@@ -1,3 +1,3 @@
-module github.com/pila/credentials
+module github.com/pila/go-credential-sdk
 
 go 1.24.3
