@@ -1,13 +1,19 @@
 package vc
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"strings"
 	"time"
 
 	"github.com/xeipuuv/gojsonschema"
+
+	"github.com/pilacorp/go-credential-sdk/vc/crypto"
 )
 
 // Credential represents a W3C Verifiable Credential.
@@ -44,40 +50,6 @@ func ParseCredential(jsonStr string, opts ...CredentialOpt) (*Credential, error)
 	err := json.Unmarshal([]byte(jsonStr), &c)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshal credential: %w", err)
-	}
-
-	// Validate proofValue after deserialization
-	if proof, ok := c["proof"]; ok {
-		var proofs []interface{}
-		switch v := proof.(type) {
-		case []interface{}:
-			proofs = v
-		case map[string]interface{}:
-			proofs = []interface{}{v}
-		default:
-			return nil, fmt.Errorf("invalid proof format: %T", proof)
-		}
-		for i, p := range proofs {
-			if pr, ok := p.(map[string]interface{}); ok {
-				if pv, ok := pr["proofValue"].(string); ok && pv != "" {
-					fmt.Printf("Parsed proofValue at index %d: %s\n", i, pv)
-					encodedProof := pv
-					if len(pv) > 0 && pv[0] == 'u' {
-						encodedProof = pv[1:]
-					}
-					if len(encodedProof) < 80 {
-						return nil, fmt.Errorf("proofValue at index %d too short: %d characters, expected ~86", i, len(encodedProof))
-					}
-					decoded, err := base64.RawURLEncoding.DecodeString(encodedProof)
-					if err != nil {
-						return nil, fmt.Errorf("decode proofValue at index %d: %w", i, err)
-					}
-					if len(decoded) != 64 {
-						return nil, fmt.Errorf("decoded proofValue length at index %d: expected 64 bytes, got %d", i, len(decoded))
-					}
-				}
-			}
-		}
 	}
 
 	options := &credentialOptions{
@@ -124,8 +96,6 @@ func CreateCredentialWithContent(vcc CredentialContents) (*Credential, error) {
 		return nil, fmt.Errorf("converting credential contents: %w", err)
 	}
 
-	//jsonutil.AddCustomFields(vcJSON, customFields)
-
 	return &credential, nil
 }
 
@@ -153,38 +123,7 @@ func (c *Credential) ToJSON() ([]byte, error) {
 	if err := json.Unmarshal(data, &temp); err != nil {
 		return nil, fmt.Errorf("validate serialization: %w", err)
 	}
-	if proof, ok := temp["proof"]; ok {
-		fmt.Printf("Proof after serialization: %v\n", proof)
-		var proofs []interface{}
-		switch v := proof.(type) {
-		case []interface{}:
-			proofs = v
-		case map[string]interface{}:
-			proofs = []interface{}{v}
-		default:
-			return nil, fmt.Errorf("invalid proof format after serialization: %T", proof)
-		}
-		for i, p := range proofs {
-			if pr, ok := p.(map[string]interface{}); ok {
-				if pv, ok := pr["proofValue"].(string); ok && pv != "" {
-					encodedProof := pv
-					if len(pv) > 0 && pv[0] == 'u' {
-						encodedProof = pv[1:]
-					}
-					if len(encodedProof) < 80 {
-						return nil, fmt.Errorf("serialized proofValue at index %d too short: %d characters, expected ~86", i, len(encodedProof))
-					}
-					decoded, err := base64.RawURLEncoding.DecodeString(encodedProof)
-					if err != nil {
-						return nil, fmt.Errorf("decode serialized proofValue at index %d: %w", i, err)
-					}
-					if len(decoded) != 64 {
-						return nil, fmt.Errorf("decoded serialized proofValue length at index %d: expected 64 bytes, got %d", i, len(decoded))
-					}
-				}
-			}
-		}
-	}
+
 	return data, nil
 }
 
@@ -314,6 +253,109 @@ func (c *Credential) AddProof(creator *ProofCreator, proofType, verificationMeth
 	return nil
 }
 
+// AddProofsECDSA add a proof to the Credential.
+func (c *Credential) AddECDSAProofs(priv *ecdsa.PrivateKey, verificationMethod string) error {
+	proofType := "DataIntegrityProof"
+	processorOpt := []ProcessorOpt{WithAlgorithm("URDNA2015")} //WithAlgorithm("URDNA2015")
+
+	proof := &Proof{
+		Type:               proofType,
+		Created:            time.Now().UTC().Format(time.RFC3339),
+		VerificationMethod: verificationMethod,
+		ProofPurpose:       "assertionMethod",
+	}
+
+	vcCopy := make(Credential)
+	for k, v := range *c {
+		if k != "proof" {
+			vcCopy[k] = v
+		}
+	}
+
+	canonicalDoc, err := CanonicalizeDocument(vcCopy, processorOpt...)
+	if err != nil {
+		return fmt.Errorf("canonicalize document: %w", err)
+	}
+
+	digest, err := ComputeDigest(canonicalDoc)
+	if err != nil {
+		return fmt.Errorf("compute digest: %w", err)
+	}
+
+	//Custom sign
+	signer := crypto.NewECDSASecp256k1Signer(priv)
+	signature, err := signer.Sign(digest)
+	if err != nil {
+		fmt.Printf("Failed to sign message: %v\n", err)
+	}
+
+	proof.ProofValue = hex.EncodeToString(signature)
+
+	var proofs []interface{}
+	if p, ok := (*c)["proof"]; ok {
+		switch v := p.(type) {
+		case []interface{}:
+			proofs = v
+		case interface{}:
+			proofs = []interface{}{v}
+		default:
+			return fmt.Errorf("invalid proof format: %T", p)
+		}
+	}
+
+	proofs = append(proofs, proof)
+	(*c)["proof"] = proofs
+
+	return nil
+}
+
+func VerifyECDSACredential(cr *Credential, publicKey *ecdsa.PublicKey) error {
+	processorOpt := []ProcessorOpt{WithAlgorithm("URDNA2015")} //WithAlgorithm("URDNA2015")
+
+	proofs, ok := (*cr)["proof"].([]interface{})
+	if !ok {
+		if proof, exists := (*cr)["proof"]; exists {
+			proofs = []interface{}{proof}
+		} else {
+			return fmt.Errorf("credential has no proof")
+		}
+	}
+
+	vcCopy := make(Credential)
+	for k, v := range *cr {
+		if k != "proof" {
+			vcCopy[k] = v
+		}
+	}
+
+	canonicalDoc, err := CanonicalizeDocument(vcCopy, processorOpt...)
+	if err != nil {
+		return fmt.Errorf("canonicalize document: %w", err)
+	}
+
+	digest, err := ComputeDigest(canonicalDoc)
+	if err != nil {
+		return fmt.Errorf("compute digest: %w", err)
+	}
+
+	proof := proofs[0].(*Proof).ProofValue
+	proofBytes, err := hex.DecodeString(proof)
+	if err != nil {
+		return fmt.Errorf("decode proofValue: %w", err)
+	}
+
+	verifier := crypto.NewSecp256k1()
+
+	pubKeyBytes := elliptic.Marshal(btcec.S256(), publicKey.X, publicKey.Y)
+	// Verify the signature
+	err = verifier.Verify(proofBytes, digest, pubKeyBytes)
+	if err != nil {
+		return err
+	}
+	return err
+
+}
+
 // CredentialContents represents the structured contents of a Credential.
 type CredentialContents struct {
 	Context    []string
@@ -427,30 +469,6 @@ func parseCredentialContents(c Credential) (CredentialContents, error) {
 	if schema, ok := c["credentialSchema"].(map[string]interface{}); ok {
 		schemaID, _ := parseTypedID(schema)
 		contents.Schemas = append(contents.Schemas, schemaID)
-	}
-
-	// Parse relatedResource
-	if resources, ok := c["relatedResource"].([]interface{}); ok {
-		for _, r := range resources {
-			if resource, ok := r.(map[string]interface{}); ok {
-				tr := TypedResource{}
-				if id, ok := resource["id"].(string); ok {
-					tr.ID = id
-				}
-				if t, ok := resource["type"].(string); ok {
-					tr.Type = t
-				}
-				if mt, ok := resource["mediaType"].(string); ok {
-					tr.MediaType = mt
-				}
-				if sri, ok := resource["digestSRI"].(string); ok {
-					tr.DigestSRI = sri
-				}
-				if mb, ok := resource["digestMultibase"].(string); ok {
-					tr.DigestMultibase = mb
-				}
-			}
-		}
 	}
 
 	// Parse proof
