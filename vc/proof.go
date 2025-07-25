@@ -4,28 +4,17 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 )
 
 // KeyType represents a cryptographic key type.
 type KeyType string
 
-const (
-	KeyTypeECDSAP256      KeyType = "ECDSAP256"
-	KeyTypeECDSASecp256k1 KeyType = "ECDSASecp256k1"
-	KeyTypeEd25519        KeyType = "Ed25519"
-)
-
 // Algorithm represents a cryptographic algorithm.
 type Algorithm string
 
-const (
-	AlgorithmECDSAP256      Algorithm = "ES256"
-	AlgorithmECDSASecp256k1 Algorithm = "ES256K"
-	AlgorithmEd25519        Algorithm = "EdDSA"
-)
-
-// Proof represents a Linked Data Proof.
+// Proof represents a Linked Data Proof for a Verifiable Credential.
 type Proof struct {
 	Type               string   `json:"type"`
 	Created            string   `json:"created"`
@@ -34,7 +23,22 @@ type Proof struct {
 	ProofValue         string   `json:"proofValue,omitempty"`
 	JWS                string   `json:"jws,omitempty"`
 	Disclosures        []string `json:"disclosures,omitempty"`
+	Cryptosuite        string   `json:"cryptosuite,omitempty"`
+	Challenge          string   `json:"challenge,omitempty"`
+	Domain             string   `json:"domain,omitempty"`
 }
+
+const (
+	// Key types
+	KeyTypeECDSAP256      KeyType = "ECDSAP256"
+	KeyTypeECDSASecp256k1 KeyType = "ECDSASecp256k1"
+	KeyTypeEd25519        KeyType = "Ed25519"
+
+	// Algorithms
+	AlgorithmECDSAP256      Algorithm = "ES256"
+	AlgorithmECDSASecp256k1 Algorithm = "ES256K"
+	AlgorithmEd25519        Algorithm = "EdDSA"
+)
 
 // CryptographicSigner defines the interface for signing data.
 type CryptographicSigner interface {
@@ -76,27 +80,22 @@ func (c *ProofCreator) AddProofType(descriptor ProofDescriptor, signer Cryptogra
 
 // Sign signs a document using the specified proof type and key type.
 func (c *ProofCreator) Sign(proof *Proof, keyType KeyType, data []byte, encode bool) ([]byte, error) {
+	if proof == nil || proof.Type == "" {
+		return nil, fmt.Errorf("failed to sign: proof or proof type is nil or empty")
+	}
 	entry, ok := c.signers[proof.Type]
 	if !ok {
-		return nil, fmt.Errorf("unsupported proof type: %s", proof.Type)
+		return nil, fmt.Errorf("failed to sign: unsupported proof type %s", proof.Type)
 	}
-
-	supported := false
 	for _, kt := range entry.descriptor.SupportedKeyTypes() {
 		if kt == keyType {
-			supported = true
-			break
+			if entry.signer.KeyType() != keyType {
+				return nil, fmt.Errorf("failed to sign: signer key type %s does not match requested %s", entry.signer.KeyType(), keyType)
+			}
+			return entry.signer.Sign(data, encode)
 		}
 	}
-	if !supported {
-		return nil, fmt.Errorf("proof type %s does not support key type %s", proof.Type, keyType)
-	}
-
-	if entry.signer.KeyType() != keyType {
-		return nil, fmt.Errorf("signer key type %s does not match requested %s", entry.signer.KeyType(), keyType)
-	}
-
-	return entry.signer.Sign(data, encode)
+	return nil, fmt.Errorf("failed to sign: proof type %s does not support key type %s", proof.Type, keyType)
 }
 
 // ProofVerifier verifies proofs on Verifiable Credentials.
@@ -123,45 +122,43 @@ func (v *ProofVerifier) AddVerifier(verifier CryptographicVerifier) {
 }
 
 // Verify verifies the proof on a Credential.
-func (v *ProofVerifier) Verify(vc *Credential, publicKey interface{}, keyType KeyType, opts ...ProcessorOpt) error {
+func (v *ProofVerifier) Verify(vc *Credential, publicKey interface{}, keyType KeyType) error {
+	if vc == nil {
+		return fmt.Errorf("failed to verify: credential is nil")
+	}
 	proofs, ok := (*vc)["proof"].([]interface{})
 	if !ok {
 		if proof, exists := (*vc)["proof"]; exists {
 			proofs = []interface{}{proof}
 		} else {
-			return fmt.Errorf("credential has no proof")
+			return fmt.Errorf("failed to verify: credential has no proof")
 		}
 	}
-
 	verifier, ok := v.verifiers[keyType]
 	if !ok {
-		return fmt.Errorf("no verifier for key type %s", keyType)
+		return fmt.Errorf("failed to verify: no verifier for key type %s", keyType)
 	}
-
 	vcCopy := make(Credential)
 	for k, v := range *vc {
 		if k != "proof" {
 			vcCopy[k] = v
 		}
 	}
-
-	canonicalDoc, err := CanonicalizeDocument(vcCopy, opts...)
+	canonicalDoc, err := CanonicalizeDocument(vcCopy)
 	if err != nil {
-		return fmt.Errorf("canonicalize document: %w", err)
+		return fmt.Errorf("failed to canonicalize document: %w", err)
 	}
-
 	digest, err := ComputeDigest(canonicalDoc)
 	if err != nil {
-		return fmt.Errorf("compute digest: %w", err)
+		return fmt.Errorf("failed to compute digest: %w", err)
 	}
-
 	for i, p := range proofs {
 		var proofValue, jws string
 		var disclosures []string
 		switch pr := p.(type) {
 		case *Proof:
 			if pr == nil {
-				return fmt.Errorf("nil proof at index %d", i)
+				return fmt.Errorf("failed to verify: nil proof at index %d", i)
 			}
 			proofValue = pr.ProofValue
 			jws = pr.JWS
@@ -169,94 +166,75 @@ func (v *ProofVerifier) Verify(vc *Credential, publicKey interface{}, keyType Ke
 		case map[string]interface{}:
 			parsedProof, err := parseProof(pr)
 			if err != nil {
-				return fmt.Errorf("parse proof at index %d: %w", i, err)
+				return fmt.Errorf("failed to parse proof at index %d: %w", i, err)
 			}
 			proofValue = parsedProof.ProofValue
 			jws = parsedProof.JWS
 			disclosures = parsedProof.Disclosures
 		default:
-			return fmt.Errorf("invalid proof format at index %d: %T", i, p)
+			return fmt.Errorf("failed to verify: invalid proof format at index %d: %T", i, p)
 		}
-
 		if jws == "" && proofValue == "" {
-			return fmt.Errorf("proof at index %d has no jws or proofValue", i)
+			return fmt.Errorf("failed to verify: proof at index %d has no jws or proofValue", i)
 		}
-
 		var signature []byte
 		if jws != "" {
-			// Handle JWS (Base64-encoded signature)
 			signature = []byte(jws)
 		} else {
-			// Handle proofValue (multibase base64url)
-			if proofValue == "" {
-				return fmt.Errorf("proofValue is empty at index %d", i)
-			}
-			fmt.Printf("Verifying proofValue at index %d: %s (length: %d)\n", i, proofValue, len(proofValue))
-			// Decode proofValue
+			log.Printf("Verifying proofValue at index %d: %s (length: %d)", i, proofValue, len(proofValue))
 			encodedProof := proofValue
 			if len(proofValue) > 0 && proofValue[0] == 'u' {
 				encodedProof = proofValue[1:] // Remove 'u' prefix
 			}
 			if len(encodedProof) < 80 {
-				return fmt.Errorf("proofValue at index %d too short: %d characters, expected ~86", i, len(encodedProof))
+				return fmt.Errorf("failed to verify: proofValue at index %d too short: %d characters, expected ~86", i, len(encodedProof))
 			}
 			signature, err = base64.RawURLEncoding.DecodeString(encodedProof)
 			if err != nil {
-				return fmt.Errorf("decode proofValue at index %d: %w", i, err)
+				return fmt.Errorf("failed to decode proofValue at index %d: %w", i, err)
 			}
-			fmt.Printf("Decoded proofValue length at index %d: %d\n", i, len(signature))
+			log.Printf("Decoded proofValue length at index %d: %d", i, len(signature))
 			if len(signature) != 64 {
-				return fmt.Errorf("decoded proofValue length at index %d: expected 64 bytes, got %d", i, len(signature))
+				return fmt.Errorf("failed to verify: decoded proofValue length at index %d: expected 64 bytes, got %d", i, len(signature))
 			}
 		}
-
-		// Include disclosures if present (for JWS)
 		signatureWithDisclosures := string(signature)
 		if len(disclosures) > 0 {
 			signatureWithDisclosures += "~" + strings.Join(disclosures, "~")
 		}
-
 		if err := verifier.Verify(digest, []byte(signatureWithDisclosures), publicKey); err != nil {
-			return fmt.Errorf("verify proof at index %d: %w", i, err)
+			return fmt.Errorf("failed to verify proof at index %d: %w", i, err)
 		}
 	}
-
 	return nil
 }
 
 // VerifyJWT verifies a JWT string and returns the reconstructed Credential.
 func (v *ProofVerifier) VerifyJWT(jwtString string, publicKey interface{}, keyType KeyType, opts ...CredentialOpt) (*Credential, error) {
+	if jwtString == "" {
+		return nil, fmt.Errorf("failed to verify JWT: JWT string is empty")
+	}
 	verifier, ok := v.verifiers[keyType]
 	if !ok {
-		return nil, fmt.Errorf("no verifier for key type %s", keyType)
+		return nil, fmt.Errorf("failed to verify JWT: no verifier for key type %s", keyType)
 	}
-
-	// Parse JWT
 	parts := strings.Split(jwtString, ".")
 	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT format: expected header.payload.signature")
+		return nil, fmt.Errorf("failed to verify JWT: invalid format, expected header.payload.signature")
 	}
 	headerB64, payloadB64, signatureB64 := parts[0], parts[1], parts[2]
-
-	// Decode payload
 	payloadJSON, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
-		return nil, fmt.Errorf("decode JWT payload: %w", err)
+		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
 	}
-
-	// Reconstruct Credential
 	var credential Credential
 	if err := json.Unmarshal(payloadJSON, &credential); err != nil {
-		return nil, fmt.Errorf("unmarshal JWT payload: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal JWT payload: %w", err)
 	}
-
-	// Verify signature
 	data := []byte(headerB64 + "." + payloadB64)
 	if err := verifier.Verify(data, []byte(signatureB64), publicKey); err != nil {
-		return nil, fmt.Errorf("verify JWT: %w", err)
+		return nil, fmt.Errorf("failed to verify JWT: %w", err)
 	}
-
-	// Apply credential options (e.g., validation)
 	options := &credentialOptions{
 		processor: &ProcessorOptions{},
 		validate:  true,
@@ -264,14 +242,60 @@ func (v *ProofVerifier) VerifyJWT(jwtString string, publicKey interface{}, keyTy
 	for _, opt := range opts {
 		opt(options)
 	}
-
 	if options.validate {
 		if err := validateCredential(credential, options.processor); err != nil {
-			return nil, fmt.Errorf("validate credential: %w", err)
+			return nil, fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}
-
 	return &credential, nil
+}
+
+// parseProof converts a single proof map into a Proof struct.
+func parseProof(proof map[string]interface{}) (Proof, error) {
+	var result Proof
+	if t, ok := proof["type"].(string); ok && t != "" {
+		result.Type = t
+	} else {
+		return Proof{}, fmt.Errorf("failed to parse proof: invalid or missing type field")
+	}
+	if created, ok := proof["created"].(string); ok && created != "" {
+		result.Created = created
+	} else {
+		return Proof{}, fmt.Errorf("failed to parse proof: invalid or missing created field")
+	}
+	if vm, ok := proof["verificationMethod"].(string); ok && vm != "" {
+		result.VerificationMethod = vm
+	} else {
+		return Proof{}, fmt.Errorf("failed to parse proof: invalid or missing verificationMethod field")
+	}
+	if pp, ok := proof["proofPurpose"].(string); ok && pp != "" {
+		result.ProofPurpose = pp
+	} else {
+		return Proof{}, fmt.Errorf("failed to parse proof: invalid or missing proofPurpose field")
+	}
+	if pv, ok := proof["proofValue"].(string); ok {
+		result.ProofValue = pv
+	}
+	if jws, ok := proof["jws"].(string); ok {
+		result.JWS = jws
+	}
+	if disclosures, ok := proof["disclosures"].([]interface{}); ok {
+		for _, d := range disclosures {
+			if ds, ok := d.(string); ok {
+				result.Disclosures = append(result.Disclosures, ds)
+			}
+		}
+	}
+	if cs, ok := proof["cryptosuite"].(string); ok {
+		result.Cryptosuite = cs
+	}
+	if ch, ok := proof["challenge"].(string); ok {
+		result.Challenge = ch
+	}
+	if dm, ok := proof["domain"].(string); ok {
+		result.Domain = dm
+	}
+	return result, nil
 }
 
 // parseLDProof parses the proof field into a slice of Proof structs.
@@ -279,88 +303,29 @@ func parseLDProof(proofRaw interface{}) ([]Proof, error) {
 	if proofRaw == nil {
 		return nil, nil
 	}
-
+	var proofs []Proof
 	switch proof := proofRaw.(type) {
 	case *Proof:
 		if proof == nil {
-			return nil, fmt.Errorf("nil proof")
+			return nil, fmt.Errorf("failed to parse proof: nil proof")
 		}
 		return []Proof{*proof}, nil
 	case map[string]interface{}:
 		parsedProof, err := parseProof(proof)
 		if err != nil {
-			return nil, fmt.Errorf("parse proof: %w", err)
+			return nil, fmt.Errorf("failed to parse proof: %w", err)
 		}
 		return []Proof{parsedProof}, nil
 	case []interface{}:
-		var proofs []Proof
 		for i, p := range proof {
-			switch pr := p.(type) {
-			case *Proof:
-				if pr == nil {
-					return nil, fmt.Errorf("nil proof at index %d", i)
-				}
-				proofs = append(proofs, *pr)
-			case map[string]interface{}:
-				parsedProof, err := parseProof(pr)
-				if err != nil {
-					return nil, fmt.Errorf("parse proof at index %d: %w", i, err)
-				}
-				proofs = append(proofs, parsedProof)
-			default:
-				return nil, fmt.Errorf("invalid proof format at index %d: %T", i, p)
+			parsedProof, err := parseProof(p.(map[string]interface{}))
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse proof at index %d: %w", i, err)
 			}
+			proofs = append(proofs, parsedProof)
 		}
 		return proofs, nil
 	default:
-		return nil, fmt.Errorf("unsupported proof format: %T", proofRaw)
+		return nil, fmt.Errorf("failed to parse proof: unsupported format %T", proofRaw)
 	}
-}
-
-// parseProof converts a single proof map into a Proof struct.
-func parseProof(proof map[string]interface{}) (Proof, error) {
-	var result Proof
-
-	// Safely extract fields with type assertions
-	if t, ok := proof["type"].(string); ok {
-		result.Type = t
-	} else {
-		return Proof{}, fmt.Errorf("invalid or missing type field")
-	}
-
-	if created, ok := proof["created"].(string); ok {
-		result.Created = created
-	} else {
-		return Proof{}, fmt.Errorf("invalid or missing created field")
-	}
-
-	if vm, ok := proof["verificationMethod"].(string); ok {
-		result.VerificationMethod = vm
-	} else {
-		return Proof{}, fmt.Errorf("invalid or missing verificationMethod field")
-	}
-
-	if pp, ok := proof["proofPurpose"].(string); ok {
-		result.ProofPurpose = pp
-	} else {
-		return Proof{}, fmt.Errorf("invalid or missing proofPurpose field")
-	}
-
-	if pv, ok := proof["proofValue"].(string); ok {
-		result.ProofValue = pv
-	} // proofValue is optional
-
-	if jws, ok := proof["jws"].(string); ok {
-		result.JWS = jws
-	} // jws is optional
-
-	if disclosures, ok := proof["disclosures"].([]interface{}); ok {
-		for _, d := range disclosures {
-			if ds, ok := d.(string); ok {
-				result.Disclosures = append(result.Disclosures, ds)
-			}
-		}
-	} // disclosures is optional
-
-	return result, nil
 }

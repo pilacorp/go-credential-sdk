@@ -7,27 +7,38 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/btcsuite/btcd/btcec/v2"
+	"log"
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/xeipuuv/gojsonschema"
 
-	"github.com/pilacorp/go-credential-sdk/vc/crypto"
+	"credential-sdk/vc/crypto"
 )
 
-// Credential represents a W3C Verifiable Credential.
+// Credential represents a W3C Verifiable Credential as a JSON object.
 type Credential map[string]interface{}
 
-// CredentialOpt represents an option for credential processing.
+// CredentialOpt represents an option for configuring credential processing.
 type CredentialOpt func(*credentialOptions)
 
+// credentialOptions holds configuration for credential processing.
 type credentialOptions struct {
 	processor *ProcessorOptions
 	validate  bool
 }
 
-// WithProcessorOptions sets the processor options.
+// Status represents the credentialStatus field as per W3C Verifiable Credentials and EBSI specifications.
+type Status struct {
+	ID                   string `json:"id,omitempty"`                   // Unique identifier for the status entry (e.g., revocation list URL)
+	Type                 string `json:"type"`                           // Status type (e.g., StatusList2021Entry, RevocationList2021)
+	StatusPurpose        string `json:"statusPurpose,omitempty"`        // Purpose of the status (e.g., "revocation", "suspension")
+	StatusListIndex      string `json:"statusListIndex,omitempty"`      // Index in the status list (e.g., bit position in StatusList2021)
+	StatusListCredential string `json:"statusListCredential,omitempty"` // Reference to the status list credential
+}
+
+// WithProcessorOptions sets the processor options for credential processing.
 func WithProcessorOptions(options ...ProcessorOpt) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.processor = &ProcessorOptions{}
@@ -37,7 +48,7 @@ func WithProcessorOptions(options ...ProcessorOpt) CredentialOpt {
 	}
 }
 
-// WithDisableValidation disables schema validation.
+// WithDisableValidation disables schema validation during credential parsing.
 func WithDisableValidation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.validate = false
@@ -46,10 +57,12 @@ func WithDisableValidation() CredentialOpt {
 
 // ParseCredential parses a JSON string into a Credential.
 func ParseCredential(jsonStr string, opts ...CredentialOpt) (*Credential, error) {
+	if jsonStr == "" {
+		return nil, fmt.Errorf("failed to parse credential: JSON string is empty")
+	}
 	var c Credential
-	err := json.Unmarshal([]byte(jsonStr), &c)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal credential: %w", err)
+	if err := json.Unmarshal([]byte(jsonStr), &c); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal credential: %w", err)
 	}
 
 	options := &credentialOptions{
@@ -61,9 +74,8 @@ func ParseCredential(jsonStr string, opts ...CredentialOpt) (*Credential, error)
 	}
 
 	if options.validate {
-		err = validateCredential(c, options.processor)
-		if err != nil {
-			return nil, fmt.Errorf("validate credential: %w", err)
+		if err := validateCredential(c, options.processor); err != nil {
+			return nil, fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}
 
@@ -72,6 +84,9 @@ func ParseCredential(jsonStr string, opts ...CredentialOpt) (*Credential, error)
 
 // NewCredential creates a new Credential with required fields.
 func NewCredential(id, issuer, subjectID string, subjectData map[string]interface{}) (*Credential, error) {
+	if id == "" || issuer == "" {
+		return nil, fmt.Errorf("failed to create credential: id and issuer are required")
+	}
 	c := Credential{
 		"@context":     []string{"https://www.w3.org/ns/credentials/v2"},
 		"id":           id,
@@ -83,159 +98,155 @@ func NewCredential(id, issuer, subjectID string, subjectData map[string]interfac
 	}
 
 	for k, v := range subjectData {
+		if k == "id" {
+			continue // Skip overwriting the subject ID
+		}
 		c["credentialSubject"].(map[string]interface{})[k] = v
 	}
 
 	return &c, nil
 }
 
-// CreateCredentialWithProofs creates vc from CredentialContents, with provided proofs.
+// CreateCredentialWithContent creates a Credential from CredentialContents.
 func CreateCredentialWithContent(vcc CredentialContents) (*Credential, error) {
+	if vcc.Context == nil && vcc.ID == "" && vcc.Issuer == "" {
+		return nil, fmt.Errorf("failed to create credential: contents must have context, ID, or issuer")
+	}
 	credential, err := serializeCredentialContents(&vcc)
 	if err != nil {
-		return nil, fmt.Errorf("converting credential contents: %w", err)
+		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}
-
 	return &credential, nil
 }
 
 // Contents returns the structured contents of the Credential.
 func (c *Credential) Contents() (CredentialContents, error) {
-	var contents CredentialContents
-	parsed, err := parseCredentialContents(*c)
-	if err != nil {
-		return contents, fmt.Errorf("parse credential contents: %w", err)
+	if c == nil {
+		return CredentialContents{}, fmt.Errorf("failed to get contents: credential is nil")
 	}
-	return parsed, nil
+	contents, err := parseCredentialContents(*c)
+	if err != nil {
+		return contents, fmt.Errorf("failed to parse credential contents: %w", err)
+	}
+	return contents, nil
 }
 
 // ToJSON serializes the Credential to JSON.
 func (c *Credential) ToJSON() ([]byte, error) {
-	if proof, ok := (*c)["proof"]; ok {
-		fmt.Printf("Proof before serialization: %v\n", proof)
+	if c == nil {
+		return nil, fmt.Errorf("failed to serialize to JSON: credential is nil")
 	}
 	data, err := json.Marshal(c)
 	if err != nil {
-		return nil, fmt.Errorf("marshal credential: %w", err)
+		return nil, fmt.Errorf("failed to marshal credential: %w", err)
 	}
-	// Validate proofValue after serialization
 	var temp Credential
 	if err := json.Unmarshal(data, &temp); err != nil {
-		return nil, fmt.Errorf("validate serialization: %w", err)
+		return nil, fmt.Errorf("failed to validate serialization: %w", err)
 	}
-
 	return data, nil
 }
 
 // ToJWT serializes the Credential to a JWT string.
 func (c *Credential) ToJWT(creator *ProofCreator, keyType KeyType) (string, error) {
-	// Create a copy of the credential without the proof
+	if c == nil {
+		return "", fmt.Errorf("failed to serialize to JWT: credential is nil")
+	}
+	if creator == nil {
+		return "", fmt.Errorf("failed to serialize to JWT: proof creator is nil")
+	}
 	vcCopy := make(Credential)
 	for k, v := range *c {
 		if k != "proof" {
 			vcCopy[k] = v
 		}
 	}
-
-	// Serialize the credential to JSON for the JWT payload
 	payload, err := json.Marshal(vcCopy)
 	if err != nil {
-		return "", fmt.Errorf("marshal credential for JWT: %w", err)
+		return "", fmt.Errorf("failed to marshal credential for JWT: %w", err)
 	}
-
-	// Create W3C-compliant JWT header
 	header := map[string]interface{}{
 		"kid": "ExHkBMW9fmbkvV266mRpuP2sUY_N_EWIN1lapUzO8ro",
-		"alg": "ES256",
+		"alg": string(keyTypeToAlgorithm(keyType)),
 	}
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
-		return "", fmt.Errorf("marshal JWT header: %w", err)
+		return "", fmt.Errorf("failed to marshal JWT header: %w", err)
 	}
-
-	// Encode header and payload in Base64 URL-safe format
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
 	payloadB64 := base64.RawURLEncoding.EncodeToString(payload)
 	dataToSign := []byte(headerB64 + "." + payloadB64)
-
-	// Create a temporary proof to pass to the signer
-	proof := &Proof{
-		Type: "DataIntegrityProof",
-	}
-
-	// Sign the header.payload
+	proof := &Proof{Type: "DataIntegrityProof"}
 	signature, err := creator.Sign(proof, keyType, dataToSign, true)
 	if err != nil {
-		return "", fmt.Errorf("sign JWT: %w", err)
+		return "", fmt.Errorf("failed to sign JWT: %w", err)
 	}
-
-	// Construct JWT string
+	log.Printf("Generated JWT signature: %s", signature)
 	return headerB64 + "." + payloadB64 + "." + string(signature), nil
 }
 
-// AddProof adds a proof to the Credential.
+// AddProof adds a proof to the Credential using the specified proof type and key type.
 func (c *Credential) AddProof(creator *ProofCreator, proofType, verificationMethod string, keyType KeyType, useJWS bool, opts ...ProcessorOpt) error {
+	if c == nil {
+		return fmt.Errorf("failed to add proof: credential is nil")
+	}
+	if creator == nil {
+		return fmt.Errorf("failed to add proof: proof creator is nil")
+	}
+	if proofType == "" || verificationMethod == "" {
+		return fmt.Errorf("failed to add proof: proof type and verification method are required")
+	}
 	proof := &Proof{
 		Type:               proofType,
 		Created:            time.Now().UTC().Format(time.RFC3339),
 		VerificationMethod: verificationMethod,
 		ProofPurpose:       "assertionMethod",
 	}
-
 	vcCopy := make(Credential)
 	for k, v := range *c {
 		if k != "proof" {
 			vcCopy[k] = v
 		}
 	}
-
-	canonicalDoc, err := CanonicalizeDocument(vcCopy, opts...)
+	canonicalDoc, err := CanonicalizeDocument(vcCopy)
 	if err != nil {
-		return fmt.Errorf("canonicalize document: %w", err)
+		return fmt.Errorf("failed to canonicalize document: %w", err)
 	}
-
 	digest, err := ComputeDigest(canonicalDoc)
 	if err != nil {
-		return fmt.Errorf("compute digest: %w", err)
+		return fmt.Errorf("failed to compute digest: %w", err)
 	}
-
 	signature, err := creator.Sign(proof, keyType, digest, false)
 	if err != nil {
-		return fmt.Errorf("sign proof: %w", err)
+		return fmt.Errorf("failed to sign proof: %w", err)
 	}
-
 	if useJWS {
 		parts := strings.Split(string(signature), "~")
 		if len(parts) < 1 {
-			return fmt.Errorf("invalid JWS format")
+			return fmt.Errorf("failed to add proof: invalid JWS format")
 		}
 		proof.JWS = parts[0]
 		if len(parts) > 1 {
 			proof.Disclosures = parts[1:]
 		}
 	} else {
-		// Ensure signature is exactly 64 bytes for proofValue
 		if len(signature) != 64 {
-			return fmt.Errorf("invalid signature length for proofValue: expected 64 bytes, got %d", len(signature))
+			return fmt.Errorf("failed to add proof: invalid signature length for proofValue: expected 64 bytes, got %d", len(signature))
 		}
-		// Encode signature as multibase (base64url) for proofValue
 		encoded := base64.RawURLEncoding.EncodeToString(signature)
-		fmt.Printf("Generated proofValue: u%s\n", encoded)
-		// Validate that encoded signature decodes back to 64 bytes
+		log.Printf("Generated proofValue: u%s", encoded)
 		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
 		if err != nil {
 			return fmt.Errorf("failed to decode proofValue: %w", err)
 		}
 		if len(decoded) != 64 {
-			return fmt.Errorf("decoded proofValue length invalid: expected 64 bytes, got %d", len(decoded))
+			return fmt.Errorf("failed to add proof: decoded proofValue length invalid: expected 64 bytes, got %d", len(decoded))
 		}
-		// Validate encoded length (~86 characters)
 		if len(encoded) < 80 {
-			return fmt.Errorf("encoded proofValue too short: %d characters, expected ~86", len(encoded))
+			return fmt.Errorf("failed to add proof: encoded proofValue too short: %d characters, expected ~86", len(encoded))
 		}
 		proof.ProofValue = "u" + encoded
 	}
-
 	var proofs []interface{}
 	if p, ok := (*c)["proof"]; ok {
 		switch v := p.(type) {
@@ -244,328 +255,247 @@ func (c *Credential) AddProof(creator *ProofCreator, proofType, verificationMeth
 		case interface{}:
 			proofs = []interface{}{v}
 		default:
-			return fmt.Errorf("invalid proof format: %T", p)
+			return fmt.Errorf("failed to add proof: invalid proof format %T", p)
 		}
 	}
-
 	proofs = append(proofs, proof)
 	(*c)["proof"] = proofs
 	return nil
 }
 
-// AddProofsECDSA add a proof to the Credential.
+// AddECDSAProofs adds an ECDSA proof to the Credential.
 func (c *Credential) AddECDSAProofs(priv *ecdsa.PrivateKey, verificationMethod string) error {
+	if c == nil {
+		return fmt.Errorf("failed to add ECDSA proof: credential is nil")
+	}
+	if priv == nil {
+		return fmt.Errorf("failed to add ECDSA proof: private key is nil")
+	}
+	if verificationMethod == "" {
+		return fmt.Errorf("failed to add ECDSA proof: verification method is required")
+	}
 	proofType := "DataIntegrityProof"
-	processorOpt := []ProcessorOpt{WithAlgorithm("URDNA2015")} //WithAlgorithm("URDNA2015")
-
 	proof := &Proof{
 		Type:               proofType,
 		Created:            time.Now().UTC().Format(time.RFC3339),
 		VerificationMethod: verificationMethod,
 		ProofPurpose:       "assertionMethod",
 	}
-
 	vcCopy := make(Credential)
 	for k, v := range *c {
 		if k != "proof" {
 			vcCopy[k] = v
 		}
 	}
-
-	canonicalDoc, err := CanonicalizeDocument(vcCopy, processorOpt...)
+	canonicalDoc, err := CanonicalizeDocument(vcCopy)
 	if err != nil {
-		return fmt.Errorf("canonicalize document: %w", err)
+		return fmt.Errorf("failed to canonicalize document: %w", err)
 	}
-
 	digest, err := ComputeDigest(canonicalDoc)
 	if err != nil {
-		return fmt.Errorf("compute digest: %w", err)
+		return fmt.Errorf("failed to compute digest: %w", err)
 	}
-
-	//Custom sign
 	signer := crypto.NewECDSASecp256k1Signer(priv)
 	signature, err := signer.Sign(digest)
 	if err != nil {
-		fmt.Printf("Failed to sign message: %v\n", err)
+		log.Printf("Failed to sign ECDSA proof: %v", err)
+		return fmt.Errorf("failed to sign ECDSA proof: %w", err)
 	}
-
 	proof.ProofValue = hex.EncodeToString(signature)
-
-	var proofs []interface{}
-	if p, ok := (*c)["proof"]; ok {
-		switch v := p.(type) {
-		case []interface{}:
-			proofs = v
-		case interface{}:
-			proofs = []interface{}{v}
-		default:
-			return fmt.Errorf("invalid proof format: %T", p)
-		}
-	}
-
-	proofs = append(proofs, proof)
-	(*c)["proof"] = proofs
+	rawProof := proofsToRaw([]Proof{*proof})
+	(*c)["proof"] = rawProof
 
 	return nil
 }
 
-func VerifyECDSACredential(cr *Credential, publicKey *ecdsa.PublicKey) error {
-	processorOpt := []ProcessorOpt{WithAlgorithm("URDNA2015")} //WithAlgorithm("URDNA2015")
-
-	proofs, ok := (*cr)["proof"].([]interface{})
+// VerifyECDSACredential verifies an ECDSA-signed Credential.
+func VerifyECDSACredential(vc *Credential, publicKey *ecdsa.PublicKey) error {
+	if vc == nil {
+		return fmt.Errorf("failed to verify ECDSA credential: credential is nil")
+	}
+	if publicKey == nil {
+		return fmt.Errorf("failed to verify ECDSA credential: public key is nil")
+	}
+	proofs, ok := (*vc)["proof"].([]interface{})
 	if !ok {
-		if proof, exists := (*cr)["proof"]; exists {
+		if proof, exists := (*vc)["proof"]; exists {
 			proofs = []interface{}{proof}
 		} else {
-			return fmt.Errorf("credential has no proof")
+			return fmt.Errorf("failed to verify ECDSA credential: credential has no proof")
 		}
 	}
-
+	if len(proofs) == 0 {
+		return fmt.Errorf("failed to verify ECDSA credential: no proofs found")
+	}
 	vcCopy := make(Credential)
-	for k, v := range *cr {
+	for k, v := range *vc {
 		if k != "proof" {
 			vcCopy[k] = v
 		}
 	}
 
-	canonicalDoc, err := CanonicalizeDocument(vcCopy, processorOpt...)
+	canonicalDoc, err := CanonicalizeDocument(vcCopy)
 	if err != nil {
-		return fmt.Errorf("canonicalize document: %w", err)
+		return fmt.Errorf("failed to canonicalize document: %w", err)
 	}
-
 	digest, err := ComputeDigest(canonicalDoc)
 	if err != nil {
-		return fmt.Errorf("compute digest: %w", err)
+		return fmt.Errorf("failed to compute digest: %w", err)
 	}
 
-	proof := proofs[0].(*Proof).ProofValue
-	proofBytes, err := hex.DecodeString(proof)
+	proof, err := parseRawToProof(proofs[0])
 	if err != nil {
-		return fmt.Errorf("decode proofValue: %w", err)
+		return fmt.Errorf("failed to verify ECDSA credential: invalid proof format at index 0", err)
 	}
-
+	proofBytes, err := hex.DecodeString(proof.ProofValue)
+	if err != nil {
+		return fmt.Errorf("failed to decode proofValue: %w", err)
+	}
 	verifier := crypto.NewSecp256k1()
-
 	pubKeyBytes := elliptic.Marshal(btcec.S256(), publicKey.X, publicKey.Y)
-	// Verify the signature
-	err = verifier.Verify(proofBytes, digest, pubKeyBytes)
-	if err != nil {
-		return err
+	if err := verifier.Verify(proofBytes, digest, pubKeyBytes); err != nil {
+		return fmt.Errorf("failed to verify ECDSA signature: %w", err)
 	}
-	return err
-
+	return nil
 }
 
 // CredentialContents represents the structured contents of a Credential.
 type CredentialContents struct {
-	Context    []string
-	ID         string
-	Types      []string
-	Issuer     string
-	ValidFrom  time.Time
-	ValidUntil time.Time
-	Subject    []Subject
-	Schemas    []TypedID
-	Proofs     []Proof
+	Context          []interface{} // JSON-LD contexts
+	ID               string        // Credential identifier
+	Types            []string      // Credential types
+	Issuer           string        // Issuer identifier
+	ValidFrom        time.Time     // Issuance date
+	ValidUntil       time.Time     // Expiration date
+	CredentialStatus []Status      // Credential status entries
+	Subject          []Subject     // Credential subjects
+	Schemas          []TypedID     // Credential schemas
+	Proofs           []Proof       // Proofs attached to the credential
 }
 
 // Subject represents the credentialSubject field.
 type Subject struct {
-	ID           string
-	CustomFields map[string]interface{}
+	ID           string                 // Subject identifier
+	CustomFields map[string]interface{} // Additional subject data
 }
 
 // validateCredential validates the Credential against its schema.
 func validateCredential(c Credential, processor *ProcessorOptions) error {
 	if processor == nil {
-		return fmt.Errorf("processor options are required")
+		return fmt.Errorf("failed to validate credential: processor options are required")
 	}
-
 	schema, ok := c["credentialSchema"].(map[string]interface{})
 	if !ok {
-		return fmt.Errorf("credentialSchema is required")
+		return fmt.Errorf("failed to validate credential: credentialSchema is required")
 	}
-
 	schemaID, ok := schema["id"].(string)
 	if !ok {
-		return fmt.Errorf("credentialSchema.id is required")
+		return fmt.Errorf("failed to validate credential: credentialSchema.id is required")
 	}
-
 	schemaLoader := gojsonschema.NewReferenceLoader(schemaID)
 	credentialLoader := gojsonschema.NewGoLoader(c)
 	result, err := gojsonschema.Validate(schemaLoader, credentialLoader)
 	if err != nil {
-		return fmt.Errorf("schema validation: %w", err)
+		return fmt.Errorf("failed to validate schema: %w", err)
 	}
-
 	if !result.Valid() {
-		return fmt.Errorf("credential is invalid: %v", result.Errors())
+		return fmt.Errorf("failed to validate credential: %v", result.Errors())
 	}
-
 	return nil
 }
 
 // parseCredentialContents parses the Credential into structured contents.
 func parseCredentialContents(c Credential) (CredentialContents, error) {
 	var contents CredentialContents
-
-	// Parse @context
-	if context, ok := c["@context"].([]interface{}); ok {
-		for _, ctx := range context {
-			if ctxStr, ok := ctx.(string); ok {
-				contents.Context = append(contents.Context, ctxStr)
-			}
-		}
+	if err := parseContext(&c, &contents); err != nil {
+		return contents, fmt.Errorf("failed to parse credential contents: %w", err)
 	}
-
-	// Parse ID
-	if id, ok := c["id"].(string); ok {
-		contents.ID = id
+	if err := parseID(&c, &contents); err != nil {
+		return contents, fmt.Errorf("failed to parse credential contents: %w", err)
 	}
-
-	// Parse types
-	if types, ok := c["type"].([]interface{}); ok {
-		for _, t := range types {
-			if typeStr, ok := t.(string); ok {
-				contents.Types = append(contents.Types, typeStr)
-			}
-		}
+	if err := parseTypes(&c, &contents); err != nil {
+		return contents, fmt.Errorf("failed to parse credential contents: %w", err)
 	}
-
-	// Parse issuer
-	contents.Issuer, _ = c["issuer"].(string)
-
-	// Parse validFrom and validUntil
-	if validFrom, ok := c["validFrom"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validFrom)
-		if err == nil {
-			contents.ValidFrom = t
-		}
+	if err := parseIssuer(&c, &contents); err != nil {
+		return contents, fmt.Errorf("failed to parse credential contents: %w", err)
 	}
-	if validUntil, ok := c["validUntil"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validUntil)
-		if err == nil {
-			contents.ValidUntil = t
-		}
+	if err := parseDates(&c, &contents); err != nil {
+		return contents, fmt.Errorf("failed to parse credential contents: %w", err)
 	}
-
-	// Parse credentialSubject
-	if subject, ok := c["credentialSubject"].(map[string]interface{}); ok {
-		s := Subject{
-			CustomFields: make(map[string]interface{}),
-		}
-		if id, ok := subject["id"].(string); ok {
-			s.ID = id
-		}
-		for k, v := range subject {
-			if k != "id" {
-				s.CustomFields[k] = v
-			}
-		}
-		contents.Subject = append(contents.Subject, s)
+	if err := parseSubject(&c, &contents); err != nil {
+		return contents, fmt.Errorf("failed to parse credential contents: %w", err)
 	}
-
-	// Parse credentialSchema
-	if schema, ok := c["credentialSchema"].(map[string]interface{}); ok {
-		schemaID, _ := parseTypedID(schema)
-		contents.Schemas = append(contents.Schemas, schemaID)
+	if err := parseSchema(&c, &contents); err != nil {
+		return contents, fmt.Errorf("failed to parse credential contents: %w", err)
 	}
-
-	// Parse proof
+	if err := parseStatus(&c, &contents); err != nil {
+		return contents, fmt.Errorf("failed to parse credential contents: %w", err)
+	}
 	proofs, err := parseLDProof(c["proof"])
 	if err != nil {
-		return contents, fmt.Errorf("parse proof: %w", err)
+		return contents, fmt.Errorf("failed to parse credential contents: %w", err)
 	}
 	contents.Proofs = proofs
-
 	return contents, nil
 }
 
-// parseTypedID parses a TypedID from a value.
-func parseTypedID(value interface{}) (TypedID, error) {
-	var tid TypedID
-	switch v := value.(type) {
-	case string:
-		tid.ID = v
-	case map[string]interface{}:
-		if id, ok := v["id"].(string); ok {
-			tid.ID = id
-		}
-		if t, ok := v["type"].(string); ok {
-			tid.Type = t
-		}
-	default:
-		return tid, fmt.Errorf("invalid typed ID format: %T", value)
-	}
-	return tid, nil
-}
-
+// serializeCredentialContents serializes CredentialContents into a Credential.
 func serializeCredentialContents(vcc *CredentialContents) (Credential, error) {
-	vcJSON := map[string]interface{}{}
-
-	// Serialize @context
-	if len(vcc.Context) > 0 {
-		vcJSON["@context"] = vcc.Context
+	if vcc == nil {
+		return nil, fmt.Errorf("failed to serialize credential contents: contents is nil")
 	}
-
-	// Serialize ID
+	vcJSON := make(Credential)
+	if len(vcc.Context) > 0 {
+		validatedContext, err := validateContext(vcc.Context)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize credential contents: invalid @context: %w", err)
+		}
+		vcJSON["@context"] = validatedContext
+	}
 	if vcc.ID != "" {
 		vcJSON["id"] = vcc.ID
 	}
-
-	// Serialize types
 	if len(vcc.Types) > 0 {
-		vcJSON["type"] = vcc.Types
+		vcJSON["type"] = serializeTypes(vcc.Types)
 	}
-
-	// Serialize issuer
+	if len(vcc.Subject) > 0 {
+		vcJSON["credentialSubject"] = SerializeSubject(vcc.Subject)
+	}
+	if len(vcc.Proofs) > 0 {
+		vcJSON["proof"] = proofsToRaw(vcc.Proofs)
+	}
 	if vcc.Issuer != "" {
 		vcJSON["issuer"] = vcc.Issuer
 	}
-
-	// Serialize validFrom and validUntil
+	if len(vcc.Schemas) > 0 {
+		vcJSON["credentialSchema"] = typedIDsToRaw(vcc.Schemas)
+	}
+	if len(vcc.CredentialStatus) > 0 {
+		vcJSON["credentialStatus"] = statusToRaw(vcc.CredentialStatus)
+	}
 	if !vcc.ValidFrom.IsZero() {
 		vcJSON["validFrom"] = vcc.ValidFrom.Format(time.RFC3339)
 	}
 	if !vcc.ValidUntil.IsZero() {
 		vcJSON["validUntil"] = vcc.ValidUntil.Format(time.RFC3339)
 	}
-
-	// Serialize credentialSubject
-	if len(vcc.Subject) > 0 {
-		subjects := make([]map[string]interface{}, len(vcc.Subject))
-		for i, subject := range vcc.Subject {
-			subjectJSON := make(map[string]interface{})
-			if subject.ID != "" {
-				subjectJSON["id"] = subject.ID
-			}
-			for k, v := range subject.CustomFields {
-				subjectJSON[k] = v
-			}
-			subjects[i] = subjectJSON
-		}
-		if len(subjects) == 1 {
-			vcJSON["credentialSubject"] = subjects[0]
-		} else {
-			vcJSON["credentialSubject"] = subjects
-		}
-	}
-
-	// Serialize schemas
-	if len(vcc.Schemas) > 0 {
-		schemas := make([]map[string]interface{}, len(vcc.Schemas))
-		for i, schema := range vcc.Schemas {
-			schemaJSON := make(map[string]interface{})
-			if schema.ID != "" {
-				schemaJSON["id"] = schema.ID
-			}
-			if schema.Type != "" {
-				schemaJSON["type"] = schema.Type
-			}
-			schemas[i] = schemaJSON
-		}
-		vcJSON["credentialSchema"] = schemas
+	if len(vcc.Proofs) > 0 {
+		vcJSON["proof"] = proofsToRaw(vcc.Proofs)
 	}
 
 	return vcJSON, nil
+}
+
+// keyTypeToAlgorithm maps a KeyType to its corresponding Algorithm.
+func keyTypeToAlgorithm(keyType KeyType) Algorithm {
+	switch keyType {
+	case KeyTypeECDSAP256:
+		return AlgorithmECDSAP256
+	case KeyTypeECDSASecp256k1:
+		return AlgorithmECDSASecp256k1
+	case KeyTypeEd25519:
+		return AlgorithmEd25519
+	default:
+		return ""
+	}
 }
