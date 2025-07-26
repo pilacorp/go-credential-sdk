@@ -3,9 +3,6 @@ package vc
 import (
 	"fmt"
 	"time"
-
-	"credential-sdk/vc/jsonutil"
-	"credential-sdk/vc/util"
 )
 
 // JSONMap represents a JSON object as a map.
@@ -13,23 +10,56 @@ type JSONMap = map[string]interface{}
 
 // JSON field constants for credential serialization.
 const (
-	jsonFldSubjectID   = "id"
-	jsonFldType        = "type"
-	jsonFldTypedIDID   = "id"
-	jsonFldTypedIDType = "type"
+	jsonFldSubjectID  = "id"
+	jsonFldType       = "type"
+	jsonFldSchemaID   = "id"
+	jsonFldSchemaType = "type"
 )
 
-// contextToRaw converts a slice of context strings and custom contexts to a JSON-LD compatible array.
-func contextToRaw(context []string, customContext []interface{}) []interface{} {
-	result := make([]interface{}, 0, len(context)+len(customContext))
-	for _, ctx := range context {
-		result = append(result, ctx)
+// serializeCredentialContents serializes CredentialContents into a Credential.
+func serializeCredentialContents(vcc *CredentialContents) (Credential, error) {
+	if vcc == nil {
+		return nil, fmt.Errorf("failed to serialize credential contents: contents is nil")
 	}
-	result = append(result, customContext...)
-	return result
+	vcJSON := make(Credential)
+	if len(vcc.Context) > 0 {
+		validatedContext, err := serializeContexts(vcc.Context)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize credential contents: invalid @context: %w", err)
+		}
+		vcJSON["@context"] = validatedContext
+	}
+	if vcc.ID != "" {
+		vcJSON["id"] = vcc.ID
+	}
+	if len(vcc.Types) > 0 {
+		vcJSON["type"] = serializeTypes(vcc.Types)
+	}
+	if len(vcc.Subject) > 0 {
+		vcJSON["credentialSubject"] = serializeSubjects(vcc.Subject)
+	}
+	if len(vcc.Proofs) > 0 {
+		vcJSON["proof"] = serializeProofs(vcc.Proofs)
+	}
+	if vcc.Issuer != "" {
+		vcJSON["issuer"] = vcc.Issuer
+	}
+	if len(vcc.Schemas) > 0 {
+		vcJSON["credentialSchema"] = serializeSchemas(vcc.Schemas)
+	}
+	if len(vcc.CredentialStatus) > 0 {
+		vcJSON["credentialStatus"] = serializeStatuses(vcc.CredentialStatus)
+	}
+	if !vcc.ValidFrom.IsZero() {
+		vcJSON["validFrom"] = vcc.ValidFrom.Format(time.RFC3339)
+	}
+	if !vcc.ValidUntil.IsZero() {
+		vcJSON["validUntil"] = vcc.ValidUntil.Format(time.RFC3339)
+	}
+	return vcJSON, nil
 }
 
-// serializeTypes converts a slice of type strings to a JSON-LD compatible format (string or array).
+// serializeTypes converts a slice of type strings to a JSON-LD compatible format.
 func serializeTypes(types []string) interface{} {
 	if len(types) == 0 {
 		return nil
@@ -40,28 +70,31 @@ func serializeTypes(types []string) interface{} {
 	return mapSlice(types, func(t string) interface{} { return t })
 }
 
-// SerializeSubject converts a slice of Subject structs to a JSON-LD compatible format.
-func SerializeSubject(subjects []Subject) interface{} {
+// serializeSubjects converts a slice of Subject structs to a JSON-LD compatible format.
+func serializeSubjects(subjects []Subject) interface{} {
 	if len(subjects) == 0 {
 		return nil
 	}
 	if len(subjects) == 1 {
-		return subjectToJSON(subjects[0])
+		return serializeSubject(subjects[0])
 	}
-	return mapSlice(subjects, subjectToJSON)
+	return mapSlice(subjects, serializeSubject)
 }
 
-// subjectToJSON converts a single Subject struct to a JSON object.
-func subjectToJSON(subject Subject) JSONMap {
-	obj := jsonutil.ShallowCopyObj(subject.CustomFields)
+// serializeSubject converts a single Subject struct to a JSON object.
+func serializeSubject(subject Subject) JSONMap {
+	obj := make(JSONMap)
 	if subject.ID != "" {
 		obj[jsonFldSubjectID] = subject.ID
+	}
+	for k, v := range subject.CustomFields {
+		obj[k] = v
 	}
 	return obj
 }
 
-// proofsToRaw converts a slice of Proof structs to a JSON-LD compatible format.
-func proofsToRaw(proofs []Proof) interface{} {
+// serializeProofs converts a slice of Proof structs to a JSON-LD compatible format.
+func serializeProofs(proofs []Proof) interface{} {
 	if len(proofs) == 0 {
 		return nil
 	}
@@ -83,21 +116,6 @@ func proofsToRaw(proofs []Proof) interface{} {
 		if proof.ProofValue != "" {
 			proofMap["proofValue"] = proof.ProofValue
 		}
-		if proof.JWS != "" {
-			proofMap["jws"] = proof.JWS
-		}
-		if len(proof.Disclosures) > 0 {
-			proofMap["disclosures"] = proof.Disclosures
-		}
-		if proof.Cryptosuite != "" {
-			proofMap["cryptosuite"] = proof.Cryptosuite
-		}
-		if proof.Challenge != "" {
-			proofMap["challenge"] = proof.Challenge
-		}
-		if proof.Domain != "" {
-			proofMap["domain"] = proof.Domain
-		}
 		result[i] = proofMap
 	}
 	if len(result) == 1 {
@@ -106,27 +124,27 @@ func proofsToRaw(proofs []Proof) interface{} {
 	return result
 }
 
-// typedIDsToRaw converts a slice of TypedID structs to a JSON-LD compatible format.
-func typedIDsToRaw(typedIDs []TypedID) interface{} {
-	if len(typedIDs) == 0 {
+// serializeSchemas converts a slice of Schema structs to a JSON-LD compatible format.
+func serializeSchemas(schemas []Schema) interface{} {
+	if len(schemas) == 0 {
 		return nil
 	}
-	if len(typedIDs) == 1 {
-		return serializeTypedID(typedIDs[0])
+	if len(schemas) == 1 {
+		return serializeSchema(schemas[0])
 	}
-	return mapSlice(typedIDs, serializeTypedID)
+	return mapSlice(schemas, serializeSchema)
 }
 
-// serializeTypedID converts a single TypedID struct to a JSON object.
-func serializeTypedID(typedID TypedID) JSONMap {
+// serializeSchema converts a single Schema struct to a JSON object.
+func serializeSchema(schema Schema) JSONMap {
 	return JSONMap{
-		jsonFldTypedIDID:   typedID.ID,
-		jsonFldTypedIDType: typedID.Type,
+		jsonFldSchemaID:   schema.ID,
+		jsonFldSchemaType: schema.Type,
 	}
 }
 
-// statusToRaw converts a slice of Status structs to a JSON-LD compatible format.
-func statusToRaw(statuses []Status) interface{} {
+// serializeStatuses converts a slice of Status structs to a JSON-LD compatible format.
+func serializeStatuses(statuses []Status) interface{} {
 	if len(statuses) == 0 {
 		return nil
 	}
@@ -157,16 +175,8 @@ func serializeStatus(status Status) JSONMap {
 	return result
 }
 
-// serializeTime formats a TimeWrapper to a string.
-func serializeTime(t *util.TimeWrapper) interface{} {
-	if t == nil {
-		return nil
-	}
-	return t.FormatToString()
-}
-
-// validateContext validates a slice of JSON-LD context entries.
-func validateContext(contexts []interface{}) ([]interface{}, error) {
+// serializeContexts validates and converts a slice of JSON-LD context entries.
+func serializeContexts(contexts []interface{}) ([]interface{}, error) {
 	validated := make([]interface{}, 0, len(contexts))
 	for i, ctx := range contexts {
 		if ctx == nil {
@@ -207,7 +217,30 @@ func mapSlice[T any, U any](slice []T, mapFn func(T) U) []U {
 	return result
 }
 
-// Parse Helper Function
+// parseRawToProof converts an interface{} (JSON object) to a Proof struct.
+func parseRawToProof(proof interface{}) (Proof, error) {
+	var result Proof
+	proofMap, ok := proof.(map[string]interface{})
+	if !ok {
+		return result, fmt.Errorf("invalid proof format: expected map[string]interface{}, got %T", proof)
+	}
+	if t, ok := proofMap["type"].(string); ok {
+		result.Type = t
+	}
+	if created, ok := proofMap["created"].(string); ok {
+		result.Created = created
+	}
+	if purpose, ok := proofMap["proofPurpose"].(string); ok {
+		result.ProofPurpose = purpose
+	}
+	if vm, ok := proofMap["verificationMethod"].(string); ok {
+		result.VerificationMethod = vm
+	}
+	if pv, ok := proofMap["proofValue"].(string); ok {
+		result.ProofValue = pv
+	}
+	return result, nil
+}
 
 // parseContext extracts the @context field from a Credential.
 func parseContext(c *Credential, contents *CredentialContents) error {
@@ -290,7 +323,7 @@ func parseSubject(c *Credential, contents *CredentialContents) error {
 // parseSchema extracts the credentialSchema field from a Credential.
 func parseSchema(c *Credential, contents *CredentialContents) error {
 	if schema, ok := (*c)["credentialSchema"].(map[string]interface{}); ok {
-		schemaID, err := parseTypedID(schema)
+		schemaID, err := parseSchemaID(schema)
 		if err != nil {
 			return fmt.Errorf("failed to parse schema: %w", err)
 		}
@@ -345,68 +378,81 @@ func parseStatus(c *Credential, contents *CredentialContents) error {
 	return nil
 }
 
-// parseTypedID parses a TypedID from a value.
-func parseTypedID(value interface{}) (TypedID, error) {
-	var tid TypedID
+// parseSchemaID parses a Schema from a value.
+func parseSchemaID(value interface{}) (Schema, error) {
+	var schema Schema
 	switch v := value.(type) {
 	case string:
-		tid.ID = v
+		schema.ID = v
 	case map[string]interface{}:
 		if id, ok := v["id"].(string); ok {
-			tid.ID = id
+			schema.ID = id
 		}
 		if t, ok := v["type"].(string); ok {
-			tid.Type = t
+			schema.Type = t
 		}
 	default:
-		return tid, fmt.Errorf("failed to parse typed ID: invalid format %T", value)
+		return schema, fmt.Errorf("failed to parse schema ID: invalid format %T", value)
 	}
-	return tid, nil
+	return schema, nil
 }
 
-// parseProof converts an interface{} (JSON object) to a Proof struct.
-func parseRawToProof(proof interface{}) (Proof, error) {
+// parseSchema extracts the credentialSchema field from a Credential.
+func parseProofs(c *Credential, contents *CredentialContents) error {
+	if proof, ok := (*c)["proof"].(map[string]interface{}); ok {
+		pro, err := parseProof(proof)
+		if err != nil {
+			return fmt.Errorf("failed to parse schema: %w", err)
+		}
+		contents.Proofs = append(contents.Proofs, pro)
+	}
+	return nil
+}
+
+// parseProof converts a single proof map into a Proof struct.
+func parseProof(proof map[string]interface{}) (Proof, error) {
 	var result Proof
-
-	proofMap, ok := proof.(map[string]interface{})
-	if !ok {
-		return result, fmt.Errorf("invalid proof format: expected map[string]interface{}, got %T", proof)
-	}
-
-	if t, ok := proofMap["type"].(string); ok {
+	if t, ok := proof["type"].(string); ok && t != "" {
 		result.Type = t
+	} else {
+		return Proof{}, fmt.Errorf("failed to parse proof: invalid or missing type field")
 	}
-	if created, ok := proofMap["created"].(string); ok {
+	if created, ok := proof["created"].(string); ok && created != "" {
 		result.Created = created
+	} else {
+		return Proof{}, fmt.Errorf("failed to parse proof: invalid or missing created field")
 	}
-	if purpose, ok := proofMap["proofPurpose"].(string); ok {
-		result.ProofPurpose = purpose
-	}
-	if vm, ok := proofMap["verificationMethod"].(string); ok {
+	if vm, ok := proof["verificationMethod"].(string); ok && vm != "" {
 		result.VerificationMethod = vm
+	} else {
+		return Proof{}, fmt.Errorf("failed to parse proof: invalid or missing verificationMethod field")
 	}
-	if pv, ok := proofMap["proofValue"].(string); ok {
+	if pp, ok := proof["proofPurpose"].(string); ok && pp != "" {
+		result.ProofPurpose = pp
+	} else {
+		return Proof{}, fmt.Errorf("failed to parse proof: invalid or missing proofPurpose field")
+	}
+	if pv, ok := proof["proofValue"].(string); ok {
 		result.ProofValue = pv
 	}
-	if jws, ok := proofMap["jws"].(string); ok {
+	if jws, ok := proof["jws"].(string); ok {
 		result.JWS = jws
 	}
-	if disclosures, ok := proofMap["disclosures"].([]interface{}); ok {
+	if disclosures, ok := proof["disclosures"].([]interface{}); ok {
 		for _, d := range disclosures {
 			if ds, ok := d.(string); ok {
 				result.Disclosures = append(result.Disclosures, ds)
 			}
 		}
 	}
-	if cs, ok := proofMap["cryptosuite"].(string); ok {
+	if cs, ok := proof["cryptosuite"].(string); ok {
 		result.Cryptosuite = cs
 	}
-	if ch, ok := proofMap["challenge"].(string); ok {
+	if ch, ok := proof["challenge"].(string); ok {
 		result.Challenge = ch
 	}
-	if dm, ok := proofMap["domain"].(string); ok {
+	if dm, ok := proof["domain"].(string); ok {
 		result.Domain = dm
 	}
-
 	return result, nil
 }

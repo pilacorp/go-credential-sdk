@@ -47,10 +47,12 @@ func CanonicalizeDocument(doc map[string]interface{}) ([]byte, error) {
 	jsonldOptions := ld.NewJsonLdOptions("")
 	jsonldOptions.Format = "application/n-quads"
 	jsonldOptions.Algorithm = ld.AlgorithmURDNA2015
+
 	standardizedDoc, err := standardizeToJSONLD(doc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to standardize to JSON-LD: %w", err)
 	}
+
 	canonicalized, err := processor.Normalize(standardizedDoc, jsonldOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to normalize document: %w", err)
