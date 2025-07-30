@@ -14,7 +14,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/xeipuuv/gojsonschema"
 
-	"credential-sdk/vc/crypto"
+	"github.com/pilacorp/go-credential-sdk/vc/crypto"
 )
 
 // Credential represents a W3C Verifiable Credential as a JSON object.
