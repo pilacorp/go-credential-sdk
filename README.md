@@ -181,7 +181,7 @@ func main() {
 
 ## <a name="didcomm-features"></a>Features
 
-- Key derivation from sender public and recipient private keys
+- Key derivation from recipient public and sender private keys
 - Encryption of messages using a shared secret
 - Decryption of JWE messages
 
@@ -213,7 +213,7 @@ func main() {
         }
     }`
 
-    sharedSecret := didcomm.GetFromKeys(SenderPublicKey, SenderPrivateKey)
+    sharedSecret := didcomm.GetFromKeys(ReceiverPublicKey, SenderPrivateKey)
     fmt.Printf("Recipient derived: %x\n", sha256.Sum256(sharedSecret))
 
     jweOutput := didcomm.Encrypt(sharedSecret, message)
