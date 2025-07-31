@@ -5,17 +5,18 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"math/big"
 	"strings"
 )
 
-// TypedID represents an ID with an optional type.
+// TypedID represents an ID with an optional type, used in credential schemas or other typed references.
 type TypedID struct {
 	ID   string
 	Type string
 }
 
-// TypedResource represents a related resource with additional fields.
+// TypedResource represents a related resource with additional fields for media and digest information.
 type TypedResource struct {
 	ID              string
 	Type            string
@@ -24,15 +25,15 @@ type TypedResource struct {
 	DigestMultibase string
 }
 
-// ECDSADescriptor is an implementation of ProofDescriptor for ECDSA.
+// ECDSADescriptor is an implementation of ProofDescriptor for ECDSA-based proofs.
 type ECDSADescriptor struct{}
 
-// ProofType returns the proof type.
+// ProofType returns the proof type for ECDSA.
 func (d *ECDSADescriptor) ProofType() string {
 	return "DataIntegrityProof"
 }
 
-// SupportedKeyTypes returns the supported key types.
+// SupportedKeyTypes returns the supported key types for ECDSA.
 func (d *ECDSADescriptor) SupportedKeyTypes() []KeyType {
 	return []KeyType{KeyTypeECDSAP256}
 }
@@ -45,51 +46,43 @@ type ECDSASigner struct {
 // Sign performs an ECDSA signature, returning raw or Base64-encoded signature based on encode flag.
 func (s *ECDSASigner) Sign(data []byte, encode bool) ([]byte, error) {
 	if s.PrivateKey == nil {
-		return nil, fmt.Errorf("private key is nil")
+		return nil, fmt.Errorf("failed to sign: private key is nil")
 	}
-
-	// Perform ECDSA signature
 	r, sVal, err := ecdsa.Sign(rand.Reader, s.PrivateKey, data)
 	if err != nil {
-		return nil, fmt.Errorf("ecdsa sign: %w", err)
+		return nil, fmt.Errorf("failed to perform ECDSA sign: %w", err)
 	}
+	rBytes, sBytes := padSignatureComponent(r, sVal)
+	sig := append(rBytes, sBytes...)
+	if len(sig) != 64 {
+		return nil, fmt.Errorf("failed to sign: invalid signature length: expected 64 bytes, got %d", len(sig))
+	}
+	if encode {
+		encoded := base64.RawURLEncoding.EncodeToString(sig)
+		log.Printf("Encoded signature: %s", encoded)
+		return []byte(encoded), nil
+	}
+	log.Printf("Raw signature length: %d", len(sig))
+	return sig, nil
+}
 
-	// Ensure r and s are 32 bytes each
+// padSignatureComponent pads ECDSA signature components to 32 bytes each.
+func padSignatureComponent(r, s *big.Int) ([]byte, []byte) {
 	rBytes := r.Bytes()
-	sBytes := sVal.Bytes()
-	if len(rBytes) > 32 || len(sBytes) > 32 {
-		return nil, fmt.Errorf("invalid ECDSA signature component length: r=%d, s=%d", len(rBytes), len(sBytes))
-	}
-
-	// Pad r and s to 32 bytes if necessary
+	sBytes := s.Bytes()
 	rPadded := make([]byte, 32)
 	sPadded := make([]byte, 32)
 	copy(rPadded[32-len(rBytes):], rBytes)
 	copy(sPadded[32-len(sBytes):], sBytes)
-
-	// Concatenate r and s (64 bytes total)
-	sig := append(rPadded, sPadded...)
-	if len(sig) != 64 {
-		return nil, fmt.Errorf("invalid signature length: expected 64 bytes, got %d", len(sig))
-	}
-
-	if encode {
-		// Encode in Base64 URL-safe format for JWT or JWS
-		encoded := base64.RawURLEncoding.EncodeToString(sig)
-		fmt.Printf("Encoded signature: %s\n", encoded)
-		return []byte(encoded), nil
-	}
-	// Return raw signature for proofValue
-	fmt.Printf("Raw signature length: %d\n", len(sig))
-	return sig, nil
+	return rPadded, sPadded
 }
 
-// Algorithm returns the algorithm.
+// Algorithm returns the ECDSA algorithm.
 func (s *ECDSASigner) Algorithm() Algorithm {
 	return AlgorithmECDSAP256
 }
 
-// KeyType returns the key type.
+// KeyType returns the ECDSA key type.
 func (s *ECDSASigner) KeyType() KeyType {
 	return KeyTypeECDSAP256
 }
@@ -103,47 +96,37 @@ type ECDSAVerifier struct {
 func (v *ECDSAVerifier) Verify(data, signature []byte, publicKey interface{}) error {
 	pubKey, ok := publicKey.(*ecdsa.PublicKey)
 	if !ok {
-		return fmt.Errorf("public key must be *ecdsa.PublicKey, got %T", publicKey)
+		return fmt.Errorf("failed to verify: public key must be *ecdsa.PublicKey, got %T", publicKey)
 	}
 	if v.PublicKey == nil || pubKey == nil {
-		return fmt.Errorf("public key is nil")
+		return fmt.Errorf("failed to verify: public key is nil")
 	}
-
 	sig := signature
-	// Check if signature is Base64-encoded (for JWS/JWT)
 	if strings.Contains(string(signature), ".") || strings.Contains(string(signature), "=") || len(signature) > 64 {
 		var err error
 		sig, err = base64.RawURLEncoding.DecodeString(string(signature))
 		if err != nil {
-			return fmt.Errorf("decode Base64 signature: %w", err)
+			return fmt.Errorf("failed to decode Base64 signature: %w", err)
 		}
-		fmt.Printf("Decoded Base64 signature length: %d\n", len(sig))
+		log.Printf("Decoded Base64 signature length: %d", len(sig))
 	}
-
-	// Remove disclosures if present (for JWS)
-	sigStr := string(sig)
-	if strings.Contains(sigStr, "~") {
-		parts := strings.Split(sigStr, "~")
+	if strings.Contains(string(sig), "~") {
+		parts := strings.Split(string(sig), "~")
 		sig = []byte(parts[0])
 	}
-
-	fmt.Printf("Verifying signature (length: %d)\n", len(sig))
+	log.Printf("Verifying signature (length: %d)", len(sig))
 	if len(sig) != 64 {
-		return fmt.Errorf("invalid signature length: expected 64 bytes, got %d", len(sig))
+		return fmt.Errorf("failed to verify: invalid signature length: expected 64 bytes, got %d", len(sig))
 	}
-
-	// Extract r and s (32 bytes each)
 	r := big.NewInt(0).SetBytes(sig[:32])
 	s := big.NewInt(0).SetBytes(sig[32:])
-
-	// Verify signature
 	if !ecdsa.Verify(pubKey, data, r, s) {
-		return fmt.Errorf("ecdsa verification failed")
+		return fmt.Errorf("failed to verify: ECDSA verification failed")
 	}
 	return nil
 }
 
-// KeyType returns the key type.
+// KeyType returns the ECDSA key type.
 func (v *ECDSAVerifier) KeyType() KeyType {
 	return KeyTypeECDSAP256
 }

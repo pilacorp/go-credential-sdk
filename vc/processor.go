@@ -3,7 +3,6 @@ package vc
 import (
 	"crypto/sha256"
 	"fmt"
-
 	"github.com/piprate/json-gold/ld"
 )
 
@@ -40,26 +39,21 @@ func WithRemoveAllInvalidRDF() ProcessorOpt {
 }
 
 // CanonicalizeDocument canonicalizes a document using JSON-LD processing.
-func CanonicalizeDocument(doc interface{}, opts ...ProcessorOpt) ([]byte, error) {
-	processor := &ld.JsonLdProcessor{}
-	options := &ProcessorOptions{
-		algorithm: "URDNA2015",
+func CanonicalizeDocument(doc map[string]interface{}) ([]byte, error) {
+	if doc == nil {
+		return nil, fmt.Errorf("failed to canonicalize document: document is nil")
 	}
-	for _, opt := range opts {
-		opt(options)
-	}
-
-	jsonldOptions := &ld.JsonLdOptions{
-		Format:                "application/n-quads",
-		Algorithm:             options.algorithm,
-		DocumentLoader:        options.documentLoader,
-		UseNativeTypes:        true,
-		ProduceGeneralizedRdf: !options.removeInvalidRDF,
-	}
-
-	canonicalized, err := processor.Normalize(doc, jsonldOptions)
+	processor := ld.NewJsonLdProcessor()
+	jsonldOptions := ld.NewJsonLdOptions("")
+	jsonldOptions.Format = "application/n-quads"
+	jsonldOptions.Algorithm = ld.AlgorithmURDNA2015
+	standardizedDoc, err := standardizeToJSONLD(doc)
 	if err != nil {
-		return nil, fmt.Errorf("normalize document: %w", err)
+		return nil, fmt.Errorf("failed to standardize to JSON-LD: %w", err)
+	}
+	canonicalized, err := processor.Normalize(standardizedDoc, jsonldOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to normalize document: %w", err)
 	}
 
 	return []byte(canonicalized.(string)), nil
@@ -67,6 +61,63 @@ func CanonicalizeDocument(doc interface{}, opts ...ProcessorOpt) ([]byte, error)
 
 // ComputeDigest computes the SHA-256 digest of the input data.
 func ComputeDigest(data []byte) ([]byte, error) {
+	if data == nil {
+		return nil, fmt.Errorf("failed to compute digest: input data is nil")
+	}
 	hash := sha256.Sum256(data)
 	return hash[:], nil
+}
+
+// standardizeToJSONLD converts a map to a JSON-LD-compatible format.
+func standardizeToJSONLD(input map[string]interface{}) (map[string]interface{}, error) {
+	if input == nil {
+		return nil, fmt.Errorf("failed to standardize to JSON-LD: input is nil")
+	}
+	result := make(map[string]interface{})
+	for key, value := range input {
+		result[key] = convertToJSONLDCompatible(value)
+	}
+	return result, nil
+}
+
+// convertToJSONLDCompatible converts a value to a JSON-LD-compatible format with explicit type annotation.
+func convertToJSONLDCompatible(value interface{}) interface{} {
+	switch v := value.(type) {
+	case string:
+		return v
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+		for key, val := range v {
+			result[key] = convertToJSONLDCompatible(val)
+		}
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(v))
+		for i, val := range v {
+			result[i] = convertToJSONLDCompatible(val)
+		}
+		return result
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return map[string]interface{}{
+			"@value": fmt.Sprintf("%d", v),
+			"@type":  "http://www.w3.org/2001/XMLSchema#integer",
+		}
+	case float32, float64:
+		return map[string]interface{}{
+			"@value": fmt.Sprintf("%f", v),
+			"@type":  "http://www.w3.org/2001/XMLSchema#double",
+		}
+	case bool:
+		return map[string]interface{}{
+			"@value": fmt.Sprintf("%v", v),
+			"@type":  "http://www.w3.org/2001/XMLSchema#boolean",
+		}
+	case nil:
+		return nil
+	default:
+		return map[string]interface{}{
+			"@value": fmt.Sprintf("%v", v),
+			"@type":  "http://www.w3.org/2001/XMLSchema#string",
+		}
+	}
 }

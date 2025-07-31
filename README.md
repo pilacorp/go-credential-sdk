@@ -107,7 +107,7 @@ func main() {
 
 	// Define credential contents
 	vcc := vc.CredentialContents{
-		Context: []string{"https://www.w3.org/ns/credentials/v2"},
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
 		ID:      "urn:uuid:db2a23dc-80e2-4ef8-b708-5d2ea7b5deb6",
 		Types: []string{
 			"VerifiableCredential",
