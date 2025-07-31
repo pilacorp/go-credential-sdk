@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"credential-sdk/vc/jsonutil"
-	"credential-sdk/vc/util"
+	"github.com/pilacorp/go-credential-sdk/vc/jsonutil"
+	"github.com/pilacorp/go-credential-sdk/vc/util"
 )
 
 // JSONMap represents a JSON object as a map.
@@ -197,17 +197,6 @@ func validateContext(contexts []interface{}) ([]interface{}, error) {
 	}
 	return validated, nil
 }
-
-// mapSlice transforms a slice of type T to a slice of type U using a mapping function.
-func mapSlice[T any, U any](slice []T, mapFn func(T) U) []U {
-	result := make([]U, 0, len(slice))
-	for _, v := range slice {
-		result = append(result, mapFn(v))
-	}
-	return result
-}
-
-// Parse Helper Function
 
 // parseContext extracts the @context field from a Credential.
 func parseContext(c *Credential, contents *CredentialContents) error {
