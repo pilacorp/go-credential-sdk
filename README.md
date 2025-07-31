@@ -226,13 +226,13 @@ func main() {
 
 ## <a name="didcomm-api"></a>API
 
-- `GetFromKeys(senderPub, senderPriv []byte) []byte`: Derives a shared secret from the sender's public and recipient's private keys.
+- `GetFromKeys(receiverPub, senderPriv []byte) []byte`: Derives a shared secret from the recipient's public and sender's private keys.
 - `Encrypt(sharedSecret []byte, message string) string`: Encrypts a message using the shared secret and returns a JWE string.
 - `DecryptJWE(jwe string, sharedSecret []byte) string`: Decrypts a JWE string using the shared secret and returns the plaintext message.
 
 **Notes:**
 
-- Replace `SenderPublicKey` and `SenderPrivateKey` with your actual key variables.
+- Replace `ReceiverPublicKey` and `SenderPrivateKey` with your actual key variables.
 - The package assumes you are familiar with DIDComm and JWE standards.
 
 ---
