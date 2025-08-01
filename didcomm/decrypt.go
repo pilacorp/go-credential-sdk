@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 )
 
@@ -23,11 +24,11 @@ func base64urlDecode(input string) []byte {
 	return data
 }
 
-func DecryptJWE(jweStr string, sharedKey []byte) string {
+func DecryptJWE(jweStr string, sharedKey []byte) (string, error) {
 	var jwe JWE
 	err := json.Unmarshal([]byte(jweStr), &jwe)
 	if err != nil {
-		log.Fatal("unmarshal error:", err)
+		return "", fmt.Errorf("unmarshal error: %v", err)
 	}
 
 	iv := base64urlDecode(jwe.IV)
@@ -35,18 +36,18 @@ func DecryptJWE(jweStr string, sharedKey []byte) string {
 
 	block, err := aes.NewCipher(sharedKey)
 	if err != nil {
-		log.Fatal(err)
+		return "", fmt.Errorf("aes new cipher error: %v", err)
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		log.Fatal(err)
+		return "", fmt.Errorf("aes new gcm error: %v", err)
 	}
 
 	plaintext, err := gcm.Open(nil, iv, ciphertext, nil)
 	if err != nil {
-		log.Fatal("decryption failed:", err)
+		return "", fmt.Errorf("decryption failed: %v", err)
 	}
 
-	return string(plaintext)
+	return string(plaintext), nil
 }

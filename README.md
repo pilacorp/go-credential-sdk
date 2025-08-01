@@ -213,14 +213,22 @@ func main() {
         }
     }`
 
-    sharedSecret := didcomm.GetFromKeys(ReceiverPublicKey, SenderPrivateKey)
-    fmt.Printf("Recipient derived: %x\n", sha256.Sum256(sharedSecret))
+	sharedSecret, err := didcomm.GetFromKeys(ReceiverPublicKey, SenderPrivateKey)
+	if err != nil {
+		fmt.Printf("Failed to get shared secret: %v\n", err)
+		return
+	}
+	fmt.Printf("Recipient derived: %x\n", sha256.Sum256(sharedSecret))
 
-    jweOutput := didcomm.Encrypt(sharedSecret, message)
-    fmt.Printf("JWE Output: %s\n", jweOutput)
+	jweOutput := didcomm.Encrypt(sharedSecret, message)
+	fmt.Printf("JWE Output: %s\n", jweOutput)
 
-    plaintext := didcomm.DecryptJWE(jweOutput, sharedSecret)
-    fmt.Printf("Plaintext: %s\n", plaintext)
+	plaintext, err := didcomm.DecryptJWE(jweOutput, sharedSecret)
+	if err != nil {
+		fmt.Printf("Failed to decrypt JWE: %v\n", err)
+		return
+	}
+	fmt.Printf("Plaintext: %s\n", plaintext)
 }
 ```
 
