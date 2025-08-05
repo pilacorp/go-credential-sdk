@@ -345,7 +345,7 @@ func VerifyECDSACredential(vc *Credential, publicKey *ecdsa.PublicKey) error {
 
 	proof, err := parseRawToProof(proofs[0])
 	if err != nil {
-		return fmt.Errorf("failed to verify ECDSA credential: invalid proof format at index 0", err)
+		return fmt.Errorf("failed to verify ECDSA credential: %w", err)
 	}
 	proofBytes, err := hex.DecodeString(proof.ProofValue)
 	if err != nil {
