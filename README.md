@@ -85,6 +85,14 @@ To create a Verifiable Credential, you need:
 4. Add an ECDSA proof using the issuer's private key
 5. Serialize and verify the credential
 
+Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(url)
+- Default: https://auth-dev.pila.vn/api/v1/did
+- Dev-env: https://auth-dev.pila.vn/api/v1/did
+
+Supported Proof:
+- type: DataIntegrityProof
+- cryptosuite: ecdsa-rdfc-2019,
+
 ## <a name="vc-example"></a>Example
 
 ```go
@@ -245,6 +253,14 @@ To create a Verifiable Presentation, you need:
 4. Create the presentation using `vp.CreatePresentationWithContent`
 5. Add an ECDSA proof using the holder's private key
 6. Serialize and verify the presentation
+
+Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(url)
+- Default: https://auth-dev.pila.vn/api/v1/did
+- Dev-env: https://auth-dev.pila.vn/api/v1/did
+
+Supported Proof:
+- type: DataIntegrityProof
+- cryptosuite: ecdsa-rdfc-2019,
 
 ## <a name="vp-example"></a>Example
 
