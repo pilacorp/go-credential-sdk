@@ -88,6 +88,7 @@ func (m *JSONMap) AddECDSAProof(priv, verificationMethod, proofPurpose, didBaseU
 		Created:            time.Now().UTC().Format(time.RFC3339),
 		VerificationMethod: verificationMethod,
 		ProofPurpose:       proofPurpose,
+		Cryptosuite:        "ecdsa-rdfc-2019",
 	}
 
 	signData, err := m.Canonicalize()
