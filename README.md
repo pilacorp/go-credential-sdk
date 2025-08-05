@@ -44,7 +44,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
 Install the package using:
 
 ```bash
-go get github.com/your-repo/go-credential-sdk
+go get github.com/pilacorp/go-credential-sdk
 ```
 
 Ensure dependencies are installed:
@@ -200,7 +200,7 @@ func main() {
 	fmt.Printf("VC with Embedded Proof:\n%s\n\n", string(vcSerialized))
 
 	// Parse and verify the credential
-	verifyVC, err := vc.ParseCredential(vcSerialized)
+	verifyVC, err := vc.ParseCredential(vcSerialized, vc.WithDisableValidation())
 	if err != nil {
 		log.Fatalf("Failed to parse VC: %v", err)
 	}
@@ -220,6 +220,7 @@ func main() {
 - The package assumes you are familiar with W3C Verifiable Presentations standards.
 - Ensure your DID resolver endpoint is accessible and supports the DID methods you're using.
 - VCs included in the presentation should be valid and properly signed.
+- When vc.ParseCredential from json, you can use `vc.WithDisableValidation()` to skip validation Credential Schema.
 
 ---
 
