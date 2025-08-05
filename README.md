@@ -106,7 +106,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/vc"
+	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
 func main() {
@@ -275,8 +275,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/pilacorp/go-credential-sdk/vc"
-	"github.com/pilacorp/go-credential-sdk/vp"
+	"github.com/pilacorp/go-credential-sdk/credential/vc"
+	"github.com/pilacorp/go-credential-sdk/credential/vp"
 )
 
 func main() {
