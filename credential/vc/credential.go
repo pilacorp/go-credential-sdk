@@ -9,7 +9,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
-	"github.com/pilacorp/go-credential-sdk/credential/processor"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
 // Config holds package configuration.
@@ -69,7 +69,7 @@ type CredentialOpt func(*credentialOptions)
 
 // credentialOptions holds configuration for credential processing.
 type credentialOptions struct {
-	processor  *processor.ProcessorOptions
+	proc       *processor.ProcessorOptions
 	validate   bool
 	didBaseURL string
 }
@@ -77,9 +77,9 @@ type credentialOptions struct {
 // WithProcessorOptions sets processor options for credential processing.
 func WithProcessorOptions(options ...processor.ProcessorOpt) CredentialOpt {
 	return func(c *credentialOptions) {
-		c.processor = &processor.ProcessorOptions{}
+		c.proc = &processor.ProcessorOptions{}
 		for _, opt := range options {
-			opt(c.processor)
+			opt(c.proc)
 		}
 	}
 }
@@ -101,10 +101,10 @@ func WithDisableValidation() CredentialOpt {
 // WithCredentialSchemaLoader sets a custom schema loader for validation.
 func WithCredentialSchemaLoader(id, schema string) CredentialOpt {
 	return func(c *credentialOptions) {
-		if c.processor == nil {
-			c.processor = &processor.ProcessorOptions{}
+		if c.proc == nil {
+			c.proc = &processor.ProcessorOptions{}
 		}
-		c.processor.SchemaLoader = &processor.CredentialSchemaLoader{Schema: schema}
+		c.proc.SchemaLoader = &processor.CredentialSchemaLoader{Schema: schema}
 	}
 }
 
@@ -120,7 +120,7 @@ func ParseCredential(rawJSON []byte, opts ...CredentialOpt) (*Credential, error)
 	}
 
 	options := &credentialOptions{
-		processor:  &processor.ProcessorOptions{},
+		proc:       &processor.ProcessorOptions{},
 		validate:   true,
 		didBaseURL: config.BaseURL,
 	}
@@ -129,7 +129,7 @@ func ParseCredential(rawJSON []byte, opts ...CredentialOpt) (*Credential, error)
 	}
 
 	if options.validate {
-		if err := validateCredential(m, options.processor); err != nil {
+		if err := validateCredential(m, options.proc); err != nil {
 			return nil, fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}
@@ -160,7 +160,7 @@ func (c *Credential) ToJSON() ([]byte, error) {
 // AddECDSAProof adds an ECDSA proof to the Credential.
 func (c *Credential) AddECDSAProof(priv, verificationMethod string, opts ...CredentialOpt) error {
 	options := &credentialOptions{
-		processor:  &processor.ProcessorOptions{},
+		proc:       &processor.ProcessorOptions{},
 		validate:   true,
 		didBaseURL: config.BaseURL,
 	}
@@ -171,6 +171,12 @@ func (c *Credential) AddECDSAProof(priv, verificationMethod string, opts ...Cred
 	return (*jsonmap.JSONMap)(c).AddECDSAProof(priv, verificationMethod, "assertionMethod", options.didBaseURL)
 }
 
+// AddCustomProof adds a custom proof to the Presentation.
+func (c *Credential) AddCustomProof(priv, proof *dto.Proof) error {
+
+	return (*jsonmap.JSONMap)(c).AddCustomProof(proof)
+}
+
 // CanonicalizeCredential canonicalizes the Credential for signing or verification.
 func (c *Credential) CanonicalizeCredential() ([]byte, error) {
 	return (*jsonmap.JSONMap)(c).Canonicalize()
@@ -179,7 +185,7 @@ func (c *Credential) CanonicalizeCredential() ([]byte, error) {
 // VerifyECDSACredential verifies an ECDSA-signed Credential.
 func VerifyECDSACredential(c *Credential, opts ...CredentialOpt) (bool, error) {
 	options := &credentialOptions{
-		processor:  &processor.ProcessorOptions{},
+		proc:       &processor.ProcessorOptions{},
 		validate:   true,
 		didBaseURL: config.BaseURL,
 	}

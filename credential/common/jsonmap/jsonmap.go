@@ -8,9 +8,8 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
-	"github.com/pilacorp/go-credential-sdk/credential/processor"
-
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -102,6 +101,19 @@ func (m *JSONMap) AddECDSAProof(priv, verificationMethod, proofPurpose, didBaseU
 	}
 	proof.ProofValue = hex.EncodeToString(signature)
 	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
+	return nil
+}
+
+// AddCustomProof adds custom proof to the JSONMap.
+func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
+	if m == nil {
+		return fmt.Errorf("JSONMap is nil")
+	}
+	if proof == nil {
+		return fmt.Errorf("proof is nil")
+	}
+	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
+
 	return nil
 }
 

@@ -6,7 +6,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
-	"github.com/pilacorp/go-credential-sdk/credential/processor"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
@@ -42,16 +42,16 @@ type PresentationOpt func(*presentationOptions)
 
 // presentationOptions holds configuration for presentation processing.
 type presentationOptions struct {
-	processor  *processor.ProcessorOptions
+	proc       *processor.ProcessorOptions
 	didBaseURL string
 }
 
 // WithPresentationProcessorOptions sets processor options for presentation processing.
 func WithPresentationProcessorOptions(options ...processor.ProcessorOpt) PresentationOpt {
 	return func(p *presentationOptions) {
-		p.processor = &processor.ProcessorOptions{}
+		p.proc = &processor.ProcessorOptions{}
 		for _, opt := range options {
-			opt(p.processor)
+			opt(p.proc)
 		}
 	}
 }
@@ -75,7 +75,7 @@ func ParsePresentation(rawJSON []byte, opts ...PresentationOpt) (*Presentation, 
 	}
 
 	options := &presentationOptions{
-		processor:  &processor.ProcessorOptions{},
+		proc:       &processor.ProcessorOptions{},
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -113,7 +113,7 @@ func (p *Presentation) ToJSON() ([]byte, error) {
 // AddECDSAProof adds an ECDSA proof to the Presentation.
 func (p *Presentation) AddECDSAProof(priv, verificationMethod string, opts ...PresentationOpt) error {
 	options := &presentationOptions{
-		processor:  &processor.ProcessorOptions{},
+		proc:       &processor.ProcessorOptions{},
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -121,6 +121,12 @@ func (p *Presentation) AddECDSAProof(priv, verificationMethod string, opts ...Pr
 	}
 
 	return (*jsonmap.JSONMap)(p).AddECDSAProof(priv, verificationMethod, "authentication", options.didBaseURL)
+}
+
+// AddCustomProof adds a custom proof to the Presentation.
+func (p *Presentation) AddCustomProof(priv, proof *dto.Proof) error {
+
+	return (*jsonmap.JSONMap)(p).AddCustomProof(proof)
 }
 
 // CanonicalizePresentation canonicalizes the Presentation for signing or verification.
@@ -131,7 +137,7 @@ func (p *Presentation) CanonicalizePresentation() ([]byte, error) {
 // VerifyECDSAPresentation verifies an ECDSA-signed Presentation.
 func VerifyECDSAPresentation(vp *Presentation, opts ...PresentationOpt) (bool, error) {
 	options := &presentationOptions{
-		processor:  &processor.ProcessorOptions{},
+		proc:       &processor.ProcessorOptions{},
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
