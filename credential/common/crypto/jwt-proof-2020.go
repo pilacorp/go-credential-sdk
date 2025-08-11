@@ -11,8 +11,8 @@ import (
 	"strings"
 )
 
-func VerifyJwtProof(req map[string]interface{}, publicKeyHex string) (bool, error) {
-	jwtToken, ok := req["proof"].(map[string]interface{})["jwt"].(string)
+func VerifyJwtProof(req *map[string]interface{}, publicKeyHex string) (bool, error) {
+	jwtToken, ok := (*req)["proof"].(map[string]interface{})["jwt"].(string)
 	if jwtToken == "" || !ok {
 		return false, fmt.Errorf("JWT token is missing")
 	}

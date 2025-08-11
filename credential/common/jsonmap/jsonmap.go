@@ -16,6 +16,13 @@ import (
 // JSONMap represents a JSON object as a map.
 type JSONMap map[string]interface{}
 
+const (
+	JwtProof2020                string = "JwtProof2020"
+	EcdsaSecp256k1Signature2019 string = "EcdsaSecp256k1Signature2019"
+	DataIntegrityProof          string = "DataIntegrityProof"
+	ECDSARDFC2019               string = "ecdsa-rdfc-2019"
+)
+
 // ToJSON serializes the JSONMap to JSON.
 func (m *JSONMap) ToJSON() ([]byte, error) {
 	if m == nil {
@@ -83,11 +90,11 @@ func (m *JSONMap) AddECDSAProof(priv, verificationMethod, proofPurpose, didBaseU
 	}
 
 	proof := &dto.Proof{
-		Type:               "DataIntegrityProof",
+		Type:               DataIntegrityProof,
 		Created:            time.Now().UTC().Format(time.RFC3339),
 		VerificationMethod: verificationMethod,
 		ProofPurpose:       proofPurpose,
-		Cryptosuite:        "ecdsa-rdfc-2019",
+		Cryptosuite:        ECDSARDFC2019,
 	}
 
 	signData, err := m.Canonicalize()
@@ -101,6 +108,7 @@ func (m *JSONMap) AddECDSAProof(priv, verificationMethod, proofPurpose, didBaseU
 	}
 	proof.ProofValue = hex.EncodeToString(signature)
 	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
+
 	return nil
 }
 
@@ -115,40 +123,6 @@ func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
 	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
 
 	return nil
-}
-
-// VerifyECDSA verifies an ECDSA-signed JSONMap.
-func (m *JSONMap) VerifyECDSA(didBaseURL string) (bool, error) {
-	if m == nil {
-		return false, fmt.Errorf("JSONMap is nil")
-	}
-
-	proofs, ok := (*m)["proof"].([]interface{})
-	if !ok {
-		if proof, exists := (*m)["proof"]; exists {
-			proofs = []interface{}{proof}
-		} else {
-			return false, fmt.Errorf("JSONMap has no proof")
-		}
-	}
-
-	doc, err := m.Canonicalize()
-	if err != nil {
-		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
-	}
-
-	proof, err := ParseRawToProof(proofs[0])
-	if err != nil {
-		return false, fmt.Errorf("failed to parse proof: %w", err)
-	}
-
-	resolver := verificationmethod.NewResolver(didBaseURL)
-	publicKey, err := resolver.GetPublicKey(proof.VerificationMethod)
-	if err != nil {
-		return false, fmt.Errorf("failed to resolve public key: %w", err)
-	}
-
-	return crypto.ECDSAVerifySignature(publicKey, proof.ProofValue, doc)
 }
 
 // parseRawToProof converts a JSON object to a Proof struct.
@@ -174,5 +148,59 @@ func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 	if pv, ok := proofMap["proofValue"].(string); ok {
 		result.ProofValue = pv
 	}
+	if pv, ok := proofMap["cryptosuite"].(string); ok {
+		result.Cryptosuite = pv
+	}
+
 	return result, nil
+}
+
+// VerifyProof verifies an ECDSA-signed JSONMap.
+func (m *JSONMap) VerifyProof(didBaseURL string) (bool, error) {
+	if m == nil {
+		return false, fmt.Errorf("JSONMap is nil")
+	}
+
+	proofs, ok := (*m)["proof"].([]interface{})
+	if !ok {
+		if proof, exists := (*m)["proof"]; exists {
+			proofs = []interface{}{proof}
+		} else {
+			return false, fmt.Errorf("JSONMap has no proof")
+		}
+	}
+	proof, err := ParseRawToProof(proofs[0])
+	if err != nil {
+		return false, fmt.Errorf("failed to parse proof: %w", err)
+	}
+
+	resolver := verificationmethod.NewResolver(didBaseURL)
+	publicKey, err := resolver.GetPublicKey(proof.VerificationMethod)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve public key: %w", err)
+	}
+	//1. check proof type
+	if proof.Type == JwtProof2020 {
+
+		return crypto.VerifyJwtProof((*map[string]interface{})(m), publicKey)
+	} else if proof.Type == EcdsaSecp256k1Signature2019 {
+
+		return m.verifyECDSA(publicKey, &proof)
+	} else if proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019 {
+
+		return m.verifyECDSA(publicKey, &proof)
+	} else {
+
+		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
+	}
+}
+
+// VerifyECDSA verifies an ECDSA-signed JSONMap.
+func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) {
+	doc, err := m.Canonicalize()
+	if err != nil {
+		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
+	}
+
+	return crypto.ECDSAVerifySignature(publicKey, proof.ProofValue, doc)
 }

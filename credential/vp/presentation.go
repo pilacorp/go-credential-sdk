@@ -82,11 +82,6 @@ func ParsePresentation(rawJSON []byte, opts ...PresentationOpt) (*Presentation, 
 		opt(options)
 	}
 
-	// Add schema validation if needed (not in original code)
-	// if err := validatePresentation(m, options.processor); err != nil {
-	// 	return nil, fmt.Errorf("failed to validate presentation: %w", err)
-	// }
-
 	p := Presentation(m)
 	return &p, nil
 }
@@ -144,7 +139,7 @@ func VerifyECDSAPresentation(vp *Presentation, opts ...PresentationOpt) (bool, e
 		opt(options)
 	}
 
-	isValid, err := (*jsonmap.JSONMap)(vp).VerifyECDSA(options.didBaseURL)
+	isValid, err := (*jsonmap.JSONMap)(vp).VerifyProof(options.didBaseURL)
 	if err != nil {
 		return false, err
 	}
