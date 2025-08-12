@@ -175,19 +175,32 @@ func (m *JSONMap) VerifyProof(didBaseURL string) (bool, error) {
 		return false, fmt.Errorf("failed to parse proof: %w", err)
 	}
 
-	resolver := verificationmethod.NewResolver(didBaseURL)
-	publicKey, err := resolver.GetPublicKey(proof.VerificationMethod)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve public key: %w", err)
 	}
 
 	if proof.Type == JwtProof2020 {
+		issuerDID, ok := (*m)["issuer"].(string)
+		if !ok {
+			return false, fmt.Errorf("issuer is missing or invalid in the request")
+		}
+
+		resolver := verificationmethod.NewResolver(didBaseURL)
+		publicKey, err := resolver.GetDefaultPublicKey(issuerDID)
+		if err != nil {
+			return false, fmt.Errorf("failed to resolve public key: %w", err)
+		}
 
 		return crypto.VerifyJwtProof((*map[string]interface{})(m), publicKey)
 	} else if proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY {
 
-		return m.verifyEcdsaProofLegacy(publicKey)
+		return m.verifyEcdsaProofLegacy()
 	} else if proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019 {
+		resolver := verificationmethod.NewResolver(didBaseURL)
+		publicKey, err := resolver.GetPublicKey(proof.VerificationMethod)
+		if err != nil {
+			return false, fmt.Errorf("failed to resolve public key: %w", err)
+		}
 
 		return m.verifyECDSA(publicKey, &proof)
 	} else {
@@ -208,10 +221,15 @@ func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) 
 
 // verifyEcdsaProofLegacy verifies an ECDSA-signed JSONMap.
 // This function support lecacy VC for compatibility
-func (m *JSONMap) verifyEcdsaProofLegacy(publicKeyHex string) (bool, error) {
+func (m *JSONMap) verifyEcdsaProofLegacy() (bool, error) {
+
 	proofValue, ok := (*m)["proof"].(map[string]interface{})["proofValue"].(string)
 	if !ok || proofValue == "" {
 		return false, fmt.Errorf("proof value is missing or invalid in the request")
+	}
+	publicKeyHex, ok := (*m)["proof"].(map[string]interface{})["verificationMethod"].(string)
+	if !ok || proofValue == "" {
+		return false, fmt.Errorf("proof verificationMethod is missing or invalid in the request")
 	}
 
 	signatureBytes, err := hex.DecodeString(proofValue)
