@@ -144,7 +144,7 @@ func VerifyECDSAPresentation(vp *Presentation, opts ...PresentationOpt) (bool, e
 		opt(options)
 	}
 
-	isValid, err := (*jsonmap.JSONMap)(vp).VerifyECDSA(options.didBaseURL)
+	isValid, err := (*jsonmap.JSONMap)(vp).VerifyProof(options.didBaseURL)
 	if err != nil {
 		return false, err
 	}

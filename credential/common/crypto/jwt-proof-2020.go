@@ -11,8 +11,8 @@ import (
 	"strings"
 )
 
-func VerifyJwtProof(req map[string]interface{}, publicKeyHex string) (bool, error) {
-	jwtToken, ok := req["proof"].(map[string]interface{})["jwt"].(string)
+func VerifyJwtProof(req *map[string]interface{}, publicKeyHex string) (bool, error) {
+	jwtToken, ok := (*req)["proof"].(map[string]interface{})["jwt"].(string)
 	if jwtToken == "" || !ok {
 		return false, fmt.Errorf("JWT token is missing")
 	}
@@ -87,14 +87,4 @@ func verifySignature(publicKey, message, signature []byte) bool {
 
 	// Compare the compressed public keys
 	return len(publicKey) == 33 && bytes.Equal(compressedRecoveredPubKey, publicKey)
-}
-
-func verifySignatureWithoutV(publicKey, message, signature []byte) bool {
-	if len(signature) != 64 || len(publicKey) != 33 || len(message) == 0 {
-		return false
-	}
-
-	hash := sha256.Sum256(message)
-
-	return crypto.VerifySignature(publicKey, hash[:], signature)
 }

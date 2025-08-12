@@ -193,7 +193,7 @@ func VerifyECDSACredential(c *Credential, opts ...CredentialOpt) (bool, error) {
 		opt(options)
 	}
 
-	return (*jsonmap.JSONMap)(c).VerifyECDSA(options.didBaseURL)
+	return (*jsonmap.JSONMap)(c).VerifyProof(options.didBaseURL)
 }
 
 // ParseCredentialContents parses the Credential into structured contents.
