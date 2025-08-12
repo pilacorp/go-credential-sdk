@@ -175,10 +175,6 @@ func (m *JSONMap) VerifyProof(didBaseURL string) (bool, error) {
 		return false, fmt.Errorf("failed to parse proof: %w", err)
 	}
 
-	if err != nil {
-		return false, fmt.Errorf("failed to resolve public key: %w", err)
-	}
-
 	if proof.Type == JwtProof2020 {
 		issuerDID, ok := (*m)["issuer"].(string)
 		if !ok {

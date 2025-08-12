@@ -22,6 +22,9 @@ func VerifyJwtProof(req *map[string]interface{}, publicKeyHex string) (bool, err
 		return false, fmt.Errorf("failed to extract signature and message from JWT: %w", err)
 	}
 
+	if !strings.HasPrefix(publicKeyHex, "0x") {
+		publicKeyHex = "0x" + publicKeyHex
+	}
 	pubBytes, err := keyToBytes(publicKeyHex)
 	if err != nil {
 		return false, fmt.Errorf("failed to convert public key to bytes: %w", err)
