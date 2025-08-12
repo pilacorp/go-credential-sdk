@@ -172,7 +172,7 @@ func (c *Credential) AddECDSAProof(priv, verificationMethod string, opts ...Cred
 }
 
 // AddCustomProof adds a custom proof to the Presentation.
-func (c *Credential) AddCustomProof(priv, proof *dto.Proof) error {
+func (c *Credential) AddCustomProof(proof *dto.Proof) error {
 
 	return (*jsonmap.JSONMap)(c).AddCustomProof(proof)
 }
