@@ -124,7 +124,7 @@ func (p *Presentation) AddECDSAProof(priv, verificationMethod string, opts ...Pr
 }
 
 // AddCustomProof adds a custom proof to the Presentation.
-func (p *Presentation) AddCustomProof(priv, proof *dto.Proof) error {
+func (p *Presentation) AddCustomProof(proof *dto.Proof) error {
 
 	return (*jsonmap.JSONMap)(p).AddCustomProof(proof)
 }
