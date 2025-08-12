@@ -70,6 +70,21 @@ func (r *Resolver) GetPublicKey(verificationMethodURL string) (string, error) {
 	return "", fmt.Errorf("verification method '%s' not found in DID document", verificationMethodURL)
 }
 
+func (r *Resolver) GetDefaultPublicKey(issuer string) (string, error) {
+	// Resolve DID document
+	doc, err := r.ResolveToDoc(issuer)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve DID '%s': %w", issuer, err)
+	}
+
+	if len(doc.VerificationMethod) > 0 {
+		publicKey := strings.TrimPrefix(doc.VerificationMethod[0].PublicKeyHex, "0x")
+		return publicKey, nil
+	}
+
+	return "", fmt.Errorf("verification method not found in DID '%s' document", issuer)
+}
+
 // ResolveToDoc fetches and parses a DID document from the resolver endpoint.
 func (r *Resolver) ResolveToDoc(did string) (*DIDDocument, error) {
 	// Construct and encode API URL
