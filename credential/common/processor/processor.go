@@ -3,7 +3,6 @@ package processor
 import (
 	"crypto/sha256"
 	"fmt"
-
 	"github.com/piprate/json-gold/ld"
 )
 
@@ -39,6 +38,15 @@ func WithRemoveAllInvalidRDF() ProcessorOpt {
 	}
 }
 
+// defaultDocumentLoader is a shared caching loader to prevent repeated fetches across function calls.
+var defaultDocumentLoader ld.DocumentLoader
+
+func init() {
+	innerLoader := ld.NewDefaultDocumentLoader(nil) // HTTP client
+	defaultDocumentLoader = ld.NewCachingDocumentLoader(innerLoader)
+
+}
+
 // CanonicalizeDocument canonicalizes a document using JSON-LD processing.
 func CanonicalizeDocument(doc map[string]interface{}) ([]byte, error) {
 	if doc == nil {
@@ -48,6 +56,8 @@ func CanonicalizeDocument(doc map[string]interface{}) ([]byte, error) {
 	jsonldOptions := ld.NewJsonLdOptions("")
 	jsonldOptions.Format = "application/n-quads"
 	jsonldOptions.Algorithm = ld.AlgorithmURDNA2015
+	// Use CachingDocumentLoader to cache remote contexts
+	jsonldOptions.DocumentLoader = defaultDocumentLoader
 
 	standardizedDoc, err := standardizeToJSONLD(doc)
 	if err != nil {
