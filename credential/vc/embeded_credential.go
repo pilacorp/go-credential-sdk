@@ -14,11 +14,27 @@ type EmbededCredential struct {
 	proof          *dto.Proof
 }
 
-func NewEmbededCredential(vcc CredentialContents) (Credential, error) {
+func NewEmbededCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
 	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}
+
+	options := &credentialOptions{
+		proc:       &processor.ProcessorOptions{},
+		validate:   true,
+		didBaseURL: config.BaseURL,
+	}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	if options.validate {
+		if err := validateCredential(m, options.proc); err != nil {
+			return nil, fmt.Errorf("failed to validate credential: %w", err)
+		}
+	}
+
 	return &EmbededCredential{jsonCredential: JSONCredential(m)}, nil
 }
 

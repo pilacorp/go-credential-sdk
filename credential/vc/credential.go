@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -127,15 +128,22 @@ func WithCredentialSchemaLoader(id, schema string) CredentialOpt {
 	}
 }
 
-// ParseCredential parses a JSON string into a Credential.
+// ParseCredential parses a credential from various formats into a Credential.
 func ParseCredential(rawCredential interface{}, opts ...CredentialOpt) (Credential, error) {
-	switch rawCredential.(type) {
+	switch v := rawCredential.(type) {
 	case []byte:
-		return ParseCredentialEmbedded(rawCredential.([]byte), opts...)
+		return ParseCredentialEmbedded(v, opts...)
 	case string:
-		return ParseCredentialJWT(rawCredential.(string), opts...)
+		return ParseCredentialJWT(v, opts...)
+	case map[string]interface{}:
+		// Convert map to JSON bytes for embedded parsing
+		vcBytes, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal credential data: %w", err)
+		}
+		return ParseCredentialEmbedded(vcBytes, opts...)
 	default:
-		return nil, fmt.Errorf("invalid credential type")
+		return nil, fmt.Errorf("invalid credential type: %T", rawCredential)
 	}
 }
 
@@ -149,7 +157,7 @@ func CreateCredentialWithContents(credType CredentialType, vcc CredentialContent
 	case CredentialTypeJWT:
 		return NewJWTCredential(vcc, opts...)
 	case CredentialTypeEmbedded:
-		return NewEmbededCredential(vcc)
+		return NewEmbededCredential(vcc, opts...)
 	default:
 		return nil, fmt.Errorf("unsupported credential type: %s", credType)
 	}

@@ -119,11 +119,13 @@ func TestCreateCredentialWithContents(t *testing.T) {
 				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				ID:      "urn:uuid:1234",
 				Issuer:  "did:example:issuer",
+				Types:   []string{"VerifiableCredential"},
 			},
 			expected: jsonmap.JSONMap{
 				"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				"id":       "urn:uuid:1234",
 				"issuer":   "did:example:issuer",
+				"type":     []string{"VerifiableCredential"},
 			},
 			expectError: false,
 		},

@@ -1,7 +1,6 @@
 package vp
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -9,7 +8,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
-// verifyCredentials verifies the ECDSA signatures of a slice of Verifiable Credentials.
+// verifyCredentials verifies the signatures of a slice of Verifiable Credentials.
 func verifyCredentials(vcs []*vc.Credential) error {
 	if vcs == nil {
 		return fmt.Errorf("credential input is nil")
@@ -115,29 +114,12 @@ func parseHolder(vp JSONPresentation, contents *PresentationContents) error {
 func parseVerifiableCredentials(vp JSONPresentation, contents *PresentationContents) error {
 	if vcs, ok := vp["verifiableCredential"].([]interface{}); ok {
 		for _, vcItem := range vcs {
-			// Try to parse as JWT first (string), then as embedded (map)
-			switch vcData := vcItem.(type) {
-			case string:
-				// JWT credential
-				credential, err := vc.ParseCredentialJWT(vcData, vc.WithDisableValidation())
-				if err != nil {
-					return fmt.Errorf("failed to parse JWT credential: %w", err)
-				}
-				contents.VerifiableCredentials = append(contents.VerifiableCredentials, &credential)
-			case map[string]interface{}:
-				// Embedded credential - convert to JSON bytes
-				vcBytes, err := json.Marshal(vcData)
-				if err != nil {
-					return fmt.Errorf("failed to marshal credential data: %w", err)
-				}
-				credential, err := vc.ParseCredentialEmbedded(vcBytes, vc.WithDisableValidation())
-				if err != nil {
-					return fmt.Errorf("failed to parse embedded credential: %w", err)
-				}
-				contents.VerifiableCredentials = append(contents.VerifiableCredentials, &credential)
-			default:
-				return fmt.Errorf("unsupported credential format: %T", vcItem)
+			// Use the abstracted ParseCredential function
+			credential, err := vc.ParseCredential(vcItem, vc.WithDisableValidation())
+			if err != nil {
+				return fmt.Errorf("failed to parse credential: %w", err)
 			}
+			contents.VerifiableCredentials = append(contents.VerifiableCredentials, &credential)
 		}
 	}
 	return nil

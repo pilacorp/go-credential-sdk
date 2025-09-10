@@ -167,7 +167,6 @@ func (j *JWTPresentation) ParsePresentationContents() (PresentationContents, err
 		parseTypes,
 		parseHolder,
 		parseVerifiableCredentials,
-		parseProofs,
 	}
 
 	for _, parser := range parsers {
