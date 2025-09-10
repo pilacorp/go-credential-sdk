@@ -125,7 +125,7 @@ func TestCreateCredentialWithContents(t *testing.T) {
 				"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				"id":       "urn:uuid:1234",
 				"issuer":   "did:example:issuer",
-				"type":     []string{"VerifiableCredential"},
+				"type":     "VerifiableCredential",
 			},
 			expectError: false,
 		},

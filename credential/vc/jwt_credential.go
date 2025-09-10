@@ -18,13 +18,10 @@ type JWTCredential struct {
 	signature string
 }
 
-// JWTCredentialOpt is an alias for CredentialOpt for JWT credentials
-type JWTCredentialOpt = CredentialOpt
-
 func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
 	options := &credentialOptions{
 		proc:       &processor.ProcessorOptions{},
-		validate:   true,
+		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -35,6 +32,12 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
+	}
+
+	if options.validate {
+		if err := validateCredential(m, options.proc); err != nil {
+			return nil, fmt.Errorf("failed to validate credential: %w", err)
+		}
 	}
 
 	headers := extractClaims(m)

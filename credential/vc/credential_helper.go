@@ -374,26 +374,31 @@ func validateCredential(m jsonmap.JSONMap, processor *processor.ProcessorOptions
 		m[key] = convertToArray(m[key])
 	}
 
-	for _, schema := range m["credentialSchema"].([]interface{}) {
-		schemaMap, ok := schema.(map[string]interface{})
-		if !ok || schemaMap["id"] == nil {
-			return fmt.Errorf("credentialSchema.id is required")
-		}
+	// Optional schema validation if credentialSchema is present and processor has schema loader
+	if schemas, exists := m["credentialSchema"]; exists && processor.SchemaLoader != nil {
+		if schemaArray, ok := schemas.([]interface{}); ok {
+			for _, schema := range schemaArray {
+				schemaMap, ok := schema.(map[string]interface{})
+				if !ok || schemaMap["id"] == nil {
+					return fmt.Errorf("credentialSchema.id is required")
+				}
 
-		schemaID, ok := schemaMap["id"].(string)
-		if !ok || schemaID == "" {
-			return fmt.Errorf("credentialSchema.id must be a non-empty string")
-		}
+				schemaID, ok := schemaMap["id"].(string)
+				if !ok || schemaID == "" {
+					return fmt.Errorf("credentialSchema.id must be a non-empty string")
+				}
 
-		schemaLoader := gojsonschema.NewReferenceLoader(schemaID)
-		credentialLoader := gojsonschema.NewGoLoader(m)
+				schemaLoader := gojsonschema.NewReferenceLoader(schemaID)
+				credentialLoader := gojsonschema.NewGoLoader(m)
 
-		result, err := gojsonschema.Validate(schemaLoader, credentialLoader)
-		if err != nil {
-			return fmt.Errorf("failed to validate schema: %w", err)
-		}
-		if !result.Valid() {
-			return fmt.Errorf("credential validation failed: %v", result.Errors())
+				result, err := gojsonschema.Validate(schemaLoader, credentialLoader)
+				if err != nil {
+					return fmt.Errorf("failed to validate schema: %w", err)
+				}
+				if !result.Valid() {
+					return fmt.Errorf("credential validation failed: %v", result.Errors())
+				}
+			}
 		}
 	}
 	return nil

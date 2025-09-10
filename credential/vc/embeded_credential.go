@@ -22,7 +22,7 @@ func NewEmbededCredential(vcc CredentialContents, opts ...CredentialOpt) (Creden
 
 	options := &credentialOptions{
 		proc:       &processor.ProcessorOptions{},
-		validate:   true,
+		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -99,7 +99,7 @@ func (e *EmbededCredential) AddCustomProof(proof interface{}) error {
 func (e *EmbededCredential) Verify(opts ...CredentialOpt) error {
 	options := &credentialOptions{
 		proc:       &processor.ProcessorOptions{},
-		validate:   true,
+		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
