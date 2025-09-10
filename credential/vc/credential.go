@@ -9,13 +9,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
-type CredentialType string
-
-const (
-	CredentialTypeEmbedded CredentialType = "embedded"
-	CredentialTypeJWT      CredentialType = "jwt"
-)
-
 // Config holds package configuration.
 var config = struct {
 	BaseURL string
@@ -31,8 +24,6 @@ func Init(baseURL string) {
 }
 
 type Credential interface {
-	Type() CredentialType
-
 	AddProof(priv string, opts ...CredentialOpt) error
 
 	GetSigningInput() ([]byte, error)
@@ -144,21 +135,5 @@ func ParseCredential(rawCredential interface{}, opts ...CredentialOpt) (Credenti
 		return ParseCredentialEmbedded(vcBytes, opts...)
 	default:
 		return nil, fmt.Errorf("invalid credential type: %T", rawCredential)
-	}
-}
-
-// CreateCredentialWithContents creates a credential based on the specified type.
-func CreateCredentialWithContents(credType CredentialType, vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
-	if len(vcc.Context) == 0 && vcc.ID == "" && vcc.Issuer == "" {
-		return nil, fmt.Errorf("contents must have context, ID, or issuer")
-	}
-
-	switch credType {
-	case CredentialTypeJWT:
-		return NewJWTCredential(vcc, opts...)
-	case CredentialTypeEmbedded:
-		return NewEmbededCredential(vcc, opts...)
-	default:
-		return nil, fmt.Errorf("unsupported credential type: %s", credType)
 	}
 }

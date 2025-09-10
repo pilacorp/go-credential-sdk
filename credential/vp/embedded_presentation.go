@@ -43,10 +43,6 @@ func ParsePresentationEmbedded(rawJSON []byte, opts ...PresentationOpt) (Present
 	return &EmbeddedPresentation{jsonPresentation: JSONPresentation(m)}, nil
 }
 
-func (e *EmbeddedPresentation) Type() PresentationType {
-	return PresentationTypeEmbedded
-}
-
 func (e *EmbeddedPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	options := &presentationOptions{
 		proc:       &processor.ProcessorOptions{},

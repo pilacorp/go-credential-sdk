@@ -17,6 +17,11 @@ func serializeCredentialContents(vcc *CredentialContents) (jsonmap.JSONMap, erro
 		return nil, fmt.Errorf("credential contents is nil")
 	}
 
+	// Validate that at least one essential field is present
+	if len(vcc.Context) == 0 && vcc.ID == "" && vcc.Issuer == "" {
+		return nil, fmt.Errorf("credential contents must have at least one of: context, ID, or issuer")
+	}
+
 	vcJSON := make(jsonmap.JSONMap)
 	if len(vcc.Context) > 0 {
 		validatedContext, err := util.SerializeContexts(vcc.Context)

@@ -22,16 +22,7 @@ func Init(baseURL string) {
 	}
 }
 
-type PresentationType string
-
-const (
-	PresentationTypeEmbedded PresentationType = "embedded"
-	PresentationTypeJWT      PresentationType = "jwt"
-)
-
 type Presentation interface {
-	Type() PresentationType
-
 	AddProof(priv string, opts ...PresentationOpt) error
 
 	GetSigningInput() ([]byte, error)
@@ -95,21 +86,5 @@ func ParsePresentation(rawPresentation interface{}, opts ...PresentationOpt) (Pr
 		return ParsePresentationJWT(rawPresentation.(string), opts...)
 	default:
 		return nil, fmt.Errorf("invalid presentation type")
-	}
-}
-
-// CreatePresentationWithContents creates a presentation based on the specified type.
-func CreatePresentationWithContents(presType PresentationType, vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
-	if len(vpc.Context) == 0 && vpc.ID == "" && vpc.Holder == "" {
-		return nil, fmt.Errorf("contents must have context, ID, or holder")
-	}
-
-	switch presType {
-	case PresentationTypeJWT:
-		return CreatePresentationJWT(vpc, opts...)
-	case PresentationTypeEmbedded:
-		return CreatePresentationEmbedded(vpc, opts...)
-	default:
-		return nil, fmt.Errorf("unsupported presentation type: %s", presType)
 	}
 }

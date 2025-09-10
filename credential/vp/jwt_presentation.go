@@ -66,10 +66,6 @@ func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation,
 	}, nil
 }
 
-func (j *JWTPresentation) Type() PresentationType {
-	return PresentationTypeJWT
-}
-
 func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	signer := jwt.NewJWTSigner(priv, j.Payload["holder"].(string))
 

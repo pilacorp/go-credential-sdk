@@ -66,10 +66,6 @@ func ParseCredentialEmbedded(rawJSON []byte, opts ...CredentialOpt) (Credential,
 	return &EmbededCredential{jsonCredential: JSONCredential(m)}, nil
 }
 
-func (e *EmbededCredential) Type() CredentialType {
-	return CredentialTypeEmbedded
-}
-
 func (e *EmbededCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	options := &credentialOptions{
 		proc:       &processor.ProcessorOptions{},

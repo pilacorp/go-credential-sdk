@@ -73,10 +73,6 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 	return &JWTCredential{Headers: extractClaims(m), Payload: JSONCredential(m)}, nil
 }
 
-func (j *JWTCredential) Type() CredentialType {
-	return CredentialTypeJWT
-}
-
 func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	signer := jwt.NewJWTSigner(priv, j.Payload["issuer"].(string))
 

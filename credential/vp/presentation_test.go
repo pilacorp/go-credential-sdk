@@ -36,8 +36,7 @@ func TestParsePresentation(t *testing.T) {
 
 	// For embedded presentations, we can get the JSON directly
 	var vpByte []byte
-	if pParsed.Type() == vp.PresentationTypeEmbedded {
-		embeddedPres := pParsed.(*vp.EmbeddedPresentation)
+	if embeddedPres, ok := pParsed.(*vp.EmbeddedPresentation); ok {
 		vpByte, err = embeddedPres.ToJSON()
 		if err != nil {
 			t.Fatalf("ToJSON failed: %v", err)
@@ -143,7 +142,7 @@ func TestCreatePresentationWithContent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := vp.CreatePresentationWithContents(vp.PresentationTypeEmbedded, tt.input)
+			p, err := vp.NewEmbeddedPresentation(tt.input)
 			if tt.expectErr {
 				if err == nil {
 					t.Fatalf("Expected error but got nil")
@@ -210,7 +209,7 @@ func TestParsePresentationContents(t *testing.T) {
 		VerifiableCredentials: vcList,
 	}
 
-	pContent, err := vp.CreatePresentationWithContents(vp.PresentationTypeEmbedded, vpc)
+	pContent, err := vp.NewEmbeddedPresentation(vpc)
 	if err != nil {
 		t.Fatalf("Failed to marshal PresentationContents: %v", err)
 	}
@@ -277,7 +276,7 @@ func TestAddECDSAProof(t *testing.T) {
 		VerifiableCredentials: vcList,
 	}
 
-	presentation, err := vp.CreatePresentationWithContents(vp.PresentationTypeEmbedded, vpc)
+	presentation, err := vp.NewEmbeddedPresentation(vpc)
 	if err != nil {
 		t.Fatalf("Failed to create presentation: %v", err)
 	}
@@ -327,7 +326,7 @@ func TestVerifyECDSAPresentation(t *testing.T) {
 		VerifiableCredentials: vcList,
 	}
 
-	presentation, err := vp.CreatePresentationWithContents(vp.PresentationTypeEmbedded, vpc)
+	presentation, err := vp.NewEmbeddedPresentation(vpc)
 	if err != nil {
 		t.Fatalf("Failed to create presentation: %v", err)
 	}
@@ -415,7 +414,7 @@ func GenerateVCTest() []*vc.Credential {
 		},
 	}
 
-	credential, err := vc.CreateCredentialWithContents(vc.CredentialTypeEmbedded, vcc)
+	credential, err := vc.NewEmbededCredential(vcc)
 	if err != nil {
 		fmt.Printf("Failed to create credential: %v\n", err)
 		return nil
@@ -458,7 +457,7 @@ func TestCreatePresentationJWT(t *testing.T) {
 	}
 
 	// Create presentation from contents
-	presentation, err := vp.CreatePresentationWithContents(vp.PresentationTypeJWT, presentationContentJWT)
+	presentation, err := vp.NewJWTPresentation(presentationContentJWT)
 	if err != nil {
 		t.Fatalf("Failed to create presentation from contents: %v", err)
 	}

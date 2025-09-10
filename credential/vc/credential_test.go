@@ -77,10 +77,10 @@ func TestParseCredential(t *testing.T) {
 
 			assert.NoError(t, err)
 			// Check the credential type and access the appropriate field
-			if result.Type() == CredentialTypeEmbedded {
+			if _, ok := result.(*EmbededCredential); ok {
 				embeddedCred := result.(*EmbededCredential)
 				assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "Credential mismatch")
-			} else if result.Type() == CredentialTypeJWT {
+			} else if _, ok := result.(*JWTCredential); ok {
 				jwtCred := result.(*JWTCredential)
 				assert.Equal(t, tt.expected, jsonmap.JSONMap(jwtCred.Payload), "Credential mismatch")
 			}
@@ -91,15 +91,13 @@ func TestParseCredential(t *testing.T) {
 func TestCreateCredentialWithContents(t *testing.T) {
 	tests := []struct {
 		name        string
-		credType    CredentialType
 		input       CredentialContents
 		expected    jsonmap.JSONMap
 		expectError bool
 		errorMsg    string
 	}{
 		{
-			name:     "Valid JWT contents",
-			credType: CredentialTypeJWT,
+			name: "Valid JWT contents",
 			input: CredentialContents{
 				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				ID:      "urn:uuid:1234",
@@ -113,8 +111,7 @@ func TestCreateCredentialWithContents(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:     "Valid Embedded contents",
-			credType: CredentialTypeEmbedded,
+			name: "Valid Embedded contents",
 			input: CredentialContents{
 				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				ID:      "urn:uuid:1234",
@@ -131,33 +128,30 @@ func TestCreateCredentialWithContents(t *testing.T) {
 		},
 		{
 			name:        "Empty contents",
-			credType:    CredentialTypeJWT,
 			input:       CredentialContents{},
 			expectError: true,
-			errorMsg:    "contents must have context, ID, or issuer",
+			errorMsg:    "credential contents must have at least one of: context, ID, or issuer",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := CreateCredentialWithContents(tt.credType, tt.input)
+			result, err := NewEmbededCredential(tt.input)
 
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
+				assert.Nil(t, result, "Result should be nil when error is expected")
 				return
 			}
 
 			assert.NoError(t, err)
-			// For JWT credentials, we need to check the payload
-			if tt.credType == CredentialTypeJWT {
-				jwtCred := result.(*JWTCredential)
-				assert.Equal(t, tt.expected, jsonmap.JSONMap(jwtCred.Payload), "JWT Credential payload mismatch")
-			} else {
-				// For embedded credentials, we need to check the jsonCredential
-				embeddedCred := result.(*EmbededCredential)
-				assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "Embedded Credential mismatch")
-			}
+			assert.NotNil(t, result, "Result should not be nil when no error is expected")
+
+			// For embedded credentials, we need to check the jsonCredential
+			embeddedCred, ok := result.(*EmbededCredential)
+			assert.True(t, ok, "Result should be *EmbededCredential")
+			assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "Embedded Credential mismatch")
 		})
 	}
 }
@@ -459,7 +453,7 @@ func TestCreateCredentialJWT(t *testing.T) {
 	}
 
 	// Create credential from contents
-	credential, err := CreateCredentialWithContents(CredentialTypeJWT, credentialContents)
+	credential, err := NewJWTCredential(credentialContents)
 	assert.NoError(t, err, "Failed to create credential from contents")
 
 	// Add proof to the credential
@@ -482,7 +476,8 @@ func TestCreateCredentialJWT(t *testing.T) {
 	assert.NotNil(t, parsedCredential, "Parsed credential should not be nil")
 
 	// Verify the credential type
-	assert.Equal(t, CredentialTypeJWT, parsedCredential.Type(), "Credential type should be JWT")
+	_, ok = parsedCredential.(*JWTCredential)
+	assert.True(t, ok, "Credential type should be JWT")
 
 	// For JWT credentials, we can check the payload directly
 	jwtCred := parsedCredential.(*JWTCredential)
