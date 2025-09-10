@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/xeipuuv/gojsonschema"
+
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 )
 
@@ -30,9 +33,6 @@ func serializeCredentialContents(vcc *CredentialContents) (jsonmap.JSONMap, erro
 	}
 	if len(vcc.Subject) > 0 {
 		vcJSON["credentialSubject"] = serializeSubjects(vcc.Subject)
-	}
-	if len(vcc.Proofs) > 0 {
-		vcJSON["proof"] = util.SerializeProofs(vcc.Proofs)
 	}
 	if vcc.Issuer != "" {
 		vcJSON["issuer"] = vcc.Issuer
@@ -124,8 +124,8 @@ func serializeStatus(status Status) jsonmap.JSONMap {
 }
 
 // parseContext extracts the @context field from a Credential.
-func parseContext(c *Credential, contents *CredentialContents) error {
-	if context, ok := (*c)["@context"].([]interface{}); ok {
+func parseContext(c JSONCredential, contents *CredentialContents) error {
+	if context, ok := c["@context"].([]interface{}); ok {
 		for _, ctx := range context {
 			switch v := ctx.(type) {
 			case string, map[string]interface{}:
@@ -139,16 +139,16 @@ func parseContext(c *Credential, contents *CredentialContents) error {
 }
 
 // parseID extracts the ID field from a Credential.
-func parseID(c *Credential, contents *CredentialContents) error {
-	if id, ok := (*c)["id"].(string); ok {
+func parseID(c JSONCredential, contents *CredentialContents) error {
+	if id, ok := c["id"].(string); ok {
 		contents.ID = id
 	}
 	return nil
 }
 
 // parseTypes extracts the type field from a Credential.
-func parseTypes(c *Credential, contents *CredentialContents) error {
-	switch v := (*c)["type"].(type) {
+func parseTypes(c JSONCredential, contents *CredentialContents) error {
+	switch v := c["type"].(type) {
 	case string:
 		contents.Types = append(contents.Types, v)
 	case []interface{}:
@@ -164,23 +164,23 @@ func parseTypes(c *Credential, contents *CredentialContents) error {
 }
 
 // parseIssuer extracts the issuer field from a Credential.
-func parseIssuer(c *Credential, contents *CredentialContents) error {
-	if issuer, ok := (*c)["issuer"].(string); ok {
+func parseIssuer(c JSONCredential, contents *CredentialContents) error {
+	if issuer, ok := c["issuer"].(string); ok {
 		contents.Issuer = issuer
 	}
 	return nil
 }
 
 // parseDates extracts validFrom and validUntil fields from a Credential.
-func parseDates(c *Credential, contents *CredentialContents) error {
-	if validFrom, ok := (*c)["validFrom"].(string); ok {
+func parseDates(c JSONCredential, contents *CredentialContents) error {
+	if validFrom, ok := c["validFrom"].(string); ok {
 		t, err := time.Parse(time.RFC3339, validFrom)
 		if err != nil {
 			return fmt.Errorf("failed to parse validFrom: %w", err)
 		}
 		contents.ValidFrom = t
 	}
-	if validUntil, ok := (*c)["validUntil"].(string); ok {
+	if validUntil, ok := c["validUntil"].(string); ok {
 		t, err := time.Parse(time.RFC3339, validUntil)
 		if err != nil {
 			return fmt.Errorf("failed to parse validUntil: %w", err)
@@ -191,8 +191,8 @@ func parseDates(c *Credential, contents *CredentialContents) error {
 }
 
 // parseSubject extracts the credentialSubject field from a Credential.
-func parseSubject(c *Credential, contents *CredentialContents) error {
-	subjectRaw := (*c)["credentialSubject"]
+func parseSubject(c JSONCredential, contents *CredentialContents) error {
+	subjectRaw := c["credentialSubject"]
 	if subjectRaw == nil {
 		return nil
 	}
@@ -237,8 +237,8 @@ func SubjectFromJSON(subjectObj jsonmap.JSONMap) (Subject, error) {
 }
 
 // parseSchema extracts the credentialSchema field from a Credential.
-func parseSchema(c *Credential, contents *CredentialContents) error {
-	schemaRaw := (*c)["credentialSchema"]
+func parseSchema(c JSONCredential, contents *CredentialContents) error {
+	schemaRaw := c["credentialSchema"]
 	if schemaRaw == nil {
 		return nil
 	}
@@ -265,8 +265,8 @@ func parseSchema(c *Credential, contents *CredentialContents) error {
 }
 
 // parseStatus extracts the credentialStatus field from a Credential.
-func parseStatus(c *Credential, contents *CredentialContents) error {
-	statusRaw := (*c)["credentialStatus"]
+func parseStatus(c JSONCredential, contents *CredentialContents) error {
+	statusRaw := c["credentialStatus"]
 	if statusRaw == nil {
 		return nil
 	}
@@ -337,30 +337,15 @@ func parseSchemaID(value interface{}) (Schema, error) {
 }
 
 // parseProofs extracts the proof field from a Credential.
-func parseProofs(c *Credential, contents *CredentialContents) error {
-	proofRaw := (*c)["proof"]
+func parseProofs(c JSONCredential, contents *CredentialContents) error {
+	proofRaw := c["proof"]
 	if proofRaw == nil {
 		return nil
 	}
 
-	switch proof := proofRaw.(type) {
-	case map[string]interface{}:
-		parsed, err := jsonmap.ParseRawToProof(proof)
-		if err != nil {
-			return fmt.Errorf("failed to parse proof: %w", err)
-		}
-		contents.Proofs = append(contents.Proofs, parsed)
-	case []interface{}:
-		for _, raw := range proof {
-			parsed, err := jsonmap.ParseRawToProof(raw)
-			if err != nil {
-				return fmt.Errorf("failed to parse proof: %w", err)
-			}
-			contents.Proofs = append(contents.Proofs, parsed)
-		}
-	default:
-		return fmt.Errorf("unsupported proof format: %T", proof)
-	}
+	// Note: Proofs are handled separately in the credential implementations
+	// This function is kept for compatibility but doesn't populate contents.Proofs
+	// since CredentialContents doesn't have a Proofs field
 	return nil
 }
 
@@ -373,4 +358,54 @@ func parseStringField(obj jsonmap.JSONMap, fieldName string) (string, error) {
 		return "", fmt.Errorf("field %q must be a string, got %T", fieldName, value)
 	}
 	return "", nil
+}
+
+// validateCredential validates the Credential against its schema.
+func validateCredential(m jsonmap.JSONMap, processor *processor.ProcessorOptions) error {
+	if processor == nil {
+		return fmt.Errorf("processor options are required")
+	}
+
+	requiredKeys := []string{"type", "credentialSchema", "credentialSubject", "credentialStatus", "proof"}
+	for _, key := range requiredKeys {
+		if _, exists := m[key]; !exists {
+			return fmt.Errorf("%s is required", key)
+		}
+		m[key] = convertToArray(m[key])
+	}
+
+	for _, schema := range m["credentialSchema"].([]interface{}) {
+		schemaMap, ok := schema.(map[string]interface{})
+		if !ok || schemaMap["id"] == nil {
+			return fmt.Errorf("credentialSchema.id is required")
+		}
+
+		schemaID, ok := schemaMap["id"].(string)
+		if !ok || schemaID == "" {
+			return fmt.Errorf("credentialSchema.id must be a non-empty string")
+		}
+
+		schemaLoader := gojsonschema.NewReferenceLoader(schemaID)
+		credentialLoader := gojsonschema.NewGoLoader(m)
+
+		result, err := gojsonschema.Validate(schemaLoader, credentialLoader)
+		if err != nil {
+			return fmt.Errorf("failed to validate schema: %w", err)
+		}
+		if !result.Valid() {
+			return fmt.Errorf("credential validation failed: %v", result.Errors())
+		}
+	}
+	return nil
+}
+
+// convertToArray ensures a value is represented as an array.
+func convertToArray(value interface{}) []interface{} {
+	if value == nil {
+		return nil
+	}
+	if arr, ok := value.([]interface{}); ok {
+		return arr
+	}
+	return []interface{}{value}
 }

@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 )
 
@@ -77,21 +76,45 @@ func TestParseCredential(t *testing.T) {
 			}
 
 			assert.NoError(t, err)
-			assert.Equal(t, tt.expected, jsonmap.JSONMap(*result), "Credential mismatch") // Cast *result to jsonmap.JSONMap
+			// Check the credential type and access the appropriate field
+			if result.Type() == CredentialTypeEmbedded {
+				embeddedCred := result.(*EmbededCredential)
+				assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "Credential mismatch")
+			} else if result.Type() == CredentialTypeJWT {
+				jwtCred := result.(*JWTCredential)
+				assert.Equal(t, tt.expected, jsonmap.JSONMap(jwtCred.Payload), "Credential mismatch")
+			}
 		})
 	}
 }
 
-func TestCreateCredentialWithContent(t *testing.T) {
+func TestCreateCredentialWithContents(t *testing.T) {
 	tests := []struct {
 		name        string
+		credType    CredentialType
 		input       CredentialContents
 		expected    jsonmap.JSONMap
 		expectError bool
 		errorMsg    string
 	}{
 		{
-			name: "Valid contents",
+			name:     "Valid JWT contents",
+			credType: CredentialTypeJWT,
+			input: CredentialContents{
+				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+				ID:      "urn:uuid:1234",
+				Issuer:  "did:example:issuer",
+			},
+			expected: jsonmap.JSONMap{
+				"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+				"id":       "urn:uuid:1234",
+				"issuer":   "did:example:issuer",
+			},
+			expectError: false,
+		},
+		{
+			name:     "Valid Embedded contents",
+			credType: CredentialTypeEmbedded,
 			input: CredentialContents{
 				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				ID:      "urn:uuid:1234",
@@ -106,6 +129,7 @@ func TestCreateCredentialWithContent(t *testing.T) {
 		},
 		{
 			name:        "Empty contents",
+			credType:    CredentialTypeJWT,
 			input:       CredentialContents{},
 			expectError: true,
 			errorMsg:    "contents must have context, ID, or issuer",
@@ -114,7 +138,7 @@ func TestCreateCredentialWithContent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := CreateCredentialWithContent(tt.input)
+			result, err := CreateCredentialWithContents(tt.credType, tt.input)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -123,78 +147,39 @@ func TestCreateCredentialWithContent(t *testing.T) {
 			}
 
 			assert.NoError(t, err)
-			assert.Equal(t, tt.expected, jsonmap.JSONMap(*result), "Credential mismatch") // Cast *result to jsonmap.JSONMap
+			// For JWT credentials, we need to check the payload
+			if tt.credType == CredentialTypeJWT {
+				jwtCred := result.(*JWTCredential)
+				assert.Equal(t, tt.expected, jsonmap.JSONMap(jwtCred.Payload), "JWT Credential payload mismatch")
+			} else {
+				// For embedded credentials, we need to check the jsonCredential
+				embeddedCred := result.(*EmbededCredential)
+				assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "Embedded Credential mismatch")
+			}
 		})
 	}
 }
 
-func TestToJSON(t *testing.T) {
-	credential := Credential(jsonmap.JSONMap{
-		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
-		"id":       "urn:uuid:1234",
-	})
-	expectedJSON := `{"@context":["https://www.w3.org/2018/credentials/v1"],"id":"urn:uuid:1234"}`
+// TestToJSON removed - JSONCredential doesn't have ToJSON method
 
-	result, err := credential.ToJSON()
-	assert.NoError(t, err)
-	assert.JSONEq(t, expectedJSON, string(result))
-}
-
-func TestParseCredentialContents(t *testing.T) {
-	fixedTime, _ := time.Parse(time.RFC3339, "2025-08-05T10:00:00Z")
-	credential := Credential(jsonmap.JSONMap{
-		"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
-		"id":                "urn:uuid:1234",
-		"type":              []interface{}{"VerifiableCredential"},
-		"issuer":            "did:example:issuer",
-		"validFrom":         fixedTime.Format(time.RFC3339),
-		"credentialSubject": map[string]interface{}{"id": "did:example:subject1", "name": "John Doe"},
-		"credentialSchema":  map[string]interface{}{"id": "https://example.org/schema/1", "type": "JsonSchemaValidator2019"},
-		"credentialStatus":  map[string]interface{}{"id": "https://example.org/status/1", "type": "StatusList2021Entry"},
-		"proof":             map[string]interface{}{"type": "Ed25519Signature2020", "created": fixedTime.Format(time.RFC3339)},
-	})
-
-	expected := CredentialContents{
-		Context:   []interface{}{"https://www.w3.org/2018/credentials/v1"},
-		ID:        "urn:uuid:1234",
-		Types:     []string{"VerifiableCredential"},
-		Issuer:    "did:example:issuer",
-		ValidFrom: fixedTime,
-		Subject: []Subject{
-			{ID: "did:example:subject1", CustomFields: map[string]interface{}{"name": "John Doe"}},
-		},
-		Schemas: []Schema{
-			{ID: "https://example.org/schema/1", Type: "JsonSchemaValidator2019"},
-		},
-		CredentialStatus: []Status{
-			{ID: "https://example.org/status/1", Type: "StatusList2021Entry"},
-		},
-		Proofs: []dto.Proof{
-			{Type: "Ed25519Signature2020", Created: fixedTime.Format(time.RFC3339)},
-		},
-	}
-
-	result, err := credential.ParseCredentialContents()
-	assert.NoError(t, err)
-	assert.Equal(t, expected, result)
-}
+// TestParseCredentialContents removed - JSONCredential doesn't have ParseCredentialContents method
 
 func TestParseContext(t *testing.T) {
 	tests := []struct {
 		name        string
-		credential  Credential
+		credential  JSONCredential
 		expected    []interface{}
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name:       "Valid context",
-			credential: Credential(jsonmap.JSONMap{"@context": []interface{}{"https://www.w3.org/2018/credentials/v1", map[string]interface{}{"custom": "context"}}}),
+			credential: JSONCredential(jsonmap.JSONMap{"@context": []interface{}{"https://www.w3.org/2018/credentials/v1", map[string]interface{}{"custom": "context"}}}),
 			expected:   []interface{}{"https://www.w3.org/2018/credentials/v1", map[string]interface{}{"custom": "context"}},
 		},
 		{
 			name:        "Invalid context type",
-			credential:  Credential(jsonmap.JSONMap{"@context": []interface{}{1}}),
+			credential:  JSONCredential(jsonmap.JSONMap{"@context": []interface{}{1}}),
 			expectError: true,
 			errorMsg:    "unsupported context type: int",
 		},
@@ -203,7 +188,7 @@ func TestParseContext(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var contents CredentialContents
-			err := parseContext(&tt.credential, &contents)
+			err := parseContext(tt.credential, &contents)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -218,9 +203,9 @@ func TestParseContext(t *testing.T) {
 }
 
 func TestParseID(t *testing.T) {
-	credential := Credential(jsonmap.JSONMap{"id": "urn:uuid:1234"})
+	credential := JSONCredential(jsonmap.JSONMap{"id": "urn:uuid:1234"})
 	var contents CredentialContents
-	err := parseID(&credential, &contents)
+	err := parseID(credential, &contents)
 	assert.NoError(t, err)
 	assert.Equal(t, "urn:uuid:1234", contents.ID)
 }
@@ -228,24 +213,24 @@ func TestParseID(t *testing.T) {
 func TestParseTypes(t *testing.T) {
 	tests := []struct {
 		name        string
-		credential  Credential
+		credential  JSONCredential
 		expected    []string
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name:       "Single type",
-			credential: Credential(jsonmap.JSONMap{"type": "VerifiableCredential"}),
+			credential: JSONCredential(jsonmap.JSONMap{"type": "VerifiableCredential"}),
 			expected:   []string{"VerifiableCredential"},
 		},
 		{
 			name:       "Multiple types",
-			credential: Credential(jsonmap.JSONMap{"type": []interface{}{"VerifiableCredential", "CustomCredential"}}),
+			credential: JSONCredential(jsonmap.JSONMap{"type": []interface{}{"VerifiableCredential", "CustomCredential"}}),
 			expected:   []string{"VerifiableCredential", "CustomCredential"},
 		},
 		{
 			name:        "Invalid type",
-			credential:  Credential(jsonmap.JSONMap{"type": 123}),
+			credential:  JSONCredential(jsonmap.JSONMap{"type": 123}),
 			expectError: true,
 			errorMsg:    "unsupported type field: int",
 		},
@@ -254,7 +239,7 @@ func TestParseTypes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var contents CredentialContents
-			err := parseTypes(&tt.credential, &contents)
+			err := parseTypes(tt.credential, &contents)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -269,22 +254,22 @@ func TestParseTypes(t *testing.T) {
 }
 
 func TestParseIssuer(t *testing.T) {
-	credential := Credential(jsonmap.JSONMap{"issuer": "did:example:issuer"})
+	credential := JSONCredential(jsonmap.JSONMap{"issuer": "did:example:issuer"})
 	var contents CredentialContents
-	err := parseIssuer(&credential, &contents)
+	err := parseIssuer(credential, &contents)
 	assert.NoError(t, err)
 	assert.Equal(t, "did:example:issuer", contents.Issuer)
 }
 
 func TestParseDates(t *testing.T) {
 	fixedTime, _ := time.Parse(time.RFC3339, "2025-08-05T10:00:00Z")
-	credential := Credential(jsonmap.JSONMap{
+	credential := JSONCredential(jsonmap.JSONMap{
 		"validFrom":  fixedTime.Format(time.RFC3339),
 		"validUntil": fixedTime.Add(24 * time.Hour).Format(time.RFC3339),
 	})
 
 	var contents CredentialContents
-	err := parseDates(&credential, &contents)
+	err := parseDates(credential, &contents)
 	assert.NoError(t, err)
 	assert.Equal(t, fixedTime, contents.ValidFrom)
 	assert.Equal(t, fixedTime.Add(24*time.Hour), contents.ValidUntil)
@@ -293,24 +278,24 @@ func TestParseDates(t *testing.T) {
 func TestParseSubject(t *testing.T) {
 	tests := []struct {
 		name        string
-		credential  Credential
+		credential  JSONCredential
 		expected    []Subject
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name:       "Single subject",
-			credential: Credential(jsonmap.JSONMap{"credentialSubject": map[string]interface{}{"id": "did:example:subject1", "name": "John Doe"}}),
+			credential: JSONCredential(jsonmap.JSONMap{"credentialSubject": map[string]interface{}{"id": "did:example:subject1", "name": "John Doe"}}),
 			expected:   []Subject{{ID: "did:example:subject1", CustomFields: map[string]interface{}{"name": "John Doe"}}},
 		},
 		{
 			name:       "Multiple subjects",
-			credential: Credential(jsonmap.JSONMap{"credentialSubject": []interface{}{map[string]interface{}{"id": "did:example:subject1"}, map[string]interface{}{"id": "did:example:subject2"}}}),
+			credential: JSONCredential(jsonmap.JSONMap{"credentialSubject": []interface{}{map[string]interface{}{"id": "did:example:subject1"}, map[string]interface{}{"id": "did:example:subject2"}}}),
 			expected:   []Subject{{ID: "did:example:subject1", CustomFields: map[string]interface{}{}}, {ID: "did:example:subject2", CustomFields: map[string]interface{}{}}},
 		},
 		{
 			name:        "Invalid subject format",
-			credential:  Credential(jsonmap.JSONMap{"credentialSubject": 123}),
+			credential:  JSONCredential(jsonmap.JSONMap{"credentialSubject": 123}),
 			expectError: true,
 			errorMsg:    "unsupported subject format: int",
 		},
@@ -319,7 +304,7 @@ func TestParseSubject(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var contents CredentialContents
-			err := parseSubject(&tt.credential, &contents)
+			err := parseSubject(tt.credential, &contents)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -334,37 +319,38 @@ func TestParseSubject(t *testing.T) {
 }
 
 func TestParseSchema(t *testing.T) {
-	credential := Credential(jsonmap.JSONMap{
+	credential := JSONCredential(jsonmap.JSONMap{
 		"credentialSchema": map[string]interface{}{"id": "https://example.org/schema/1", "type": "JsonSchemaValidator2019"},
 	})
 
 	var contents CredentialContents
-	err := parseSchema(&credential, &contents)
+	err := parseSchema(credential, &contents)
 	assert.NoError(t, err)
 	assert.Equal(t, []Schema{{ID: "https://example.org/schema/1", Type: "JsonSchemaValidator2019"}}, contents.Schemas)
 }
 
 func TestParseStatus(t *testing.T) {
-	credential := Credential(jsonmap.JSONMap{
+	credential := JSONCredential(jsonmap.JSONMap{
 		"credentialStatus": map[string]interface{}{"id": "https://example.org/status/1", "type": "StatusList2021Entry"},
 	})
 
 	var contents CredentialContents
-	err := parseStatus(&credential, &contents)
+	err := parseStatus(credential, &contents)
 	assert.NoError(t, err)
 	assert.Equal(t, []Status{{ID: "https://example.org/status/1", Type: "StatusList2021Entry"}}, contents.CredentialStatus)
 }
 
 func TestParseProofs(t *testing.T) {
 	fixedTime, _ := time.Parse(time.RFC3339, "2025-08-05T10:00:00Z")
-	credential := Credential(jsonmap.JSONMap{
+	credential := JSONCredential(jsonmap.JSONMap{
 		"proof": map[string]interface{}{"type": "Ed25519Signature2020", "created": fixedTime.Format(time.RFC3339)},
 	})
 
 	var contents CredentialContents
-	err := parseProofs(&credential, &contents)
+	err := parseProofs(credential, &contents)
 	assert.NoError(t, err)
-	assert.Equal(t, []dto.Proof{{Type: "Ed25519Signature2020", Created: fixedTime.Format(time.RFC3339)}}, contents.Proofs)
+	// Note: parseProofs now returns nil since CredentialContents doesn't have Proofs field
+	// The test just verifies no error occurs
 }
 
 func TestSubjectFromJSON(t *testing.T) {
@@ -471,45 +457,33 @@ func TestCreateCredentialJWT(t *testing.T) {
 	}
 
 	// Create credential from contents
-	credential, err := CreateCredentialWithContent(credentialContents)
+	credential, err := CreateCredentialWithContents(CredentialTypeJWT, credentialContents)
 	assert.NoError(t, err, "Failed to create credential from contents")
 
-	// Sign the credential as JWT
-	additionalClaims := map[string]interface{}{
-		"aud": "did:example:verifier",
-		"exp": time.Now().Add(24 * time.Hour).Unix(),
-	}
+	// Add proof to the credential
+	err = credential.AddProof(privateKeyHex)
+	assert.NoError(t, err, "Failed to add proof to credential")
 
-	jwtToken, err := credential.SignJWT(privateKeyHex, issuerDID, additionalClaims)
-	assert.NoError(t, err, "Failed to sign credential as JWT")
+	// Serialize the credential to get JWT string
+	serialized, err := credential.Serialize()
+	assert.NoError(t, err, "Failed to serialize credential")
+	jwtToken, ok := serialized.(string)
+	assert.True(t, ok, "Serialized credential should be a string for JWT")
 	assert.NotEmpty(t, jwtToken, "JWT token should not be empty")
 
 	// Verify the JWT token structure (should have 3 parts)
-	parts := []string{}
-	for _, part := range []string{"header", "payload", "signature"} {
-		parts = append(parts, part)
-	}
 	assert.Equal(t, 3, len(strings.Split(jwtToken, ".")), "JWT should have 3 parts separated by dots")
 
-	// Verify the JWT credential
-	verifiedData, err := VerifyJWT(jwtToken, WithDisableValidation())
-	assert.NoError(t, err, "Failed to verify JWT credential")
-	assert.NotNil(t, verifiedData, "Verified data should not be nil")
+	// Parse the JWT credential back
+	parsedCredential, err := ParseCredentialJWT(jwtToken, WithDisableValidation())
+	assert.NoError(t, err, "Failed to parse JWT credential")
+	assert.NotNil(t, parsedCredential, "Parsed credential should not be nil")
 
-	// Verify the credential data matches
-	verifiedCredential := Credential(verifiedData)
-	verifiedContents, err := verifiedCredential.ParseCredentialContents()
-	assert.NoError(t, err, "Failed to parse verified credential contents")
+	// Verify the credential type
+	assert.Equal(t, CredentialTypeJWT, parsedCredential.Type(), "Credential type should be JWT")
 
-	// Check key fields match
-	assert.Equal(t, credentialContents.ID, verifiedContents.ID, "Credential ID should match")
-	assert.Equal(t, credentialContents.Issuer, verifiedContents.Issuer, "Issuer should match")
-	assert.Equal(t, len(credentialContents.Types), len(verifiedContents.Types), "Number of types should match")
-	assert.Equal(t, len(credentialContents.Subject), len(verifiedContents.Subject), "Number of subjects should match")
-
-	// Check subject data
-	if len(verifiedContents.Subject) > 0 {
-		assert.Equal(t, credentialContents.Subject[0].ID, verifiedContents.Subject[0].ID, "Subject ID should match")
-		assert.Equal(t, credentialContents.Subject[0].CustomFields["name"], verifiedContents.Subject[0].CustomFields["name"], "Subject name should match")
-	}
+	// For JWT credentials, we can check the payload directly
+	jwtCred := parsedCredential.(*JWTCredential)
+	assert.Equal(t, credentialContents.ID, jwtCred.Payload["id"], "Credential ID should match")
+	assert.Equal(t, credentialContents.Issuer, jwtCred.Payload["issuer"], "Issuer should match")
 }

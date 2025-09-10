@@ -1,6 +1,7 @@
 package vp
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -18,32 +19,23 @@ func verifyCredentials(vcs []*vc.Credential) error {
 		if v == nil {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
-		vcSerialized, err := v.ToJSON()
+		// Verify the credential using the new interface
+		err := (*v).Verify(vc.WithBaseURL(config.BaseURL))
 		if err != nil {
-			return fmt.Errorf("failed to serialize credential at index %d: %w", i, err)
-		}
-		verifyVC, err := vc.ParseCredential(vcSerialized, vc.WithDisableValidation())
-		if err != nil {
-			return fmt.Errorf("failed to parse credential at index %d: %w", i, err)
-		}
-		isValid, err := vc.VerifyECDSACredential(verifyVC, vc.WithBaseURL(config.BaseURL))
-		if err != nil {
-			return fmt.Errorf("failed to verify ECDSA proof for credential at index %d: %w", i, err)
-		}
-		if !isValid {
-			return fmt.Errorf("ECDSA proof for credential at index %d is invalid", i)
+			return fmt.Errorf("failed to verify credential at index %d: %w", i, err)
 		}
 	}
 	return nil
 }
 
-// serializePresentationContents serializes PresentationContents into a Presentation.
+// serializePresentationContents serializes PresentationContents into a JSON map.
 func serializePresentationContents(vpc *PresentationContents) (jsonmap.JSONMap, error) {
 	if vpc == nil {
 		return nil, fmt.Errorf("presentation contents is nil")
 	}
 
 	vpJSON := make(jsonmap.JSONMap)
+
 	if len(vpc.Context) > 0 {
 		validatedContext, err := util.SerializeContexts(vpc.Context)
 		if err != nil {
@@ -61,57 +53,19 @@ func serializePresentationContents(vpc *PresentationContents) (jsonmap.JSONMap, 
 		vpJSON["holder"] = vpc.Holder
 	}
 	if len(vpc.VerifiableCredentials) > 0 {
+		// Verify embedded credentials
 		if err := verifyCredentials(vpc.VerifiableCredentials); err != nil {
 			return nil, fmt.Errorf("failed to verify credentials: %w", err)
 		}
 		vpJSON["verifiableCredential"] = vpc.VerifiableCredentials
 	}
-	if len(vpc.Proofs) > 0 {
-		vpJSON["proof"] = util.SerializeProofs(vpc.Proofs)
-	}
-	return vpJSON, nil
-}
 
-// serializePresentationContentsJWT serializes PresentationContentsJWT into a Presentation.
-func serializePresentationContentsJWT(vpc *PresentationContentsJWT) (jsonmap.JSONMap, error) {
-	if vpc == nil {
-		return nil, fmt.Errorf("presentation contents is nil")
-	}
-
-	vpJSON := make(jsonmap.JSONMap)
-	if len(vpc.Context) > 0 {
-		validatedContext, err := util.SerializeContexts(vpc.Context)
-		if err != nil {
-			return nil, fmt.Errorf("invalid @context: %w", err)
-		}
-		vpJSON["@context"] = validatedContext
-	}
-	if vpc.ID != "" {
-		vpJSON["id"] = vpc.ID
-	}
-	if len(vpc.Types) > 0 {
-		vpJSON["type"] = util.SerializeTypes(vpc.Types)
-	}
-	if vpc.Holder != "" {
-		vpJSON["holder"] = vpc.Holder
-	}
-	if len(vpc.VerifiableCredentials) > 0 {
-		credentials := make([]interface{}, 0, len(vpc.VerifiableCredentials))
-		for _, credential := range vpc.VerifiableCredentials {
-			credentialJSON, err := vc.ParseCredentialJWT(credential)
-			if err != nil {
-				return nil, fmt.Errorf("failed to serialize verifiable credential: %w", err)
-			}
-			credentials = append(credentials, jsonmap.JSONMap(*credentialJSON))
-		}
-		vpJSON["verifiableCredential"] = credentials
-	}
 	return vpJSON, nil
 }
 
 // parseContext extracts the @context field from a Presentation.
-func parseContext(vp *Presentation, contents *PresentationContents) error {
-	if context, ok := (*vp)["@context"].([]interface{}); ok {
+func parseContext(vp JSONPresentation, contents *PresentationContents) error {
+	if context, ok := vp["@context"].([]interface{}); ok {
 		for _, ctx := range context {
 			switch v := ctx.(type) {
 			case string, map[string]interface{}:
@@ -125,16 +79,16 @@ func parseContext(vp *Presentation, contents *PresentationContents) error {
 }
 
 // parseID extracts the ID field from a Presentation.
-func parseID(vp *Presentation, contents *PresentationContents) error {
-	if id, ok := (*vp)["id"].(string); ok {
+func parseID(vp JSONPresentation, contents *PresentationContents) error {
+	if id, ok := vp["id"].(string); ok {
 		contents.ID = id
 	}
 	return nil
 }
 
 // parseTypes extracts the type field from a Presentation.
-func parseTypes(vp *Presentation, contents *PresentationContents) error {
-	switch v := (*vp)["type"].(type) {
+func parseTypes(vp JSONPresentation, contents *PresentationContents) error {
+	switch v := vp["type"].(type) {
 	case string:
 		contents.Types = append(contents.Types, v)
 	case []interface{}:
@@ -150,21 +104,38 @@ func parseTypes(vp *Presentation, contents *PresentationContents) error {
 }
 
 // parseHolder extracts the holder field from a Presentation.
-func parseHolder(vp *Presentation, contents *PresentationContents) error {
-	if holder, ok := (*vp)["holder"].(string); ok {
+func parseHolder(vp JSONPresentation, contents *PresentationContents) error {
+	if holder, ok := vp["holder"].(string); ok {
 		contents.Holder = holder
 	}
 	return nil
 }
 
 // parseVerifiableCredentials extracts the verifiableCredential field from a Presentation.
-func parseVerifiableCredentials(vp *Presentation, contents *PresentationContents) error {
-	if vcs, ok := (*vp)["verifiableCredential"].([]interface{}); ok {
+func parseVerifiableCredentials(vp JSONPresentation, contents *PresentationContents) error {
+	if vcs, ok := vp["verifiableCredential"].([]interface{}); ok {
 		for _, vcItem := range vcs {
-			if vcMap, ok := vcItem.(map[string]interface{}); ok {
-				credential := vc.Credential(vcMap)
+			// Try to parse as JWT first (string), then as embedded (map)
+			switch vcData := vcItem.(type) {
+			case string:
+				// JWT credential
+				credential, err := vc.ParseCredentialJWT(vcData, vc.WithDisableValidation())
+				if err != nil {
+					return fmt.Errorf("failed to parse JWT credential: %w", err)
+				}
 				contents.VerifiableCredentials = append(contents.VerifiableCredentials, &credential)
-			} else {
+			case map[string]interface{}:
+				// Embedded credential - convert to JSON bytes
+				vcBytes, err := json.Marshal(vcData)
+				if err != nil {
+					return fmt.Errorf("failed to marshal credential data: %w", err)
+				}
+				credential, err := vc.ParseCredentialEmbedded(vcBytes, vc.WithDisableValidation())
+				if err != nil {
+					return fmt.Errorf("failed to parse embedded credential: %w", err)
+				}
+				contents.VerifiableCredentials = append(contents.VerifiableCredentials, &credential)
+			default:
 				return fmt.Errorf("unsupported credential format: %T", vcItem)
 			}
 		}
@@ -173,29 +144,14 @@ func parseVerifiableCredentials(vp *Presentation, contents *PresentationContents
 }
 
 // parseProofs extracts the proof field from a Presentation.
-func parseProofs(vp *Presentation, contents *PresentationContents) error {
-	proofRaw := (*vp)["proof"]
+func parseProofs(vp JSONPresentation, contents *PresentationContents) error {
+	proofRaw := vp["proof"]
 	if proofRaw == nil {
 		return nil
 	}
 
-	switch proof := proofRaw.(type) {
-	case map[string]interface{}:
-		parsed, err := jsonmap.ParseRawToProof(proof)
-		if err != nil {
-			return fmt.Errorf("failed to parse proof: %w", err)
-		}
-		contents.Proofs = append(contents.Proofs, parsed)
-	case []interface{}:
-		for _, raw := range proof {
-			parsed, err := jsonmap.ParseRawToProof(raw)
-			if err != nil {
-				return fmt.Errorf("failed to parse proof: %w", err)
-			}
-			contents.Proofs = append(contents.Proofs, parsed)
-		}
-	default:
-		return fmt.Errorf("unsupported proof format: %T", proof)
-	}
+	// Note: Proofs are handled separately in the presentation implementations
+	// This function is kept for compatibility but doesn't populate contents.Proofs
+	// since PresentationContents doesn't have a Proofs field
 	return nil
 }

@@ -45,25 +45,25 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) (jsonmap.JSONMap, error) {
 }
 
 // VerifyDocument verifies a verifiable document JWT and returns the document as JSONMap
-func (v *JWTVerifier) VerifyDocument(tokenString string, docType string) (jsonmap.JSONMap, error) {
+func (v *JWTVerifier) VerifyDocument(tokenString string, docType string) error {
 	claims, err := v.VerifyJWT(tokenString)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Extract the document from claims (try both vc and vp)
 	var docData interface{}
 	docData, ok := claims[docType]
 	if !ok {
-		return nil, fmt.Errorf("%s claim not found in JWT", docType)
+		return fmt.Errorf("%s claim not found in JWT", docType)
 	}
 
-	docJSONMap, ok := docData.(map[string]interface{})
+	_, ok = docData.(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("verifiable document is not a valid JSON object")
+		return fmt.Errorf("verifiable document is not a valid JSON object")
 	}
 
-	return jsonmap.JSONMap(docJSONMap), nil
+	return nil
 }
 
 // getKey retrieves the public key for JWT verification

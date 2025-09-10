@@ -54,7 +54,7 @@ func TestJWTSelfIssued(t *testing.T) {
 
 	// Verify the JWT
 	verifier := NewJWTVerifier("https://auth-dev.pila.vn/api/v1/did")
-	_, err = verifier.VerifyDocument(signedJWT, "vc")
+	err = verifier.VerifyDocument(signedJWT, "vc")
 	if err != nil {
 		t.Fatalf("Failed to verify JWT: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestJWTPresentation(t *testing.T) {
 
 	// Verify the JWT
 	verifier := NewJWTVerifier("https://auth-dev.pila.vn/api/v1/did")
-	_, err = verifier.VerifyDocument(signedJWT, "vp")
+	err = verifier.VerifyDocument(signedJWT, "vp")
 	if err != nil {
 		t.Fatalf("Failed to verify VP JWT: %v", err)
 	}
