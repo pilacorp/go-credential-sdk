@@ -9,6 +9,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
@@ -138,6 +139,32 @@ func ParseCredential(rawJSON []byte, opts ...CredentialOpt) (*Credential, error)
 	return &c, nil
 }
 
+// ParseCredentialJWT parses a JWT-signed Credential.
+func ParseCredentialJWT(tokenString string, opts ...CredentialOpt) (*Credential, error) {
+	m, err := jwt.GetDocumentFromJWT(tokenString, "vc")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get document from JWT: %w", err)
+	}
+
+	options := &credentialOptions{
+		proc:       &processor.ProcessorOptions{},
+		validate:   true,
+		didBaseURL: config.BaseURL,
+	}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	if options.validate {
+		if err := validateCredential(m, options.proc); err != nil {
+			return nil, fmt.Errorf("failed to validate credential: %w", err)
+		}
+	}
+
+	c := Credential(m)
+	return &c, nil
+}
+
 // CreateCredentialWithContent creates a Credential from CredentialContents.
 func CreateCredentialWithContent(vcc CredentialContents) (*Credential, error) {
 	if len(vcc.Context) == 0 && vcc.ID == "" && vcc.Issuer == "" {
@@ -196,6 +223,29 @@ func VerifyECDSACredential(c *Credential, opts ...CredentialOpt) (bool, error) {
 	return (*jsonmap.JSONMap)(c).VerifyProof(options.didBaseURL)
 }
 
+// SignJWT signs the Credential as a JWT using ES256K algorithm
+func (c *Credential) SignJWT(privateKeyHex, issuerDID string, additionalClaims ...map[string]interface{}) (string, error) {
+	signer := jwt.NewJWTSigner(privateKeyHex, issuerDID)
+
+	return signer.SignDocument(jsonmap.JSONMap(*c), "vc", additionalClaims...)
+}
+
+// VerifyJWT verifies a JWT-signed Credential and returns the data
+func VerifyJWT(tokenString string, opts ...CredentialOpt) (jsonmap.JSONMap, error) {
+	options := &credentialOptions{
+		proc:       &processor.ProcessorOptions{},
+		validate:   true,
+		didBaseURL: config.BaseURL,
+	}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	verifier := jwt.NewJWTVerifier(options.didBaseURL)
+
+	return verifier.VerifyDocument(tokenString, "vc")
+}
+
 // ParseCredentialContents parses the Credential into structured contents.
 func (c *Credential) ParseCredentialContents() (CredentialContents, error) {
 	var contents CredentialContents
@@ -224,6 +274,8 @@ func validateCredential(m jsonmap.JSONMap, processor *processor.ProcessorOptions
 	if processor == nil {
 		return fmt.Errorf("processor options are required")
 	}
+
+	fmt.Println("m", m)
 
 	requiredKeys := []string{"type", "credentialSchema", "credentialSubject", "credentialStatus", "proof"}
 	for _, key := range requiredKeys {

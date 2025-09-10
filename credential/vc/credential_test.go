@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -414,4 +415,101 @@ func TestParseStringField(t *testing.T) {
 	_, err = parseStringField(jsonmap.JSONMap{"id": 123}, "id")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "field \"id\" must be a string")
+}
+
+func TestCreateCredentialJWT(t *testing.T) {
+	// Initialize the credential package
+	Init("https://auth-dev.pila.vn/api/v1/did")
+
+	// Test data
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+	subjectDID := "did:key:z2dmzD81cgPx8Vki7JbuuMmFYrWPgYoytykUZ3eyqht1j9KbsEYvdrjxMjQ4tpnje9BDBTzuNDP3knn6qLZErzd4bJ5go2CChoPjd5GAH3zpFJP5fuwSk66U5Pq6EhF4nKnHzDnznEP8fX99nZGgwbAh1o7Gj1X52Tdhf7U4KTk66xsA5r"
+
+	// Create credential contents
+	credentialContents := CredentialContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		ID:     "urn:uuid:jwt-test-credential-12345678",
+		Types:  []string{"VerifiableCredential", "EducationalCredential"},
+		Issuer: issuerDID,
+		ValidFrom: func() time.Time {
+			t, _ := time.Parse(time.RFC3339, "2024-01-01T00:00:00Z")
+			return t
+		}(),
+		ValidUntil: func() time.Time {
+			t, _ := time.Parse(time.RFC3339, "2025-01-01T00:00:00Z")
+			return t
+		}(),
+		Subject: []Subject{
+			{
+				ID: subjectDID,
+				CustomFields: map[string]interface{}{
+					"name":           "John Doe",
+					"degree":         "Bachelor of Science",
+					"university":     "Test University",
+					"graduationYear": 2023,
+				},
+			},
+		},
+		CredentialStatus: []Status{
+			{
+				ID:              "https://example.org/credentials/status/123",
+				Type:            "BitstringStatusListEntry",
+				StatusPurpose:   "revocation",
+				StatusListIndex: "123",
+			},
+		},
+		Schemas: []Schema{
+			{
+				ID:   "https://example.org/schemas/educational-credential.json",
+				Type: "JsonSchema",
+			},
+		},
+	}
+
+	// Create credential from contents
+	credential, err := CreateCredentialWithContent(credentialContents)
+	assert.NoError(t, err, "Failed to create credential from contents")
+
+	// Sign the credential as JWT
+	additionalClaims := map[string]interface{}{
+		"aud": "did:example:verifier",
+		"exp": time.Now().Add(24 * time.Hour).Unix(),
+	}
+
+	jwtToken, err := credential.SignJWT(privateKeyHex, issuerDID, additionalClaims)
+	assert.NoError(t, err, "Failed to sign credential as JWT")
+	assert.NotEmpty(t, jwtToken, "JWT token should not be empty")
+
+	// Verify the JWT token structure (should have 3 parts)
+	parts := []string{}
+	for _, part := range []string{"header", "payload", "signature"} {
+		parts = append(parts, part)
+	}
+	assert.Equal(t, 3, len(strings.Split(jwtToken, ".")), "JWT should have 3 parts separated by dots")
+
+	// Verify the JWT credential
+	verifiedData, err := VerifyJWT(jwtToken, WithDisableValidation())
+	assert.NoError(t, err, "Failed to verify JWT credential")
+	assert.NotNil(t, verifiedData, "Verified data should not be nil")
+
+	// Verify the credential data matches
+	verifiedCredential := Credential(verifiedData)
+	verifiedContents, err := verifiedCredential.ParseCredentialContents()
+	assert.NoError(t, err, "Failed to parse verified credential contents")
+
+	// Check key fields match
+	assert.Equal(t, credentialContents.ID, verifiedContents.ID, "Credential ID should match")
+	assert.Equal(t, credentialContents.Issuer, verifiedContents.Issuer, "Issuer should match")
+	assert.Equal(t, len(credentialContents.Types), len(verifiedContents.Types), "Number of types should match")
+	assert.Equal(t, len(credentialContents.Subject), len(verifiedContents.Subject), "Number of subjects should match")
+
+	// Check subject data
+	if len(verifiedContents.Subject) > 0 {
+		assert.Equal(t, credentialContents.Subject[0].ID, verifiedContents.Subject[0].ID, "Subject ID should match")
+		assert.Equal(t, credentialContents.Subject[0].CustomFields["name"], verifiedContents.Subject[0].CustomFields["name"], "Subject name should match")
+	}
 }

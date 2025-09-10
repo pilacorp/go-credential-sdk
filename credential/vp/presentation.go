@@ -6,6 +6,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
@@ -35,6 +36,15 @@ type PresentationContents struct {
 	Holder                string
 	VerifiableCredentials []*vc.Credential
 	Proofs                []dto.Proof
+}
+
+// PresentationContentsJWT represents the structured contents of a Presentation.
+type PresentationContentsJWT struct {
+	Context               []interface{}
+	ID                    string
+	Types                 []string
+	Holder                string
+	VerifiableCredentials []string
 }
 
 // PresentationOpt configures presentation processing options.
@@ -110,6 +120,22 @@ func (p *Presentation) ToJSON() ([]byte, error) {
 	return (*jsonmap.JSONMap)(p).ToJSON()
 }
 
+// CreatePresentationWithContentJWT creates a Presentation from PresentationContentsJWT.
+func CreatePresentationWithContentJWT(vpc PresentationContentsJWT) (*Presentation, error) {
+	if len(vpc.Context) == 0 && vpc.ID == "" && vpc.Holder == "" {
+		return nil, fmt.Errorf("contents must have context, ID, or holder")
+	}
+
+	m, err := serializePresentationContentsJWT(&vpc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
+	}
+
+	p := Presentation(m)
+
+	return &p, nil
+}
+
 // AddECDSAProof adds an ECDSA proof to the Presentation.
 func (p *Presentation) AddECDSAProof(priv, verificationMethod string, opts ...PresentationOpt) error {
 	options := &presentationOptions{
@@ -159,6 +185,26 @@ func VerifyECDSAPresentation(vp *Presentation, opts ...PresentationOpt) (bool, e
 	}
 
 	return isValid, nil
+}
+
+// SignJWT signs the Presentation as a JWT using ES256K algorithm
+func (p *Presentation) SignJWT(privateKeyHex, holderDID string, additionalClaims ...map[string]interface{}) (string, error) {
+	signer := jwt.NewJWTSigner(privateKeyHex, holderDID)
+	return signer.SignDocument(jsonmap.JSONMap(*p), "vp", additionalClaims...)
+}
+
+// VerifyJWT verifies a JWT-signed Presentation and returns the data
+func VerifyJWT(tokenString string, opts ...PresentationOpt) (jsonmap.JSONMap, error) {
+	options := &presentationOptions{
+		proc:       &processor.ProcessorOptions{},
+		didBaseURL: config.BaseURL,
+	}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	verifier := jwt.NewJWTVerifier(options.didBaseURL)
+	return verifier.VerifyDocument(tokenString, "vp")
 }
 
 // ParsePresentationContents parses the Presentation into structured contents.

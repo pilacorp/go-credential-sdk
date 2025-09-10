@@ -3,6 +3,7 @@ package vp_test
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -416,4 +417,103 @@ func GenerateVCTest() []*vc.Credential {
 	}
 
 	return []*vc.Credential{credential, credential}
+}
+
+func TestCreatePresentationJWT(t *testing.T) {
+	// Initialize the presentation and credential packages
+	vp.Init("https://auth-dev.pila.vn/api/v1/did")
+	vc.Init("https://auth-dev.pila.vn/api/v1/did")
+
+	// Test data
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+	verifierDID := "did:example:verifier"
+
+	// Create a test credential first
+	vcList := GenerateVCTest()
+	if vcList == nil {
+		t.Fatal("Failed to generate test credentials")
+	}
+
+	vcJWTList := make([]string, len(vcList))
+	for i, vc := range vcList {
+		vcJWT, err := vc.SignJWT(privateKeyHex, holderDID)
+		if err != nil {
+			t.Fatalf("Failed to sign credential as JWT: %v", err)
+		}
+		vcJWTList[i] = vcJWT
+	}
+
+	// Create presentation JWT contents
+	presentationContentJWT := vp.PresentationContentsJWT{
+		Context:               []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:                    "urn:uuid:jwt-test-presentation-12345678",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                holderDID,
+		VerifiableCredentials: vcJWTList,
+	}
+
+	// Create presentation from contents
+	presentation, err := vp.CreatePresentationWithContentJWT(presentationContentJWT)
+	if err != nil {
+		t.Fatalf("Failed to create presentation from contents: %v", err)
+	}
+
+	// Sign the presentation as JWT
+	additionalClaims := map[string]interface{}{
+		"aud": verifierDID,
+		"exp": time.Now().Add(24 * time.Hour).Unix(),
+		"iat": time.Now().Unix(),
+	}
+
+	jwtToken, err := presentation.SignJWT(privateKeyHex, holderDID, additionalClaims)
+	if err != nil {
+		t.Fatalf("Failed to sign presentation as JWT: %v", err)
+	}
+	if jwtToken == "" {
+		t.Fatal("JWT token should not be empty")
+	}
+
+	// Verify the JWT token structure (should have 3 parts)
+	parts := strings.Split(jwtToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("JWT should have 3 parts separated by dots, got %d", len(parts))
+	}
+
+	// Verify the JWT presentation
+	verifiedData, err := vp.VerifyJWT(jwtToken)
+	if err != nil {
+		t.Fatalf("Failed to verify JWT presentation: %v", err)
+	}
+	if verifiedData == nil {
+		t.Fatal("Verified data should not be nil")
+	}
+
+	// Verify the presentation data matches
+	verifiedPresentation := vp.Presentation(verifiedData)
+	verifiedContents, err := verifiedPresentation.ParsePresentationContents()
+	if err != nil {
+		t.Fatalf("Failed to parse verified presentation contents: %v", err)
+	}
+
+	// Check key fields match
+	if presentationContentJWT.ID != verifiedContents.ID {
+		t.Errorf("Expected presentation ID '%s', got '%s'", presentationContentJWT.ID, verifiedContents.ID)
+	}
+	if presentationContentJWT.Holder != verifiedContents.Holder {
+		t.Errorf("Expected holder '%s', got '%s'", presentationContentJWT.Holder, verifiedContents.Holder)
+	}
+	if len(presentationContentJWT.Types) != len(verifiedContents.Types) {
+		t.Errorf("Expected %d types, got %d", len(presentationContentJWT.Types), len(verifiedContents.Types))
+	}
+	if len(presentationContentJWT.VerifiableCredentials) != len(verifiedContents.VerifiableCredentials) {
+		t.Errorf("Expected %d verifiable credentials, got %d", len(presentationContentJWT.VerifiableCredentials), len(verifiedContents.VerifiableCredentials))
+	}
+
+	// Check types match
+	for i, expectedType := range presentationContentJWT.Types {
+		if i < len(verifiedContents.Types) && expectedType != verifiedContents.Types[i] {
+			t.Errorf("Expected type '%s' at index %d, got '%s'", expectedType, i, verifiedContents.Types[i])
+		}
+	}
 }

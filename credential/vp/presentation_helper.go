@@ -72,6 +72,43 @@ func serializePresentationContents(vpc *PresentationContents) (jsonmap.JSONMap, 
 	return vpJSON, nil
 }
 
+// serializePresentationContentsJWT serializes PresentationContentsJWT into a Presentation.
+func serializePresentationContentsJWT(vpc *PresentationContentsJWT) (jsonmap.JSONMap, error) {
+	if vpc == nil {
+		return nil, fmt.Errorf("presentation contents is nil")
+	}
+
+	vpJSON := make(jsonmap.JSONMap)
+	if len(vpc.Context) > 0 {
+		validatedContext, err := util.SerializeContexts(vpc.Context)
+		if err != nil {
+			return nil, fmt.Errorf("invalid @context: %w", err)
+		}
+		vpJSON["@context"] = validatedContext
+	}
+	if vpc.ID != "" {
+		vpJSON["id"] = vpc.ID
+	}
+	if len(vpc.Types) > 0 {
+		vpJSON["type"] = util.SerializeTypes(vpc.Types)
+	}
+	if vpc.Holder != "" {
+		vpJSON["holder"] = vpc.Holder
+	}
+	if len(vpc.VerifiableCredentials) > 0 {
+		credentials := make([]interface{}, 0, len(vpc.VerifiableCredentials))
+		for _, credential := range vpc.VerifiableCredentials {
+			credentialJSON, err := vc.ParseCredentialJWT(credential)
+			if err != nil {
+				return nil, fmt.Errorf("failed to serialize verifiable credential: %w", err)
+			}
+			credentials = append(credentials, jsonmap.JSONMap(*credentialJSON))
+		}
+		vpJSON["verifiableCredential"] = credentials
+	}
+	return vpJSON, nil
+}
+
 // parseContext extracts the @context field from a Presentation.
 func parseContext(vp *Presentation, contents *PresentationContents) error {
 	if context, ok := (*vp)["@context"].([]interface{}); ok {
