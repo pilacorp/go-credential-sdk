@@ -30,30 +30,39 @@ func serializeCredentialContents(vcc *CredentialContents) (jsonmap.JSONMap, erro
 		}
 		vcJSON["@context"] = validatedContext
 	}
+
 	if vcc.ID != "" {
 		vcJSON["id"] = vcc.ID
 	}
+
 	if len(vcc.Types) > 0 {
 		vcJSON["type"] = util.SerializeTypes(vcc.Types)
 	}
+
 	if len(vcc.Subject) > 0 {
 		vcJSON["credentialSubject"] = serializeSubjects(vcc.Subject)
 	}
+
 	if vcc.Issuer != "" {
 		vcJSON["issuer"] = vcc.Issuer
 	}
+
 	if len(vcc.Schemas) > 0 {
 		vcJSON["credentialSchema"] = serializeSchemas(vcc.Schemas)
 	}
+
 	if len(vcc.CredentialStatus) > 0 {
 		vcJSON["credentialStatus"] = serializeStatuses(vcc.CredentialStatus)
 	}
+
 	if !vcc.ValidFrom.IsZero() {
 		vcJSON["validFrom"] = vcc.ValidFrom.Format(time.RFC3339)
 	}
+
 	if !vcc.ValidUntil.IsZero() {
 		vcJSON["validUntil"] = vcc.ValidUntil.Format(time.RFC3339)
 	}
+
 	return vcJSON, nil
 }
 
@@ -62,9 +71,11 @@ func serializeSubjects(subjects []Subject) interface{} {
 	if len(subjects) == 0 {
 		return nil
 	}
+
 	if len(subjects) == 1 {
 		return serializeSubject(subjects[0])
 	}
+
 	return util.MapSlice(subjects, serializeSubject)
 }
 
@@ -74,6 +85,7 @@ func serializeSubject(subject Subject) jsonmap.JSONMap {
 	if subject.ID != "" {
 		jsonObj["id"] = subject.ID
 	}
+
 	return jsonObj
 }
 
@@ -82,9 +94,11 @@ func serializeSchemas(schemas []Schema) interface{} {
 	if len(schemas) == 0 {
 		return nil
 	}
+
 	if len(schemas) == 1 {
 		return serializeSchema(schemas[0])
 	}
+
 	return util.MapSlice(schemas, serializeSchema)
 }
 
@@ -101,30 +115,38 @@ func serializeStatuses(statuses []Status) interface{} {
 	if len(statuses) == 0 {
 		return nil
 	}
+
 	if len(statuses) == 1 {
 		return serializeStatus(statuses[0])
 	}
+
 	return util.MapSlice(statuses, serializeStatus)
 }
 
 // serializeStatus converts a single Status struct to a JSON object.
 func serializeStatus(status Status) jsonmap.JSONMap {
 	result := make(jsonmap.JSONMap)
+
 	if status.ID != "" {
 		result["id"] = status.ID
 	}
+
 	if status.Type != "" {
 		result["type"] = status.Type
 	}
+
 	if status.StatusPurpose != "" {
 		result["statusPurpose"] = status.StatusPurpose
 	}
+
 	if status.StatusListIndex != "" {
 		result["statusListIndex"] = status.StatusListIndex
 	}
+
 	if status.StatusListCredential != "" {
 		result["statusListCredential"] = status.StatusListCredential
 	}
+
 	return result
 }
 
@@ -148,6 +170,7 @@ func parseID(c JSONCredential, contents *CredentialContents) error {
 	if id, ok := c["id"].(string); ok {
 		contents.ID = id
 	}
+
 	return nil
 }
 
@@ -165,6 +188,7 @@ func parseTypes(c JSONCredential, contents *CredentialContents) error {
 	default:
 		return fmt.Errorf("unsupported type field: %T", v)
 	}
+
 	return nil
 }
 
@@ -173,6 +197,7 @@ func parseIssuer(c JSONCredential, contents *CredentialContents) error {
 	if issuer, ok := c["issuer"].(string); ok {
 		contents.Issuer = issuer
 	}
+
 	return nil
 }
 
@@ -185,6 +210,7 @@ func parseDates(c JSONCredential, contents *CredentialContents) error {
 		}
 		contents.ValidFrom = t
 	}
+
 	if validUntil, ok := c["validUntil"].(string); ok {
 		t, err := time.Parse(time.RFC3339, validUntil)
 		if err != nil {
@@ -192,6 +218,7 @@ func parseDates(c JSONCredential, contents *CredentialContents) error {
 		}
 		contents.ValidUntil = t
 	}
+
 	return nil
 }
 
@@ -210,6 +237,7 @@ func parseSubject(c JSONCredential, contents *CredentialContents) error {
 		if err != nil {
 			return fmt.Errorf("failed to parse subject: %w", err)
 		}
+
 		contents.Subject = []Subject{parsed}
 	case []interface{}:
 		subjects := make([]Subject, 0, len(subject))
@@ -224,20 +252,24 @@ func parseSubject(c JSONCredential, contents *CredentialContents) error {
 			}
 			subjects = append(subjects, parsed)
 		}
+
 		contents.Subject = subjects
 	default:
 		return fmt.Errorf("unsupported subject format: %T", subject)
 	}
+
 	return nil
 }
 
 // SubjectFromJSON creates a credential subject from a JSON object.
 func SubjectFromJSON(subjectObj jsonmap.JSONMap) (Subject, error) {
 	flds, rest := util.SplitJSONObj(subjectObj, "id")
+
 	id, err := parseStringField(flds, "id")
 	if err != nil {
 		return Subject{}, fmt.Errorf("failed to parse subject id: %w", err)
 	}
+
 	return Subject{ID: id, CustomFields: rest}, nil
 }
 
@@ -266,6 +298,7 @@ func parseSchema(c JSONCredential, contents *CredentialContents) error {
 	default:
 		return fmt.Errorf("unsupported schema format: %T", schema)
 	}
+
 	return nil
 }
 
@@ -282,6 +315,7 @@ func parseStatus(c JSONCredential, contents *CredentialContents) error {
 		if err != nil {
 			return fmt.Errorf("failed to parse status: %w", err)
 		}
+
 		contents.CredentialStatus = append(contents.CredentialStatus, parsed)
 	case []interface{}:
 		for _, raw := range status {
@@ -290,6 +324,7 @@ func parseStatus(c JSONCredential, contents *CredentialContents) error {
 				if err != nil {
 					return fmt.Errorf("failed to parse status: %w", err)
 				}
+
 				contents.CredentialStatus = append(contents.CredentialStatus, parsed)
 			} else {
 				return fmt.Errorf("unsupported status format: %T", raw)
@@ -304,21 +339,27 @@ func parseStatus(c JSONCredential, contents *CredentialContents) error {
 // parseStatusEntry parses a single status entry from a JSON object.
 func parseStatusEntry(status map[string]interface{}) (Status, error) {
 	s := Status{}
+
 	if id, ok := status["id"].(string); ok {
 		s.ID = id
 	}
+
 	if t, ok := status["type"].(string); ok {
 		s.Type = t
 	}
+
 	if purpose, ok := status["statusPurpose"].(string); ok {
 		s.StatusPurpose = purpose
 	}
+
 	if index, ok := status["statusListIndex"].(string); ok {
 		s.StatusListIndex = index
 	}
+
 	if cred, ok := status["statusListCredential"].(string); ok {
 		s.StatusListCredential = cred
 	}
+
 	return s, nil
 }
 
@@ -338,6 +379,7 @@ func parseSchemaID(value interface{}) (Schema, error) {
 	default:
 		return schema, fmt.Errorf("invalid schema format: %T", v)
 	}
+
 	return schema, nil
 }
 
@@ -348,9 +390,6 @@ func parseProofs(c JSONCredential, contents *CredentialContents) error {
 		return nil
 	}
 
-	// Note: Proofs are handled separately in the credential implementations
-	// This function is kept for compatibility but doesn't populate contents.Proofs
-	// since CredentialContents doesn't have a Proofs field
 	return nil
 }
 
@@ -362,6 +401,7 @@ func parseStringField(obj jsonmap.JSONMap, fieldName string) (string, error) {
 		}
 		return "", fmt.Errorf("field %q must be a string, got %T", fieldName, value)
 	}
+
 	return "", nil
 }
 
@@ -378,8 +418,9 @@ func validateCredential(m jsonmap.JSONMap, processor *processor.ProcessorOptions
 		}
 		m[key] = convertToArray(m[key])
 	}
+
 	// Optional schema validation if credentialSchema is present and processor has schema loader
-	if schemas, exists := m["credentialSchema"]; exists && processor.SchemaLoader != nil {
+	if schemas, exists := m["credentialSchema"]; exists {
 		var schemaList []interface{}
 
 		// Handle both single schema object and array of schemas
@@ -390,8 +431,6 @@ func validateCredential(m jsonmap.JSONMap, processor *processor.ProcessorOptions
 		} else {
 			return fmt.Errorf("credentialSchema must be an object or array")
 		}
-
-		fmt.Println("schemaList: ", schemaList)
 
 		for _, schema := range schemaList {
 			var schemaMap map[string]interface{}
@@ -423,6 +462,7 @@ func validateCredential(m jsonmap.JSONMap, processor *processor.ProcessorOptions
 			}
 		}
 	}
+
 	return nil
 }
 

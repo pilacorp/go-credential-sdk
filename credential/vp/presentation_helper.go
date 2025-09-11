@@ -1,6 +1,7 @@
 package vp
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -9,7 +10,7 @@ import (
 )
 
 // verifyCredentials verifies the signatures of a slice of Verifiable Credentials.
-func verifyCredentials(vcs []*vc.Credential) error {
+func verifyCredentials(vcs []vc.Credential) error {
 	if vcs == nil {
 		return fmt.Errorf("credential input is nil")
 	}
@@ -19,7 +20,7 @@ func verifyCredentials(vcs []*vc.Credential) error {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
 		// Verify the credential using the new interface
-		err := (*v).Verify(vc.WithBaseURL(config.BaseURL))
+		err := v.Verify(vc.WithBaseURL(config.BaseURL))
 		if err != nil {
 			return fmt.Errorf("failed to verify credential at index %d: %w", i, err)
 		}
@@ -52,21 +53,19 @@ func serializePresentationContents(vpc *PresentationContents) (jsonmap.JSONMap, 
 		vpJSON["holder"] = vpc.Holder
 	}
 	if len(vpc.VerifiableCredentials) > 0 {
-		// credentials must have the same type
-		for _, vc := range vpc.VerifiableCredentials {
-			if (*vc).GetType() != (*vpc.VerifiableCredentials[0]).GetType() {
-				return nil, fmt.Errorf("credentials must have the same type")
-			}
-		}
 		// Serialize credentials for presentation storage
 		credentialList := make([]interface{}, len(vpc.VerifiableCredentials))
 		for i, vc := range vpc.VerifiableCredentials {
 			// Use Serialize() method which returns the appropriate format for each credential type
-			serialized, err := (*vc).Serialize()
+			serialized, err := vc.Serialize()
 			if err != nil {
 				return nil, fmt.Errorf("failed to serialize credential %d: %w", i, err)
 			}
 			credentialList[i] = serialized
+			err = vc.Verify()
+			if err != nil {
+				return nil, fmt.Errorf("failed to verify credential %d: %w", i, err)
+			}
 		}
 		vpJSON["verifiableCredential"] = credentialList
 	}
@@ -124,15 +123,28 @@ func parseHolder(vp JSONPresentation, contents *PresentationContents) error {
 
 // parseVerifiableCredentials extracts the verifiableCredential field from a Presentation.
 func parseVerifiableCredentials(vp JSONPresentation, contents *PresentationContents) error {
-	if vcs, ok := vp["verifiableCredential"].([]interface{}); ok {
-		for _, vcItem := range vcs {
-			// Use the abstracted ParseCredential function
-			credential, err := vc.ParseCredential(vcItem, vc.WithDisableValidation())
-			if err != nil {
-				return fmt.Errorf("failed to parse credential: %w", err)
-			}
-			contents.VerifiableCredentials = append(contents.VerifiableCredentials, &credential)
+	vcs, ok := vp["verifiableCredential"].([]interface{})
+	if !ok {
+		return nil // No verifiable credentials field
+	}
+
+	for i, vcItem := range vcs {
+		if vcItem == nil {
+			return fmt.Errorf("credential at index %d is nil", i)
 		}
+
+		// Marshal to bytes (handles both strings and objects)
+		vcItemBytes, err := json.Marshal(vcItem)
+		if err != nil {
+			return fmt.Errorf("failed to marshal credential at index %d: %w", i, err)
+		}
+
+		// Parse using the unified ParseCredential function
+		credential, err := vc.ParseCredential(vcItemBytes, vc.WithDisableValidation())
+		if err != nil {
+			return fmt.Errorf("failed to parse credential at index %d: %w", i, err)
+		}
+		contents.VerifiableCredentials = append(contents.VerifiableCredentials, credential)
 	}
 	return nil
 }
@@ -144,8 +156,25 @@ func parseProofs(vp JSONPresentation, contents *PresentationContents) error {
 		return nil
 	}
 
-	// Note: Proofs are handled separately in the presentation implementations
-	// This function is kept for compatibility but doesn't populate contents.Proofs
-	// since PresentationContents doesn't have a Proofs field
 	return nil
+}
+
+// parsePresentationContents parses the Presentation into structured contents.
+func parsePresentationContents(vp JSONPresentation) (PresentationContents, error) {
+	var contents PresentationContents
+	parsers := []func(JSONPresentation, *PresentationContents) error{
+		parseContext,
+		parseID,
+		parseTypes,
+		parseHolder,
+		parseVerifiableCredentials,
+		parseProofs,
+	}
+
+	for _, parser := range parsers {
+		if err := parser(vp, &contents); err != nil {
+			return contents, fmt.Errorf("failed to parse presentation contents: %w", err)
+		}
+	}
+	return contents, nil
 }

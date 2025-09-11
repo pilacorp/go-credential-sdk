@@ -35,6 +35,8 @@ type Presentation interface {
 	// - For JWT presentations: returns the JWT string
 	// - For embedded presentations: returns the JSON object with proof
 	Serialize() (interface{}, error)
+
+	ToJSON() ([]byte, error)
 }
 
 // JSONPresentation represents a W3C Verifiable Presentation as a JSON object.
@@ -46,7 +48,7 @@ type PresentationContents struct {
 	ID                    string
 	Types                 []string
 	Holder                string
-	VerifiableCredentials []*vc.Credential
+	VerifiableCredentials []vc.Credential
 }
 
 // PresentationOpt configures presentation processing options.
@@ -76,13 +78,22 @@ func WithBaseURL(baseURL string) PresentationOpt {
 }
 
 // ParsePresentation parses a presentation into a Presentation.
-func ParsePresentation(rawPresentation interface{}, opts ...PresentationOpt) (Presentation, error) {
-	switch rawPresentation.(type) {
-	case []byte:
-		return ParsePresentationEmbedded(rawPresentation.([]byte), opts...)
-	case string:
-		return ParsePresentationJWT(rawPresentation.(string), opts...)
-	default:
-		return nil, fmt.Errorf("invalid presentation type")
+func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Presentation, error) {
+	if len(rawPresentation) == 0 {
+		return nil, fmt.Errorf("presentation is empty")
 	}
+
+	// try to parse as JWT
+	presentation, err := ParsePresentationJWT(string(rawPresentation), opts...)
+	if err == nil {
+		return presentation, nil
+	}
+
+	// try to parse as embedded
+	presentation, err = ParsePresentationEmbedded(rawPresentation, opts...)
+	if err == nil {
+		return presentation, nil
+	}
+
+	return nil, fmt.Errorf("failed to parse presentation")
 }

@@ -72,6 +72,7 @@ func (e *EmbededCredential) AddProof(priv string, opts ...CredentialOpt) error {
 		validate:   true,
 		didBaseURL: config.BaseURL,
 	}
+
 	return (*jsonmap.JSONMap)(&e.jsonCredential).AddECDSAProof(priv, e.getVerificationMethod(), "assertionMethod", options.didBaseURL)
 }
 
@@ -87,12 +88,10 @@ func (e *EmbededCredential) AddCustomProof(proof *dto.Proof) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
-	e.proof = proof
-	return (*jsonmap.JSONMap)(&e.jsonCredential).AddCustomProof(e.proof)
-}
 
-func (e *EmbededCredential) GetType() string {
-	return "EmbeddedCredential"
+	e.proof = proof
+
+	return (*jsonmap.JSONMap)(&e.jsonCredential).AddCustomProof(e.proof)
 }
 
 func (e *EmbededCredential) Verify(opts ...CredentialOpt) error {
@@ -112,6 +111,7 @@ func (e *EmbededCredential) Verify(opts ...CredentialOpt) error {
 	if !isValid {
 		return fmt.Errorf("invalid proof")
 	}
+
 	return nil
 }
 
@@ -123,4 +123,8 @@ func (e *EmbededCredential) Serialize() (interface{}, error) {
 
 	// Return the JSON credential object directly
 	return map[string]interface{}(e.jsonCredential), nil
+}
+
+func (e *EmbededCredential) ToJSON() ([]byte, error) {
+	return (*jsonmap.JSONMap)(&e.jsonCredential).ToJSON()
 }

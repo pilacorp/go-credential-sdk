@@ -1,7 +1,6 @@
 package vc
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -38,7 +37,7 @@ type Credential interface {
 	// - For embedded credentials: returns the JSON object with proof
 	Serialize() (interface{}, error)
 
-	GetType() string
+	ToJSON() ([]byte, error)
 }
 
 // Credential represents a W3C Credential as a JSON object.
@@ -129,20 +128,23 @@ func WithCredentialSchemaLoader(id, schema string) CredentialOpt {
 }
 
 // ParseCredential parses a credential from various formats into a Credential.
-func ParseCredential(rawCredential interface{}, opts ...CredentialOpt) (Credential, error) {
-	switch v := rawCredential.(type) {
-	case []byte:
-		return ParseCredentialEmbedded(v, opts...)
-	case string:
-		return ParseCredentialJWT(v, opts...)
-	case map[string]interface{}:
-		// Convert map to JSON bytes for embedded parsing
-		vcBytes, err := json.Marshal(v)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal credential data: %w", err)
-		}
-		return ParseCredentialEmbedded(vcBytes, opts...)
-	default:
-		return nil, fmt.Errorf("invalid credential type: %T", rawCredential)
+func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, error) {
+	if len(rawCredential) == 0 {
+		return nil, fmt.Errorf("JSON string is empty")
 	}
+
+	// try to parse as JWT
+	rawCredentialStr := string(rawCredential)
+	credential, err := ParseCredentialJWT(rawCredentialStr, opts...)
+	if err == nil {
+		return credential, nil
+	}
+
+	// try to parse as embedded
+	credential, err = ParseCredentialEmbedded(rawCredential, opts...)
+	if err == nil {
+		return credential, nil
+	}
+
+	return nil, fmt.Errorf("failed to parse credential: not a valid JWT or embedded credential")
 }

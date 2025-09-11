@@ -14,15 +14,15 @@ import (
 
 // JWTSigner handles JWT signing operations for verifiable documents
 type JWTSigner struct {
-	privateKeyHex string
-	issuerDID     string
+	privKeyHex string
+	issuerDID  string
 }
 
 // NewJWTSigner creates a new JWT signer instance
-func NewJWTSigner(privateKeyHex, issuerDID string) *JWTSigner {
+func NewJWTSigner(privKeyHex, issuerDID string) *JWTSigner {
 	return &JWTSigner{
-		privateKeyHex: privateKeyHex,
-		issuerDID:     issuerDID,
+		privKeyHex: privKeyHex,
+		issuerDID:  issuerDID,
 	}
 }
 
@@ -85,7 +85,7 @@ func (s *JWTSigner) SignDocument(docJSONMap jsonmap.JSONMap, docType string, add
 	token.Header["typ"] = "JWT"
 	token.Header["kid"] = s.GetKeyID()
 
-	signedString, err := token.SignedString(s.privateKeyHex)
+	signedString, err := token.SignedString(s.privKeyHex)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
@@ -95,7 +95,7 @@ func (s *JWTSigner) SignDocument(docJSONMap jsonmap.JSONMap, docType string, add
 
 // GetPublicKey returns the public key associated with this signer
 func (s *JWTSigner) GetPublicKey() (*ecdsa.PublicKey, error) {
-	privKeyBytes, err := hex.DecodeString(s.privateKeyHex)
+	privKeyBytes, err := hex.DecodeString(s.privKeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key hex: %w", err)
 	}

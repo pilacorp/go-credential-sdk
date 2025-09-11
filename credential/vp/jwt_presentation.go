@@ -11,10 +11,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
-type JWTPresentationHeaders map[string]interface{}
-
 type JWTPresentation struct {
-	Headers   JWTPresentationHeaders
 	Payload   JSONPresentation
 	signature string
 }
@@ -34,16 +31,17 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}
 
-	headers := extractPresentationClaims(m)
 	payload := JSONPresentation(m)
 
 	return &JWTPresentation{
-		Headers: headers,
 		Payload: payload,
 	}, nil
 }
 
 func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation, error) {
+	// Remove JSON quotes if present (from json.Marshal of a string)
+	rawJWT = strings.Trim(rawJWT, `"`)
+
 	m, err := jwt.GetDocumentFromJWT(rawJWT, "vp")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get document from JWT: %w", err)
@@ -58,7 +56,6 @@ func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation,
 	}
 
 	return &JWTPresentation{
-		Headers:   extractPresentationClaims(m),
 		Payload:   JSONPresentation(m),
 		signature: strings.Split(rawJWT, ".")[2],
 	}, nil
@@ -119,7 +116,7 @@ func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
 	}
 
 	// Verify embedded JWT credentials
-	contents, err := j.parsePresentationContents()
+	contents, err := parsePresentationContents(j.Payload)
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
 	}
@@ -141,42 +138,8 @@ func (j *JWTPresentation) Serialize() (interface{}, error) {
 	return fmt.Sprintf("%s.%s", signingInput, j.signature), nil
 }
 
-func (j *JWTPresentation) GetType() string {
-	return "JWTPresentation"
-}
-
-func extractPresentationClaims(m jsonmap.JSONMap) JWTPresentationHeaders {
-	headers := make(JWTPresentationHeaders)
-
-	if m["holder"] != "" {
-		headers["iss"] = m["holder"]
-	}
-	if m["id"] != "" {
-		headers["jti"] = m["id"]
-	}
-	headers["typ"] = "vp"
-	headers["alg"] = "ES256"
-
-	return headers
-}
-
-// parsePresentationContents parses the Presentation into structured contents.
-func (j *JWTPresentation) parsePresentationContents() (PresentationContents, error) {
-	var contents PresentationContents
-	parsers := []func(JSONPresentation, *PresentationContents) error{
-		parseContext,
-		parseID,
-		parseTypes,
-		parseHolder,
-		parseVerifiableCredentials,
-	}
-
-	for _, parser := range parsers {
-		if err := parser(j.Payload, &contents); err != nil {
-			return contents, fmt.Errorf("failed to parse presentation contents: %w", err)
-		}
-	}
-	return contents, nil
+func (j *JWTPresentation) ToJSON() ([]byte, error) {
+	return (*jsonmap.JSONMap)(&j.Payload).ToJSON()
 }
 
 // CreatePresentationJWT creates a JWT presentation from PresentationContents.

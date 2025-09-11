@@ -316,12 +316,13 @@ func TestAddECDSAProof(t *testing.T) {
 
 	// Get JSON from embedded presentation
 	embeddedPres := presentation.(*vp.EmbeddedPresentation)
-	presentationJSON, err := embeddedPres.ToJSON()
+	presentationJSON, err := embeddedPres.Serialize()
+	presentationJSONBytes, err := json.Marshal(presentationJSON)
 	if err != nil {
 		t.Fatalf("Failed to serialize presentation: %v", err)
 	}
 
-	p, err := vp.ParsePresentation(presentationJSON)
+	p, err := vp.ParsePresentation(presentationJSONBytes)
 	if err != nil {
 		t.Fatalf("Failed to parse presentation: %v", err)
 	}
@@ -373,7 +374,7 @@ func TestVerifyECDSAPresentation(t *testing.T) {
 }
 
 // GenerateVCTest replicates the function from main.go to create test credentials.
-func GenerateVCTest() []*vc.Credential {
+func GenerateVCTest() []vc.Credential {
 	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
@@ -443,7 +444,7 @@ func GenerateVCTest() []*vc.Credential {
 		return nil
 	}
 
-	return []*vc.Credential{&credential, &credential}
+	return []vc.Credential{credential, credential}
 }
 
 func TestCreatePresentationJWT(t *testing.T) {
@@ -502,7 +503,7 @@ func TestCreatePresentationJWT(t *testing.T) {
 	}
 
 	// Parse the JWT presentation back
-	verifiedPresentation, err := vp.ParsePresentation(jwtToken)
+	verifiedPresentation, err := vp.ParsePresentation([]byte(jwtToken))
 	if err != nil {
 		t.Fatalf("Failed to verify JWT presentation: %v", err)
 	}
@@ -679,7 +680,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 
 		// Parse and verify the JWT presentation
-		parsedPresentation, err := vp.ParsePresentation(jwtToken)
+		parsedPresentation, err := vp.ParsePresentation([]byte(jwtToken))
 		if err != nil {
 			t.Fatalf("Failed to parse JWT presentation: %v", err)
 		}
@@ -769,4 +770,239 @@ func TestPresentationSignatureFlows(t *testing.T) {
 			t.Fatalf("Error message should mention nil proof, got: %v", err)
 		}
 	})
+}
+
+func TestEmbeddedPresentationFlow(t *testing.T) {
+	// Initialize the presentation and credential packages
+	vp.Init("https://auth-dev.pila.vn/api/v1/did")
+	vc.Init("https://auth-dev.pila.vn/api/v1/did")
+
+	// Test data
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+
+	// Create both embedded and JWT credentials
+	embeddedVC, jwtVC := createTestCredentials(t, issuerDID, privateKeyHex)
+
+	// 1. Create embedded VP with both embedded VC and JWT VC
+	presentationContents := vp.PresentationContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		ID:                    "urn:uuid:embedded-vp-test-12345678",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                holderDID,
+		VerifiableCredentials: []vc.Credential{embeddedVC, jwtVC},
+	}
+
+	presentation, err := vp.NewEmbeddedPresentation(presentationContents)
+	if err != nil {
+		t.Fatalf("Failed to create embedded presentation: %v", err)
+	}
+
+	// 2. Use AddProof to add proof to VP with issuer private key
+	err = presentation.AddProof(privateKeyHex)
+	if err != nil {
+		t.Fatalf("Failed to add proof to embedded presentation: %v", err)
+	}
+
+	// 3. Verify VP
+	err = presentation.Verify()
+	if err != nil {
+		t.Fatalf("Failed to verify embedded presentation: %v", err)
+	}
+
+	// 4. Use .ToJSON to convert VP to JSON and parse it into another VP
+	jsonData, err := presentation.ToJSON()
+	if err != nil {
+		t.Fatalf("Failed to convert embedded presentation to JSON: %v", err)
+	}
+
+	// Parse the JSON into another VP
+	parsedPresentation, err := vp.ParsePresentation(jsonData)
+	if err != nil {
+		t.Fatalf("Failed to parse presentation from JSON: %v", err)
+	}
+
+	// 5. Verify the another VP
+	err = parsedPresentation.Verify()
+	if err != nil {
+		t.Fatalf("Failed to verify parsed embedded presentation: %v", err)
+	}
+
+	// Verify the presentation data matches
+	parsedEmbeddedPres := parsedPresentation.(*vp.EmbeddedPresentation)
+	parsedJSONData, err := parsedEmbeddedPres.ToJSON()
+	if err != nil {
+		t.Fatalf("Failed to convert parsed presentation to JSON: %v", err)
+	}
+
+	// Compare the JSON data (should be identical)
+	if string(jsonData) != string(parsedJSONData) {
+		t.Fatal("Original and parsed presentation JSON should be identical")
+	}
+}
+
+func TestJWTPresentationFlow(t *testing.T) {
+	// Initialize the presentation and credential packages
+	vp.Init("https://auth-dev.pila.vn/api/v1/did")
+	vc.Init("https://auth-dev.pila.vn/api/v1/did")
+
+	// Test data
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+
+	// Create both embedded and JWT credentials
+	embeddedVC, jwtVC := createTestCredentials(t, issuerDID, privateKeyHex)
+
+	// 1. Create JWT VP with both JWT VC and issuer private key
+	presentationContents := vp.PresentationContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		ID:                    "urn:uuid:jwt-vp-test-12345678",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                holderDID,
+		VerifiableCredentials: []vc.Credential{embeddedVC, jwtVC},
+	}
+
+	presentation, err := vp.NewJWTPresentation(presentationContents)
+	if err != nil {
+		t.Fatalf("Failed to create JWT presentation: %v", err)
+	}
+
+	// 2. Use AddProof to add proof to VP with issuer private key
+	err = presentation.AddProof(privateKeyHex)
+	if err != nil {
+		t.Fatalf("Failed to add proof to JWT presentation: %v", err)
+	}
+
+	// 3. Verify VP
+	err = presentation.Verify()
+	if err != nil {
+		t.Fatalf("Failed to verify JWT presentation: %v", err)
+	}
+
+	// 4. Use .ToJSON to convert VP to JSON and parse it into another VP
+	serialized, err := presentation.Serialize()
+	if err != nil {
+		t.Fatalf("Failed to serialize JWT presentation: %v", err)
+	}
+
+	jwtToken, ok := serialized.(string)
+	if !ok {
+		t.Fatal("Serialized JWT presentation should be a string")
+	}
+
+	// Parse the JWT into another VP
+	parsedPresentation, err := vp.ParsePresentation([]byte(jwtToken))
+	if err != nil {
+		t.Fatalf("Failed to parse JWT presentation: %v", err)
+	}
+
+	// 5. Verify the another VP
+	err = parsedPresentation.Verify()
+	if err != nil {
+		t.Fatalf("Failed to verify parsed JWT presentation: %v", err)
+	}
+
+	// Verify the JWT tokens are identical
+	parsedSerialized, err := parsedPresentation.Serialize()
+	if err != nil {
+		t.Fatalf("Failed to serialize parsed JWT presentation: %v", err)
+	}
+
+	parsedJWTToken, ok := parsedSerialized.(string)
+	if !ok {
+		t.Fatal("Parsed serialized JWT presentation should be a string")
+	}
+
+	if jwtToken != parsedJWTToken {
+		t.Fatal("Original and parsed JWT presentation tokens should be identical")
+	}
+
+	// Verify JWT structure (should have 3 parts)
+	parts := strings.Split(jwtToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("JWT should have 3 parts separated by dots, got %d", len(parts))
+	}
+}
+
+// Helper function to create test credentials (both embedded and JWT)
+func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Credential, vc.Credential) {
+	// Create credential contents
+	credentialContents := vc.CredentialContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		ID:     "urn:uuid:test-credential-12345678",
+		Types:  []string{"VerifiableCredential", "TestCredential"},
+		Issuer: issuerDID,
+		ValidFrom: func() time.Time {
+			t, _ := time.Parse(time.RFC3339, "2024-01-01T00:00:00Z")
+			return t
+		}(),
+		ValidUntil: func() time.Time {
+			t, _ := time.Parse(time.RFC3339, "2025-01-01T00:00:00Z")
+			return t
+		}(),
+		Subject: []vc.Subject{
+			{
+				ID: "did:key:z2dmzD81cgPx8Vki7JbuuMmFYrWPgYoytykUZ3eyqht1j9KbsEYvdrjxMjQ4tpnje9BDBTzuNDP3knn6qLZErzd4bJ5go2CChoPjd5GAH3zpFJP5fuwSk66U5Pq6EhF4nKnHzDnznEP8fX99nZGgwbAh1o7Gj1X52Tdhf7U4KTk66xsA5r",
+				CustomFields: map[string]interface{}{
+					"name":       "Test User",
+					"department": "Engineering",
+					"employeeId": "EMP123456",
+					"isActive":   true,
+					"salary":     75000,
+					"skills":     []string{"Go", "JavaScript", "Docker"},
+				},
+			},
+		},
+		CredentialStatus: []vc.Status{
+			{
+				ID:              "https://example.org/credentials/status/123",
+				Type:            "BitstringStatusListEntry",
+				StatusPurpose:   "revocation",
+				StatusListIndex: "123",
+			},
+		},
+		Schemas: []vc.Schema{
+			{
+				ID:   "https://example.org/schemas/employee-credential.json",
+				Type: "JsonSchema",
+			},
+		},
+	}
+
+	// Create embedded credential
+	embeddedVC, err := vc.NewEmbededCredential(credentialContents)
+	if err != nil {
+		t.Fatalf("Failed to create embedded credential: %v", err)
+	}
+
+	// Add proof to embedded credential
+	err = embeddedVC.AddProof(privateKeyHex)
+	if err != nil {
+		t.Fatalf("Failed to add proof to embedded credential: %v", err)
+	}
+
+	// Create JWT credential
+	jwtVC, err := vc.NewJWTCredential(credentialContents)
+	if err != nil {
+		t.Fatalf("Failed to create JWT credential: %v", err)
+	}
+
+	// Add proof to JWT credential
+	err = jwtVC.AddProof(privateKeyHex)
+	if err != nil {
+		t.Fatalf("Failed to add proof to JWT credential: %v", err)
+	}
+
+	return embeddedVC, jwtVC
 }

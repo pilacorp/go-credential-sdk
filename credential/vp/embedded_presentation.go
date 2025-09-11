@@ -19,6 +19,7 @@ func NewEmbeddedPresentation(vpc PresentationContents) (Presentation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}
+
 	return &EmbeddedPresentation{jsonPresentation: JSONPresentation(m)}, nil
 }
 
@@ -51,6 +52,7 @@ func (e *EmbeddedPresentation) AddProof(priv string, opts ...PresentationOpt) er
 	for _, opt := range opts {
 		opt(options)
 	}
+
 	return (*jsonmap.JSONMap)(&e.jsonPresentation).AddECDSAProof(priv, e.getVerificationMethod(), "authentication", options.didBaseURL)
 }
 
@@ -66,7 +68,9 @@ func (e *EmbeddedPresentation) AddCustomProof(proof *dto.Proof) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
+
 	e.proof = proof
+
 	return (*jsonmap.JSONMap)(&e.jsonPresentation).AddCustomProof(e.proof)
 }
 
@@ -88,10 +92,11 @@ func (e *EmbeddedPresentation) Verify(opts ...PresentationOpt) error {
 	}
 
 	// Verify embedded credentials
-	contents, err := e.parsePresentationContents()
+	contents, err := parsePresentationContents(e.jsonPresentation)
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
 	}
+
 	if err := verifyCredentials(contents.VerifiableCredentials); err != nil {
 		return fmt.Errorf("failed to verify credentials: %w", err)
 	}
@@ -109,31 +114,6 @@ func (e *EmbeddedPresentation) Serialize() (interface{}, error) {
 	return map[string]interface{}(e.jsonPresentation), nil
 }
 
-func (e *EmbeddedPresentation) GetType() string {
-	return "EmbeddedPresentation"
-}
-
-// parsePresentationContents parses the Presentation into structured contents.
-func (e *EmbeddedPresentation) parsePresentationContents() (PresentationContents, error) {
-	var contents PresentationContents
-	parsers := []func(JSONPresentation, *PresentationContents) error{
-		parseContext,
-		parseID,
-		parseTypes,
-		parseHolder,
-		parseVerifiableCredentials,
-		parseProofs,
-	}
-
-	for _, parser := range parsers {
-		if err := parser(e.jsonPresentation, &contents); err != nil {
-			return contents, fmt.Errorf("failed to parse presentation contents: %w", err)
-		}
-	}
-	return contents, nil
-}
-
-// ToJSON serializes the Presentation to JSON.
 func (e *EmbeddedPresentation) ToJSON() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.jsonPresentation).ToJSON()
 }

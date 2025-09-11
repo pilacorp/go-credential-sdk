@@ -48,6 +48,9 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 }
 
 func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error) {
+	// Remove JSON quotes if present (from json.Marshal of a string)
+	rawJWT = strings.Trim(rawJWT, `"`)
+
 	m, err := jwt.GetDocumentFromJWT(rawJWT, "vc")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get document from JWT: %w", err)
@@ -81,7 +84,11 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	if err != nil {
 		return err
 	}
+
 	parts := strings.Split(jwtString, ".")
+	if len(parts) < 2 {
+		return fmt.Errorf("invalid JWT token")
+	}
 	j.signature = parts[2]
 
 	return nil
@@ -89,10 +96,12 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 
 func (j *JWTCredential) GetSigningInput() ([]byte, error) {
 	signer := jwt.NewJWTSigner("", j.Payload["issuer"].(string))
+
 	signingInput, err := signer.SigningInput((jsonmap.JSONMap)(j.Payload), "vc")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get signing input: %w", err)
 	}
+
 	return []byte(signingInput), nil
 }
 
@@ -100,10 +109,13 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
+
 	if len(proof.Signature) == 0 {
 		return fmt.Errorf("proof signature cannot be empty")
 	}
+
 	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
+
 	return nil
 }
 
@@ -136,13 +148,15 @@ func (j *JWTCredential) Serialize() (interface{}, error) {
 	if j.signature == "" {
 		return nil, fmt.Errorf("credential must be signed before serialization")
 	}
+
 	signingInput, err := j.GetSigningInput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get signing input: %w", err)
 	}
+
 	return fmt.Sprintf("%s.%s", signingInput, j.signature), nil
 }
 
-func (j *JWTCredential) GetType() string {
-	return "JWTCredential"
+func (j *JWTCredential) ToJSON() ([]byte, error) {
+	return (*jsonmap.JSONMap)(&j.Payload).ToJSON()
 }

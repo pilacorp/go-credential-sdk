@@ -12,7 +12,11 @@ import (
 func GetDocumentFromJWT(tokenString string, docType string) (jsonmap.JSONMap, error) {
 	parts := strings.Split(tokenString, ".")
 
-	payload, err := base64.StdEncoding.DecodeString(parts[1])
+	if len(parts) < 2 || len(parts) > 3 {
+		return nil, fmt.Errorf("invalid JWT token")
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return nil, err
 	}
