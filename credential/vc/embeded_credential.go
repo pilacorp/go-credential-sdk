@@ -83,13 +83,16 @@ func (e *EmbededCredential) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.jsonCredential).Canonicalize()
 }
 
-func (e *EmbededCredential) AddCustomProof(proof interface{}) error {
-	if _, ok := proof.(*dto.Proof); ok {
-		e.proof = proof.(*dto.Proof)
-	} else {
-		return fmt.Errorf("proof must be a dto.Proof")
+func (e *EmbededCredential) AddCustomProof(proof *dto.Proof) error {
+	if proof == nil {
+		return fmt.Errorf("proof cannot be nil")
 	}
+	e.proof = proof
 	return (*jsonmap.JSONMap)(&e.jsonCredential).AddCustomProof(e.proof)
+}
+
+func (e *EmbededCredential) GetType() string {
+	return "EmbeddedCredential"
 }
 
 func (e *EmbededCredential) Verify(opts ...CredentialOpt) error {

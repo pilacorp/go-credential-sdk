@@ -2,9 +2,10 @@ package vp
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"strings"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
@@ -17,9 +18,6 @@ type JWTPresentation struct {
 	Payload   JSONPresentation
 	signature string
 }
-
-// JWTPresentationOpt is an alias for PresentationOpt for JWT presentations
-type JWTPresentationOpt = PresentationOpt
 
 func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
 	options := &presentationOptions{
@@ -62,7 +60,7 @@ func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation,
 	return &JWTPresentation{
 		Headers:   extractPresentationClaims(m),
 		Payload:   JSONPresentation(m),
-		signature: rawJWT,
+		signature: strings.Split(rawJWT, ".")[2],
 	}, nil
 }
 
@@ -73,34 +71,29 @@ func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	if err != nil {
 		return err
 	}
-	j.signature = jwtString
+	parts := strings.Split(jwtString, ".")
+	j.signature = parts[2]
 
 	return nil
 }
 
 func (j *JWTPresentation) GetSigningInput() ([]byte, error) {
-	headersBytes, err := json.Marshal(j.Headers)
+	signer := jwt.NewJWTSigner("", j.Payload["holder"].(string))
+	signingInput, err := signer.SigningInput((jsonmap.JSONMap)(j.Payload), "vp")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get signing input: %w", err)
 	}
-	headerStr := base64.StdEncoding.EncodeToString(headersBytes)
-
-	payloadBytes, err := json.Marshal(j.Payload)
-	if err != nil {
-		return nil, err
-	}
-	payloadStr := base64.StdEncoding.EncodeToString(payloadBytes)
-
-	return []byte(fmt.Sprintf("%s.%s", headerStr, payloadStr)), nil
+	return []byte(signingInput), nil
 }
 
-func (j *JWTPresentation) AddCustomProof(proof interface{}) error {
-	if _, ok := proof.(string); ok {
-		j.signature = proof.(string)
-	} else {
-		return fmt.Errorf("proof must be a string")
+func (j *JWTPresentation) AddCustomProof(proof *dto.Proof) error {
+	if proof == nil {
+		return fmt.Errorf("proof cannot be nil")
 	}
-
+	if len(proof.Signature) == 0 {
+		return fmt.Errorf("proof signature cannot be empty")
+	}
+	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
 	return nil
 }
 
@@ -113,15 +106,20 @@ func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
 		opt(options)
 	}
 
-	verifier := jwt.NewJWTVerifier(options.didBaseURL)
+	verifier := jwt.NewJWTVerifier(config.BaseURL)
 
-	err := verifier.VerifyDocument(j.signature, "vp")
+	serialized, err := j.Serialize()
+	if err != nil {
+		return fmt.Errorf("failed to serialize presentation: %w", err)
+	}
+
+	err = verifier.VerifyDocument(serialized.(string), "vp")
 	if err != nil {
 		return err
 	}
 
 	// Verify embedded JWT credentials
-	contents, err := j.ParsePresentationContents()
+	contents, err := j.parsePresentationContents()
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
 	}
@@ -136,7 +134,15 @@ func (j *JWTPresentation) Serialize() (interface{}, error) {
 	if j.signature == "" {
 		return nil, fmt.Errorf("presentation must be signed before serialization")
 	}
-	return j.signature, nil
+	signingInput, err := j.GetSigningInput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get signing input: %w", err)
+	}
+	return fmt.Sprintf("%s.%s", signingInput, j.signature), nil
+}
+
+func (j *JWTPresentation) GetType() string {
+	return "JWTPresentation"
 }
 
 func extractPresentationClaims(m jsonmap.JSONMap) JWTPresentationHeaders {
@@ -154,8 +160,8 @@ func extractPresentationClaims(m jsonmap.JSONMap) JWTPresentationHeaders {
 	return headers
 }
 
-// ParsePresentationContents parses the Presentation into structured contents.
-func (j *JWTPresentation) ParsePresentationContents() (PresentationContents, error) {
+// parsePresentationContents parses the Presentation into structured contents.
+func (j *JWTPresentation) parsePresentationContents() (PresentationContents, error) {
 	var contents PresentationContents
 	parsers := []func(JSONPresentation, *PresentationContents) error{
 		parseContext,

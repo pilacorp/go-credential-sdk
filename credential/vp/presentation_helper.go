@@ -52,11 +52,23 @@ func serializePresentationContents(vpc *PresentationContents) (jsonmap.JSONMap, 
 		vpJSON["holder"] = vpc.Holder
 	}
 	if len(vpc.VerifiableCredentials) > 0 {
-		// Verify embedded credentials
-		if err := verifyCredentials(vpc.VerifiableCredentials); err != nil {
-			return nil, fmt.Errorf("failed to verify credentials: %w", err)
+		// credentials must have the same type
+		for _, vc := range vpc.VerifiableCredentials {
+			if (*vc).GetType() != (*vpc.VerifiableCredentials[0]).GetType() {
+				return nil, fmt.Errorf("credentials must have the same type")
+			}
 		}
-		vpJSON["verifiableCredential"] = vpc.VerifiableCredentials
+		// Serialize credentials for presentation storage
+		credentialList := make([]interface{}, len(vpc.VerifiableCredentials))
+		for i, vc := range vpc.VerifiableCredentials {
+			// Use Serialize() method which returns the appropriate format for each credential type
+			serialized, err := (*vc).Serialize()
+			if err != nil {
+				return nil, fmt.Errorf("failed to serialize credential %d: %w", i, err)
+			}
+			credentialList[i] = serialized
+		}
+		vpJSON["verifiableCredential"] = credentialList
 	}
 
 	return vpJSON, nil

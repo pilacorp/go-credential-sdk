@@ -2,9 +2,10 @@ package vc
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"strings"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
@@ -13,7 +14,6 @@ import (
 type JWTHeaders map[string]interface{}
 
 type JWTCredential struct {
-	Headers   JWTHeaders
 	Payload   JSONCredential
 	signature string
 }
@@ -40,11 +40,9 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 		}
 	}
 
-	headers := extractClaims(m)
 	payload := JSONCredential(m)
 
 	return &JWTCredential{
-		Headers: headers,
 		Payload: payload,
 	}, nil
 }
@@ -70,7 +68,10 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 		}
 	}
 
-	return &JWTCredential{Headers: extractClaims(m), Payload: JSONCredential(m)}, nil
+	return &JWTCredential{
+		Payload:   JSONCredential(m),
+		signature: strings.Split(rawJWT, ".")[2],
+	}, nil
 }
 
 func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
@@ -80,34 +81,29 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	if err != nil {
 		return err
 	}
-	j.signature = jwtString
+	parts := strings.Split(jwtString, ".")
+	j.signature = parts[2]
 
 	return nil
 }
 
 func (j *JWTCredential) GetSigningInput() ([]byte, error) {
-	headersBytes, err := json.Marshal(j.Headers)
+	signer := jwt.NewJWTSigner("", j.Payload["issuer"].(string))
+	signingInput, err := signer.SigningInput((jsonmap.JSONMap)(j.Payload), "vc")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get signing input: %w", err)
 	}
-	headerStr := base64.StdEncoding.EncodeToString(headersBytes)
-
-	payloadBytes, err := json.Marshal(j.Payload)
-	if err != nil {
-		return nil, err
-	}
-	payloadStr := base64.StdEncoding.EncodeToString(payloadBytes)
-
-	return []byte(fmt.Sprintf("%s.%s", headerStr, payloadStr)), nil
+	return []byte(signingInput), nil
 }
 
-func (j *JWTCredential) AddCustomProof(proof interface{}) error {
-	if _, ok := proof.(string); ok {
-		j.signature = proof.(string)
-	} else {
-		return fmt.Errorf("proof must be a string")
+func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
+	if proof == nil {
+		return fmt.Errorf("proof cannot be nil")
 	}
-
+	if len(proof.Signature) == 0 {
+		return fmt.Errorf("proof signature cannot be empty")
+	}
+	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
 	return nil
 }
 
@@ -121,9 +117,14 @@ func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 		opt(options)
 	}
 
-	verifier := jwt.NewJWTVerifier(j.signature)
+	verifier := jwt.NewJWTVerifier(config.BaseURL)
 
-	err := verifier.VerifyDocument(j.signature, "vc")
+	serialized, err := j.Serialize()
+	if err != nil {
+		return fmt.Errorf("failed to serialize credential: %w", err)
+	}
+
+	err = verifier.VerifyDocument(serialized.(string), "vc")
 	if err != nil {
 		return err
 	}
@@ -135,26 +136,13 @@ func (j *JWTCredential) Serialize() (interface{}, error) {
 	if j.signature == "" {
 		return nil, fmt.Errorf("credential must be signed before serialization")
 	}
-	return j.signature, nil
+	signingInput, err := j.GetSigningInput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get signing input: %w", err)
+	}
+	return fmt.Sprintf("%s.%s", signingInput, j.signature), nil
 }
 
-func extractClaims(m jsonmap.JSONMap) JWTHeaders {
-	headers := make(JWTHeaders)
-
-	if m["issuer"] != "" {
-		headers["iss"] = m["issuer"]
-	}
-	if m["id"] != "" {
-		headers["jti"] = m["id"]
-	}
-	if m["validFrom"] != nil {
-		headers["iat"] = m["validFrom"]
-	}
-	if m["validUntil"] != nil {
-		headers["exp"] = m["validUntil"]
-	}
-	headers["typ"] = "vc"
-	headers["alg"] = "ES256"
-
-	return headers
+func (j *JWTCredential) GetType() string {
+	return "JWTCredential"
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
@@ -27,7 +28,7 @@ type Credential interface {
 	AddProof(priv string, opts ...CredentialOpt) error
 
 	GetSigningInput() ([]byte, error)
-	AddCustomProof(proof interface{}) error
+	AddCustomProof(proof *dto.Proof) error
 
 	// Verify verifies the credential
 	Verify(opts ...CredentialOpt) error
@@ -36,6 +37,8 @@ type Credential interface {
 	// - For JWT credentials: returns the JWT string
 	// - For embedded credentials: returns the JSON object with proof
 	Serialize() (interface{}, error)
+
+	GetType() string
 }
 
 // Credential represents a W3C Credential as a JSON object.
@@ -102,10 +105,16 @@ func WithBaseURL(baseURL string) CredentialOpt {
 	}
 }
 
-// WithDisableValidation disables schema validation during credential parsing.
 func WithDisableValidation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.validate = false
+	}
+}
+
+// WithEnableValidation enables schema validation during credential parsing.
+func WithEnableValidation() CredentialOpt {
+	return func(c *credentialOptions) {
+		c.validate = true
 	}
 }
 

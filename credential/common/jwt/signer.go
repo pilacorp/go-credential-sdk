@@ -26,31 +26,39 @@ func NewJWTSigner(privateKeyHex, issuerDID string) *JWTSigner {
 	}
 }
 
+func (s *JWTSigner) SigningInput(docJSONMap jsonmap.JSONMap, docType string) (string, error) {
+	// Register the ES256K signing method
+	jwt.RegisterSigningMethod(ES256K.Alg(), func() jwt.SigningMethod {
+		return ES256K
+	})
+
+	// Get document ID from JSONMap or generate one
+	docID, ok := docJSONMap["id"].(string)
+	if !ok || docID == "" {
+		docID = "urn:uuid:" + generateUUID()
+	}
+
+	// Determine the claim key based on document type
+	claimKey := docType
+
+	claims := map[string]interface{}{
+		claimKey: docJSONMap,
+	}
+
+	// Create the token
+	token := jwt.NewWithClaims(ES256K, jwt.MapClaims(claims))
+	token.Header["typ"] = "JWT"
+	token.Header["kid"] = s.GetKeyID()
+
+	return token.SigningString()
+}
+
 // SignDocument signs a verifiable document (VC or VP) as JWT from JSONMap
 func (s *JWTSigner) SignDocument(docJSONMap jsonmap.JSONMap, docType string, additionalClaims ...map[string]interface{}) (string, error) {
 	// Register the ES256K signing method
 	jwt.RegisterSigningMethod(ES256K.Alg(), func() jwt.SigningMethod {
 		return ES256K
 	})
-
-	// Reconstruct private key and derive public key
-	privKeyBytes, err := hex.DecodeString(s.privateKeyHex)
-	if err != nil {
-		return "", fmt.Errorf("invalid private key hex: %w", err)
-	}
-
-	privKey, err := crypto.ToECDSA(privKeyBytes)
-	if err != nil {
-		return "", fmt.Errorf("invalid private key: %w", err)
-	}
-
-	pubKey := &privKey.PublicKey
-
-	// Generate the Key ID from the public key
-	kid, err := s.generateKidFromPubKey(pubKey)
-	if err != nil {
-		return "", fmt.Errorf("could not generate kid: %w", err)
-	}
 
 	// Get document ID from JSONMap or generate one
 	docID, ok := docJSONMap["id"].(string)
@@ -75,7 +83,7 @@ func (s *JWTSigner) SignDocument(docJSONMap jsonmap.JSONMap, docType string, add
 	// Create and sign the token
 	token := jwt.NewWithClaims(ES256K, jwt.MapClaims(claims))
 	token.Header["typ"] = "JWT"
-	token.Header["kid"] = kid
+	token.Header["kid"] = s.GetKeyID()
 
 	signedString, err := token.SignedString(s.privateKeyHex)
 	if err != nil {
@@ -83,11 +91,6 @@ func (s *JWTSigner) SignDocument(docJSONMap jsonmap.JSONMap, docType string, add
 	}
 
 	return signedString, nil
-}
-
-// generateKidFromPubKey generates a Key ID from the public key
-func (s *JWTSigner) generateKidFromPubKey(pubKey *ecdsa.PublicKey) (string, error) {
-	return fmt.Sprintf("%s#%s", s.issuerDID, "key-1"), nil
 }
 
 // GetPublicKey returns the public key associated with this signer
@@ -106,13 +109,8 @@ func (s *JWTSigner) GetPublicKey() (*ecdsa.PublicKey, error) {
 }
 
 // GetKeyID returns the Key ID for this signer
-func (s *JWTSigner) GetKeyID() (string, error) {
-	pubKey, err := s.GetPublicKey()
-	if err != nil {
-		return "", err
-	}
-
-	return s.generateKidFromPubKey(pubKey)
+func (s *JWTSigner) GetKeyID() string {
+	return fmt.Sprintf("%s#%s", s.issuerDID, "key-1")
 }
 
 // generateUUID generates a simple UUID-like string

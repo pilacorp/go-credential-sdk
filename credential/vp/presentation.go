@@ -3,6 +3,7 @@ package vp
 import (
 	"fmt"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -26,7 +27,7 @@ type Presentation interface {
 	AddProof(priv string, opts ...PresentationOpt) error
 
 	GetSigningInput() ([]byte, error)
-	AddCustomProof(proof interface{}) error
+	AddCustomProof(proof *dto.Proof) error
 
 	Verify(opts ...PresentationOpt) error
 
@@ -34,9 +35,6 @@ type Presentation interface {
 	// - For JWT presentations: returns the JWT string
 	// - For embedded presentations: returns the JSON object with proof
 	Serialize() (interface{}, error)
-
-	// ParsePresentationContents parses the presentation into structured contents
-	ParsePresentationContents() (PresentationContents, error)
 }
 
 // JSONPresentation represents a W3C Verifiable Presentation as a JSON object.

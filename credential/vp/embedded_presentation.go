@@ -62,12 +62,11 @@ func (e *EmbeddedPresentation) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.jsonPresentation).Canonicalize()
 }
 
-func (e *EmbeddedPresentation) AddCustomProof(proof interface{}) error {
-	if p, ok := proof.(*dto.Proof); ok {
-		e.proof = p
-	} else {
-		return fmt.Errorf("proof must be a dto.Proof")
+func (e *EmbeddedPresentation) AddCustomProof(proof *dto.Proof) error {
+	if proof == nil {
+		return fmt.Errorf("proof cannot be nil")
 	}
+	e.proof = proof
 	return (*jsonmap.JSONMap)(&e.jsonPresentation).AddCustomProof(e.proof)
 }
 
@@ -89,7 +88,7 @@ func (e *EmbeddedPresentation) Verify(opts ...PresentationOpt) error {
 	}
 
 	// Verify embedded credentials
-	contents, err := e.ParsePresentationContents()
+	contents, err := e.parsePresentationContents()
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
 	}
@@ -110,8 +109,12 @@ func (e *EmbeddedPresentation) Serialize() (interface{}, error) {
 	return map[string]interface{}(e.jsonPresentation), nil
 }
 
-// ParsePresentationContents parses the Presentation into structured contents.
-func (e *EmbeddedPresentation) ParsePresentationContents() (PresentationContents, error) {
+func (e *EmbeddedPresentation) GetType() string {
+	return "EmbeddedPresentation"
+}
+
+// parsePresentationContents parses the Presentation into structured contents.
+func (e *EmbeddedPresentation) parsePresentationContents() (PresentationContents, error) {
 	var contents PresentationContents
 	parsers := []func(JSONPresentation, *PresentationContents) error{
 		parseContext,

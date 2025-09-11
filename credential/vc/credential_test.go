@@ -7,7 +7,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 )
 
 func TestParseCredential(t *testing.T) {
@@ -483,4 +485,383 @@ func TestCreateCredentialJWT(t *testing.T) {
 	jwtCred := parsedCredential.(*JWTCredential)
 	assert.Equal(t, credentialContents.ID, jwtCred.Payload["id"], "Credential ID should match")
 	assert.Equal(t, credentialContents.Issuer, jwtCred.Payload["issuer"], "Issuer should match")
+
+	// Verify the credential
+	err = credential.Verify()
+	assert.NoError(t, err, "Failed to verify credential")
+}
+
+func TestCredentialSignatureFlows(t *testing.T) {
+	// Initialize the credential package
+	Init("https://auth-dev.pila.vn/api/v1/did")
+
+	// Test data
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+	subjectDID := "did:key:z2dmzD81cgPx8Vki7JbuuMmFYrWPgYoytykUZ3eyqht1j9KbsEYvdrjxMjQ4tpnje9BDBTzuNDP3knn6qLZErzd4bJ5go2CChoPjd5GAH3zpFJP5fuwSk66U5Pq6EhF4nKnHzDnznEP8fX99nZGgwbAh1o7Gj1X52Tdhf7U4KTk66xsA5r"
+
+	// Create credential contents
+	credentialContents := CredentialContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		ID:     "urn:uuid:signature-test-credential-12345678",
+		Types:  []string{"VerifiableCredential", "EducationalCredential"},
+		Issuer: issuerDID,
+		ValidFrom: func() time.Time {
+			t, _ := time.Parse(time.RFC3339, "2024-01-01T00:00:00Z")
+			return t
+		}(),
+		ValidUntil: func() time.Time {
+			t, _ := time.Parse(time.RFC3339, "2025-01-01T00:00:00Z")
+			return t
+		}(),
+		Subject: []Subject{
+			{
+				ID: subjectDID,
+				CustomFields: map[string]interface{}{
+					"name":           "John Doe",
+					"degree":         "Bachelor of Science",
+					"university":     "Test University",
+					"graduationYear": 2023,
+				},
+			},
+		},
+		CredentialStatus: []Status{
+			{
+				ID:              "https://example.org/credentials/status/123",
+				Type:            "BitstringStatusListEntry",
+				StatusPurpose:   "revocation",
+				StatusListIndex: "123",
+			},
+		},
+		Schemas: []Schema{
+			{
+				ID:   "https://example.org/schemas/educational-credential.json",
+				Type: "JsonSchema",
+			},
+		},
+	}
+
+	t.Run("Embedded Credential - AddProof Flow", func(t *testing.T) {
+		// Create embedded credential
+		credential, err := NewEmbededCredential(credentialContents)
+		assert.NoError(t, err, "Failed to create embedded credential")
+
+		// Add proof using AddProof method
+		err = credential.AddProof(privateKeyHex)
+		assert.NoError(t, err, "Failed to add proof to embedded credential")
+
+		// Verify the credential
+		err = credential.Verify()
+		assert.NoError(t, err, "Failed to verify embedded credential with proof")
+
+		// Serialize and verify it has proof
+		serialized, err := credential.Serialize()
+		assert.NoError(t, err, "Failed to serialize embedded credential")
+
+		// Check that serialized credential contains proof
+		credMap, ok := serialized.(map[string]interface{})
+		assert.True(t, ok, "Serialized credential should be a map")
+		assert.Contains(t, credMap, "proof", "Serialized credential should contain proof")
+	})
+
+	t.Run("Embedded Credential - GetSigningInput + AddCustomProof Flow", func(t *testing.T) {
+		// Create embedded credential
+		credential, err := NewEmbededCredential(credentialContents)
+		assert.NoError(t, err, "Failed to create embedded credential")
+
+		// Get signing input
+		signingInput, err := credential.GetSigningInput()
+		assert.NoError(t, err, "Failed to get signing input")
+		assert.NotEmpty(t, signingInput, "Signing input should not be empty")
+
+		// Create a custom proof (simulating external signing)
+		customProof := &dto.Proof{
+			Type:               "EcdsaSecp256k1Signature2019",
+			Created:            "2024-01-01T00:00:00Z",
+			VerificationMethod: issuerDID + "#key-1",
+			ProofPurpose:       "assertionMethod",
+			ProofValue:         "mock-signature-value",
+		}
+
+		// Add custom proof
+		err = credential.AddCustomProof(customProof)
+		assert.NoError(t, err, "Failed to add custom proof to embedded credential")
+
+		// Serialize and verify it has proof
+		serialized, err := credential.Serialize()
+		assert.NoError(t, err, "Failed to serialize embedded credential with custom proof")
+
+		// Check that serialized credential contains proof
+		credMap, ok := serialized.(map[string]interface{})
+		assert.True(t, ok, "Serialized credential should be a map")
+		assert.Contains(t, credMap, "proof", "Serialized credential should contain proof")
+	})
+
+	t.Run("JWT Credential - AddProof Flow", func(t *testing.T) {
+		// Create JWT credential
+		credential, err := NewJWTCredential(credentialContents)
+		assert.NoError(t, err, "Failed to create JWT credential")
+
+		// Add proof using AddProof method
+		err = credential.AddProof(privateKeyHex)
+		assert.NoError(t, err, "Failed to add proof to JWT credential")
+
+		// Serialize to get JWT token
+		serialized, err := credential.Serialize()
+		assert.NoError(t, err, "Failed to serialize JWT credential")
+
+		jwtToken, ok := serialized.(string)
+		assert.True(t, ok, "Serialized JWT credential should be a string")
+		assert.NotEmpty(t, jwtToken, "JWT token should not be empty")
+		assert.Equal(t, 3, len(strings.Split(jwtToken, ".")), "JWT should have 3 parts")
+
+		// Parse and verify the JWT credential
+		parsedCredential, err := ParseCredentialJWT(jwtToken, WithDisableValidation())
+		assert.NoError(t, err, "Failed to parse JWT credential")
+		assert.NotNil(t, parsedCredential, "Parsed credential should not be nil")
+
+		// verify
+		err = parsedCredential.Verify()
+		assert.NoError(t, err, "Failed to verify JWT credential")
+	})
+
+	t.Run("JWT Credential - GetSigningInput + AddCustomProof Flow", func(t *testing.T) {
+		// Create JWT credential
+		credential, err := NewJWTCredential(credentialContents)
+		assert.NoError(t, err, "Failed to create JWT credential")
+
+		// Get signing input
+		signingInput, err := credential.GetSigningInput()
+		assert.NoError(t, err, "Failed to get signing input")
+		assert.NotEmpty(t, signingInput, "Signing input should not be empty")
+
+		// Sign message with ES256K
+		signer := jwt.SigningMethodES256K{}
+		signatureBytes, err := signer.Sign(string(signingInput), privateKeyHex)
+		assert.NoError(t, err, "Failed to sign message")
+		assert.NotEmpty(t, signatureBytes, "Signature should not be empty")
+
+		// Create a custom proof with JWT signature
+		customProof := &dto.Proof{
+			Signature: signatureBytes,
+		}
+
+		// Add custom proof (this will set the JWT signature)
+		err = credential.AddCustomProof(customProof)
+		assert.NoError(t, err, "Failed to add custom proof to JWT credential")
+
+		// Serialize to get JWT token
+		serialized, err := credential.Serialize()
+		assert.NoError(t, err, "Failed to serialize JWT credential with custom proof")
+
+		jwtToken, ok := serialized.(string)
+		assert.True(t, ok, "Serialized JWT credential should be a string")
+		assert.NotEmpty(t, jwtToken, "JWT token should not be empty")
+	})
+
+	t.Run("Error Cases", func(t *testing.T) {
+		// Test AddCustomProof with nil proof
+		credential, err := NewEmbededCredential(credentialContents)
+		assert.NoError(t, err, "Failed to create embedded credential")
+
+		err = credential.AddCustomProof(nil)
+		assert.Error(t, err, "Should return error for nil proof")
+		assert.Contains(t, err.Error(), "proof cannot be nil", "Error message should mention nil proof")
+
+		// Test JWT credential with nil proof
+		jwtCredential, err := NewJWTCredential(credentialContents)
+		assert.NoError(t, err, "Failed to create JWT credential")
+
+		err = jwtCredential.AddCustomProof(nil)
+		assert.Error(t, err, "Should return error for nil proof")
+		assert.Contains(t, err.Error(), "proof cannot be nil", "Error message should mention nil proof")
+	})
+}
+
+func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
+	issuerPrivateKey := "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
+	issuerDID := "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
+	schema := Schema{
+		ID:   "https://auth-dev.pila.vn/api/v1/schemas/03d53d01-1841-4ab1-987c-bf96a0907db7",
+		Type: "JsonSchema",
+	}
+	credentialContents := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"},
+		Schemas: []Schema{schema},
+		Subject: []Subject{Subject{
+			ID: "did:nda:testnet:0x78e43d3bd308b0522c8f6fcfb4785d9b841556c8",
+			CustomFields: map[string]interface{}{
+				"age":        10,
+				"department": "Engineering",
+				"name":       "Test Create",
+				"salary":     50000,
+			},
+		}},
+		ID:         "did:nda:testnet:f5dd72fe-75d3-4a3b-b679-8b9fb5df5177",
+		Issuer:     issuerDID,
+		Types:      []string{"VerifiableCredential"},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(time.Hour * 24 * 30),
+		CredentialStatus: []Status{
+			{
+				ID:                   "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0#0",
+				Type:                 "BitstringStatusListEntry",
+				StatusPurpose:        "revocation",
+				StatusListIndex:      "0",
+				StatusListCredential: "https://auth-dev.pila.vn/api/v1/issuers/did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0",
+			},
+		},
+	}
+
+	embededCredential, err := NewEmbededCredential(credentialContents, WithEnableValidation(), WithCredentialSchemaLoader(schema.ID, schema.Type))
+	if err != nil {
+		t.Fatalf("Failed to create embedded credential: %v", err)
+	}
+
+	// add proof
+	err = embededCredential.AddProof(issuerPrivateKey)
+	if err != nil {
+		t.Fatalf("Failed to add proof: %v", err)
+	}
+
+	// verify
+	err = embededCredential.Verify()
+	if err != nil {
+		t.Fatalf("Failed to verify embedded credential: %v", err)
+	}
+}
+
+func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
+	issuerPrivateKey := "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
+	issuerDID := "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
+	schema := Schema{
+		ID:   "https://auth-dev.pila.vn/api/v1/schemas/03d53d01-1841-4ab1-987c-bf96a0907db7",
+		Type: "JsonSchema",
+	}
+	credentialContents := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"},
+		Schemas: []Schema{schema},
+		Subject: []Subject{Subject{
+			ID: "did:nda:testnet:0x78e43d3bd308b0522c8f6fcfb4785d9b841556c8",
+			CustomFields: map[string]interface{}{
+				"age":        10,
+				"department": "Engineering",
+				"name":       "Test Create",
+				"salary":     50000,
+			},
+		}},
+		ID:         "did:nda:testnet:f5dd72fe-75d3-4a3b-b679-8b9fb5df5177",
+		Issuer:     issuerDID,
+		Types:      []string{"VerifiableCredential"},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(time.Hour * 24 * 30),
+		CredentialStatus: []Status{
+			{
+				ID:                   "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0#0",
+				Type:                 "BitstringStatusListEntry",
+				StatusPurpose:        "revocation",
+				StatusListIndex:      "0",
+				StatusListCredential: "https://auth-dev.pila.vn/api/v1/issuers/did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0",
+			},
+		},
+	}
+
+	jwtCredential, err := NewJWTCredential(credentialContents, WithEnableValidation(), WithCredentialSchemaLoader(schema.ID, schema.Type))
+	if err != nil {
+		t.Fatalf("Failed to create JWT credential: %v", err)
+	}
+
+	// add proof
+	err = jwtCredential.AddProof(issuerPrivateKey)
+	if err != nil {
+		t.Fatalf("Failed to add proof: %v", err)
+	}
+
+	// verify
+	err = jwtCredential.Verify()
+	if err != nil {
+		t.Fatalf("Failed to verify JWT credential: %v", err)
+	}
+}
+
+func TestJWTCredentialAddCustomProofMustEqualsToAddProof(t *testing.T) {
+	issuerPrivateKey := "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
+	issuerDID := "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
+	schema := Schema{
+		ID:   "https://auth-dev.pila.vn/api/v1/schemas/03d53d01-1841-4ab1-987c-bf96a0907db7",
+		Type: "JsonSchema",
+	}
+	credentialContents := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"},
+		Schemas: []Schema{schema},
+		Subject: []Subject{Subject{
+			ID: "did:nda:testnet:0x78e43d3bd308b0522c8f6fcfb4785d9b841556c8",
+		}},
+		ID:         "did:nda:testnet:f5dd72fe-75d3-4a3b-b679-8b9fb5df5177",
+		Issuer:     issuerDID,
+		Types:      []string{"VerifiableCredential"},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(time.Hour * 24 * 30),
+		CredentialStatus: []Status{
+			{
+				ID:                   "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0#0",
+				Type:                 "BitstringStatusListEntry",
+				StatusPurpose:        "revocation",
+				StatusListIndex:      "0",
+				StatusListCredential: "https://auth-dev.pila.vn/api/v1/issuers/did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0",
+			},
+		},
+	}
+	jwtCredential, err := NewJWTCredential(credentialContents, WithEnableValidation(), WithCredentialSchemaLoader(schema.ID, schema.Type))
+	if err != nil {
+		t.Fatalf("Failed to create JWT credential: %v", err)
+	}
+
+	// add proof
+	err = jwtCredential.AddProof(issuerPrivateKey)
+	if err != nil {
+		t.Fatalf("Failed to add proof: %v", err)
+	}
+
+	// another jwt with custom proof
+	anotherJwtCredential, err := NewJWTCredential(credentialContents, WithEnableValidation(), WithCredentialSchemaLoader(schema.ID, schema.Type))
+	if err != nil {
+		t.Fatalf("Failed to create another JWT credential: %v", err)
+	}
+
+	// calculate signature
+	getSigningInput, err := anotherJwtCredential.GetSigningInput()
+	if err != nil {
+		t.Fatalf("Failed to get signing input: %v", err)
+	}
+	signer := jwt.SigningMethodES256K{}
+	signatureBytes, err := signer.Sign(string(getSigningInput), issuerPrivateKey)
+	if err != nil {
+		t.Fatalf("Failed to sign: %v", err)
+	}
+
+	// add custom proof
+	err = anotherJwtCredential.AddCustomProof(&dto.Proof{
+		Signature: signatureBytes,
+	})
+	if err != nil {
+		t.Fatalf("Failed to add custom proof: %v", err)
+	}
+
+	// verify
+	err = anotherJwtCredential.Verify()
+	if err != nil {
+		t.Fatalf("Failed to verify JWT credential: %v", err)
+	}
+
+	// compare jwt
+	jwtToken, err := jwtCredential.Serialize()
+	if err != nil {
+		t.Fatalf("Failed to serialize JWT credential: %v", err)
+	}
+	anotherJwtToken, err := anotherJwtCredential.Serialize()
+	assert.Equal(t, jwtToken, anotherJwtToken, "JWT token should be the same")
 }

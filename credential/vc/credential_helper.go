@@ -371,38 +371,55 @@ func validateCredential(m jsonmap.JSONMap, processor *processor.ProcessorOptions
 		return fmt.Errorf("processor options are required")
 	}
 
-	requiredKeys := []string{"type", "credentialSchema", "credentialSubject", "credentialStatus", "proof"}
+	requiredKeys := []string{"type", "credentialSchema", "credentialSubject", "credentialStatus"}
 	for _, key := range requiredKeys {
 		if _, exists := m[key]; !exists {
 			return fmt.Errorf("%s is required", key)
 		}
 		m[key] = convertToArray(m[key])
 	}
-
 	// Optional schema validation if credentialSchema is present and processor has schema loader
 	if schemas, exists := m["credentialSchema"]; exists && processor.SchemaLoader != nil {
+		var schemaList []interface{}
+
+		// Handle both single schema object and array of schemas
 		if schemaArray, ok := schemas.([]interface{}); ok {
-			for _, schema := range schemaArray {
-				schemaMap, ok := schema.(map[string]interface{})
-				if !ok || schemaMap["id"] == nil {
-					return fmt.Errorf("credentialSchema.id is required")
-				}
+			schemaList = schemaArray
+		} else if schemaObj, ok := schemas.(map[string]interface{}); ok {
+			schemaList = []interface{}{schemaObj}
+		} else {
+			return fmt.Errorf("credentialSchema must be an object or array")
+		}
 
-				schemaID, ok := schemaMap["id"].(string)
-				if !ok || schemaID == "" {
-					return fmt.Errorf("credentialSchema.id must be a non-empty string")
-				}
+		fmt.Println("schemaList: ", schemaList)
 
-				schemaLoader := gojsonschema.NewReferenceLoader(schemaID)
-				credentialLoader := gojsonschema.NewGoLoader(m)
+		for _, schema := range schemaList {
+			var schemaMap map[string]interface{}
 
-				result, err := gojsonschema.Validate(schemaLoader, credentialLoader)
-				if err != nil {
-					return fmt.Errorf("failed to validate schema: %w", err)
-				}
-				if !result.Valid() {
-					return fmt.Errorf("credential validation failed: %v", result.Errors())
-				}
+			if jsonMap, isJSONMap := schema.(jsonmap.JSONMap); isJSONMap {
+				schemaMap = map[string]interface{}(jsonMap)
+			} else {
+				return fmt.Errorf("credentialSchema must be an object or array")
+			}
+
+			if schemaMap["id"] == nil {
+				return fmt.Errorf("credentialSchema.id is required")
+			}
+
+			schemaID, ok := schemaMap["id"].(string)
+			if !ok || schemaID == "" {
+				return fmt.Errorf("credentialSchema.id must be a non-empty string")
+			}
+
+			schemaLoader := gojsonschema.NewReferenceLoader(schemaID)
+			credentialLoader := gojsonschema.NewGoLoader(m)
+
+			result, err := gojsonschema.Validate(schemaLoader, credentialLoader)
+			if err != nil {
+				return fmt.Errorf("failed to validate schema: %w", err)
+			}
+			if !result.Valid() {
+				return fmt.Errorf("credential validation failed: %v", result.Errors())
 			}
 		}
 	}
