@@ -1,7 +1,6 @@
 package vp
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -24,8 +23,24 @@ func Init(baseURL string) {
 	}
 }
 
-// Presentation represents a W3C Verifiable Presentation as a JSON object.
-type Presentation jsonmap.JSONMap
+type Presentation interface {
+	AddProof(priv string, opts ...PresentationOpt) error
+
+	GetSigningInput() ([]byte, error)
+	AddCustomProof(proof *dto.Proof) error
+
+	Verify(opts ...PresentationOpt) error
+
+	// Serialize returns the presentation in its native format
+	// - For JWT presentations: returns the JWT string
+	// - For embedded presentations: returns the JSON object with proof
+	Serialize() (interface{}, error)
+
+	ToJSON() ([]byte, error)
+}
+
+// JSONPresentation represents a W3C Verifiable Presentation as a JSON object.
+type JSONPresentation jsonmap.JSONMap
 
 // PresentationContents represents the structured contents of a Presentation.
 type PresentationContents struct {
@@ -33,8 +48,7 @@ type PresentationContents struct {
 	ID                    string
 	Types                 []string
 	Holder                string
-	VerifiableCredentials []*vc.Credential
-	Proofs                []dto.Proof
+	VerifiableCredentials []vc.Credential
 }
 
 // PresentationOpt configures presentation processing options.
@@ -63,120 +77,23 @@ func WithBaseURL(baseURL string) PresentationOpt {
 	}
 }
 
-// ParsePresentation parses a JSON string into a Presentation.
-func ParsePresentation(rawJSON []byte, opts ...PresentationOpt) (*Presentation, error) {
-	if len(rawJSON) == 0 {
-		return nil, fmt.Errorf("JSON string is empty")
+// ParsePresentation parses a presentation into a Presentation.
+func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Presentation, error) {
+	if len(rawPresentation) == 0 {
+		return nil, fmt.Errorf("presentation is empty")
 	}
 
-	var m jsonmap.JSONMap
-	if err := json.Unmarshal(rawJSON, &m); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal presentation: %w", err)
+	// try to parse as JWT
+	presentation, err := ParsePresentationJWT(string(rawPresentation), opts...)
+	if err == nil {
+		return presentation, nil
 	}
 
-	options := &presentationOptions{
-		proc:       &processor.ProcessorOptions{},
-		didBaseURL: config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
+	// try to parse as embedded
+	presentation, err = ParsePresentationEmbedded(rawPresentation, opts...)
+	if err == nil {
+		return presentation, nil
 	}
 
-	// Add schema validation if needed (not in original code)
-	// if err := validatePresentation(m, options.processor); err != nil {
-	// 	return nil, fmt.Errorf("failed to validate presentation: %w", err)
-	// }
-
-	p := Presentation(m)
-	return &p, nil
-}
-
-// CreatePresentationWithContent creates a Presentation from PresentationContents.
-func CreatePresentationWithContent(vpc PresentationContents) (*Presentation, error) {
-	if len(vpc.Context) == 0 && vpc.ID == "" && vpc.Holder == "" {
-		return nil, fmt.Errorf("contents must have context, ID, or holder")
-	}
-
-	m, err := serializePresentationContents(&vpc)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
-	}
-	p := Presentation(m)
-	return &p, nil
-}
-
-// ToJSON serializes the Presentation to JSON.
-func (p *Presentation) ToJSON() ([]byte, error) {
-	return (*jsonmap.JSONMap)(p).ToJSON()
-}
-
-// AddECDSAProof adds an ECDSA proof to the Presentation.
-func (p *Presentation) AddECDSAProof(priv, verificationMethod string, opts ...PresentationOpt) error {
-	options := &presentationOptions{
-		proc:       &processor.ProcessorOptions{},
-		didBaseURL: config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
-
-	return (*jsonmap.JSONMap)(p).AddECDSAProof(priv, verificationMethod, "authentication", options.didBaseURL)
-}
-
-// AddCustomProof adds a custom proof to the Presentation.
-func (p *Presentation) AddCustomProof(proof *dto.Proof) error {
-
-	return (*jsonmap.JSONMap)(p).AddCustomProof(proof)
-}
-
-// CanonicalizePresentation canonicalizes the Presentation for signing or verification.
-func (p *Presentation) CanonicalizePresentation() ([]byte, error) {
-	return (*jsonmap.JSONMap)(p).Canonicalize()
-}
-
-// VerifyECDSAPresentation verifies an ECDSA-signed Presentation.
-func VerifyECDSAPresentation(vp *Presentation, opts ...PresentationOpt) (bool, error) {
-	options := &presentationOptions{
-		proc:       &processor.ProcessorOptions{},
-		didBaseURL: config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
-
-	isValid, err := (*jsonmap.JSONMap)(vp).VerifyProof(options.didBaseURL)
-	if err != nil {
-		return false, err
-	}
-
-	// Verify embedded credentials
-	contents, err := vp.ParsePresentationContents()
-	if err != nil {
-		return false, fmt.Errorf("failed to parse presentation contents: %w", err)
-	}
-	if err := verifyCredentials(contents.VerifiableCredentials); err != nil {
-		return false, fmt.Errorf("failed to verify credentials: %w", err)
-	}
-
-	return isValid, nil
-}
-
-// ParsePresentationContents parses the Presentation into structured contents.
-func (p *Presentation) ParsePresentationContents() (PresentationContents, error) {
-	var contents PresentationContents
-	parsers := []func(*Presentation, *PresentationContents) error{
-		parseContext,
-		parseID,
-		parseTypes,
-		parseHolder,
-		parseVerifiableCredentials,
-		parseProofs,
-	}
-
-	for _, parser := range parsers {
-		if err := parser(p, &contents); err != nil {
-			return contents, fmt.Errorf("failed to parse presentation contents: %w", err)
-		}
-	}
-	return contents, nil
+	return nil, fmt.Errorf("failed to parse presentation")
 }
