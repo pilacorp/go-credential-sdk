@@ -751,7 +751,7 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 		},
 	}
 
-	embededCredential, err := NewEmbededCredential(credentialContents, WithEnableValidation(), WithCredentialSchemaLoader(schema.ID, schema.Type))
+	embededCredential, err := NewEmbededCredential(credentialContents, WithEnableValidation())
 	if err != nil {
 		t.Fatalf("Failed to create embedded credential: %v", err)
 	}
@@ -767,12 +767,6 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to verify embedded credential: %v", err)
 	}
-
-	credentailBytes, err := embededCredential.ToJSON()
-	if err != nil {
-		t.Fatalf("Failed to convert embedded credential to JSON: %v", err)
-	}
-	println(string(credentailBytes))
 }
 
 func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
@@ -810,7 +804,7 @@ func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 		},
 	}
 
-	jwtCredential, err := NewJWTCredential(credentialContents, WithEnableValidation(), WithCredentialSchemaLoader(schema.ID, schema.Type))
+	jwtCredential, err := NewJWTCredential(credentialContents, WithEnableValidation())
 	if err != nil {
 		t.Fatalf("Failed to create JWT credential: %v", err)
 	}

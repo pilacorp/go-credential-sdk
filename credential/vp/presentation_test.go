@@ -935,47 +935,28 @@ func TestJWTPresentationFlow(t *testing.T) {
 // Helper function to create test credentials (both embedded and JWT)
 func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Credential, vc.Credential) {
 	// Create credential contents
+	schema := vc.Schema{
+		ID:   "https://auth-dev.pila.vn/api/v1/schemas/03d53d01-1841-4ab1-987c-bf96a0907db7",
+		Type: "JsonSchema",
+	}
 	credentialContents := vc.CredentialContents{
-		Context: []interface{}{
-			"https://www.w3.org/ns/credentials/v2",
-			"https://www.w3.org/ns/credentials/examples/v2",
-		},
-		ID:     "urn:uuid:test-credential-12345678",
-		Types:  []string{"VerifiableCredential", "TestCredential"},
-		Issuer: issuerDID,
-		ValidFrom: func() time.Time {
-			t, _ := time.Parse(time.RFC3339, "2024-01-01T00:00:00Z")
-			return t
-		}(),
-		ValidUntil: func() time.Time {
-			t, _ := time.Parse(time.RFC3339, "2025-01-01T00:00:00Z")
-			return t
-		}(),
-		Subject: []vc.Subject{
-			{
-				ID: "did:key:z2dmzD81cgPx8Vki7JbuuMmFYrWPgYoytykUZ3eyqht1j9KbsEYvdrjxMjQ4tpnje9BDBTzuNDP3knn6qLZErzd4bJ5go2CChoPjd5GAH3zpFJP5fuwSk66U5Pq6EhF4nKnHzDnznEP8fX99nZGgwbAh1o7Gj1X52Tdhf7U4KTk66xsA5r",
-				CustomFields: map[string]interface{}{
-					"name":       "Test User",
-					"department": "Engineering",
-					"employeeId": "EMP123456",
-					"isActive":   true,
-					"salary":     75000,
-					"skills":     []string{"Go", "JavaScript", "Docker"},
-				},
-			},
-		},
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"},
+		Schemas: []vc.Schema{schema},
+		Subject: []vc.Subject{vc.Subject{
+			ID: "did:nda:testnet:0x78e43d3bd308b0522c8f6fcfb4785d9b841556c8",
+		}},
+		ID:         "did:nda:testnet:f5dd72fe-75d3-4a3b-b679-8b9fb5df5177",
+		Issuer:     issuerDID,
+		Types:      []string{"VerifiableCredential"},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(time.Hour * 24 * 30),
 		CredentialStatus: []vc.Status{
 			{
-				ID:              "https://example.org/credentials/status/123",
-				Type:            "BitstringStatusListEntry",
-				StatusPurpose:   "revocation",
-				StatusListIndex: "123",
-			},
-		},
-		Schemas: []vc.Schema{
-			{
-				ID:   "https://example.org/schemas/employee-credential.json",
-				Type: "JsonSchema",
+				ID:                   "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0#0",
+				Type:                 "BitstringStatusListEntry",
+				StatusPurpose:        "revocation",
+				StatusListIndex:      "0",
+				StatusListCredential: "https://auth-dev.pila.vn/api/v1/issuers/did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0",
 			},
 		},
 	}

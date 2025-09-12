@@ -8,7 +8,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
-	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
 type JWTHeaders map[string]interface{}
@@ -20,7 +19,6 @@ type JWTCredential struct {
 
 func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
 	options := &credentialOptions{
-		proc:       &processor.ProcessorOptions{},
 		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
@@ -35,7 +33,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 	}
 
 	if options.validate {
-		if err := validateCredential(m, options.proc); err != nil {
+		if err := validateCredential(m); err != nil {
 			return nil, fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}
@@ -57,7 +55,6 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 	}
 
 	options := &credentialOptions{
-		proc:       &processor.ProcessorOptions{},
 		validate:   true,
 		didBaseURL: config.BaseURL,
 	}
@@ -66,7 +63,7 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 	}
 
 	if options.validate {
-		if err := validateCredential(m, options.proc); err != nil {
+		if err := validateCredential(m); err != nil {
 			return nil, fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}
@@ -121,7 +118,6 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
 
 func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 	options := &credentialOptions{
-		proc:       &processor.ProcessorOptions{},
 		validate:   true,
 		didBaseURL: config.BaseURL,
 	}

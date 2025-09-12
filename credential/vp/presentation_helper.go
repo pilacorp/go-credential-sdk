@@ -20,7 +20,7 @@ func verifyCredentials(vcs []vc.Credential) error {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
 		// Verify the credential using the new interface
-		err := v.Verify(vc.WithBaseURL(config.BaseURL))
+		err := v.Verify(vc.WithEnableValidation())
 		if err != nil {
 			return fmt.Errorf("failed to verify credential at index %d: %w", i, err)
 		}

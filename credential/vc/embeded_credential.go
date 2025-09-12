@@ -6,7 +6,6 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
-	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
 type EmbededCredential struct {
@@ -21,7 +20,6 @@ func NewEmbededCredential(vcc CredentialContents, opts ...CredentialOpt) (Creden
 	}
 
 	options := &credentialOptions{
-		proc:       &processor.ProcessorOptions{},
 		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
@@ -30,7 +28,7 @@ func NewEmbededCredential(vcc CredentialContents, opts ...CredentialOpt) (Creden
 	}
 
 	if options.validate {
-		if err := validateCredential(m, options.proc); err != nil {
+		if err := validateCredential(m); err != nil {
 			return nil, fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}
@@ -49,7 +47,6 @@ func ParseCredentialEmbedded(rawJSON []byte, opts ...CredentialOpt) (Credential,
 	}
 
 	options := &credentialOptions{
-		proc:       &processor.ProcessorOptions{},
 		validate:   true,
 		didBaseURL: config.BaseURL,
 	}
@@ -58,7 +55,7 @@ func ParseCredentialEmbedded(rawJSON []byte, opts ...CredentialOpt) (Credential,
 	}
 
 	if options.validate {
-		if err := validateCredential(m, options.proc); err != nil {
+		if err := validateCredential(m); err != nil {
 			return nil, fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}
@@ -68,7 +65,6 @@ func ParseCredentialEmbedded(rawJSON []byte, opts ...CredentialOpt) (Credential,
 
 func (e *EmbededCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	options := &credentialOptions{
-		proc:       &processor.ProcessorOptions{},
 		validate:   true,
 		didBaseURL: config.BaseURL,
 	}
@@ -96,7 +92,6 @@ func (e *EmbededCredential) AddCustomProof(proof *dto.Proof) error {
 
 func (e *EmbededCredential) Verify(opts ...CredentialOpt) error {
 	options := &credentialOptions{
-		proc:       &processor.ProcessorOptions{},
 		validate:   false,
 		didBaseURL: config.BaseURL,
 	}

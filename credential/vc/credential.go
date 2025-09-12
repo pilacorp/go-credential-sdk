@@ -6,7 +6,6 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
-	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
 // Config holds package configuration.
@@ -82,19 +81,8 @@ type CredentialOpt func(*credentialOptions)
 
 // credentialOptions holds configuration for credential processing.
 type credentialOptions struct {
-	proc       *processor.ProcessorOptions
 	validate   bool
 	didBaseURL string
-}
-
-// WithProcessorOptions sets processor options for credential processing.
-func WithProcessorOptions(options ...processor.ProcessorOpt) CredentialOpt {
-	return func(c *credentialOptions) {
-		c.proc = &processor.ProcessorOptions{}
-		for _, opt := range options {
-			opt(c.proc)
-		}
-	}
 }
 
 // WithBaseURL sets the DID base URL for credential processing.
@@ -114,16 +102,6 @@ func WithDisableValidation() CredentialOpt {
 func WithEnableValidation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.validate = true
-	}
-}
-
-// WithCredentialSchemaLoader sets a custom schema loader for validation.
-func WithCredentialSchemaLoader(id, schema string) CredentialOpt {
-	return func(c *credentialOptions) {
-		if c.proc == nil {
-			c.proc = &processor.ProcessorOptions{}
-		}
-		c.proc.SchemaLoader = &processor.CredentialSchemaLoader{Schema: schema}
 	}
 }
 
