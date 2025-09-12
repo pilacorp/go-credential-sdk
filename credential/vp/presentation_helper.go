@@ -10,7 +10,14 @@ import (
 )
 
 // verifyCredentials verifies the signatures of a slice of Verifiable Credentials.
-func verifyCredentials(vcs []vc.Credential) error {
+func verifyCredentials(jsonPresentation JSONPresentation) error {
+	contents, err := parsePresentationContents(jsonPresentation)
+	if err != nil {
+		return fmt.Errorf("failed to parse presentation contents: %w", err)
+	}
+
+	vcs := contents.VerifiableCredentials
+
 	if vcs == nil {
 		return fmt.Errorf("credential input is nil")
 	}
@@ -140,7 +147,7 @@ func parseVerifiableCredentials(vp JSONPresentation, contents *PresentationConte
 		}
 
 		// Parse using the unified ParseCredential function
-		credential, err := vc.ParseCredential(vcItemBytes, vc.WithDisableValidation())
+		credential, err := vc.ParseCredential(vcItemBytes)
 		if err != nil {
 			return fmt.Errorf("failed to parse credential at index %d: %w", i, err)
 		}

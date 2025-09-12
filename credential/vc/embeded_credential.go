@@ -47,7 +47,7 @@ func ParseCredentialEmbedded(rawJSON []byte, opts ...CredentialOpt) (Credential,
 	}
 
 	options := &credentialOptions{
-		validate:   true,
+		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -65,7 +65,7 @@ func ParseCredentialEmbedded(rawJSON []byte, opts ...CredentialOpt) (Credential,
 
 func (e *EmbededCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	options := &credentialOptions{
-		validate:   true,
+		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 

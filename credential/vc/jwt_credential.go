@@ -55,7 +55,7 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 	}
 
 	options := &credentialOptions{
-		validate:   true,
+		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -118,7 +118,7 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
 
 func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 	options := &credentialOptions{
-		validate:   true,
+		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {

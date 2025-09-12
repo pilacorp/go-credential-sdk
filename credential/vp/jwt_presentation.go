@@ -54,6 +54,12 @@ func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation,
 		opt(options)
 	}
 
+	if options.validate {
+		if err := verifyCredentials(JSONPresentation(m)); err != nil {
+			return nil, fmt.Errorf("failed to validate presentation: %w", err)
+		}
+	}
+
 	return &JWTPresentation{
 		Payload:   JSONPresentation(m),
 		signature: strings.Split(rawJWT, ".")[2],
@@ -115,12 +121,8 @@ func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
 	}
 
 	// Verify embedded JWT credentials
-	contents, err := parsePresentationContents(j.Payload)
-	if err != nil {
-		return fmt.Errorf("failed to parse presentation contents: %w", err)
-	}
 	if options.validate {
-		if err := verifyCredentials(contents.VerifiableCredentials); err != nil {
+		if err := verifyCredentials(j.Payload); err != nil {
 			return fmt.Errorf("failed to verify credentials: %w", err)
 		}
 	}

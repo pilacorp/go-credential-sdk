@@ -38,7 +38,7 @@ func TestParseCredential(t *testing.T) {
 		{
 			name:      "Valid credential JSON",
 			inputJSON: validJSON,
-			opts:      []CredentialOpt{WithDisableValidation()},
+			opts:      []CredentialOpt{},
 			expected: jsonmap.JSONMap{
 				"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				"id":                "urn:uuid:1234",
@@ -69,7 +69,7 @@ func TestParseCredential(t *testing.T) {
 		{
 			name:        "Valid Educational Credential",
 			inputJSON:   []byte(validJWTtoken),
-			opts:        []CredentialOpt{WithDisableValidation()},
+			opts:        []CredentialOpt{},
 			expectError: false,
 			expected: jsonmap.JSONMap{
 				"@context": []interface{}{
@@ -508,7 +508,7 @@ func TestCreateCredentialJWT(t *testing.T) {
 	assert.Equal(t, 3, len(strings.Split(jwtToken, ".")), "JWT should have 3 parts separated by dots")
 
 	// Parse the JWT credential back
-	parsedCredential, err := ParseCredentialJWT(jwtToken, WithDisableValidation())
+	parsedCredential, err := ParseCredentialJWT(jwtToken)
 	assert.NoError(t, err, "Failed to parse JWT credential")
 	assert.NotNil(t, parsedCredential, "Parsed credential should not be nil")
 
@@ -654,7 +654,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.Equal(t, 3, len(strings.Split(jwtToken, ".")), "JWT should have 3 parts")
 
 		// Parse and verify the JWT credential
-		parsedCredential, err := ParseCredentialJWT(jwtToken, WithDisableValidation())
+		parsedCredential, err := ParseCredentialJWT(jwtToken)
 		assert.NoError(t, err, "Failed to parse JWT credential")
 		assert.NotNil(t, parsedCredential, "Parsed credential should not be nil")
 
@@ -763,7 +763,7 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 	}
 
 	// verify
-	err = embededCredential.Verify()
+	err = embededCredential.Verify(WithEnableValidation())
 	if err != nil {
 		t.Fatalf("Failed to verify embedded credential: %v", err)
 	}
@@ -831,7 +831,7 @@ func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 	}
 
 	// verify
-	err = jwtCredential.Verify()
+	err = jwtCredential.Verify(WithEnableValidation())
 	if err != nil {
 		t.Fatalf("Failed to verify JWT credential: %v", err)
 	}
@@ -877,7 +877,7 @@ func TestJWTCredentialAddCustomProofMustEqualsToAddProof(t *testing.T) {
 	}
 
 	// verify
-	err = anotherJwtCredential.Verify()
+	err = anotherJwtCredential.Verify(WithEnableValidation())
 	if err != nil {
 		t.Fatalf("Failed to verify JWT credential: %v", err)
 	}

@@ -40,6 +40,12 @@ func ParsePresentationEmbedded(rawJSON []byte, opts ...PresentationOpt) (Present
 		opt(options)
 	}
 
+	if options.validate {
+		if err := verifyCredentials(JSONPresentation(m)); err != nil {
+			return nil, fmt.Errorf("failed to validate presentation: %w", err)
+		}
+	}
+
 	return &EmbeddedPresentation{jsonPresentation: JSONPresentation(m)}, nil
 }
 
@@ -91,13 +97,8 @@ func (e *EmbeddedPresentation) Verify(opts ...PresentationOpt) error {
 	}
 
 	// Verify embedded credentials
-	contents, err := parsePresentationContents(e.jsonPresentation)
-	if err != nil {
-		return fmt.Errorf("failed to parse presentation contents: %w", err)
-	}
-
 	if options.validate {
-		if err := verifyCredentials(contents.VerifiableCredentials); err != nil {
+		if err := verifyCredentials(e.jsonPresentation); err != nil {
 			return fmt.Errorf("failed to verify credentials: %w", err)
 		}
 	}

@@ -59,6 +59,7 @@ type presentationOptions struct {
 	didBaseURL string
 }
 
+// WithEnableValidation enables validation for credentials in the presentation.
 func WithEnableValidation() PresentationOpt {
 	return func(p *presentationOptions) {
 		p.validate = true

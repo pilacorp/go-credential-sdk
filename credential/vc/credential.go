@@ -92,12 +92,6 @@ func WithBaseURL(baseURL string) CredentialOpt {
 	}
 }
 
-func WithDisableValidation() CredentialOpt {
-	return func(c *credentialOptions) {
-		c.validate = false
-	}
-}
-
 // WithEnableValidation enables schema validation during credential parsing.
 func WithEnableValidation() CredentialOpt {
 	return func(c *credentialOptions) {
