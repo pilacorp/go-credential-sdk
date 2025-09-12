@@ -845,6 +845,73 @@ func TestEmbeddedPresentationFlow(t *testing.T) {
 	}
 }
 
+func TestCreateEmbeddedPresentationOfTwoEmbeddedCredentials(t *testing.T) {
+	// Initialize the presentation and credential packages
+	vp.Init("https://auth-dev.pila.vn/api/v1/did")
+	vc.Init("https://auth-dev.pila.vn/api/v1/did")
+
+	// Test data
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+
+	// Create embedded credentials
+	embeddedVC, _ := createTestCredentials(t, issuerDID, privateKeyHex)
+
+	// Create embedded presentation
+	presentationContents := vp.PresentationContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		ID:                    "urn:uuid:embedded-vp-test-12345678",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                holderDID,
+		VerifiableCredentials: []vc.Credential{embeddedVC, embeddedVC},
+	}
+
+	presentation, err := vp.NewEmbeddedPresentation(presentationContents)
+	if err != nil {
+		t.Fatalf("Failed to create embedded presentation: %v", err)
+	}
+
+	// Add proof to the presentation
+	err = presentation.AddProof(privateKeyHex)
+	if err != nil {
+		t.Fatalf("Failed to add proof to embedded presentation: %v", err)
+	}
+
+	// Verify the presentation
+	err = presentation.Verify()
+	if err != nil {
+		t.Fatalf("Failed to verify embedded presentation: %v", err)
+	}
+
+	// Get JSON format
+	jsonData, err := presentation.ToJSON()
+	if err != nil {
+		t.Fatalf("Failed to convert embedded presentation to JSON: %v", err)
+	}
+
+	// Parse the presentation
+	parsedPresentation, err := vp.ParsePresentation(jsonData)
+	if err != nil {
+		t.Fatalf("Failed to parse embedded presentation: %v", err)
+	}
+
+	// Verify the parsed presentation
+	err = parsedPresentation.Verify()
+	if err != nil {
+		t.Fatalf("Failed to verify parsed embedded presentation: %v", err)
+	}
+
+	// println the json data
+	jsonData, err = parsedPresentation.ToJSON()
+	if err != nil {
+		t.Fatalf("Failed to convert parsed embedded presentation to JSON: %v", err)
+	}
+}
+
 func TestJWTPresentationFlow(t *testing.T) {
 	// Initialize the presentation and credential packages
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
@@ -936,7 +1003,7 @@ func TestJWTPresentationFlow(t *testing.T) {
 func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Credential, vc.Credential) {
 	// Create credential contents
 	schema := vc.Schema{
-		ID:   "https://auth-dev.pila.vn/api/v1/schemas/03d53d01-1841-4ab1-987c-bf96a0907db7",
+		ID:   "https://auth-dev.pila.vn/api/v1/schemas/7250251f-141e-47a2-aa5f-a5d3499d30da",
 		Type: "JsonSchema",
 	}
 	credentialContents := vc.CredentialContents{
@@ -944,6 +1011,12 @@ func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Cr
 		Schemas: []vc.Schema{schema},
 		Subject: []vc.Subject{vc.Subject{
 			ID: "did:nda:testnet:0x78e43d3bd308b0522c8f6fcfb4785d9b841556c8",
+			CustomFields: map[string]interface{}{
+				"age":        10,
+				"name":       "Test Create",
+				"salary":     50000,
+				"department": "Engineering",
+			},
 		}},
 		ID:         "did:nda:testnet:f5dd72fe-75d3-4a3b-b679-8b9fb5df5177",
 		Issuer:     issuerDID,

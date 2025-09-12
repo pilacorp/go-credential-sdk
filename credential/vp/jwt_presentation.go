@@ -8,7 +8,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
-	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
 type JWTPresentation struct {
@@ -18,7 +17,7 @@ type JWTPresentation struct {
 
 func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
 	options := &presentationOptions{
-		proc:       &processor.ProcessorOptions{},
+		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -48,7 +47,7 @@ func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation,
 	}
 
 	options := &presentationOptions{
-		proc:       &processor.ProcessorOptions{},
+		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -96,7 +95,7 @@ func (j *JWTPresentation) AddCustomProof(proof *dto.Proof) error {
 
 func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
 	options := &presentationOptions{
-		proc:       &processor.ProcessorOptions{},
+		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -120,8 +119,10 @@ func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
 	}
-	if err := verifyCredentials(contents.VerifiableCredentials); err != nil {
-		return fmt.Errorf("failed to verify credentials: %w", err)
+	if options.validate {
+		if err := verifyCredentials(contents.VerifiableCredentials); err != nil {
+			return fmt.Errorf("failed to verify credentials: %w", err)
+		}
 	}
 
 	return nil

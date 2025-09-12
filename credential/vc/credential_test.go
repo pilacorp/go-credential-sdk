@@ -720,7 +720,7 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 	issuerPrivateKey := "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
 	issuerDID := "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
 	schema := Schema{
-		ID:   "https://auth-dev.pila.vn/api/v1/schemas/03d53d01-1841-4ab1-987c-bf96a0907db7",
+		ID:   "https://auth-dev.pila.vn/api/v1/schemas/7250251f-141e-47a2-aa5f-a5d3499d30da",
 		Type: "JsonSchema",
 	}
 	credentialContents := CredentialContents{
@@ -769,24 +769,19 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 	}
 }
 
-func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
-	issuerPrivateKey := "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
-	issuerDID := "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
+// Helper function to create base credential contents with default values
+func createBaseCredentialContents(issuerDID string, customFields map[string]interface{}) CredentialContents {
 	schema := Schema{
-		ID:   "https://auth-dev.pila.vn/api/v1/schemas/03d53d01-1841-4ab1-987c-bf96a0907db7",
+		ID:   "https://auth-dev.pila.vn/api/v1/schemas/7250251f-141e-47a2-aa5f-a5d3499d30da",
 		Type: "JsonSchema",
 	}
-	credentialContents := CredentialContents{
+
+	return CredentialContents{
 		Context: []interface{}{"https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"},
 		Schemas: []Schema{schema},
 		Subject: []Subject{Subject{
-			ID: "did:nda:testnet:0x78e43d3bd308b0522c8f6fcfb4785d9b841556c8",
-			CustomFields: map[string]interface{}{
-				"age":        10,
-				"department": "Engineering",
-				"name":       "Test Create",
-				"salary":     50000,
-			},
+			ID:           "did:nda:testnet:0x78e43d3bd308b0522c8f6fcfb4785d9b841556c8",
+			CustomFields: customFields,
 		}},
 		ID:         "did:nda:testnet:f5dd72fe-75d3-4a3b-b679-8b9fb5df5177",
 		Issuer:     issuerDID,
@@ -803,6 +798,26 @@ func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 			},
 		},
 	}
+}
+
+// Helper function to create valid default custom fields
+func createValidCustomFields() map[string]interface{} {
+	return map[string]interface{}{
+		"age":        10,
+		"name":       "Test Create",
+		"salary":     50000,
+		"department": "Engineering",
+	}
+}
+
+// Test constants
+const (
+	testIssuerPrivateKey = "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
+	testIssuerDID        = "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
+)
+
+func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
+	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
 
 	jwtCredential, err := NewJWTCredential(credentialContents, WithEnableValidation())
 	if err != nil {
@@ -810,7 +825,7 @@ func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 	}
 
 	// add proof
-	err = jwtCredential.AddProof(issuerPrivateKey)
+	err = jwtCredential.AddProof(testIssuerPrivateKey)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -823,40 +838,15 @@ func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 }
 
 func TestJWTCredentialAddCustomProofMustEqualsToAddProof(t *testing.T) {
-	issuerPrivateKey := "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
-	issuerDID := "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
-	schema := Schema{
-		ID:   "https://auth-dev.pila.vn/api/v1/schemas/03d53d01-1841-4ab1-987c-bf96a0907db7",
-		Type: "JsonSchema",
-	}
-	credentialContents := CredentialContents{
-		Context: []interface{}{"https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"},
-		Schemas: []Schema{schema},
-		Subject: []Subject{Subject{
-			ID: "did:nda:testnet:0x78e43d3bd308b0522c8f6fcfb4785d9b841556c8",
-		}},
-		ID:         "did:nda:testnet:f5dd72fe-75d3-4a3b-b679-8b9fb5df5177",
-		Issuer:     issuerDID,
-		Types:      []string{"VerifiableCredential"},
-		ValidFrom:  time.Now(),
-		ValidUntil: time.Now().Add(time.Hour * 24 * 30),
-		CredentialStatus: []Status{
-			{
-				ID:                   "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0#0",
-				Type:                 "BitstringStatusListEntry",
-				StatusPurpose:        "revocation",
-				StatusListIndex:      "0",
-				StatusListCredential: "https://auth-dev.pila.vn/api/v1/issuers/did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0",
-			},
-		},
-	}
+	// Create credential with empty custom fields for this test
+	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
 	jwtCredential, err := NewJWTCredential(credentialContents, WithEnableValidation())
 	if err != nil {
 		t.Fatalf("Failed to create JWT credential: %v", err)
 	}
 
 	// add proof
-	err = jwtCredential.AddProof(issuerPrivateKey)
+	err = jwtCredential.AddProof(testIssuerPrivateKey)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -873,7 +863,7 @@ func TestJWTCredentialAddCustomProofMustEqualsToAddProof(t *testing.T) {
 		t.Fatalf("Failed to get signing input: %v", err)
 	}
 	signer := jwt.SigningMethodES256K{}
-	signatureBytes, err := signer.Sign(string(getSigningInput), issuerPrivateKey)
+	signatureBytes, err := signer.Sign(string(getSigningInput), testIssuerPrivateKey)
 	if err != nil {
 		t.Fatalf("Failed to sign: %v", err)
 	}
@@ -899,4 +889,98 @@ func TestJWTCredentialAddCustomProofMustEqualsToAddProof(t *testing.T) {
 	}
 	anotherJwtToken, err := anotherJwtCredential.Serialize()
 	assert.Equal(t, jwtToken, anotherJwtToken, "JWT token should be the same")
+}
+
+func TestCreateJWTCredentialWithValidateSchemaFailInvalidFieldValue(t *testing.T) {
+	// Invalid field value - negative age
+	customFields := map[string]interface{}{
+		"name":       "Test Create",
+		"salary":     -50000,
+		"department": "Engineering",
+	}
+	credentialContents := createBaseCredentialContents(testIssuerDID, customFields)
+
+	_, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	if err == nil {
+		t.Fatalf("Expected validation error for invalid field value, but got no error")
+	}
+}
+
+func TestCreateJWTCredentialWithValidateSchemaFailEmptySubject(t *testing.T) {
+	// Create credential with empty subject array
+	schema := Schema{
+		ID:   "https://auth-dev.pila.vn/api/v1/schemas/7250251f-141e-47a2-aa5f-a5d3499d30da",
+		Type: "JsonSchema",
+	}
+	credentialContents := CredentialContents{
+		Context:    []interface{}{"https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"},
+		Schemas:    []Schema{schema},
+		Subject:    []Subject{}, // Empty subject array
+		ID:         "did:nda:testnet:f5dd72fe-75d3-4a3b-b679-8b9fb5df5177",
+		Issuer:     testIssuerDID,
+		Types:      []string{"VerifiableCredential"},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(time.Hour * 24 * 30),
+		CredentialStatus: []Status{
+			{
+				ID:                   "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0#0",
+				Type:                 "BitstringStatusListEntry",
+				StatusPurpose:        "revocation",
+				StatusListIndex:      "0",
+				StatusListCredential: "https://auth-dev.pila.vn/api/v1/issuers/did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee/credentials/status/0",
+			},
+		},
+	}
+
+	_, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	if err == nil {
+		t.Fatalf("Expected validation error for empty subject, but got no error")
+	}
+}
+
+func TestCreateJWTCredentialWithValidateSchemaFailInvalidDepartment(t *testing.T) {
+	customFields := map[string]interface{}{
+		"age":        10,
+		"name":       "Test Create",
+		"department": 100,
+		"salary":     100000,
+	}
+	credentialContents := createBaseCredentialContents(testIssuerDID, customFields)
+
+	_, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	if err == nil {
+		t.Fatalf("Expected validation error for invalid department field, but got no error")
+	}
+}
+
+func TestCreateJWTCredentialWithValidateSchemaFailInvalidSalaryType(t *testing.T) {
+	// Invalid salary type - should be number, not string
+	customFields := map[string]interface{}{
+		"age":        10,
+		"name":       "Test Create",
+		"salary":     "not_a_number",
+		"department": "Engineering",
+	}
+	credentialContents := createBaseCredentialContents(testIssuerDID, customFields)
+
+	_, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	if err == nil {
+		t.Fatalf("Expected validation error for invalid salary type, but got no error")
+	}
+}
+
+func TestCreateJWTCredentialWithValidateSchemaFailNegativeSalary(t *testing.T) {
+	// Invalid salary value - negative salary
+	customFields := map[string]interface{}{
+		"age":        10,
+		"name":       "Test Create",
+		"salary":     -1000,
+		"department": "Engineering",
+	}
+	credentialContents := createBaseCredentialContents(testIssuerDID, customFields)
+
+	_, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	if err == nil {
+		t.Fatalf("Expected validation error for negative salary, but got no error")
+	}
 }

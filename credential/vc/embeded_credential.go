@@ -107,6 +107,12 @@ func (e *EmbededCredential) Verify(opts ...CredentialOpt) error {
 		return fmt.Errorf("invalid proof")
 	}
 
+	if options.validate {
+		if err := validateCredential(jsonmap.JSONMap(e.jsonCredential)); err != nil {
+			return fmt.Errorf("failed to validate credential: %w", err)
+		}
+	}
+
 	return nil
 }
 

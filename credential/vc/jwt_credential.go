@@ -137,6 +137,12 @@ func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 		return err
 	}
 
+	if options.validate {
+		if err := validateCredential(jsonmap.JSONMap(j.Payload)); err != nil {
+			return fmt.Errorf("failed to validate credential: %w", err)
+		}
+	}
+
 	return nil
 }
 

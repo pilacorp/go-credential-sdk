@@ -5,7 +5,6 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
-	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
@@ -56,17 +55,13 @@ type PresentationOpt func(*presentationOptions)
 
 // presentationOptions holds configuration for presentation processing.
 type presentationOptions struct {
-	proc       *processor.ProcessorOptions
+	validate   bool
 	didBaseURL string
 }
 
-// WithPresentationProcessorOptions sets processor options for presentation processing.
-func WithPresentationProcessorOptions(options ...processor.ProcessorOpt) PresentationOpt {
+func WithEnableValidation() PresentationOpt {
 	return func(p *presentationOptions) {
-		p.proc = &processor.ProcessorOptions{}
-		for _, opt := range options {
-			opt(p.proc)
-		}
+		p.validate = true
 	}
 }
 
