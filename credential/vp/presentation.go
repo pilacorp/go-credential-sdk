@@ -1,7 +1,9 @@
 package vp
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -35,7 +37,9 @@ type Presentation interface {
 	// - For embedded presentations: returns the JSON object with proof
 	Serialize() (interface{}, error)
 
-	ToJSON() ([]byte, error)
+	GetContents() ([]byte, error)
+
+	GetType() string
 }
 
 // JSONPresentation represents a W3C Verifiable Presentation as a JSON object.
@@ -79,16 +83,18 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 		return nil, fmt.Errorf("presentation is empty")
 	}
 
-	// try to parse as JWT
-	presentation, err := ParsePresentationJWT(string(rawPresentation), opts...)
-	if err == nil {
-		return presentation, nil
+	var valMap map[string]interface{}
+	err := json.Unmarshal(rawPresentation, &valMap)
+	if err == nil && valMap != nil {
+		return ParsePresentationEmbedded(rawPresentation, opts...)
 	}
 
-	// try to parse as embedded
-	presentation, err = ParsePresentationEmbedded(rawPresentation, opts...)
-	if err == nil {
-		return presentation, nil
+	valStr := string(rawPresentation)
+	// check valStr is a valid jwt token
+	// count the number of dots in valStr
+	dotCount := strings.Count(valStr, ".")
+	if dotCount > 0 && dotCount < 3 {
+		return ParsePresentationJWT(valStr, opts...)
 	}
 
 	return nil, fmt.Errorf("failed to parse presentation")

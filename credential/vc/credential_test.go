@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -983,4 +984,72 @@ func TestCreateJWTCredentialWithValidateSchemaFailNegativeSalary(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Expected validation error for negative salary, but got no error")
 	}
+}
+
+func TestParseCredentialWithEBSIJWTString(t *testing.T) {
+	vcJwt := "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NksiLCJraWQiOiJkaWQ6ZWJzaTp6YUE5Y1hycWlDRDRuM0FxWDR5RDdHZCNHQ29jRkZWWTVJS290QjNHYWU3MEV2ZU9hMlhzVllvcmZPZVJGOVFNZGtZIn0.eyJpYXQiOjE3MDU1NjU1ODksImV4cCI6MTk1Mzc2MzIwMCwianRpIjoidXJuOnV1aWQ6NzQxOWMxMDktMjg1YS00MjRkLWJiNjktMGJhYmFjNmJkNDQ0Iiwic3ViIjoiZGlkOmtleTp6QmhCTG1ZbXlpaHRvbVJkSkpORUt6YlBqNTFvNGEzR1lGZVpvUkhTQUJLVXdxZGppUVBZMmRtQ2d5UjY2RlQ4azI3QnlMMzJlaEtKaGRRUmdnOHJFZ2M5dTNlcUZidmlhbkVCS2NpVnhlM3VTNlZKOXBDdkhRSG9MUVFndUpzR1FVN2U3eDl0SlgySDJBU0Q2OXh5dDhkeVBNSlVBRWJkTmJHYTdHcVJxNmZQWWlLdHdDUjdneTIiLCJpc3MiOiJkaWQ6ZWJzaTp6YUE5Y1hycWlDRDRuM0FxWDR5RDdHZCIsIm5iZiI6MTcwNTU2NTU4OSwidmMiOnsiQGNvbnRleHQiOlsiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvdjEiXSwiaWQiOiJ1cm46dXVpZDo3NDE5YzEwOS0yODVhLTQyNGQtYmI2OS0wYmFiYWM2YmQ0NDQiLCJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIiwiVmVyaWZpYWJsZUF0dGVzdGF0aW9uIl0sImlzc3VlciI6ImRpZDplYnNpOnphQTljWHJxaUNENG4zQXFYNHlEN0dkIiwiaXNzdWFuY2VEYXRlIjoiMjAyNC0wMS0xOFQwODoxMzowOVoiLCJpc3N1ZWQiOiIyMDI0LTAxLTE4VDA4OjEzOjA5WiIsInZhbGlkRnJvbSI6IjIwMjQtMDEtMThUMDg6MTM6MDlaIiwiY3JlZGVudGlhbFN1YmplY3QiOnsiaWQiOiJkaWQ6a2V5OnpCaEJMbVlteWlodG9tUmRKSk5FS3piUGo1MW80YTNHWUZlWm9SSFNBQktVd3FkamlRUFkyZG1DZ3lSNjZGVDhrMjdCeUwzMmVoS0poZFFSZ2c4ckVnYzl1M2VxRmJ2aWFuRUJLY2lWeGUzdVM2Vko5cEN2SFFIb0xRUWd1SnNHUVU3ZTd4OXRKWDJIMkFTRDY5eHl0OGR5UE1KVUFFYmROYkdhN0dxUnE2ZlBZaUt0d0NSN2d5MiIsImZhbWlseU5hbWUiOiJEdWJvaXMiLCJmaXJzdE5hbWUiOiJTb3BoaWUiLCJkYXRlT2ZCaXJ0aCI6IjE5ODUtMDUtMjAiLCJwZXJzb25hbElkZW50aWZpZXIiOiI5ODc2NTQzMjEiLCJwbGFjZU9mQmlydGgiOnsiYWRkcmVzc0NvdW50cnkiOiJCRSIsImFkZHJlc3NSZWdpb24iOiJCUlUiLCJhZGRyZXNzTG9jYWxpdHkiOiJCcnVzc2VscyJ9LCJjdXJyZW50QWRkcmVzcyI6eyJhZGRyZXNzQ291bnRyeSI6IkJFIiwiYWRkcmVzc1JlZ2lvbiI6IlZCUiIsImFkZHJlc3NMb2NhbGl0eSI6IkxldXZlbiIsInBvc3RhbENvZGUiOiIzMDAwIiwic3RyZWV0QWRkcmVzcyI6IjQ1NiBFbG0gQXZlIiwiZnVsbEFkZHJlc3MiOiI0NTYgRWxtIEF2ZSwgTGV1dmVuLCBWQlIgMzAwMCwgQmVsZ2l1bSJ9LCJnZW5kZXIiOiJmZW1hbGUiLCJuYXRpb25hbGl0eSI6WyJCRSJdLCJhZ2VPdmVyMTgiOnRydWV9LCJjcmVkZW50aWFsU2NoZW1hIjp7ImlkIjoiaHR0cHM6Ly9hcGktY29uZm9ybWFuY2UuZWJzaS5ldS90cnVzdGVkLXNjaGVtYXMtcmVnaXN0cnkvdjMvc2NoZW1hcy96RHBXR1VCZW5tcVh6dXJza3J5OU5zazZ2cTJSOHRoaDlWU2VvUnFndW95TUQiLCJ0eXBlIjoiRnVsbEpzb25TY2hlbWFWYWxpZGF0b3IyMDIxIn0sImV4cGlyYXRpb25EYXRlIjoiMjAzMS0xMS0zMFQwMDowMDowMFoiLCJ0ZXJtc09mVXNlIjp7ImlkIjoiaHR0cHM6Ly9hcGktY29uZm9ybWFuY2UuZWJzaS5ldS90cnVzdGVkLWlzc3VlcnMtcmVnaXN0cnkvdjUvaXNzdWVycy9kaWQ6ZWJzaTp6YUE5Y1hycWlDRDRuM0FxWDR5RDdHZC9hdHRyaWJ1dGVzLzQzNzgzOWQxZjMwYjBhMzM1ODYxY2E4NTkwNmQ3OTVlZDQ5NmE0ZTc4MmFhOWQwZGRjYTAxMGI1N2ZhZTBmNDYiLCJ0eXBlIjoiSXNzdWFuY2VDZXJ0aWZpY2F0ZSJ9fX0.xliplm1xoDpo2zFm1IToeYybhZycYXG2J3i2oCEtfExHUIpKFeqNjVtPDkReHa5krg_wowe3VOlVdGv9HnocDQ"
+	vcBytes := []byte(vcJwt)
+	vcCredential, err := ParseCredential(vcBytes, WithEnableValidation())
+	if err != nil {
+		t.Fatalf("Failed to parse credential: %v", err)
+	}
+	assert.Equal(t, "JWT", vcCredential.GetType(), "Credential type should be JWT")
+
+	expectedPayload := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/2018/credentials/v1",
+		},
+		"id": "urn:uuid:7419c109-285a-424d-bb69-0babac6bd444",
+		"type": []interface{}{
+			"VerifiableCredential",
+			"VerifiableAttestation",
+		},
+		"issuer":       "did:ebsi:zaA9cXrqiCD4n3AqX4yD7Gd",
+		"issuanceDate": "2024-01-18T08:13:09Z",
+		"issued":       "2024-01-18T08:13:09Z",
+		"validFrom":    "2024-01-18T08:13:09Z",
+		"credentialSubject": map[string]interface{}{
+			"id":                 "did:key:zBhBLmYmyihtomRdJJNEKzbPj51o4a3GYFeZoRHSABKUwqdjiQPY2dmCgyR66FT8k27ByL32ehKJhdQRgg8rEgc9u3eqFbvianEBKciVxe3uS6VJ9pCvHQHoLQQguJsGQU7e7x9tJX2H2ASD69xyt8dyPMJUAEbdNbGa7GqRq6fPYiKtwCR7gy2",
+			"familyName":         "Dubois",
+			"firstName":          "Sophie",
+			"dateOfBirth":        "1985-05-20",
+			"personalIdentifier": "987654321",
+			"placeOfBirth": map[string]interface{}{
+				"addressCountry":  "BE",
+				"addressRegion":   "BRU",
+				"addressLocality": "Brussels",
+			},
+			"currentAddress": map[string]interface{}{
+				"addressCountry":  "BE",
+				"addressRegion":   "VBR",
+				"addressLocality": "Leuven",
+				"postalCode":      "3000",
+				"streetAddress":   "456 Elm Ave",
+				"fullAddress":     "456 Elm Ave, Leuven, VBR 3000, Belgium",
+			},
+			"gender":      "female",
+			"nationality": []interface{}{"BE"},
+			"ageOver18":   true,
+		},
+		"credentialSchema": map[string]interface{}{
+			"id":   "https://api-conformance.ebsi.eu/trusted-schemas-registry/v3/schemas/zDpWGUBenmqXzurskry9Nsk6vq2R8thh9VSeoRqguoyMD",
+			"type": "FullJsonSchemaValidator2021",
+		},
+		"expirationDate": "2031-11-30T00:00:00Z",
+		"termsOfUse": map[string]interface{}{
+			"id":   "https://api-conformance.ebsi.eu/trusted-issuers-registry/v5/issuers/did:ebsi:zaA9cXrqiCD4n3AqX4yD7Gd/attributes/437839d1f30b0a335861ca85906d795ed496a4e782aa9d0ddca010b57fae0f46",
+			"type": "IssuanceCertificate",
+		},
+	}
+
+	expectedPayloadBytes, err := json.Marshal(expectedPayload)
+	if err != nil {
+		t.Fatalf("Failed to marshal expected payload: %v", err)
+	}
+
+	contents, err := vcCredential.GetContents()
+	if err != nil {
+		t.Fatalf("Failed to get credential contents: %v", err)
+	}
+	assert.Equal(t, expectedPayloadBytes, contents, "Credential contents should be the same")
 }

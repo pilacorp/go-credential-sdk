@@ -1,7 +1,9 @@
 package vc
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -36,7 +38,9 @@ type Credential interface {
 	// - For embedded credentials: returns the JSON object with proof
 	Serialize() (interface{}, error)
 
-	ToJSON() ([]byte, error)
+	GetContents() ([]byte, error)
+
+	GetType() string
 }
 
 // Credential represents a W3C Credential as a JSON object.
@@ -105,17 +109,18 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 		return nil, fmt.Errorf("JSON string is empty")
 	}
 
-	// try to parse as JWT
-	rawCredentialStr := string(rawCredential)
-	credential, err := ParseCredentialJWT(rawCredentialStr, opts...)
-	if err == nil {
-		return credential, nil
+	var valMap map[string]interface{}
+	err := json.Unmarshal(rawCredential, &valMap)
+	if err == nil && valMap != nil {
+		return ParseCredentialEmbedded(rawCredential, opts...)
 	}
 
-	// try to parse as embedded
-	credential, err = ParseCredentialEmbedded(rawCredential, opts...)
-	if err == nil {
-		return credential, nil
+	valStr := string(rawCredential)
+	// check valStr is a valid jwt token
+	// count the number of dots in valStr
+	dotCount := strings.Count(valStr, ".")
+	if dotCount > 0 && dotCount < 3 {
+		return ParseCredentialJWT(valStr, opts...)
 	}
 
 	return nil, fmt.Errorf("failed to parse credential: not a valid JWT or embedded credential")

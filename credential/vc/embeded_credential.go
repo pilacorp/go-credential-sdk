@@ -126,6 +126,10 @@ func (e *EmbededCredential) Serialize() (interface{}, error) {
 	return map[string]interface{}(e.jsonCredential), nil
 }
 
-func (e *EmbededCredential) ToJSON() ([]byte, error) {
+func (e *EmbededCredential) GetContents() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.jsonCredential).ToJSON()
+}
+
+func (e *EmbededCredential) GetType() string {
+	return "Embedded"
 }

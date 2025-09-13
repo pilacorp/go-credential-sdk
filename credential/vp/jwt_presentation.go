@@ -141,7 +141,7 @@ func (j *JWTPresentation) Serialize() (interface{}, error) {
 	return fmt.Sprintf("%s.%s", signingInput, j.signature), nil
 }
 
-func (j *JWTPresentation) ToJSON() ([]byte, error) {
+func (j *JWTPresentation) GetContents() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&j.Payload).ToJSON()
 }
 
@@ -152,4 +152,8 @@ func CreatePresentationJWT(vpc PresentationContents, opts ...PresentationOpt) (P
 	}
 
 	return NewJWTPresentation(vpc, opts...)
+}
+
+func (j *JWTPresentation) GetType() string {
+	return "JWT"
 }

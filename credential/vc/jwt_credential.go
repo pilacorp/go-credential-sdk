@@ -94,12 +94,7 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 func (j *JWTCredential) GetSigningInput() ([]byte, error) {
 	signer := jwt.NewJWTSigner("", j.Payload["issuer"].(string))
 
-	signingInput, err := signer.SigningInput((jsonmap.JSONMap)(j.Payload), "vc")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get signing input: %w", err)
-	}
-
-	return []byte(signingInput), nil
+	return signer.SigningInput((jsonmap.JSONMap)(j.Payload), "vc")
 }
 
 func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
@@ -159,6 +154,10 @@ func (j *JWTCredential) Serialize() (interface{}, error) {
 	return fmt.Sprintf("%s.%s", signingInput, j.signature), nil
 }
 
-func (j *JWTCredential) ToJSON() ([]byte, error) {
+func (j *JWTCredential) GetContents() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&j.Payload).ToJSON()
+}
+
+func (j *JWTCredential) GetType() string {
+	return "JWT"
 }

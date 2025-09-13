@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -408,7 +409,7 @@ func parseStringField(obj jsonmap.JSONMap, fieldName string) (string, error) {
 func validateCredential(m jsonmap.JSONMap) error {
 	copyMap := util.ShallowCopyObj(m)
 
-	requiredKeys := []string{"type", "credentialSchema", "credentialSubject", "credentialStatus"}
+	requiredKeys := []string{"type", "credentialSchema", "credentialSubject"}
 	var schemaList []interface{}
 	for _, key := range requiredKeys {
 		if _, exists := copyMap[key]; !exists {
@@ -422,10 +423,13 @@ func validateCredential(m jsonmap.JSONMap) error {
 	for _, schema := range schemaList {
 		var schemaMap map[string]interface{}
 
-		if jsonMap, isJSONMap := schema.(jsonmap.JSONMap); isJSONMap {
-			schemaMap = map[string]interface{}(jsonMap)
-		} else {
-			return fmt.Errorf("credentialSchema must be an object or array")
+		marshalJsonMap, err := json.Marshal(schema)
+		if err != nil {
+			return fmt.Errorf("failed to marshal schema: %w", err)
+		}
+		err = json.Unmarshal(marshalJsonMap, &schemaMap)
+		if err != nil {
+			return fmt.Errorf("failed to unmarshal schema: %w", err)
 		}
 
 		if schemaMap["id"] == nil {

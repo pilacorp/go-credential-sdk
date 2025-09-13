@@ -11,6 +11,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestParsePresentation(t *testing.T) {
@@ -39,7 +40,7 @@ func TestParsePresentation(t *testing.T) {
 	// For embedded presentations, we can get the JSON directly
 	var vpByte []byte
 	if embeddedPres, ok := pParsed.(*vp.EmbeddedPresentation); ok {
-		vpByte, err = embeddedPres.ToJSON()
+		vpByte, err = embeddedPres.GetContents()
 		if err != nil {
 			t.Fatalf("ToJSON failed: %v", err)
 		}
@@ -160,9 +161,9 @@ func TestCreatePresentationWithContent(t *testing.T) {
 
 			// Get JSON from embedded presentation
 			embeddedPres := p.(*vp.EmbeddedPresentation)
-			data, err := embeddedPres.ToJSON()
+			data, err := embeddedPres.GetContents()
 			if err != nil {
-				t.Fatalf("ToJSON failed: %v", err)
+				t.Fatalf("GetContents failed: %v", err)
 			}
 
 			var m map[string]interface{}
@@ -221,9 +222,9 @@ func TestParsePresentationContents(t *testing.T) {
 
 	// Get JSON from embedded presentation
 	embeddedPres := pContent.(*vp.EmbeddedPresentation)
-	pJson, err := embeddedPres.ToJSON()
+	pJson, err := embeddedPres.GetContents()
 	if err != nil {
-		t.Fatalf("ToJSON failed: %v", err)
+		t.Fatalf("GetContents failed: %v", err)
 	}
 
 	p, err := vp.ParsePresentation(pJson)
@@ -233,9 +234,9 @@ func TestParsePresentationContents(t *testing.T) {
 
 	// Get JSON from embedded presentation and parse it
 	embeddedPres = p.(*vp.EmbeddedPresentation)
-	jsonData, err := embeddedPres.ToJSON()
+	jsonData, err := embeddedPres.GetContents()
 	if err != nil {
-		t.Fatalf("ToJSON failed: %v", err)
+		t.Fatalf("GetContents failed: %v", err)
 	}
 
 	var m map[string]interface{}
@@ -815,7 +816,7 @@ func TestEmbeddedPresentationFlow(t *testing.T) {
 	}
 
 	// 4. Use .ToJSON to convert VP to JSON and parse it into another VP
-	jsonData, err := presentation.ToJSON()
+	jsonData, err := presentation.GetContents()
 	if err != nil {
 		t.Fatalf("Failed to convert embedded presentation to JSON: %v", err)
 	}
@@ -834,7 +835,7 @@ func TestEmbeddedPresentationFlow(t *testing.T) {
 
 	// Verify the presentation data matches
 	parsedEmbeddedPres := parsedPresentation.(*vp.EmbeddedPresentation)
-	parsedJSONData, err := parsedEmbeddedPres.ToJSON()
+	parsedJSONData, err := parsedEmbeddedPres.GetContents()
 	if err != nil {
 		t.Fatalf("Failed to convert parsed presentation to JSON: %v", err)
 	}
@@ -888,7 +889,7 @@ func TestCreateEmbeddedPresentationOfTwoEmbeddedCredentials(t *testing.T) {
 	}
 
 	// Get JSON format
-	jsonData, err := presentation.ToJSON()
+	jsonData, err := presentation.GetContents()
 	if err != nil {
 		t.Fatalf("Failed to convert embedded presentation to JSON: %v", err)
 	}
@@ -906,7 +907,7 @@ func TestCreateEmbeddedPresentationOfTwoEmbeddedCredentials(t *testing.T) {
 	}
 
 	// println the json data
-	jsonData, err = parsedPresentation.ToJSON()
+	jsonData, err = parsedPresentation.GetContents()
 	if err != nil {
 		t.Fatalf("Failed to convert parsed embedded presentation to JSON: %v", err)
 	}
@@ -966,7 +967,7 @@ func TestJWTPresentationFlow(t *testing.T) {
 	}
 
 	// Parse the JWT into another VP
-	parsedPresentation, err := vp.ParsePresentation([]byte(jwtToken))
+	parsedPresentation, err := vp.ParsePresentation([]byte(jwtToken), vp.WithEnableValidation())
 	if err != nil {
 		t.Fatalf("Failed to parse JWT presentation: %v", err)
 	}
@@ -1059,4 +1060,39 @@ func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Cr
 	}
 
 	return embeddedVC, jwtVC
+}
+
+func TestParsePresentationWithEBSIJWTString(t *testing.T) {
+	jwtToken := "eyJ0eXAiOiJKV1QiLCJraWQiOiJkaWQ6a2V5OnpCaEJMbVlteWlodG9tUmRKSk5FS3piUGo1MW80YTNHWUZlWm9SSFNBQktVd3FkamlRUFkyZWU0dmN4djdzd0V0aGFBd3NhVVRtbTZxV1prR2t6QlFkRlBCa1RxWHB1NVBlY2t0YXljVTRxYThCN2NVaTJ5VmhGMXZ6MlA5ZDk3WlB2QWtxRzVhN3BWVlZVNlBUU1RmUDI0NEJ0SE5rUFVWOTdpcUZHZERSVHl1TGl6ZXVVeFF0ayN6QmhCTG1ZbXlpaHRvbVJkSkpORUt6YlBqNTFvNGEzR1lGZVpvUkhTQUJLVXdxZGppUVBZMmVlNHZjeHY3c3dFdGhhQXdzYVVUbW02cVdaa0drekJRZEZQQmtUcVhwdTVQZWNrdGF5Y1U0cWE4QjdjVWkyeVZoRjF2ejJQOWQ5N1pQdkFrcUc1YTdwVlZWVTZQVFNUZlAyNDRCdEhOa1BVVjk3aXFGR2REUlR5dUxpemV1VXhRdGsiLCJhbGciOiJFUzI1NksifQ.eyJpYXQiOjE3MjkwMDE4NTgsImV4cCI6MTk1Mzc2MzIwMCwianRpIjoidXJuOmRpZDoxMjM0NTYiLCJzdWIiOiJkaWQ6a2V5OnpCaEJMbVlteWlodG9tUmRKSk5FS3piUGo1MW80YTNHWUZlWm9SSFNBQktVd3FkamlRUFkyZWU0dmN4djdzd0V0aGFBd3NhVVRtbTZxV1prR2t6QlFkRlBCa1RxWHB1NVBlY2t0YXljVTRxYThCN2NVaTJ5VmhGMXZ6MlA5ZDk3WlB2QWtxRzVhN3BWVlZVNlBUU1RmUDI0NEJ0SE5rUFVWOTdpcUZHZERSVHl1TGl6ZXVVeFF0ayIsImlzcyI6ImRpZDprZXk6ekJoQkxtWW15aWh0b21SZEpKTkVLemJQajUxbzRhM0dZRmVab1JIU0FCS1V3cWRqaVFQWTJlZTR2Y3h2N3N3RXRoYUF3c2FVVG1tNnFXWmtHa3pCUWRGUEJrVHFYcHU1UGVja3RheWNVNHFhOEI3Y1VpMnlWaEYxdnoyUDlkOTdaUHZBa3FHNWE3cFZWVlU2UFRTVGZQMjQ0QnRITmtQVVY5N2lxRkdkRFJUeXVMaXpldVV4UXRrIiwiYXVkIjoiZGlkOmVic2k6enpjRENwNUQxUE5WQXNUUHZSaGp0eXYiLCJ2cCI6eyJpZCI6InVybjpkaWQ6MTIzNDU2IiwiQGNvbnRleHQiOlsiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvdjEiXSwidHlwZSI6WyJWZXJpZmlhYmxlUHJlc2VudGF0aW9uIl0sImhvbGRlciI6ImRpZDprZXk6ekJoQkxtWW15aWh0b21SZEpKTkVLemJQajUxbzRhM0dZRmVab1JIU0FCS1V3cWRqaVFQWTJlZTR2Y3h2N3N3RXRoYUF3c2FVVG1tNnFXWmtHa3pCUWRGUEJrVHFYcHU1UGVja3RheWNVNHFhOEI3Y1VpMnlWaEYxdnoyUDlkOTdaUHZBa3FHNWE3cFZWVlU2UFRTVGZQMjQ0QnRITmtQVVY5N2lxRkdkRFJUeXVMaXpldVV4UXRrIiwidmVyaWZpYWJsZUNyZWRlbnRpYWwiOlsiZXlKMGVYQWlPaUpLVjFRaUxDSmhiR2NpT2lKRlV6STFOa3NpTENKcmFXUWlPaUprYVdRNlpXSnphVHA2ZUdGWllWVjBZamh3ZG05QmRGbE9WMkpMWTNabFp5TkRTSGhaZWs5eGRETTRVM2cyV1VKbVVGbG9hVVZrWjJOM2VsZHJPWFI1TjJzd1RFSmhObWczTUc1akluMC5leUpwWVhRaU9qRTNNRFUxTmpVMU9Ea3NJbVY0Y0NJNk1UazFNemMyTXpJd01Dd2lhblJwSWpvaWRYSnVPblYxYVdRNk56UXhPV014TURrdE1qZzFZUzAwTWpSa0xXSmlOamt0TUdKaFltRmpObUprTkRRMElpd2ljM1ZpSWpvaVpHbGtPbXRsZVRwNlFtaENURzFaYlhscGFIUnZiVkprU2twT1JVdDZZbEJxTlRGdk5HRXpSMWxHWlZwdlVraFRRVUpMVlhkeFpHcHBVVkJaTW1WbE5IWmplSFkzYzNkRmRHaGhRWGR6WVZWVWJXMDJjVmRhYTBkcmVrSlJaRVpRUW10VWNWaHdkVFZRWldOcmRHRjVZMVUwY1dFNFFqZGpWV2t5ZVZab1JqRjJlakpRT1dRNU4xcFFka0ZyY1VjMVlUZHdWbFpXVlRaUVZGTlVabEF5TkRSQ2RFaE9hMUJWVmprM2FYRkdSMlJFVWxSNWRVeHBlbVYxVlhoUmRHc2lMQ0pwYzNNaU9pSmthV1E2WldKemFUcDZlR0ZaWVZWMFlqaHdkbTlCZEZsT1YySkxZM1psWnlJc0ltNWlaaUk2TVRjd05UVTJOVFU0T1N3aWRtTWlPbnNpUUdOdmJuUmxlSFFpT2xzaWFIUjBjSE02THk5M2QzY3Vkek11YjNKbkx6SXdNVGd2WTNKbFpHVnVkR2xoYkhNdmRqRWlYU3dpYVdRaU9pSjFjbTQ2ZFhWcFpEbzNOREU1WXpFd09TMHlPRFZoTFRReU5HUXRZbUkyT1Mwd1ltRmlZV00yWW1RME5EUWlMQ0owZVhCbElqcGJJbFpsY21sbWFXRmliR1ZEY21Wa1pXNTBhV0ZzSWl3aVZtVnlhV1pwWVdKc1pVRjBkR1Z6ZEdGMGFXOXVJbDBzSW1semMzVmxjaUk2SW1ScFpEcGxZbk5wT25wNFlWbGhWWFJpT0hCMmIwRjBXVTVYWWt0amRtVm5JaXdpYVhOemRXRnVZMlZFWVhSbElqb2lNakF5TkMwd01TMHhPRlF3T0RveE16b3dPVm9pTENKcGMzTjFaV1FpT2lJeU1ESTBMVEF4TFRFNFZEQTRPakV6T2pBNVdpSXNJblpoYkdsa1JuSnZiU0k2SWpJd01qUXRNREV0TVRoVU1EZzZNVE02TURsYUlpd2lZM0psWkdWdWRHbGhiRk4xWW1wbFkzUWlPbnNpYVdRaU9pSmthV1E2YTJWNU9ucENhRUpNYlZsdGVXbG9kRzl0VW1SS1NrNUZTM3BpVUdvMU1XODBZVE5IV1VabFdtOVNTRk5CUWt0VmQzRmthbWxSVUZreVpXVTBkbU40ZGpkemQwVjBhR0ZCZDNOaFZWUnRiVFp4VjFwclIydDZRbEZrUmxCQ2ExUnhXSEIxTlZCbFkydDBZWGxqVlRSeFlUaENOMk5WYVRKNVZtaEdNWFo2TWxBNVpEazNXbEIyUVd0eFJ6VmhOM0JXVmxaVk5sQlVVMVJtVURJME5FSjBTRTVyVUZWV09UZHBjVVpIWkVSU1ZIbDFUR2w2WlhWVmVGRjBheUlzSW1aaGJXbHNlVTVoYldVaU9pSkVkV0p2YVhNaUxDSm1hWEp6ZEU1aGJXVWlPaUpUYjNCb2FXVWlMQ0prWVhSbFQyWkNhWEowYUNJNklqRTVPRFV0TURVdE1qQWlMQ0p3WlhKemIyNWhiRWxrWlc1MGFXWnBaWElpT2lJNU9EYzJOVFF6TWpFaUxDSndiR0ZqWlU5bVFtbHlkR2dpT25zaVlXUmtjbVZ6YzBOdmRXNTBjbmtpT2lKQ1JTSXNJbUZrWkhKbGMzTlNaV2RwYjI0aU9pSkNVbFVpTENKaFpHUnlaWE56VEc5allXeHBkSGtpT2lKQ2NuVnpjMlZzY3lKOUxDSmpkWEp5Wlc1MFFXUmtjbVZ6Y3lJNmV5SmhaR1J5WlhOelEyOTFiblJ5ZVNJNklrSkZJaXdpWVdSa2NtVnpjMUpsWjJsdmJpSTZJbFpDVWlJc0ltRmtaSEpsYzNOTWIyTmhiR2wwZVNJNklreGxkWFpsYmlJc0luQnZjM1JoYkVOdlpHVWlPaUl6TURBd0lpd2ljM1J5WldWMFFXUmtjbVZ6Y3lJNklqUTFOaUJGYkcwZ1FYWmxJaXdpWm5Wc2JFRmtaSEpsYzNNaU9pSTBOVFlnUld4dElFRjJaU3dnVEdWMWRtVnVMQ0JXUWxJZ016QXdNQ3dnUW1Wc1oybDFiU0o5TENKblpXNWtaWElpT2lKbVpXMWhiR1VpTENKdVlYUnBiMjVoYkdsMGVTSTZXeUpDUlNKZExDSmhaMlZQZG1WeU1UZ2lPblJ5ZFdWOUxDSmpjbVZrWlc1MGFXRnNVMk5vWlcxaElqcDdJbWxrSWpvaWFIUjBjSE02THk5aGNHa3RjR2xzYjNRdVpXSnphUzVsZFM5MGNuVnpkR1ZrTFhOamFHVnRZWE10Y21WbmFYTjBjbmt2ZGpNdmMyTm9aVzFoY3k5NlJIQlhSMVZDWlc1dGNWaDZkWEp6YTNKNU9VNXpheloyY1RKU09IUm9hRGxXVTJWdlVuRm5kVzk1VFVRaUxDSjBlWEJsSWpvaVJuVnNiRXB6YjI1VFkyaGxiV0ZXWVd4cFpHRjBiM0l5TURJeEluMHNJbVY0Y0dseVlYUnBiMjVFWVhSbElqb2lNakF6TVMweE1TMHpNRlF3TURvd01Eb3dNRm9pTENKMFpYSnRjMDltVlhObElqcDdJbWxrSWpvaWFIUjBjSE02THk5aGNHa3RjR2xzYjNRdVpXSnphUzVsZFM5MGNuVnpkR1ZrTFdsemMzVmxjbk10Y21WbmFYTjBjbmt2ZGpVdmFYTnpkV1Z5Y3k5a2FXUTZaV0p6YVRwNmVHRlpZVlYwWWpod2RtOUJkRmxPVjJKTFkzWmxaeTloZEhSeWFXSjFkR1Z6TDJJME1HWmtPV0kwTURRME1UaGhORFJrTW1RNU9URXhNemMzWVRBek1UTXdaR1JsTkRVd1pXSTFORFpqTnpVMVlqVmlPREJoWTJRM09ESTVNREpsTm1RaUxDSjBlWEJsSWpvaVNYTnpkV0Z1WTJWRFpYSjBhV1pwWTJGMFpTSjlmWDAuVnZjTnVXajVXcG9Td25EYWd1Ti12cHpUa0JwUFV6NEtJQi1BdnJ4UzZnSjkxZzdONHphSndKdDNvLUcwNWR6NklXbktRY3M0LUZJeDdMU0t0ZWd0MnciXX0sIm5iZiI6MTcwNTU2NTU4OX0.2y5gVQ3hloo9r4mZ39gnlgDBMY2NnKEEOPxN4QZluucWhxPN0GOgJS2A5vUPvSz7XQ1XAQd1VtQkTD0UDLihLA"
+	vpBytes := []byte(jwtToken)
+	// parse the jwt token
+	presentation, err := vp.ParsePresentation(vpBytes)
+	if err != nil {
+		t.Fatalf("Failed to parse presentation: %v", err)
+	}
+	assert.Equal(t, presentation.GetType(), "JWT")
+
+	expectedPayload := map[string]interface{}{
+		"id": "urn:did:123456",
+		"@context": []interface{}{
+			"https://www.w3.org/2018/credentials/v1",
+		},
+		"type": []interface{}{
+			"VerifiablePresentation",
+		},
+		"holder": "did:key:zBhBLmYmyihtomRdJJNEKzbPj51o4a3GYFeZoRHSABKUwqdjiQPY2ee4vcxv7swEthaAwsaUTmm6qWZkGkzBQdFPBkTqXpu5PecktaycU4qa8B7cUi2yVhF1vz2P9d97ZPvAkqG5a7pVVVU6PTSTfP244BtHNkPUV97iqFGdDRTyuLizeuUxQtk",
+		"verifiableCredential": []interface{}{
+			"eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NksiLCJraWQiOiJkaWQ6ZWJzaTp6eGFZYVV0Yjhwdm9BdFlOV2JLY3ZlZyNDSHhZek9xdDM4U3g2WUJmUFloaUVkZ2N3eldrOXR5N2swTEJhNmg3MG5jIn0.eyJpYXQiOjE3MDU1NjU1ODksImV4cCI6MTk1Mzc2MzIwMCwianRpIjoidXJuOnV1aWQ6NzQxOWMxMDktMjg1YS00MjRkLWJiNjktMGJhYmFjNmJkNDQ0Iiwic3ViIjoiZGlkOmtleTp6QmhCTG1ZbXlpaHRvbVJkSkpORUt6YlBqNTFvNGEzR1lGZVpvUkhTQUJLVXdxZGppUVBZMmVlNHZjeHY3c3dFdGhhQXdzYVVUbW02cVdaa0drekJRZEZQQmtUcVhwdTVQZWNrdGF5Y1U0cWE4QjdjVWkyeVZoRjF2ejJQOWQ5N1pQdkFrcUc1YTdwVlZWVTZQVFNUZlAyNDRCdEhOa1BVVjk3aXFGR2REUlR5dUxpemV1VXhRdGsiLCJpc3MiOiJkaWQ6ZWJzaTp6eGFZYVV0Yjhwdm9BdFlOV2JLY3ZlZyIsIm5iZiI6MTcwNTU2NTU4OSwidmMiOnsiQGNvbnRleHQiOlsiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvdjEiXSwiaWQiOiJ1cm46dXVpZDo3NDE5YzEwOS0yODVhLTQyNGQtYmI2OS0wYmFiYWM2YmQ0NDQiLCJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIiwiVmVyaWZpYWJsZUF0dGVzdGF0aW9uIl0sImlzc3VlciI6ImRpZDplYnNpOnp4YVlhVXRiOHB2b0F0WU5XYktjdmVnIiwiaXNzdWFuY2VEYXRlIjoiMjAyNC0wMS0xOFQwODoxMzowOVoiLCJpc3N1ZWQiOiIyMDI0LTAxLTE4VDA4OjEzOjA5WiIsInZhbGlkRnJvbSI6IjIwMjQtMDEtMThUMDg6MTM6MDlaIiwiY3JlZGVudGlhbFN1YmplY3QiOnsiaWQiOiJkaWQ6a2V5OnpCaEJMbVlteWlodG9tUmRKSk5FS3piUGo1MW80YTNHWUZlWm9SSFNBQktVd3FkamlRUFkyZWU0dmN4djdzd0V0aGFBd3NhVVRtbTZxV1prR2t6QlFkRlBCa1RxWHB1NVBlY2t0YXljVTRxYThCN2NVaTJ5VmhGMXZ6MlA5ZDk3WlB2QWtxRzVhN3BWVlZVNlBUU1RmUDI0NEJ0SE5rUFVWOTdpcUZHZERSVHl1TGl6ZXVVeFF0ayIsImZhbWlseU5hbWUiOiJEdWJvaXMiLCJmaXJzdE5hbWUiOiJTb3BoaWUiLCJkYXRlT2ZCaXJ0aCI6IjE5ODUtMDUtMjAiLCJwZXJzb25hbElkZW50aWZpZXIiOiI5ODc2NTQzMjEiLCJwbGFjZU9mQmlydGgiOnsiYWRkcmVzc0NvdW50cnkiOiJCRSIsImFkZHJlc3NSZWdpb24iOiJCUlUiLCJhZGRyZXNzTG9jYWxpdHkiOiJCcnVzc2VscyJ9LCJjdXJyZW50QWRkcmVzcyI6eyJhZGRyZXNzQ291bnRyeSI6IkJFIiwiYWRkcmVzc1JlZ2lvbiI6IlZCUiIsImFkZHJlc3NMb2NhbGl0eSI6IkxldXZlbiIsInBvc3RhbENvZGUiOiIzMDAwIiwic3RyZWV0QWRkcmVzcyI6IjQ1NiBFbG0gQXZlIiwiZnVsbEFkZHJlc3MiOiI0NTYgRWxtIEF2ZSwgTGV1dmVuLCBWQlIgMzAwMCwgQmVsZ2l1bSJ9LCJnZW5kZXIiOiJmZW1hbGUiLCJuYXRpb25hbGl0eSI6WyJCRSJdLCJhZ2VPdmVyMTgiOnRydWV9LCJjcmVkZW50aWFsU2NoZW1hIjp7ImlkIjoiaHR0cHM6Ly9hcGktcGlsb3QuZWJzaS5ldS90cnVzdGVkLXNjaGVtYXMtcmVnaXN0cnkvdjMvc2NoZW1hcy96RHBXR1VCZW5tcVh6dXJza3J5OU5zazZ2cTJSOHRoaDlWU2VvUnFndW95TUQiLCJ0eXBlIjoiRnVsbEpzb25TY2hlbWFWYWxpZGF0b3IyMDIxIn0sImV4cGlyYXRpb25EYXRlIjoiMjAzMS0xMS0zMFQwMDowMDowMFoiLCJ0ZXJtc09mVXNlIjp7ImlkIjoiaHR0cHM6Ly9hcGktcGlsb3QuZWJzaS5ldS90cnVzdGVkLWlzc3VlcnMtcmVnaXN0cnkvdjUvaXNzdWVycy9kaWQ6ZWJzaTp6eGFZYVV0Yjhwdm9BdFlOV2JLY3ZlZy9hdHRyaWJ1dGVzL2I0MGZkOWI0MDQ0MThhNDRkMmQ5OTExMzc3YTAzMTMwZGRlNDUwZWI1NDZjNzU1YjViODBhY2Q3ODI5MDJlNmQiLCJ0eXBlIjoiSXNzdWFuY2VDZXJ0aWZpY2F0ZSJ9fX0.VvcNuWj5WpoSwnDaguN-vpzTkBpPUz4KIB-AvrxS6gJ91g7N4zaJwJt3o-G05dz6IWnKQcs4-FIx7LSKtegt2w",
+		},
+	}
+	expectedPayloadBytes, err := json.Marshal(expectedPayload)
+	if err != nil {
+		t.Fatalf("Failed to marshal expected payload: %v", err)
+	}
+
+	contents, err := presentation.GetContents()
+	if err != nil {
+		t.Fatalf("Failed to get contents: %v", err)
+	}
+	assert.Equal(t, string(contents), string(expectedPayloadBytes))
 }

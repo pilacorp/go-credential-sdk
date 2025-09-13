@@ -26,7 +26,7 @@ func NewJWTSigner(privKeyHex, issuerDID string) *JWTSigner {
 	}
 }
 
-func (s *JWTSigner) SigningInput(docJSONMap jsonmap.JSONMap, docType string) (string, error) {
+func (s *JWTSigner) SigningInput(docJSONMap jsonmap.JSONMap, docType string) ([]byte, error) {
 	// Register the ES256K signing method
 	jwt.RegisterSigningMethod(ES256K.Alg(), func() jwt.SigningMethod {
 		return ES256K
@@ -50,7 +50,12 @@ func (s *JWTSigner) SigningInput(docJSONMap jsonmap.JSONMap, docType string) (st
 	token.Header["typ"] = "JWT"
 	token.Header["kid"] = s.GetKeyID()
 
-	return token.SigningString()
+	signingInput, err := token.SigningString()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get signing input: %w", err)
+	}
+
+	return []byte(signingInput), nil
 }
 
 // SignDocument signs a verifiable document (VC or VP) as JWT from JSONMap

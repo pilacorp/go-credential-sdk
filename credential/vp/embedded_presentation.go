@@ -116,7 +116,7 @@ func (e *EmbeddedPresentation) Serialize() (interface{}, error) {
 	return map[string]interface{}(e.jsonPresentation), nil
 }
 
-func (e *EmbeddedPresentation) ToJSON() ([]byte, error) {
+func (e *EmbeddedPresentation) GetContents() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.jsonPresentation).ToJSON()
 }
 
@@ -127,4 +127,8 @@ func CreatePresentationEmbedded(vpc PresentationContents, opts ...PresentationOp
 	}
 
 	return NewEmbeddedPresentation(vpc)
+}
+
+func (e *EmbeddedPresentation) GetType() string {
+	return "Embedded"
 }
