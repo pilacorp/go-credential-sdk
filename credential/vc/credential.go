@@ -119,7 +119,7 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 	// check valStr is a valid jwt token
 	// count the number of dots in valStr
 	dotCount := strings.Count(valStr, ".")
-	if dotCount > 0 && dotCount < 3 {
+	if dotCount == 2 || dotCount == 3 {
 		return ParseCredentialJWT(valStr, opts...)
 	}
 

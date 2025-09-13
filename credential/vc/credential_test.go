@@ -120,7 +120,7 @@ func TestParseCredential(t *testing.T) {
 				assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "Credential mismatch")
 			} else if _, ok := result.(*JWTCredential); ok {
 				jwtCred := result.(*JWTCredential)
-				assert.Equal(t, tt.expected, jsonmap.JSONMap(jwtCred.Payload), "Credential mismatch")
+				assert.Equal(t, tt.expected, jsonmap.JSONMap(jwtCred.PayloadData), "Credential mismatch")
 			}
 		})
 	}
@@ -519,8 +519,8 @@ func TestCreateCredentialJWT(t *testing.T) {
 
 	// For JWT credentials, we can check the payload directly
 	jwtCred := parsedCredential.(*JWTCredential)
-	assert.Equal(t, credentialContents.ID, jwtCred.Payload["id"], "Credential ID should match")
-	assert.Equal(t, credentialContents.Issuer, jwtCred.Payload["issuer"], "Issuer should match")
+	assert.Equal(t, credentialContents.ID, jwtCred.PayloadData["id"], "Credential ID should match")
+	assert.Equal(t, credentialContents.Issuer, jwtCred.PayloadData["issuer"], "Issuer should match")
 
 	// Verify the credential
 	err = credential.Verify()
@@ -1052,4 +1052,9 @@ func TestParseCredentialWithEBSIJWTString(t *testing.T) {
 		t.Fatalf("Failed to get credential contents: %v", err)
 	}
 	assert.Equal(t, expectedPayloadBytes, contents, "Credential contents should be the same")
+
+	err = vcCredential.Verify(WithEnableValidation(), WithBaseURL("https://api-conformance.ebsi.eu/did-registry/v5/identifiers"))
+	if err != nil {
+		t.Fatalf("Failed to verify credential: %v", err)
+	}
 }

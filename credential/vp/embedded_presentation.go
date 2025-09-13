@@ -88,7 +88,7 @@ func (e *EmbeddedPresentation) Verify(opts ...PresentationOpt) error {
 		opt(options)
 	}
 
-	isValid, err := (*jsonmap.JSONMap)(&e.jsonPresentation).VerifyProof(config.BaseURL)
+	isValid, err := (*jsonmap.JSONMap)(&e.jsonPresentation).VerifyProof(options.didBaseURL)
 	if err != nil {
 		return err
 	}

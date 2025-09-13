@@ -8,7 +8,6 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // SigningMethodES256K implements JWT signing using ES256K algorithm
@@ -21,7 +20,7 @@ func (m *SigningMethodES256K) Alg() string {
 func (m *SigningMethodES256K) Verify(signingString string, signature []byte, key interface{}) error {
 	ecdsaKey, ok := key.(*ecdsa.PublicKey)
 	if !ok {
-		return jwt.ErrInvalidKeyType
+		return fmt.Errorf("invalid key type: expected *ecdsa.PublicKey")
 	}
 
 	hasher := sha256.New()
@@ -36,7 +35,7 @@ func (m *SigningMethodES256K) Verify(signingString string, signature []byte, key
 	s := new(big.Int).SetBytes(signature[32:])
 
 	if !ecdsa.Verify(ecdsaKey, digest, r, s) {
-		return jwt.ErrSignatureInvalid
+		return fmt.Errorf("signature verification failed")
 	}
 
 	return nil
@@ -45,7 +44,7 @@ func (m *SigningMethodES256K) Verify(signingString string, signature []byte, key
 func (m *SigningMethodES256K) Sign(signingString string, key interface{}) ([]byte, error) {
 	privKeyHex, ok := key.(string)
 	if !ok {
-		return nil, jwt.ErrInvalidKeyType
+		return nil, fmt.Errorf("invalid key type: expected string")
 	}
 
 	privKeyBytes, err := hex.DecodeString(privKeyHex)

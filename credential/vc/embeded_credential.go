@@ -14,17 +14,17 @@ type EmbededCredential struct {
 }
 
 func NewEmbededCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
-	m, err := serializeCredentialContents(&vcc)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
-	}
-
 	options := &credentialOptions{
 		validate:   false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
 		opt(options)
+	}
+
+	m, err := serializeCredentialContents(&vcc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}
 
 	if options.validate {
@@ -37,6 +37,14 @@ func NewEmbededCredential(vcc CredentialContents, opts ...CredentialOpt) (Creden
 }
 
 func ParseCredentialEmbedded(rawJSON []byte, opts ...CredentialOpt) (Credential, error) {
+	options := &credentialOptions{
+		validate:   false,
+		didBaseURL: config.BaseURL,
+	}
+	for _, opt := range opts {
+		opt(options)
+	}
+
 	if len(rawJSON) == 0 {
 		return nil, fmt.Errorf("JSON string is empty")
 	}
@@ -44,14 +52,6 @@ func ParseCredentialEmbedded(rawJSON []byte, opts ...CredentialOpt) (Credential,
 	var m jsonmap.JSONMap
 	if err := json.Unmarshal(rawJSON, &m); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal credential: %w", err)
-	}
-
-	options := &credentialOptions{
-		validate:   false,
-		didBaseURL: config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
 	}
 
 	if options.validate {
@@ -67,6 +67,9 @@ func (e *EmbededCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	options := &credentialOptions{
 		validate:   false,
 		didBaseURL: config.BaseURL,
+	}
+	for _, opt := range opts {
+		opt(options)
 	}
 
 	return (*jsonmap.JSONMap)(&e.jsonCredential).AddECDSAProof(priv, e.getVerificationMethod(), "assertionMethod", options.didBaseURL)
@@ -99,7 +102,7 @@ func (e *EmbededCredential) Verify(opts ...CredentialOpt) error {
 		opt(options)
 	}
 
-	isValid, err := (*jsonmap.JSONMap)(&e.jsonCredential).VerifyProof(config.BaseURL)
+	isValid, err := (*jsonmap.JSONMap)(&e.jsonCredential).VerifyProof(options.didBaseURL)
 	if err != nil {
 		return err
 	}

@@ -2,13 +2,13 @@ package jwt
 
 import (
 	"crypto/ecdsa"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -25,54 +25,72 @@ func NewJWTVerifier(didResolverURL string) *JWTVerifier {
 }
 
 // VerifyJWT verifies a JWT token and returns the claims as JSONMap
-func (v *JWTVerifier) VerifyJWT(tokenString string) (jsonmap.JSONMap, error) {
-	// Register the ES256K signing method
-	jwt.RegisterSigningMethod(ES256K.Alg(), func() jwt.SigningMethod {
-		return ES256K
-	})
+func (v *JWTVerifier) VerifyJWT(tokenString string) error {
+	// Split JWT into parts
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
+	}
 
-	claims := jwt.MapClaims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, v.getKey)
+	headerEncoded := parts[0]
+	payloadEncoded := parts[1]
+	signatureEncoded := parts[2]
+
+	// Decode and parse header
+	headerBytes, err := base64.RawURLEncoding.DecodeString(headerEncoded)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse JWT: %w", err)
+		return fmt.Errorf("failed to decode header: %w", err)
 	}
 
-	if !token.Valid {
-		return nil, fmt.Errorf("token is invalid")
-	}
-
-	return jsonmap.JSONMap(claims), nil
-}
-
-// VerifyDocument verifies a verifiable document JWT and returns the document as JSONMap
-func (v *JWTVerifier) VerifyDocument(tokenString string, docType string) error {
-	claims, err := v.VerifyJWT(tokenString)
+	var header map[string]interface{}
+	err = json.Unmarshal(headerBytes, &header)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to unmarshal header: %w", err)
 	}
 
-	// Extract the document from claims (try both vc and vp)
-	var docData interface{}
-	docData, ok := claims[docType]
-	if !ok {
-		return fmt.Errorf("%s claim not found in JWT", docType)
+	// Decode and parse payload
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadEncoded)
+	if err != nil {
+		return fmt.Errorf("failed to decode payload: %w", err)
 	}
 
-	_, ok = docData.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("verifiable document is not a valid JSON object")
+	var payload map[string]interface{}
+	err = json.Unmarshal(payloadBytes, &payload)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal payload: %w", err)
+	}
+
+	// Verify signature
+	signingString := headerEncoded + "." + payloadEncoded
+	signature, err := base64.RawURLEncoding.DecodeString(signatureEncoded)
+	if err != nil {
+		return fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	// Get public key from header
+	publicKey, err := v.getPublicKeyFromHeader(header)
+	if err != nil {
+		return fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	// Verify signature using ES256K
+	err = ES256K.Verify(signingString, signature, publicKey)
+	if err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
 	}
 
 	return nil
 }
 
-// getKey retrieves the public key for JWT verification
-func (v *JWTVerifier) getKey(token *jwt.Token) (interface{}, error) {
-	if _, ok := token.Method.(*SigningMethodES256K); !ok {
-		return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+// getPublicKeyFromHeader retrieves the public key from JWT header
+func (v *JWTVerifier) getPublicKeyFromHeader(header map[string]interface{}) (*ecdsa.PublicKey, error) {
+	// Check algorithm
+	alg, ok := header["alg"].(string)
+	if !ok || alg != "ES256K" {
+		return nil, fmt.Errorf("unexpected signing method: %v", header["alg"])
 	}
 
-	kid, ok := token.Header["kid"].(string)
+	kid, ok := header["kid"].(string)
 	if !ok {
 		return nil, fmt.Errorf("kid header not found")
 	}
