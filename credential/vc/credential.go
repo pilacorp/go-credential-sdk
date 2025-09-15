@@ -112,7 +112,7 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 
 	if isEmbedded(rawCredential) {
 
-		return ParseCredentialEmbedded(rawCredential, opts...)
+		return ParseCredentialJSON(rawCredential, opts...)
 	}
 
 	valStr := string(rawCredential)

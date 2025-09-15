@@ -8,12 +8,12 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 )
 
-type EmbededCredential struct {
-	jsonCredential JSONCredential
+type JSONCredentialStruct struct {
+	jsonCredential jsonmap.JSONMap
 	proof          *dto.Proof
 }
 
-func NewEmbededCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
+func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
 	options := &credentialOptions{
 		validate:   false,
 		didBaseURL: config.BaseURL,
@@ -33,10 +33,10 @@ func NewEmbededCredential(vcc CredentialContents, opts ...CredentialOpt) (Creden
 		}
 	}
 
-	return &EmbededCredential{jsonCredential: JSONCredential(m)}, nil
+	return &JSONCredentialStruct{jsonCredential: m}, nil
 }
 
-func ParseCredentialEmbedded(rawJSON []byte, opts ...CredentialOpt) (Credential, error) {
+func ParseCredentialJSON(rawJSON []byte, opts ...CredentialOpt) (Credential, error) {
 	options := &credentialOptions{
 		validate:   false,
 		didBaseURL: config.BaseURL,
@@ -60,10 +60,10 @@ func ParseCredentialEmbedded(rawJSON []byte, opts ...CredentialOpt) (Credential,
 		}
 	}
 
-	return &EmbededCredential{jsonCredential: JSONCredential(m)}, nil
+	return &JSONCredentialStruct{jsonCredential: m}, nil
 }
 
-func (e *EmbededCredential) AddProof(priv string, opts ...CredentialOpt) error {
+func (e *JSONCredentialStruct) AddProof(priv string, opts ...CredentialOpt) error {
 	options := &credentialOptions{
 		validate:   false,
 		didBaseURL: config.BaseURL,
@@ -75,15 +75,15 @@ func (e *EmbededCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	return (*jsonmap.JSONMap)(&e.jsonCredential).AddECDSAProof(priv, e.getVerificationMethod(), "assertionMethod", options.didBaseURL)
 }
 
-func (e *EmbededCredential) getVerificationMethod() string {
+func (e *JSONCredentialStruct) getVerificationMethod() string {
 	return fmt.Sprintf("%s#%s", e.jsonCredential["issuer"].(string), "key-1")
 }
 
-func (e *EmbededCredential) GetSigningInput() ([]byte, error) {
+func (e *JSONCredentialStruct) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.jsonCredential).Canonicalize()
 }
 
-func (e *EmbededCredential) AddCustomProof(proof *dto.Proof) error {
+func (e *JSONCredentialStruct) AddCustomProof(proof *dto.Proof) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
@@ -93,7 +93,7 @@ func (e *EmbededCredential) AddCustomProof(proof *dto.Proof) error {
 	return (*jsonmap.JSONMap)(&e.jsonCredential).AddCustomProof(e.proof)
 }
 
-func (e *EmbededCredential) Verify(opts ...CredentialOpt) error {
+func (e *JSONCredentialStruct) Verify(opts ...CredentialOpt) error {
 	options := &credentialOptions{
 		validate:   false,
 		didBaseURL: config.BaseURL,
@@ -119,7 +119,7 @@ func (e *EmbededCredential) Verify(opts ...CredentialOpt) error {
 	return nil
 }
 
-func (e *EmbededCredential) Serialize() (interface{}, error) {
+func (e *JSONCredentialStruct) Serialize() (interface{}, error) {
 	// Check if credential has proof
 	if e.jsonCredential["proof"] == nil {
 		return nil, fmt.Errorf("credential must have proof before serialization")
@@ -129,10 +129,10 @@ func (e *EmbededCredential) Serialize() (interface{}, error) {
 	return map[string]interface{}(e.jsonCredential), nil
 }
 
-func (e *EmbededCredential) GetContents() ([]byte, error) {
+func (e *JSONCredentialStruct) GetContents() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.jsonCredential).ToJSON()
 }
 
-func (e *EmbededCredential) GetType() string {
-	return "Embedded"
+func (e *JSONCredentialStruct) GetType() string {
+	return "JSON"
 }
