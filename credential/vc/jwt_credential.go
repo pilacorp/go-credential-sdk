@@ -15,32 +15,32 @@ type JWTHeaders map[string]interface{}
 
 type JWTCredential struct {
 	SigningInput string         // JWT header.payload (base64 encoded)
-	PayloadData  JSONCredential // Parsed payload as JSONCredential
+	PayloadData  CredentialData // Parsed payload as CredentialData
 	Signature    string         // JWT signature (if signed)
 }
 
 func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
 	options := &credentialOptions{
-		validate:   false,
-		didBaseURL: config.BaseURL,
+		isValidateSchema: false,
+		didBaseURL:       config.BaseURL,
 	}
 	for _, opt := range opts {
 		opt(options)
 	}
 
-	// Convert CredentialContents to JSONCredential
+	// Convert CredentialContents to CredentialData
 	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}
 
-	if options.validate {
+	if options.isValidateSchema {
 		if err := validateCredential(m); err != nil {
 			return nil, fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}
 
-	payloadData := JSONCredential(m)
+	payloadData := CredentialData(m)
 
 	// Extract other claims from credentialContents
 	otherClaims := map[string]interface{}{}
@@ -101,9 +101,13 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 }
 
 func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error) {
+	if !isJWTCredential(rawJWT) {
+		return nil, fmt.Errorf("invalid JWT format")
+	}
+
 	options := &credentialOptions{
-		validate:   false,
-		didBaseURL: config.BaseURL,
+		isValidateSchema: false,
+		didBaseURL:       config.BaseURL,
 	}
 	for _, opt := range opts {
 		opt(options)
@@ -115,9 +119,6 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 
 	// Split JWT into parts
 	parts := strings.Split(rawJWT, ".")
-	if len(parts) < 2 || len(parts) > 3 {
-		return nil, fmt.Errorf("invalid JWT format: expected 2 or 3 parts, got %d", len(parts))
-	}
 
 	// Extract the payload and header
 	headerEncoded := parts[0]
@@ -150,8 +151,8 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 		return nil, fmt.Errorf("vc claim is not a valid JSON object")
 	}
 
-	if options.validate {
-		if err := validateCredential(jsonmap.JSONMap(vcMap)); err != nil {
+	if options.isValidateSchema {
+		if err := validateCredential(vcMap); err != nil {
 			return nil, fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}
@@ -162,15 +163,15 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 	// Return JWTCredential
 	return &JWTCredential{
 		SigningInput: signingInput,
-		PayloadData:  JSONCredential(vcMap),
+		PayloadData:  CredentialData(vcMap),
 		Signature:    signature,
 	}, nil
 }
 
 func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	options := &credentialOptions{
-		validate:   false,
-		didBaseURL: config.BaseURL,
+		isValidateSchema: false,
+		didBaseURL:       config.BaseURL,
 	}
 	for _, opt := range opts {
 		opt(options)
@@ -216,8 +217,8 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
 
 func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 	options := &credentialOptions{
-		validate:   false,
-		didBaseURL: config.BaseURL,
+		isValidateSchema: false,
+		didBaseURL:       config.BaseURL,
 	}
 	for _, opt := range opts {
 		opt(options)
@@ -236,8 +237,8 @@ func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 		return err
 	}
 
-	if options.validate {
-		if err := validateCredential(jsonmap.JSONMap(j.PayloadData)); err != nil {
+	if options.isValidateSchema {
+		if err := validateCredential(j.PayloadData); err != nil {
 			return fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}

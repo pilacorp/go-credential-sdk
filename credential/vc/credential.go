@@ -43,8 +43,8 @@ type Credential interface {
 	GetType() string
 }
 
-// Credential represents a W3C Credential as a JSON object.
-type JSONCredential jsonmap.JSONMap
+// CredentialData represents credential data in JSON format (suitable for both JWT and JSON credentials).
+type CredentialData jsonmap.JSONMap
 
 // CredentialContents represents the structured contents of a Credential.
 type CredentialContents struct {
@@ -85,8 +85,8 @@ type CredentialOpt func(*credentialOptions)
 
 // credentialOptions holds configuration for credential processing.
 type credentialOptions struct {
-	validate   bool
-	didBaseURL string
+	isValidateSchema bool
+	didBaseURL       string
 }
 
 // WithBaseURL sets the DID base URL for credential processing.
@@ -96,10 +96,10 @@ func WithBaseURL(baseURL string) CredentialOpt {
 	}
 }
 
-// WithEnableValidation enables schema validation during credential parsing.
-func WithEnableValidation() CredentialOpt {
+// WithSchemaValidation enables schema validation during credential parsing.
+func WithSchemaValidation() CredentialOpt {
 	return func(c *credentialOptions) {
-		c.validate = true
+		c.isValidateSchema = true
 	}
 }
 
@@ -110,13 +110,13 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 		return nil, fmt.Errorf("JSON string is empty")
 	}
 
-	if isEmbedded(rawCredential) {
+	if isJSONCredential(rawCredential) {
 
-		return ParseCredentialJSON(rawCredential, opts...)
+		return ParseJSONCredential(rawCredential, opts...)
 	}
 
 	valStr := string(rawCredential)
-	if isJWT(valStr) {
+	if isJWTCredential(valStr) {
 
 		return ParseCredentialJWT(valStr, opts...)
 	}
@@ -124,11 +124,11 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 	return nil, fmt.Errorf("failed to parse credential: not a valid JWT or embedded credential")
 }
 
-func isEmbedded(rawCredential []byte) bool {
+func isJSONCredential(rawCredential []byte) bool {
 	return json.Valid(rawCredential)
 }
 
-func isJWT(valStr string) bool {
+func isJWTCredential(valStr string) bool {
 	regex := `^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$`
 	match, _ := regexp.MatchString(regex, valStr)
 	return match

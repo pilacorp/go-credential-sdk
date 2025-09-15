@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
-	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 )
 
@@ -31,7 +30,7 @@ func TestParseCredential(t *testing.T) {
 		name        string
 		inputJSON   []byte
 		opts        []CredentialOpt
-		expected    jsonmap.JSONMap
+		expected    CredentialData
 		expectError bool
 		errorMsg    string
 	}{
@@ -39,7 +38,7 @@ func TestParseCredential(t *testing.T) {
 			name:      "Valid credential JSON",
 			inputJSON: validJSON,
 			opts:      []CredentialOpt{},
-			expected: jsonmap.JSONMap{
+			expected: CredentialData{
 				"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				"id":                "urn:uuid:1234",
 				"type":              []interface{}{"VerifiableCredential"},
@@ -71,7 +70,7 @@ func TestParseCredential(t *testing.T) {
 			inputJSON:   []byte(validJWTtoken),
 			opts:        []CredentialOpt{},
 			expectError: false,
-			expected: jsonmap.JSONMap{
+			expected: CredentialData{
 				"@context": []interface{}{
 					"https://www.w3.org/ns/credentials/v2",
 					"https://www.w3.org/ns/credentials/examples/v2",
@@ -114,12 +113,12 @@ func TestParseCredential(t *testing.T) {
 
 			assert.NoError(t, err)
 			// Check the credential type and access the appropriate field
-			if _, ok := result.(*JSONCredentialStruct); ok {
-				embeddedCred := result.(*JSONCredentialStruct)
-				assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "Credential mismatch")
+			if _, ok := result.(*JSONCredential); ok {
+				embeddedCred := result.(*JSONCredential)
+				assert.Equal(t, tt.expected, CredentialData(embeddedCred.presentationData), "Credential mismatch")
 			} else if _, ok := result.(*JWTCredential); ok {
 				jwtCred := result.(*JWTCredential)
-				assert.Equal(t, tt.expected, jsonmap.JSONMap(jwtCred.PayloadData), "Credential mismatch")
+				assert.Equal(t, tt.expected, CredentialData(jwtCred.PayloadData), "Credential mismatch")
 			}
 		})
 	}
@@ -129,7 +128,7 @@ func TestCreateCredentialWithContents(t *testing.T) {
 	tests := []struct {
 		name        string
 		input       CredentialContents
-		expected    jsonmap.JSONMap
+		expected    CredentialData
 		expectError bool
 		errorMsg    string
 	}{
@@ -140,7 +139,7 @@ func TestCreateCredentialWithContents(t *testing.T) {
 				ID:      "urn:uuid:1234",
 				Issuer:  "did:example:issuer",
 			},
-			expected: jsonmap.JSONMap{
+			expected: CredentialData{
 				"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				"id":       "urn:uuid:1234",
 				"issuer":   "did:example:issuer",
@@ -155,7 +154,7 @@ func TestCreateCredentialWithContents(t *testing.T) {
 				Issuer:  "did:example:issuer",
 				Types:   []string{"VerifiableCredential"},
 			},
-			expected: jsonmap.JSONMap{
+			expected: CredentialData{
 				"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				"id":       "urn:uuid:1234",
 				"issuer":   "did:example:issuer",
@@ -186,9 +185,9 @@ func TestCreateCredentialWithContents(t *testing.T) {
 			assert.NotNil(t, result, "Result should not be nil when no error is expected")
 
 			// For JSON credentials, we need to check the jsonCredential
-			embeddedCred, ok := result.(*JSONCredentialStruct)
-			assert.True(t, ok, "Result should be *JSONCredentialStruct")
-			assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "JSON Credential mismatch")
+			embeddedCred, ok := result.(*JSONCredential)
+			assert.True(t, ok, "Result should be *JSONCredential")
+			assert.Equal(t, tt.expected, CredentialData(embeddedCred.presentationData), "JSON Credential mismatch")
 		})
 	}
 }
@@ -200,19 +199,19 @@ func TestCreateCredentialWithContents(t *testing.T) {
 func TestParseContext(t *testing.T) {
 	tests := []struct {
 		name        string
-		credential  JSONCredential
+		credential  CredentialData
 		expected    []interface{}
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name:       "Valid context",
-			credential: JSONCredential(jsonmap.JSONMap{"@context": []interface{}{"https://www.w3.org/2018/credentials/v1", map[string]interface{}{"custom": "context"}}}),
+			credential: CredentialData{"@context": []interface{}{"https://www.w3.org/2018/credentials/v1", map[string]interface{}{"custom": "context"}}},
 			expected:   []interface{}{"https://www.w3.org/2018/credentials/v1", map[string]interface{}{"custom": "context"}},
 		},
 		{
 			name:        "Invalid context type",
-			credential:  JSONCredential(jsonmap.JSONMap{"@context": []interface{}{1}}),
+			credential:  CredentialData{"@context": []interface{}{1}},
 			expectError: true,
 			errorMsg:    "unsupported context type: int",
 		},
@@ -221,7 +220,7 @@ func TestParseContext(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var contents CredentialContents
-			err := parseContext(tt.credential, &contents)
+			err := parseContext(CredentialData(tt.credential), &contents)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -236,7 +235,7 @@ func TestParseContext(t *testing.T) {
 }
 
 func TestParseID(t *testing.T) {
-	credential := JSONCredential(jsonmap.JSONMap{"id": "urn:uuid:1234"})
+	credential := CredentialData{"id": "urn:uuid:1234"}
 	var contents CredentialContents
 	err := parseID(credential, &contents)
 	assert.NoError(t, err)
@@ -246,24 +245,24 @@ func TestParseID(t *testing.T) {
 func TestParseTypes(t *testing.T) {
 	tests := []struct {
 		name        string
-		credential  JSONCredential
+		credential  CredentialData
 		expected    []string
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name:       "Single type",
-			credential: JSONCredential(jsonmap.JSONMap{"type": "VerifiableCredential"}),
+			credential: CredentialData{"type": "VerifiableCredential"},
 			expected:   []string{"VerifiableCredential"},
 		},
 		{
 			name:       "Multiple types",
-			credential: JSONCredential(jsonmap.JSONMap{"type": []interface{}{"VerifiableCredential", "CustomCredential"}}),
+			credential: CredentialData{"type": []interface{}{"VerifiableCredential", "CustomCredential"}},
 			expected:   []string{"VerifiableCredential", "CustomCredential"},
 		},
 		{
 			name:        "Invalid type",
-			credential:  JSONCredential(jsonmap.JSONMap{"type": 123}),
+			credential:  CredentialData{"type": 123},
 			expectError: true,
 			errorMsg:    "unsupported type field: int",
 		},
@@ -287,7 +286,7 @@ func TestParseTypes(t *testing.T) {
 }
 
 func TestParseIssuer(t *testing.T) {
-	credential := JSONCredential(jsonmap.JSONMap{"issuer": "did:example:issuer"})
+	credential := CredentialData{"issuer": "did:example:issuer"}
 	var contents CredentialContents
 	err := parseIssuer(credential, &contents)
 	assert.NoError(t, err)
@@ -296,10 +295,10 @@ func TestParseIssuer(t *testing.T) {
 
 func TestParseDates(t *testing.T) {
 	fixedTime, _ := time.Parse(time.RFC3339, "2025-08-05T10:00:00Z")
-	credential := JSONCredential(jsonmap.JSONMap{
+	credential := CredentialData{
 		"validFrom":  fixedTime.Format(time.RFC3339),
 		"validUntil": fixedTime.Add(24 * time.Hour).Format(time.RFC3339),
-	})
+	}
 
 	var contents CredentialContents
 	err := parseDates(credential, &contents)
@@ -311,24 +310,24 @@ func TestParseDates(t *testing.T) {
 func TestParseSubject(t *testing.T) {
 	tests := []struct {
 		name        string
-		credential  JSONCredential
+		credential  CredentialData
 		expected    []Subject
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name:       "Single subject",
-			credential: JSONCredential(jsonmap.JSONMap{"credentialSubject": map[string]interface{}{"id": "did:example:subject1", "name": "John Doe"}}),
+			credential: CredentialData{"credentialSubject": map[string]interface{}{"id": "did:example:subject1", "name": "John Doe"}},
 			expected:   []Subject{{ID: "did:example:subject1", CustomFields: map[string]interface{}{"name": "John Doe"}}},
 		},
 		{
 			name:       "Multiple subjects",
-			credential: JSONCredential(jsonmap.JSONMap{"credentialSubject": []interface{}{map[string]interface{}{"id": "did:example:subject1"}, map[string]interface{}{"id": "did:example:subject2"}}}),
+			credential: CredentialData{"credentialSubject": []interface{}{map[string]interface{}{"id": "did:example:subject1"}, map[string]interface{}{"id": "did:example:subject2"}}},
 			expected:   []Subject{{ID: "did:example:subject1", CustomFields: map[string]interface{}{}}, {ID: "did:example:subject2", CustomFields: map[string]interface{}{}}},
 		},
 		{
 			name:        "Invalid subject format",
-			credential:  JSONCredential(jsonmap.JSONMap{"credentialSubject": 123}),
+			credential:  CredentialData{"credentialSubject": 123},
 			expectError: true,
 			errorMsg:    "unsupported subject format: int",
 		},
@@ -352,9 +351,9 @@ func TestParseSubject(t *testing.T) {
 }
 
 func TestParseSchema(t *testing.T) {
-	credential := JSONCredential(jsonmap.JSONMap{
+	credential := CredentialData{
 		"credentialSchema": map[string]interface{}{"id": "https://example.org/schema/1", "type": "JsonSchemaValidator2019"},
-	})
+	}
 
 	var contents CredentialContents
 	err := parseSchema(credential, &contents)
@@ -363,9 +362,9 @@ func TestParseSchema(t *testing.T) {
 }
 
 func TestParseStatus(t *testing.T) {
-	credential := JSONCredential(jsonmap.JSONMap{
+	credential := CredentialData{
 		"credentialStatus": map[string]interface{}{"id": "https://example.org/status/1", "type": "StatusList2021Entry"},
-	})
+	}
 
 	var contents CredentialContents
 	err := parseStatus(credential, &contents)
@@ -375,9 +374,9 @@ func TestParseStatus(t *testing.T) {
 
 func TestParseProofs(t *testing.T) {
 	fixedTime, _ := time.Parse(time.RFC3339, "2025-08-05T10:00:00Z")
-	credential := JSONCredential(jsonmap.JSONMap{
+	credential := CredentialData{
 		"proof": map[string]interface{}{"type": "Ed25519Signature2020", "created": fixedTime.Format(time.RFC3339)},
-	})
+	}
 
 	var contents CredentialContents
 	err := parseProofs(credential, &contents)
@@ -387,7 +386,7 @@ func TestParseProofs(t *testing.T) {
 }
 
 func TestSubjectFromJSON(t *testing.T) {
-	input := jsonmap.JSONMap{"id": "did:example:subject1", "name": "John Doe"}
+	input := CredentialData{"id": "did:example:subject1", "name": "John Doe"}
 	expected := Subject{ID: "did:example:subject1", CustomFields: map[string]interface{}{"name": "John Doe"}}
 
 	result, err := SubjectFromJSON(input)
@@ -426,12 +425,12 @@ func TestParseSchemaID(t *testing.T) {
 }
 
 func TestParseStringField(t *testing.T) {
-	input := jsonmap.JSONMap{"id": "did:example:subject1"}
+	input := CredentialData{"id": "did:example:subject1"}
 	result, err := parseStringField(input, "id")
 	assert.NoError(t, err)
 	assert.Equal(t, "did:example:subject1", result)
 
-	_, err = parseStringField(jsonmap.JSONMap{"id": 123}, "id")
+	_, err = parseStringField(CredentialData{"id": 123}, "id")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "field \"id\" must be a string")
 }
@@ -751,7 +750,7 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 		},
 	}
 
-	embededCredential, err := NewJSONCredential(credentialContents, WithEnableValidation())
+	embededCredential, err := NewJSONCredential(credentialContents, WithSchemaValidation())
 	if err != nil {
 		t.Fatalf("Failed to create JSON credential: %v", err)
 	}
@@ -763,7 +762,7 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 	}
 
 	// verify
-	err = embededCredential.Verify(WithEnableValidation())
+	err = embededCredential.Verify(WithSchemaValidation())
 	if err != nil {
 		t.Fatalf("Failed to verify JSON credential: %v", err)
 	}
@@ -819,7 +818,7 @@ const (
 func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
 
-	jwtCredential, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	jwtCredential, err := NewJWTCredential(credentialContents, WithSchemaValidation())
 	if err != nil {
 		t.Fatalf("Failed to create JWT credential: %v", err)
 	}
@@ -831,7 +830,7 @@ func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 	}
 
 	// verify
-	err = jwtCredential.Verify(WithEnableValidation())
+	err = jwtCredential.Verify(WithSchemaValidation())
 	if err != nil {
 		t.Fatalf("Failed to verify JWT credential: %v", err)
 	}
@@ -840,7 +839,7 @@ func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 func TestJWTCredentialAddCustomProofMustEqualsToAddProof(t *testing.T) {
 	// Create credential with empty custom fields for this test
 	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
-	jwtCredential, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	jwtCredential, err := NewJWTCredential(credentialContents, WithSchemaValidation())
 	if err != nil {
 		t.Fatalf("Failed to create JWT credential: %v", err)
 	}
@@ -852,7 +851,7 @@ func TestJWTCredentialAddCustomProofMustEqualsToAddProof(t *testing.T) {
 	}
 
 	// another jwt with custom proof
-	anotherJwtCredential, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	anotherJwtCredential, err := NewJWTCredential(credentialContents, WithSchemaValidation())
 	if err != nil {
 		t.Fatalf("Failed to create another JWT credential: %v", err)
 	}
@@ -877,7 +876,7 @@ func TestJWTCredentialAddCustomProofMustEqualsToAddProof(t *testing.T) {
 	}
 
 	// verify
-	err = anotherJwtCredential.Verify(WithEnableValidation())
+	err = anotherJwtCredential.Verify(WithSchemaValidation())
 	if err != nil {
 		t.Fatalf("Failed to verify JWT credential: %v", err)
 	}
@@ -900,7 +899,7 @@ func TestCreateJWTCredentialWithValidateSchemaFailInvalidFieldValue(t *testing.T
 	}
 	credentialContents := createBaseCredentialContents(testIssuerDID, customFields)
 
-	_, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	_, err := NewJWTCredential(credentialContents, WithSchemaValidation())
 	if err == nil {
 		t.Fatalf("Expected validation error for invalid field value, but got no error")
 	}
@@ -932,7 +931,7 @@ func TestCreateJWTCredentialWithValidateSchemaFailEmptySubject(t *testing.T) {
 		},
 	}
 
-	_, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	_, err := NewJWTCredential(credentialContents, WithSchemaValidation())
 	if err == nil {
 		t.Fatalf("Expected validation error for empty subject, but got no error")
 	}
@@ -947,7 +946,7 @@ func TestCreateJWTCredentialWithValidateSchemaFailInvalidDepartment(t *testing.T
 	}
 	credentialContents := createBaseCredentialContents(testIssuerDID, customFields)
 
-	_, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	_, err := NewJWTCredential(credentialContents, WithSchemaValidation())
 	if err == nil {
 		t.Fatalf("Expected validation error for invalid department field, but got no error")
 	}
@@ -963,7 +962,7 @@ func TestCreateJWTCredentialWithValidateSchemaFailInvalidSalaryType(t *testing.T
 	}
 	credentialContents := createBaseCredentialContents(testIssuerDID, customFields)
 
-	_, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	_, err := NewJWTCredential(credentialContents, WithSchemaValidation())
 	if err == nil {
 		t.Fatalf("Expected validation error for invalid salary type, but got no error")
 	}
@@ -979,7 +978,7 @@ func TestCreateJWTCredentialWithValidateSchemaFailNegativeSalary(t *testing.T) {
 	}
 	credentialContents := createBaseCredentialContents(testIssuerDID, customFields)
 
-	_, err := NewJWTCredential(credentialContents, WithEnableValidation())
+	_, err := NewJWTCredential(credentialContents, WithSchemaValidation())
 	if err == nil {
 		t.Fatalf("Expected validation error for negative salary, but got no error")
 	}

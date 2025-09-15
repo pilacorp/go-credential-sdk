@@ -38,7 +38,7 @@ func TestParsePresentation(t *testing.T) {
 
 	// For JSON presentations, we can get the JSON directly
 	var vpByte []byte
-	if embeddedPres, ok := pParsed.(*vp.JSONPresentationStruct); ok {
+	if embeddedPres, ok := pParsed.(*vp.JSONPresentation); ok {
 		vpByte, err = embeddedPres.GetContents()
 		if err != nil {
 			t.Fatalf("ToJSON failed: %v", err)
@@ -159,7 +159,7 @@ func TestCreatePresentationWithContent(t *testing.T) {
 			}
 
 			// Get JSON from JSON presentation
-			embeddedPres := p.(*vp.JSONPresentationStruct)
+			embeddedPres := p.(*vp.JSONPresentation)
 			data, err := embeddedPres.GetContents()
 			if err != nil {
 				t.Fatalf("GetContents failed: %v", err)
@@ -220,7 +220,7 @@ func TestParsePresentationContents(t *testing.T) {
 	}
 
 	// Get JSON from JSON presentation
-	embeddedPres := pContent.(*vp.JSONPresentationStruct)
+	embeddedPres := pContent.(*vp.JSONPresentation)
 	pJson, err := embeddedPres.GetContents()
 	if err != nil {
 		t.Fatalf("GetContents failed: %v", err)
@@ -232,7 +232,7 @@ func TestParsePresentationContents(t *testing.T) {
 	}
 
 	// Get JSON from JSON presentation and parse it
-	embeddedPres = p.(*vp.JSONPresentationStruct)
+	embeddedPres = p.(*vp.JSONPresentation)
 	jsonData, err := embeddedPres.GetContents()
 	if err != nil {
 		t.Fatalf("GetContents failed: %v", err)
@@ -315,7 +315,7 @@ func TestAddECDSAProof(t *testing.T) {
 	}
 
 	// Get JSON from JSON presentation
-	embeddedPres := presentation.(*vp.JSONPresentationStruct)
+	embeddedPres := presentation.(*vp.JSONPresentation)
 	presentationJSON, err := embeddedPres.Serialize()
 	presentationJSONBytes, err := json.Marshal(presentationJSON)
 	if err != nil {
@@ -772,7 +772,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 	})
 }
 
-func TestJSONPresentationStructFlow(t *testing.T) {
+func TestJSONPresentationFlow(t *testing.T) {
 	// Initialize the presentation and credential packages
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
@@ -833,7 +833,7 @@ func TestJSONPresentationStructFlow(t *testing.T) {
 	}
 
 	// Verify the presentation data matches
-	parsedEmbeddedPres := parsedPresentation.(*vp.JSONPresentationStruct)
+	parsedEmbeddedPres := parsedPresentation.(*vp.JSONPresentation)
 	parsedJSONData, err := parsedEmbeddedPres.GetContents()
 	if err != nil {
 		t.Fatalf("Failed to convert parsed presentation to JSON: %v", err)
@@ -845,7 +845,7 @@ func TestJSONPresentationStructFlow(t *testing.T) {
 	}
 }
 
-func TestCreateJSONPresentationStructOfTwoJSONCredentials(t *testing.T) {
+func TestCreateJSONPresentationOfTwoJSONCredentials(t *testing.T) {
 	// Initialize the presentation and credential packages
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
@@ -966,7 +966,7 @@ func TestJWTPresentationFlow(t *testing.T) {
 	}
 
 	// Parse the JWT into another VP
-	parsedPresentation, err := vp.ParsePresentation([]byte(jwtToken), vp.WithEnableValidation())
+	parsedPresentation, err := vp.ParsePresentation([]byte(jwtToken), vp.WithVCValidation())
 	if err != nil {
 		t.Fatalf("Failed to parse JWT presentation: %v", err)
 	}

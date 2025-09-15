@@ -8,8 +8,8 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 )
 
-type JSONPresentationStruct struct {
-	jsonPresentation jsonmap.JSONMap
+type JSONPresentation struct {
+	presentationData PresentationData
 	proof            *dto.Proof
 }
 
@@ -19,76 +19,80 @@ func NewJSONPresentation(vpc PresentationContents) (Presentation, error) {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}
 
-	return &JSONPresentationStruct{jsonPresentation: m}, nil
+	return &JSONPresentation{presentationData: m}, nil
 }
 
-func ParsePresentationJSON(rawJSON []byte, opts ...PresentationOpt) (Presentation, error) {
+func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (Presentation, error) {
 	if len(rawJSON) == 0 {
 		return nil, fmt.Errorf("JSON string is empty")
 	}
 
-	var m jsonmap.JSONMap
+	if !isJSONPresentation(rawJSON) {
+		return nil, fmt.Errorf("invalid JSON format")
+	}
+
+	var m PresentationData
 	if err := json.Unmarshal(rawJSON, &m); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal presentation: %w", err)
 	}
 
 	options := &presentationOptions{
-		validate:   false,
+		isValidate: false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
 		opt(options)
 	}
 
-	if options.validate {
-		if err := verifyCredentials(JSONPresentation(m)); err != nil {
+	if options.isValidate {
+		if err := verifyCredentials(m); err != nil {
 			return nil, fmt.Errorf("failed to validate presentation: %w", err)
 		}
 	}
 
-	return &JSONPresentationStruct{jsonPresentation: m}, nil
+	return &JSONPresentation{presentationData: m}, nil
 }
 
-func (e *JSONPresentationStruct) AddProof(priv string, opts ...PresentationOpt) error {
+func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	options := &presentationOptions{
-		validate:   false,
+		isValidate: false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
 		opt(options)
 	}
 
-	return (*jsonmap.JSONMap)(&e.jsonPresentation).AddECDSAProof(priv, e.getVerificationMethod(), "authentication", options.didBaseURL)
+	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(priv, e.getVerificationMethod(), "authentication", options.didBaseURL)
 }
 
-func (e *JSONPresentationStruct) getVerificationMethod() string {
-	return fmt.Sprintf("%s#%s", e.jsonPresentation["holder"].(string), "key-1")
+func (e *JSONPresentation) getVerificationMethod() string {
+	return fmt.Sprintf("%s#%s", e.presentationData["holder"].(string), "key-1")
 }
 
-func (e *JSONPresentationStruct) GetSigningInput() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.jsonPresentation).Canonicalize()
+func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
+	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
 }
 
-func (e *JSONPresentationStruct) AddCustomProof(proof *dto.Proof) error {
+func (e *JSONPresentation) AddCustomProof(proof *dto.Proof) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
 
 	e.proof = proof
 
-	return (*jsonmap.JSONMap)(&e.jsonPresentation).AddCustomProof(e.proof)
+	return (*jsonmap.JSONMap)(&e.presentationData).AddCustomProof(e.proof)
 }
 
-func (e *JSONPresentationStruct) Verify(opts ...PresentationOpt) error {
+func (e *JSONPresentation) Verify(opts ...PresentationOpt) error {
 	options := &presentationOptions{
-		validate:   false,
+		isValidate: false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
 		opt(options)
 	}
 
-	isValid, err := (*jsonmap.JSONMap)(&e.jsonPresentation).VerifyProof(options.didBaseURL)
+	isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(options.didBaseURL)
 	if err != nil {
 		return err
 	}
@@ -97,8 +101,8 @@ func (e *JSONPresentationStruct) Verify(opts ...PresentationOpt) error {
 	}
 
 	// Verify embedded credentials
-	if options.validate {
-		if err := verifyCredentials(JSONPresentation(e.jsonPresentation)); err != nil {
+	if options.isValidate {
+		if err := verifyCredentials(PresentationData(e.presentationData)); err != nil {
 			return fmt.Errorf("failed to verify credentials: %w", err)
 		}
 	}
@@ -106,18 +110,18 @@ func (e *JSONPresentationStruct) Verify(opts ...PresentationOpt) error {
 	return nil
 }
 
-func (e *JSONPresentationStruct) Serialize() (interface{}, error) {
+func (e *JSONPresentation) Serialize() (interface{}, error) {
 	// Check if presentation has proof
-	if e.jsonPresentation["proof"] == nil {
+	if e.presentationData["proof"] == nil {
 		return nil, fmt.Errorf("presentation must have proof before serialization")
 	}
 
 	// Return the JSON presentation object directly
-	return map[string]interface{}(e.jsonPresentation), nil
+	return map[string]interface{}(e.presentationData), nil
 }
 
-func (e *JSONPresentationStruct) GetContents() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.jsonPresentation).ToJSON()
+func (e *JSONPresentation) GetContents() ([]byte, error) {
+	return (*jsonmap.JSONMap)(&e.presentationData).ToJSON()
 }
 
 // CreatePresentationJSON creates a JSON presentation from PresentationContents.
@@ -129,6 +133,6 @@ func CreatePresentationJSON(vpc PresentationContents, opts ...PresentationOpt) (
 	return NewJSONPresentation(vpc)
 }
 
-func (e *JSONPresentationStruct) GetType() string {
+func (e *JSONPresentation) GetType() string {
 	return "JSON"
 }

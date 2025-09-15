@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
 // verifyCredentials verifies the signatures of a slice of Verifiable Credentials.
-func verifyCredentials(jsonPresentation JSONPresentation) error {
+func verifyCredentials(jsonPresentation PresentationData) error {
 	contents, err := parsePresentationContents(jsonPresentation)
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
@@ -27,7 +26,7 @@ func verifyCredentials(jsonPresentation JSONPresentation) error {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
 		// Verify the credential using the new interface
-		err := v.Verify(vc.WithEnableValidation())
+		err := v.Verify(vc.WithSchemaValidation())
 		if err != nil {
 			return fmt.Errorf("failed to verify credential at index %d: %w", i, err)
 		}
@@ -36,12 +35,12 @@ func verifyCredentials(jsonPresentation JSONPresentation) error {
 }
 
 // serializePresentationContents serializes PresentationContents into a JSON map.
-func serializePresentationContents(vpc *PresentationContents) (jsonmap.JSONMap, error) {
+func serializePresentationContents(vpc *PresentationContents) (PresentationData, error) {
 	if vpc == nil {
 		return nil, fmt.Errorf("presentation contents is nil")
 	}
 
-	vpJSON := make(jsonmap.JSONMap)
+	vpJSON := make(PresentationData)
 
 	if len(vpc.Context) > 0 {
 		validatedContext, err := util.SerializeContexts(vpc.Context)
@@ -81,7 +80,7 @@ func serializePresentationContents(vpc *PresentationContents) (jsonmap.JSONMap, 
 }
 
 // parseContext extracts the @context field from a Presentation.
-func parseContext(vp JSONPresentation, contents *PresentationContents) error {
+func parseContext(vp PresentationData, contents *PresentationContents) error {
 	if context, ok := vp["@context"].([]interface{}); ok {
 		for _, ctx := range context {
 			switch v := ctx.(type) {
@@ -96,7 +95,7 @@ func parseContext(vp JSONPresentation, contents *PresentationContents) error {
 }
 
 // parseID extracts the ID field from a Presentation.
-func parseID(vp JSONPresentation, contents *PresentationContents) error {
+func parseID(vp PresentationData, contents *PresentationContents) error {
 	if id, ok := vp["id"].(string); ok {
 		contents.ID = id
 	}
@@ -104,7 +103,7 @@ func parseID(vp JSONPresentation, contents *PresentationContents) error {
 }
 
 // parseTypes extracts the type field from a Presentation.
-func parseTypes(vp JSONPresentation, contents *PresentationContents) error {
+func parseTypes(vp PresentationData, contents *PresentationContents) error {
 	switch v := vp["type"].(type) {
 	case string:
 		contents.Types = append(contents.Types, v)
@@ -121,7 +120,7 @@ func parseTypes(vp JSONPresentation, contents *PresentationContents) error {
 }
 
 // parseHolder extracts the holder field from a Presentation.
-func parseHolder(vp JSONPresentation, contents *PresentationContents) error {
+func parseHolder(vp PresentationData, contents *PresentationContents) error {
 	if holder, ok := vp["holder"].(string); ok {
 		contents.Holder = holder
 	}
@@ -129,7 +128,7 @@ func parseHolder(vp JSONPresentation, contents *PresentationContents) error {
 }
 
 // parseVerifiableCredentials extracts the verifiableCredential field from a Presentation.
-func parseVerifiableCredentials(vp JSONPresentation, contents *PresentationContents) error {
+func parseVerifiableCredentials(vp PresentationData, contents *PresentationContents) error {
 	vcs, ok := vp["verifiableCredential"].([]interface{})
 	if !ok {
 		return nil // No verifiable credentials field
@@ -162,7 +161,7 @@ func parseVerifiableCredentials(vp JSONPresentation, contents *PresentationConte
 }
 
 // parseProofs extracts the proof field from a Presentation.
-func parseProofs(vp JSONPresentation, contents *PresentationContents) error {
+func parseProofs(vp PresentationData, contents *PresentationContents) error {
 	proofRaw := vp["proof"]
 	if proofRaw == nil {
 		return nil
@@ -172,9 +171,9 @@ func parseProofs(vp JSONPresentation, contents *PresentationContents) error {
 }
 
 // parsePresentationContents parses the Presentation into structured contents.
-func parsePresentationContents(vp JSONPresentation) (PresentationContents, error) {
+func parsePresentationContents(vp PresentationData) (PresentationContents, error) {
 	var contents PresentationContents
-	parsers := []func(JSONPresentation, *PresentationContents) error{
+	parsers := []func(PresentationData, *PresentationContents) error{
 		parseContext,
 		parseID,
 		parseTypes,

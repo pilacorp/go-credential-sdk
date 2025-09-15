@@ -42,8 +42,8 @@ type Presentation interface {
 	GetType() string
 }
 
-// JSONPresentation represents a W3C Verifiable Presentation as a JSON object.
-type JSONPresentation jsonmap.JSONMap
+// PresentationData represents presentation data in JSON format (suitable for both JWT and JSON presentations).
+type PresentationData jsonmap.JSONMap
 
 // PresentationContents represents the structured contents of a Presentation.
 type PresentationContents struct {
@@ -59,14 +59,14 @@ type PresentationOpt func(*presentationOptions)
 
 // presentationOptions holds configuration for presentation processing.
 type presentationOptions struct {
-	validate   bool
+	isValidate bool
 	didBaseURL string
 }
 
-// WithEnableValidation enables validation for credentials in the presentation.
-func WithEnableValidation() PresentationOpt {
+// WithVCValidation enables validation for credentials in the presentation.
+func WithVCValidation() PresentationOpt {
 	return func(p *presentationOptions) {
-		p.validate = true
+		p.isValidate = true
 	}
 }
 
@@ -83,23 +83,23 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 		return nil, fmt.Errorf("presentation is empty")
 	}
 
-	if isEmbedded(rawPresentation) {
-		return ParsePresentationJSON(rawPresentation, opts...)
+	if isJSONPresentation(rawPresentation) {
+		return ParseJSONPresentation(rawPresentation, opts...)
 	}
 
 	valStr := string(rawPresentation)
-	if isJWT(valStr) {
+	if isJWTPresentation(valStr) {
 		return ParsePresentationJWT(valStr, opts...)
 	}
 
 	return nil, fmt.Errorf("failed to parse presentation")
 }
 
-func isEmbedded(rawPresentation []byte) bool {
+func isJSONPresentation(rawPresentation []byte) bool {
 	return json.Valid(rawPresentation)
 }
 
-func isJWT(valStr string) bool {
+func isJWTPresentation(valStr string) bool {
 	regex := `^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$`
 	match, _ := regexp.MatchString(regex, valStr)
 	return match

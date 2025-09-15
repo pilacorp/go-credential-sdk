@@ -13,26 +13,26 @@ import (
 
 type JWTPresentation struct {
 	SigningInput string           // JWT header.payload (base64 encoded)
-	PayloadData  JSONPresentation // Parsed payload as JSONPresentation
+	PayloadData  PresentationData // Parsed payload as PresentationData
 	Signature    string           // JWT signature (if signed)
 }
 
 func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
 	options := &presentationOptions{
-		validate:   false,
+		isValidate: false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
 		opt(options)
 	}
 
-	// Convert PresentationContents to JSONPresentation
+	// Convert PresentationContents to PresentationData
 	m, err := serializePresentationContents(&vpc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}
 
-	payloadData := JSONPresentation(m)
+	payloadData := PresentationData(m)
 
 	// Extract other claims from presentationContents
 	otherClaims := map[string]interface{}{}
@@ -84,8 +84,12 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 }
 
 func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation, error) {
+	if !isJWTPresentation(rawJWT) {
+		return nil, fmt.Errorf("invalid JWT format")
+	}
+
 	options := &presentationOptions{
-		validate:   false,
+		isValidate: false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -98,9 +102,6 @@ func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation,
 
 	// Split JWT into parts
 	parts := strings.Split(rawJWT, ".")
-	if len(parts) < 2 || len(parts) > 3 {
-		return nil, fmt.Errorf("invalid JWT format: expected 2 or 3 parts, got %d", len(parts))
-	}
 
 	// Extract the payload and header
 	headerEncoded := parts[0]
@@ -133,8 +134,8 @@ func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation,
 		return nil, fmt.Errorf("vp claim is not a valid JSON object")
 	}
 
-	if options.validate {
-		if err := verifyCredentials(JSONPresentation(vpMap)); err != nil {
+	if options.isValidate {
+		if err := verifyCredentials(PresentationData(vpMap)); err != nil {
 			return nil, fmt.Errorf("failed to validate presentation: %w", err)
 		}
 	}
@@ -145,14 +146,14 @@ func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation,
 	// Return JWTPresentation
 	return &JWTPresentation{
 		SigningInput: signingInput,
-		PayloadData:  JSONPresentation(vpMap),
+		PayloadData:  PresentationData(vpMap),
 		Signature:    signature,
 	}, nil
 }
 
 func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	options := &presentationOptions{
-		validate:   false,
+		isValidate: false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -199,7 +200,7 @@ func (j *JWTPresentation) AddCustomProof(proof *dto.Proof) error {
 
 func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
 	options := &presentationOptions{
-		validate:   false,
+		isValidate: false,
 		didBaseURL: config.BaseURL,
 	}
 	for _, opt := range opts {
@@ -220,8 +221,8 @@ func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
 	}
 
 	// Verify embedded JWT credentials
-	if options.validate {
-		if err := verifyCredentials(j.PayloadData); err != nil {
+	if options.isValidate {
+		if err := verifyCredentials(PresentationData(j.PayloadData)); err != nil {
 			return fmt.Errorf("failed to verify credentials: %w", err)
 		}
 	}
