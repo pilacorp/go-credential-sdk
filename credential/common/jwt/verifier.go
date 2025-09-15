@@ -42,6 +42,12 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("invalid header: %w", err)
 	}
 
+	// Check algorithm
+	alg, ok := header["alg"].(string)
+	if !ok || alg != "ES256K" {
+		return fmt.Errorf("unsupported algorithm: %v", header["alg"])
+	}
+
 	kid, ok := header["kid"].(string)
 	if !ok {
 		return fmt.Errorf("kid not found in header")
