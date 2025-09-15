@@ -1,12 +1,8 @@
 package jwt
 
 import (
-	"crypto/ecdsa"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
-
-	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // JWTSigner handles JWT signing operations
@@ -34,21 +30,6 @@ func (s *JWTSigner) SignString(signingString string) (string, error) {
 	// Encode signature as base64url
 	signatureEncoded := base64.RawURLEncoding.EncodeToString(signature)
 	return signatureEncoded, nil
-}
-
-// GetPublicKey returns the public key associated with this signer
-func (s *JWTSigner) GetPublicKey() (*ecdsa.PublicKey, error) {
-	privKeyBytes, err := hex.DecodeString(s.privKeyHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid private key hex: %w", err)
-	}
-
-	privKey, err := crypto.ToECDSA(privKeyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("invalid private key: %w", err)
-	}
-
-	return &privKey.PublicKey, nil
 }
 
 // GetKeyID returns the Key ID for this signer
