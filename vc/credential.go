@@ -29,7 +29,7 @@ type credentialOptions struct {
 	validate  bool
 }
 
-// Status represents the credentialStatus field as per W3C Verifiable Credentials and EBSI specifications.
+// Status represents the credentialStatus field as per W3C Verifiable Credentials specifications.
 type Status struct {
 	ID                   string `json:"id,omitempty"`                   // Unique identifier for the status entry (e.g., revocation list URL)
 	Type                 string `json:"type"`                           // Status type (e.g., StatusList2021Entry, RevocationList2021)

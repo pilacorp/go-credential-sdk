@@ -3,7 +3,7 @@ package vc
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
+	"regexp"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -106,22 +106,30 @@ func WithEnableValidation() CredentialOpt {
 // ParseCredential parses a credential from various formats into a Credential.
 func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, error) {
 	if len(rawCredential) == 0 {
+
 		return nil, fmt.Errorf("JSON string is empty")
 	}
 
-	var valMap map[string]interface{}
-	err := json.Unmarshal(rawCredential, &valMap)
-	if err == nil && valMap != nil {
+	if isEmbedded(rawCredential) {
+
 		return ParseCredentialEmbedded(rawCredential, opts...)
 	}
 
 	valStr := string(rawCredential)
-	// check valStr is a valid jwt token
-	// count the number of dots in valStr
-	dotCount := strings.Count(valStr, ".")
-	if dotCount == 2 || dotCount == 3 {
+	if isJWT(valStr) {
+
 		return ParseCredentialJWT(valStr, opts...)
 	}
 
 	return nil, fmt.Errorf("failed to parse credential: not a valid JWT or embedded credential")
+}
+
+func isEmbedded(rawCredential []byte) bool {
+	return json.Valid(rawCredential)
+}
+
+func isJWT(valStr string) bool {
+	regex := `^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$`
+	match, _ := regexp.MatchString(regex, valStr)
+	return match
 }

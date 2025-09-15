@@ -30,8 +30,8 @@ type VerificationMethodEntry struct {
 	ID           string `json:"id"`
 	Type         string `json:"type"`
 	Controller   string `json:"controller"`
-	PublicKeyHex string `json:"publicKeyHex,omitempty"` // For NDA format
-	PublicKeyJwk *JWK   `json:"publicKeyJwk,omitempty"` // For EBSI format
+	PublicKeyHex string `json:"publicKeyHex,omitempty"`
+	PublicKeyJwk *JWK   `json:"publicKeyJwk,omitempty"`
 }
 
 // DIDDocument represents the structure of a resolved DID Document.
@@ -76,13 +76,13 @@ func (r *Resolver) GetPublicKey(verificationMethodURL string) (string, error) {
 	// Find matching verification method
 	for _, vm := range doc.VerificationMethod {
 		if vm.ID == verificationMethodURL {
-			// Check if it's NDA format (publicKeyHex)
+			// format publicKeyHex
 			if vm.PublicKeyHex != "" {
 				publicKey := strings.TrimPrefix(vm.PublicKeyHex, "0x")
 				return publicKey, nil
 			}
 
-			// Check if it's EBSI format (publicKeyJwk)
+			// format publicKeyJwk
 			if vm.PublicKeyJwk != nil {
 				// Convert JWK to hex format
 				hexKey, err := r.jwkToHex(vm.PublicKeyJwk)
@@ -148,13 +148,13 @@ func (r *Resolver) GetDefaultPublicKey(issuer string) (string, error) {
 	if len(doc.VerificationMethod) > 0 {
 		vm := doc.VerificationMethod[0]
 
-		// Check if it's NDA format (publicKeyHex)
+		// format publicKeyHex
 		if vm.PublicKeyHex != "" {
 			publicKey := strings.TrimPrefix(vm.PublicKeyHex, "0x")
 			return publicKey, nil
 		}
 
-		// Check if it's EBSI format (publicKeyJwk)
+		// format publicKeyJwk
 		if vm.PublicKeyJwk != nil {
 			// Convert JWK to hex format
 			hexKey, err := r.jwkToHex(vm.PublicKeyJwk)
@@ -213,13 +213,13 @@ func (r *Resolver) GetPublicKeyByIssuerAndSignMethod(issuer, signMethod string) 
 	// Find matching verification method by type
 	for _, vm := range doc.VerificationMethod {
 		if vm.Type == signMethod {
-			// Check if it's NDA format (publicKeyHex)
+			// format publicKeyHex
 			if vm.PublicKeyHex != "" {
 				publicKey := strings.TrimPrefix(vm.PublicKeyHex, "0x")
 				return publicKey, vm.ID, nil
 			}
 
-			// Check if it's EBSI format (publicKeyJwk)
+			// format publicKeyJwk
 			if vm.PublicKeyJwk != nil {
 				// Convert JWK to hex format
 				hexKey, err := r.jwkToHex(vm.PublicKeyJwk)

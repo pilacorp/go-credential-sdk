@@ -3,7 +3,7 @@ package vp
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
+	"regexp"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -83,19 +83,24 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 		return nil, fmt.Errorf("presentation is empty")
 	}
 
-	var valMap map[string]interface{}
-	err := json.Unmarshal(rawPresentation, &valMap)
-	if err == nil && valMap != nil {
+	if isEmbedded(rawPresentation) {
 		return ParsePresentationEmbedded(rawPresentation, opts...)
 	}
 
 	valStr := string(rawPresentation)
-	// check valStr is a valid jwt token
-	// count the number of dots in valStr
-	dotCount := strings.Count(valStr, ".")
-	if dotCount > 0 && dotCount < 3 {
+	if isJWT(valStr) {
 		return ParsePresentationJWT(valStr, opts...)
 	}
 
 	return nil, fmt.Errorf("failed to parse presentation")
+}
+
+func isEmbedded(rawPresentation []byte) bool {
+	return json.Valid(rawPresentation)
+}
+
+func isJWT(valStr string) bool {
+	regex := `^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$`
+	match, _ := regexp.MatchString(regex, valStr)
+	return match
 }

@@ -140,14 +140,19 @@ func parseVerifiableCredentials(vp JSONPresentation, contents *PresentationConte
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
 
-		// Marshal to bytes (handles both strings and objects)
-		vcItemBytes, err := json.Marshal(vcItem)
-		if err != nil {
-			return fmt.Errorf("failed to marshal credential at index %d: %w", i, err)
+		var credential vc.Credential
+		var err error
+
+		if vcStr, isString := vcItem.(string); isString {
+			credential, err = vc.ParseCredential([]byte(vcStr))
+		} else {
+			vcItemBytes, marshalErr := json.Marshal(vcItem)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal credential at index %d: %w", i, marshalErr)
+			}
+			credential, err = vc.ParseCredential(vcItemBytes)
 		}
 
-		// Parse using the unified ParseCredential function
-		credential, err := vc.ParseCredential(vcItemBytes)
 		if err != nil {
 			return fmt.Errorf("failed to parse credential at index %d: %w", i, err)
 		}
