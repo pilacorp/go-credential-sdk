@@ -14,13 +14,7 @@ type JSONCredential struct {
 }
 
 func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
-	options := &credentialOptions{
-		isValidateSchema: false,
-		didBaseURL:       config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
+	options := GetOptions(opts...)
 
 	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
@@ -37,16 +31,10 @@ func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (Credentia
 }
 
 func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (Credential, error) {
+	options := GetOptions(opts...)
+
 	if !isJSONCredential(rawJSON) {
 		return nil, fmt.Errorf("invalid JSON format")
-	}
-
-	options := &credentialOptions{
-		isValidateSchema: false,
-		didBaseURL:       config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
 	}
 
 	if len(rawJSON) == 0 {
@@ -64,23 +52,25 @@ func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (Credential, err
 		}
 	}
 
+	if options.isVerifyProof {
+		isValid, err := (*jsonmap.JSONMap)(&m).VerifyProof(options.didBaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify proof: %w", err)
+		}
+		if !isValid {
+			return nil, fmt.Errorf("invalid proof")
+		}
+	}
+
 	return &JSONCredential{presentationData: m}, nil
 }
 
 func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
-	options := &credentialOptions{
-		isValidateSchema: false,
-		didBaseURL:       config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
+	options := GetOptions(opts...)
 
-	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(priv, e.getVerificationMethod(), "assertionMethod", options.didBaseURL)
-}
+	verificationMethod := fmt.Sprintf("%s#%s", e.presentationData["issuer"].(string), options.verificationMethodKey)
 
-func (e *JSONCredential) getVerificationMethod() string {
-	return fmt.Sprintf("%s#%s", e.presentationData["issuer"].(string), "key-1")
+	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(priv, verificationMethod, "assertionMethod", options.didBaseURL)
 }
 
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {
@@ -98,13 +88,7 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof) error {
 }
 
 func (e *JSONCredential) Verify(opts ...CredentialOpt) error {
-	options := &credentialOptions{
-		isValidateSchema: false,
-		didBaseURL:       config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
+	options := GetOptions(opts...)
 
 	isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(options.didBaseURL)
 	if err != nil {

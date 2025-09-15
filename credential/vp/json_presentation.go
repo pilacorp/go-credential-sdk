@@ -13,16 +13,26 @@ type JSONPresentation struct {
 	proof            *dto.Proof
 }
 
-func NewJSONPresentation(vpc PresentationContents) (Presentation, error) {
+func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
+	options := GetOptions(opts...)
+
 	m, err := serializePresentationContents(&vpc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
+	}
+
+	if options.isValidateVC {
+		if err := verifyCredentials(m); err != nil {
+			return nil, fmt.Errorf("failed to validate presentation: %w", err)
+		}
 	}
 
 	return &JSONPresentation{presentationData: m}, nil
 }
 
 func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (Presentation, error) {
+	options := GetOptions(opts...)
+
 	if len(rawJSON) == 0 {
 		return nil, fmt.Errorf("JSON string is empty")
 	}
@@ -36,15 +46,7 @@ func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (Presentatio
 		return nil, fmt.Errorf("failed to unmarshal presentation: %w", err)
 	}
 
-	options := &presentationOptions{
-		isValidate: false,
-		didBaseURL: config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
-
-	if options.isValidate {
+	if options.isValidateVC {
 		if err := verifyCredentials(m); err != nil {
 			return nil, fmt.Errorf("failed to validate presentation: %w", err)
 		}
@@ -54,19 +56,17 @@ func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (Presentatio
 }
 
 func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error {
-	options := &presentationOptions{
-		isValidate: false,
-		didBaseURL: config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
+	options := GetOptions(opts...)
+
+	if options.isValidateVC {
+		if err := verifyCredentials(PresentationData(e.presentationData)); err != nil {
+			return fmt.Errorf("failed to validate presentation: %w", err)
+		}
 	}
 
-	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(priv, e.getVerificationMethod(), "authentication", options.didBaseURL)
-}
+	verificationMethod := fmt.Sprintf("%s#%s", e.presentationData["holder"].(string), options.verificationMethodKey)
 
-func (e *JSONPresentation) getVerificationMethod() string {
-	return fmt.Sprintf("%s#%s", e.presentationData["holder"].(string), "key-1")
+	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(priv, verificationMethod, "authentication", options.didBaseURL)
 }
 
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
@@ -84,13 +84,7 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof) error {
 }
 
 func (e *JSONPresentation) Verify(opts ...PresentationOpt) error {
-	options := &presentationOptions{
-		isValidate: false,
-		didBaseURL: config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
+	options := GetOptions(opts...)
 
 	isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(options.didBaseURL)
 	if err != nil {
@@ -101,7 +95,7 @@ func (e *JSONPresentation) Verify(opts ...PresentationOpt) error {
 	}
 
 	// Verify embedded credentials
-	if options.isValidate {
+	if options.isValidateVC {
 		if err := verifyCredentials(PresentationData(e.presentationData)); err != nil {
 			return fmt.Errorf("failed to verify credentials: %w", err)
 		}
@@ -122,15 +116,6 @@ func (e *JSONPresentation) Serialize() (interface{}, error) {
 
 func (e *JSONPresentation) GetContents() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.presentationData).ToJSON()
-}
-
-// CreatePresentationJSON creates a JSON presentation from PresentationContents.
-func CreatePresentationJSON(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
-	if len(vpc.Context) == 0 && vpc.ID == "" && vpc.Holder == "" {
-		return nil, fmt.Errorf("contents must have context, ID, or holder")
-	}
-
-	return NewJSONPresentation(vpc)
 }
 
 func (e *JSONPresentation) GetType() string {

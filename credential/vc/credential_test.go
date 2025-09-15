@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"encoding/json"
+
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 )
@@ -517,7 +518,7 @@ func TestCreateCredentialJWT(t *testing.T) {
 	assert.Equal(t, 3, len(strings.Split(jwtToken, ".")), "JWT should have 3 parts separated by dots")
 
 	// Parse the JWT credential back
-	parsedCredential, err := ParseCredentialJWT(jwtToken)
+	parsedCredential, err := ParseJWTCredential(jwtToken)
 	assert.NoError(t, err, "Failed to parse JWT credential")
 	assert.NotNil(t, parsedCredential, "Parsed credential should not be nil")
 
@@ -672,7 +673,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.Equal(t, 3, len(strings.Split(jwtToken, ".")), "JWT should have 3 parts")
 
 		// Parse and verify the JWT credential
-		parsedCredential, err := ParseCredentialJWT(jwtToken)
+		parsedCredential, err := ParseJWTCredential(jwtToken)
 		assert.NoError(t, err, "Failed to parse JWT credential")
 		assert.NotNil(t, parsedCredential, "Parsed credential should not be nil")
 

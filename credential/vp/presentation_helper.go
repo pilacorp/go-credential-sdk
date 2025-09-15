@@ -40,6 +40,10 @@ func serializePresentationContents(vpc *PresentationContents) (PresentationData,
 		return nil, fmt.Errorf("presentation contents is nil")
 	}
 
+	if len(vpc.Context) == 0 && vpc.ID == "" && vpc.Holder == "" {
+		return nil, fmt.Errorf("contents must have context, ID, or holder")
+	}
+
 	vpJSON := make(PresentationData)
 
 	if len(vpc.Context) > 0 {

@@ -85,8 +85,10 @@ type CredentialOpt func(*credentialOptions)
 
 // credentialOptions holds configuration for credential processing.
 type credentialOptions struct {
-	isValidateSchema bool
-	didBaseURL       string
+	isValidateSchema      bool
+	isVerifyProof         bool
+	didBaseURL            string
+	verificationMethodKey string
 }
 
 // WithBaseURL sets the DID base URL for credential processing.
@@ -96,11 +98,41 @@ func WithBaseURL(baseURL string) CredentialOpt {
 	}
 }
 
+// WithVerificationMethodKey sets the verification method key (default: "key-1").
+func WithVerificationMethodKey(key string) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.verificationMethodKey = key
+	}
+}
+
 // WithSchemaValidation enables schema validation during credential parsing.
 func WithSchemaValidation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isValidateSchema = true
 	}
+}
+
+// WithVerifyProof enables proof verification during credential parsing.
+func WithVerifyProof() CredentialOpt {
+	return func(c *credentialOptions) {
+		c.isVerifyProof = true
+	}
+}
+
+// GetOptions returns the credential options.
+func GetOptions(opts ...CredentialOpt) *credentialOptions {
+	options := &credentialOptions{
+		isValidateSchema:      false,
+		isVerifyProof:         false,
+		didBaseURL:            config.BaseURL,
+		verificationMethodKey: "key-1",
+	}
+
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	return options
 }
 
 // ParseCredential parses a credential from various formats into a Credential.
@@ -118,10 +150,15 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 	valStr := string(rawCredential)
 	if isJWTCredential(valStr) {
 
-		return ParseCredentialJWT(valStr, opts...)
+		return ParseJWTCredential(valStr, opts...)
 	}
 
 	return nil, fmt.Errorf("failed to parse credential: not a valid JWT or embedded credential")
+}
+
+// ParseCredentialWithValidation parses a credential from various formats into a Credential with validation.
+func ParseCredentialWithValidation(rawCredential []byte) (Credential, error) {
+	return ParseCredential(rawCredential, WithSchemaValidation(), WithVerifyProof())
 }
 
 func isJSONCredential(rawCredential []byte) bool {

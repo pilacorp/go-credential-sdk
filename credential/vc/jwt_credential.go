@@ -20,13 +20,7 @@ type JWTCredential struct {
 }
 
 func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
-	options := &credentialOptions{
-		isValidateSchema: false,
-		didBaseURL:       config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
+	options := GetOptions(opts...)
 
 	// Convert CredentialContents to CredentialData
 	m, err := serializeCredentialContents(&vcc)
@@ -73,7 +67,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 	header := map[string]interface{}{
 		"typ": "JWT",
 		"alg": "ES256K",
-		"kid": fmt.Sprintf("%s#%s", vcc.Issuer, "key-1"),
+		"kid": fmt.Sprintf("%s#%s", vcc.Issuer, options.verificationMethodKey),
 	}
 
 	// Encode header and payload
@@ -100,22 +94,12 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 	}, nil
 }
 
-func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error) {
+func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error) {
+	options := GetOptions(opts...)
+
 	if !isJWTCredential(rawJWT) {
 		return nil, fmt.Errorf("invalid JWT format")
 	}
-
-	options := &credentialOptions{
-		isValidateSchema: false,
-		didBaseURL:       config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
-
-	// Parse the JWT credential from rawJWT
-	// Remove JSON quotes if present (from json.Marshal of a string)
-	rawJWT = strings.Trim(rawJWT, `"`)
 
 	// Split JWT into parts
 	parts := strings.Split(rawJWT, ".")
@@ -157,6 +141,13 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 		}
 	}
 
+	if options.isVerifyProof {
+		verifier := jwt.NewJWTVerifier(options.didBaseURL)
+		if err := verifier.VerifyJWT(rawJWT); err != nil {
+			return nil, fmt.Errorf("failed to verify proof: %w", err)
+		}
+	}
+
 	// Create signing input (header.payload)
 	signingInput := headerEncoded + "." + payloadEncoded
 
@@ -169,21 +160,7 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 }
 
 func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
-	options := &credentialOptions{
-		isValidateSchema: false,
-		didBaseURL:       config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
-
-	// Get issuer from PayloadData
-	issuer, ok := j.payloadData["issuer"].(string)
-	if !ok {
-		return fmt.Errorf("issuer not found in credential")
-	}
-
-	signer := jwt.NewJWTSigner(priv, issuer)
+	signer := jwt.NewJWTSigner(priv)
 
 	// Sign the existing signing input
 	signature, err := signer.SignString(j.signingInput)
@@ -193,6 +170,7 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 
 	// Update signature
 	j.signature = signature
+
 	return nil
 }
 
@@ -216,13 +194,7 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
 }
 
 func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
-	options := &credentialOptions{
-		isValidateSchema: false,
-		didBaseURL:       config.BaseURL,
-	}
-	for _, opt := range opts {
-		opt(options)
-	}
+	options := GetOptions(opts...)
 
 	// For signed JWT, verify signature
 	verifier := jwt.NewJWTVerifier(options.didBaseURL)

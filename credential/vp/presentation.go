@@ -59,14 +59,16 @@ type PresentationOpt func(*presentationOptions)
 
 // presentationOptions holds configuration for presentation processing.
 type presentationOptions struct {
-	isValidate bool
-	didBaseURL string
+	isValidateVC          bool
+	isVerifyProof         bool
+	didBaseURL            string
+	verificationMethodKey string
 }
 
 // WithVCValidation enables validation for credentials in the presentation.
 func WithVCValidation() PresentationOpt {
 	return func(p *presentationOptions) {
-		p.isValidate = true
+		p.isValidateVC = true
 	}
 }
 
@@ -75,6 +77,35 @@ func WithBaseURL(baseURL string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.didBaseURL = baseURL
 	}
+}
+
+// WithVerificationMethodKey sets the verification method key (default: "key-1").
+func WithVerificationMethodKey(key string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.verificationMethodKey = key
+	}
+}
+
+// WithVerifyProof enables proof verification during presentation parsing.
+func WithVerifyProof() PresentationOpt {
+	return func(p *presentationOptions) {
+		p.isVerifyProof = true
+	}
+}
+
+func GetOptions(opts ...PresentationOpt) *presentationOptions {
+	options := &presentationOptions{
+		isValidateVC:          false,
+		isVerifyProof:         false,
+		didBaseURL:            config.BaseURL,
+		verificationMethodKey: "key-1",
+	}
+
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	return options
 }
 
 // ParsePresentation parses a presentation into a Presentation.
@@ -89,10 +120,15 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 
 	valStr := string(rawPresentation)
 	if isJWTPresentation(valStr) {
-		return ParsePresentationJWT(valStr, opts...)
+		return ParseJWTPresentation(valStr, opts...)
 	}
 
 	return nil, fmt.Errorf("failed to parse presentation")
+}
+
+// ParsePresentationWithValidation parses a presentation into a Presentation with validation.
+func ParsePresentationWithValidation(rawPresentation []byte) (Presentation, error) {
+	return ParsePresentation(rawPresentation, WithVCValidation(), WithVerifyProof())
 }
 
 func isJSONPresentation(rawPresentation []byte) bool {

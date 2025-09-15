@@ -112,16 +112,13 @@ func TestCreatePresentationWithContent(t *testing.T) {
 				"@context": []interface{}{
 					"https://www.w3.org/ns/credentials/v2",
 				},
-				"length": len(GenerateVCTest()),
 			},
 		},
 		{
-			name:      "Empty presentation",
-			input:     vp.PresentationContents{},
-			expectErr: false,
-			expectFields: map[string]interface{}{
-				"length": 0,
-			},
+			name:         "Empty presentation",
+			input:        vp.PresentationContents{},
+			expectErr:    true,
+			expectFields: map[string]interface{}{},
 		},
 		{
 			name: "type has multiple values",
@@ -140,7 +137,6 @@ func TestCreatePresentationWithContent(t *testing.T) {
 				"@context": []interface{}{
 					"https://www.w3.org/ns/credentials/v2",
 				},
-				"length": len(GenerateVCTest()),
 			},
 		},
 	}
