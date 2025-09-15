@@ -14,9 +14,9 @@ import (
 type JWTHeaders map[string]interface{}
 
 type JWTCredential struct {
-	SigningInput string         // JWT header.payload (base64 encoded)
-	PayloadData  CredentialData // Parsed payload as CredentialData
-	Signature    string         // JWT signature (if signed)
+	signingInput string         // JWT header.payload (base64 encoded)
+	payloadData  CredentialData // Parsed payload as CredentialData
+	signature    string         // JWT signature (if signed)
 }
 
 func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
@@ -94,9 +94,9 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 
 	// Return JWTCredential
 	return &JWTCredential{
-		SigningInput: signingInput,
-		PayloadData:  payloadData,
-		Signature:    "",
+		signingInput: signingInput,
+		payloadData:  payloadData,
+		signature:    "",
 	}, nil
 }
 
@@ -162,9 +162,9 @@ func ParseCredentialJWT(rawJWT string, opts ...CredentialOpt) (Credential, error
 
 	// Return JWTCredential
 	return &JWTCredential{
-		SigningInput: signingInput,
-		PayloadData:  CredentialData(vcMap),
-		Signature:    signature,
+		signingInput: signingInput,
+		payloadData:  CredentialData(vcMap),
+		signature:    signature,
 	}, nil
 }
 
@@ -178,7 +178,7 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	}
 
 	// Get issuer from PayloadData
-	issuer, ok := j.PayloadData["issuer"].(string)
+	issuer, ok := j.payloadData["issuer"].(string)
 	if !ok {
 		return fmt.Errorf("issuer not found in credential")
 	}
@@ -186,18 +186,18 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	signer := jwt.NewJWTSigner(priv, issuer)
 
 	// Sign the existing signing input
-	signature, err := signer.SignString(j.SigningInput)
+	signature, err := signer.SignString(j.signingInput)
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
 
 	// Update signature
-	j.Signature = signature
+	j.signature = signature
 	return nil
 }
 
 func (j *JWTCredential) GetSigningInput() ([]byte, error) {
-	return []byte(j.SigningInput), nil
+	return []byte(j.signingInput), nil
 }
 
 func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
@@ -210,7 +210,7 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
 	}
 
 	// Use the provided signature directly
-	j.Signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
+	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
 
 	return nil
 }
@@ -238,7 +238,7 @@ func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 	}
 
 	if options.isValidateSchema {
-		if err := validateCredential(j.PayloadData); err != nil {
+		if err := validateCredential(j.payloadData); err != nil {
 			return fmt.Errorf("failed to validate credential: %w", err)
 		}
 	}
@@ -247,17 +247,17 @@ func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 }
 
 func (j *JWTCredential) Serialize() (interface{}, error) {
-	if j.Signature != "" {
+	if j.signature != "" {
 		// Signed JWT
-		return j.SigningInput + "." + j.Signature, nil
+		return j.signingInput + "." + j.signature, nil
 	} else {
 		// Unsigned JWT
-		return j.SigningInput, nil
+		return j.signingInput, nil
 	}
 }
 
 func (j *JWTCredential) GetContents() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&j.PayloadData).ToJSON()
+	return (*jsonmap.JSONMap)(&j.payloadData).ToJSON()
 }
 
 func (j *JWTCredential) GetType() string {

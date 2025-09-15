@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"encoding/json"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 )
@@ -118,7 +119,16 @@ func TestParseCredential(t *testing.T) {
 				assert.Equal(t, tt.expected, CredentialData(embeddedCred.presentationData), "Credential mismatch")
 			} else if _, ok := result.(*JWTCredential); ok {
 				jwtCred := result.(*JWTCredential)
-				assert.Equal(t, tt.expected, CredentialData(jwtCred.PayloadData), "Credential mismatch")
+				payloadData, err := jwtCred.GetContents()
+				if err != nil {
+					t.Fatalf("GetContents failed: %v", err)
+				}
+				var payloadMap map[string]interface{}
+				err = json.Unmarshal(payloadData, &payloadMap)
+				if err != nil {
+					t.Fatalf("Failed to unmarshal payload: %v", err)
+				}
+				assert.Equal(t, tt.expected, CredentialData(payloadMap), "Credential mismatch")
 			}
 		})
 	}
@@ -517,8 +527,17 @@ func TestCreateCredentialJWT(t *testing.T) {
 
 	// For JWT credentials, we can check the payload directly
 	jwtCred := parsedCredential.(*JWTCredential)
-	assert.Equal(t, credentialContents.ID, jwtCred.PayloadData["id"], "Credential ID should match")
-	assert.Equal(t, credentialContents.Issuer, jwtCred.PayloadData["issuer"], "Issuer should match")
+	payloadData, err := jwtCred.GetContents()
+	if err != nil {
+		t.Fatalf("GetContents failed: %v", err)
+	}
+	var payloadMap map[string]interface{}
+	err = json.Unmarshal(payloadData, &payloadMap)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal payload: %v", err)
+	}
+	assert.Equal(t, credentialContents.ID, payloadMap["id"], "Credential ID should match")
+	assert.Equal(t, credentialContents.Issuer, payloadMap["issuer"], "Issuer should match")
 
 	// Verify the credential
 	err = credential.Verify()

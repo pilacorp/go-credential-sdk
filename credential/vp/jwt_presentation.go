@@ -12,9 +12,9 @@ import (
 )
 
 type JWTPresentation struct {
-	SigningInput string           // JWT header.payload (base64 encoded)
-	PayloadData  PresentationData // Parsed payload as PresentationData
-	Signature    string           // JWT signature (if signed)
+	signingInput string           // JWT header.payload (base64 encoded)
+	payloadData  PresentationData // Parsed payload as PresentationData
+	signature    string           // JWT signature (if signed)
 }
 
 func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
@@ -77,9 +77,9 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 
 	// Return JWTPresentation
 	return &JWTPresentation{
-		SigningInput: signingInput,
-		PayloadData:  payloadData,
-		Signature:    "",
+		signingInput: signingInput,
+		payloadData:  payloadData,
+		signature:    "",
 	}, nil
 }
 
@@ -145,9 +145,9 @@ func ParsePresentationJWT(rawJWT string, opts ...PresentationOpt) (Presentation,
 
 	// Return JWTPresentation
 	return &JWTPresentation{
-		SigningInput: signingInput,
-		PayloadData:  PresentationData(vpMap),
-		Signature:    signature,
+		signingInput: signingInput,
+		payloadData:  PresentationData(vpMap),
+		signature:    signature,
 	}, nil
 }
 
@@ -161,7 +161,7 @@ func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	}
 
 	// Get holder from PayloadData
-	holder, ok := j.PayloadData["holder"].(string)
+	holder, ok := j.payloadData["holder"].(string)
 	if !ok {
 		return fmt.Errorf("holder not found in presentation")
 	}
@@ -169,18 +169,18 @@ func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	signer := jwt.NewJWTSigner(priv, holder)
 
 	// Sign the existing signing input
-	signature, err := signer.SignString(j.SigningInput)
+	signature, err := signer.SignString(j.signingInput)
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
 
 	// Update signature
-	j.Signature = signature
+	j.signature = signature
 	return nil
 }
 
 func (j *JWTPresentation) GetSigningInput() ([]byte, error) {
-	return []byte(j.SigningInput), nil
+	return []byte(j.signingInput), nil
 }
 
 func (j *JWTPresentation) AddCustomProof(proof *dto.Proof) error {
@@ -193,7 +193,7 @@ func (j *JWTPresentation) AddCustomProof(proof *dto.Proof) error {
 	}
 
 	// Use the provided signature directly
-	j.Signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
+	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
 
 	return nil
 }
@@ -222,7 +222,7 @@ func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
 
 	// Verify embedded JWT credentials
 	if options.isValidate {
-		if err := verifyCredentials(PresentationData(j.PayloadData)); err != nil {
+		if err := verifyCredentials(PresentationData(j.payloadData)); err != nil {
 			return fmt.Errorf("failed to verify credentials: %w", err)
 		}
 	}
@@ -231,17 +231,17 @@ func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
 }
 
 func (j *JWTPresentation) Serialize() (interface{}, error) {
-	if j.Signature != "" {
+	if j.signature != "" {
 		// Signed JWT
-		return j.SigningInput + "." + j.Signature, nil
+		return j.signingInput + "." + j.signature, nil
 	} else {
 		// Unsigned JWT
-		return j.SigningInput, nil
+		return j.signingInput, nil
 	}
 }
 
 func (j *JWTPresentation) GetContents() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&j.PayloadData).ToJSON()
+	return (*jsonmap.JSONMap)(&j.payloadData).ToJSON()
 }
 
 // CreatePresentationJWT creates a JWT presentation from PresentationContents.
