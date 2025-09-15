@@ -114,8 +114,8 @@ func TestParseCredential(t *testing.T) {
 
 			assert.NoError(t, err)
 			// Check the credential type and access the appropriate field
-			if _, ok := result.(*EmbededCredential); ok {
-				embeddedCred := result.(*EmbededCredential)
+			if _, ok := result.(*JSONCredentialStruct); ok {
+				embeddedCred := result.(*JSONCredentialStruct)
 				assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "Credential mismatch")
 			} else if _, ok := result.(*JWTCredential); ok {
 				jwtCred := result.(*JWTCredential)
@@ -148,7 +148,7 @@ func TestCreateCredentialWithContents(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "Valid Embedded contents",
+			name: "Valid JSON contents",
 			input: CredentialContents{
 				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				ID:      "urn:uuid:1234",
@@ -173,7 +173,7 @@ func TestCreateCredentialWithContents(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := NewEmbededCredential(tt.input)
+			result, err := NewJSONCredential(tt.input)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -185,10 +185,10 @@ func TestCreateCredentialWithContents(t *testing.T) {
 			assert.NoError(t, err)
 			assert.NotNil(t, result, "Result should not be nil when no error is expected")
 
-			// For embedded credentials, we need to check the jsonCredential
-			embeddedCred, ok := result.(*EmbededCredential)
-			assert.True(t, ok, "Result should be *EmbededCredential")
-			assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "Embedded Credential mismatch")
+			// For JSON credentials, we need to check the jsonCredential
+			embeddedCred, ok := result.(*JSONCredentialStruct)
+			assert.True(t, ok, "Result should be *JSONCredentialStruct")
+			assert.Equal(t, tt.expected, jsonmap.JSONMap(embeddedCred.jsonCredential), "JSON Credential mismatch")
 		})
 	}
 }
@@ -579,22 +579,22 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		},
 	}
 
-	t.Run("Embedded Credential - AddProof Flow", func(t *testing.T) {
-		// Create embedded credential
-		credential, err := NewEmbededCredential(credentialContents)
-		assert.NoError(t, err, "Failed to create embedded credential")
+	t.Run("JSON Credential - AddProof Flow", func(t *testing.T) {
+		// Create JSON credential
+		credential, err := NewJSONCredential(credentialContents)
+		assert.NoError(t, err, "Failed to create JSON credential")
 
 		// Add proof using AddProof method
 		err = credential.AddProof(privateKeyHex)
-		assert.NoError(t, err, "Failed to add proof to embedded credential")
+		assert.NoError(t, err, "Failed to add proof to JSON credential")
 
 		// Verify the credential
 		err = credential.Verify()
-		assert.NoError(t, err, "Failed to verify embedded credential with proof")
+		assert.NoError(t, err, "Failed to verify JSON credential with proof")
 
 		// Serialize and verify it has proof
 		serialized, err := credential.Serialize()
-		assert.NoError(t, err, "Failed to serialize embedded credential")
+		assert.NoError(t, err, "Failed to serialize JSON credential")
 
 		// Check that serialized credential contains proof
 		credMap, ok := serialized.(map[string]interface{})
@@ -602,10 +602,10 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.Contains(t, credMap, "proof", "Serialized credential should contain proof")
 	})
 
-	t.Run("Embedded Credential - GetSigningInput + AddCustomProof Flow", func(t *testing.T) {
-		// Create embedded credential
-		credential, err := NewEmbededCredential(credentialContents)
-		assert.NoError(t, err, "Failed to create embedded credential")
+	t.Run("JSON Credential - GetSigningInput + AddCustomProof Flow", func(t *testing.T) {
+		// Create JSON credential
+		credential, err := NewJSONCredential(credentialContents)
+		assert.NoError(t, err, "Failed to create JSON credential")
 
 		// Get signing input
 		signingInput, err := credential.GetSigningInput()
@@ -623,11 +623,11 @@ func TestCredentialSignatureFlows(t *testing.T) {
 
 		// Add custom proof
 		err = credential.AddCustomProof(customProof)
-		assert.NoError(t, err, "Failed to add custom proof to embedded credential")
+		assert.NoError(t, err, "Failed to add custom proof to JSON credential")
 
 		// Serialize and verify it has proof
 		serialized, err := credential.Serialize()
-		assert.NoError(t, err, "Failed to serialize embedded credential with custom proof")
+		assert.NoError(t, err, "Failed to serialize JSON credential with custom proof")
 
 		// Check that serialized credential contains proof
 		credMap, ok := serialized.(map[string]interface{})
@@ -699,8 +699,8 @@ func TestCredentialSignatureFlows(t *testing.T) {
 
 	t.Run("Error Cases", func(t *testing.T) {
 		// Test AddCustomProof with nil proof
-		credential, err := NewEmbededCredential(credentialContents)
-		assert.NoError(t, err, "Failed to create embedded credential")
+		credential, err := NewJSONCredential(credentialContents)
+		assert.NoError(t, err, "Failed to create JSON credential")
 
 		err = credential.AddCustomProof(nil)
 		assert.Error(t, err, "Should return error for nil proof")
@@ -751,9 +751,9 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 		},
 	}
 
-	embededCredential, err := NewEmbededCredential(credentialContents, WithEnableValidation())
+	embededCredential, err := NewJSONCredential(credentialContents, WithEnableValidation())
 	if err != nil {
-		t.Fatalf("Failed to create embedded credential: %v", err)
+		t.Fatalf("Failed to create JSON credential: %v", err)
 	}
 
 	// add proof
@@ -765,7 +765,7 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 	// verify
 	err = embededCredential.Verify(WithEnableValidation())
 	if err != nil {
-		t.Fatalf("Failed to verify embedded credential: %v", err)
+		t.Fatalf("Failed to verify JSON credential: %v", err)
 	}
 }
 

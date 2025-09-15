@@ -84,7 +84,7 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 	}
 
 	if isEmbedded(rawPresentation) {
-		return ParsePresentationEmbedded(rawPresentation, opts...)
+		return ParsePresentationJSON(rawPresentation, opts...)
 	}
 
 	valStr := string(rawPresentation)

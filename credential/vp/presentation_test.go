@@ -36,9 +36,9 @@ func TestParsePresentation(t *testing.T) {
 		t.Fatalf("ParsePresentation failed: %v", err)
 	}
 
-	// For embedded presentations, we can get the JSON directly
+	// For JSON presentations, we can get the JSON directly
 	var vpByte []byte
-	if embeddedPres, ok := pParsed.(*vp.EmbeddedPresentation); ok {
+	if embeddedPres, ok := pParsed.(*vp.JSONPresentationStruct); ok {
 		vpByte, err = embeddedPres.GetContents()
 		if err != nil {
 			t.Fatalf("ToJSON failed: %v", err)
@@ -147,7 +147,7 @@ func TestCreatePresentationWithContent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := vp.NewEmbeddedPresentation(tt.input)
+			p, err := vp.NewJSONPresentation(tt.input)
 			if tt.expectErr {
 				if err == nil {
 					t.Fatalf("Expected error but got nil")
@@ -158,8 +158,8 @@ func TestCreatePresentationWithContent(t *testing.T) {
 				t.Fatalf("CreatePresentationWithContent failed: %v", err)
 			}
 
-			// Get JSON from embedded presentation
-			embeddedPres := p.(*vp.EmbeddedPresentation)
+			// Get JSON from JSON presentation
+			embeddedPres := p.(*vp.JSONPresentationStruct)
 			data, err := embeddedPres.GetContents()
 			if err != nil {
 				t.Fatalf("GetContents failed: %v", err)
@@ -214,13 +214,13 @@ func TestParsePresentationContents(t *testing.T) {
 		VerifiableCredentials: vcList,
 	}
 
-	pContent, err := vp.NewEmbeddedPresentation(vpc)
+	pContent, err := vp.NewJSONPresentation(vpc)
 	if err != nil {
 		t.Fatalf("Failed to marshal PresentationContents: %v", err)
 	}
 
-	// Get JSON from embedded presentation
-	embeddedPres := pContent.(*vp.EmbeddedPresentation)
+	// Get JSON from JSON presentation
+	embeddedPres := pContent.(*vp.JSONPresentationStruct)
 	pJson, err := embeddedPres.GetContents()
 	if err != nil {
 		t.Fatalf("GetContents failed: %v", err)
@@ -231,8 +231,8 @@ func TestParsePresentationContents(t *testing.T) {
 		t.Fatalf("ParsePresentation failed: %v", err)
 	}
 
-	// Get JSON from embedded presentation and parse it
-	embeddedPres = p.(*vp.EmbeddedPresentation)
+	// Get JSON from JSON presentation and parse it
+	embeddedPres = p.(*vp.JSONPresentationStruct)
 	jsonData, err := embeddedPres.GetContents()
 	if err != nil {
 		t.Fatalf("GetContents failed: %v", err)
@@ -304,7 +304,7 @@ func TestAddECDSAProof(t *testing.T) {
 		VerifiableCredentials: vcList,
 	}
 
-	presentation, err := vp.NewEmbeddedPresentation(vpc)
+	presentation, err := vp.NewJSONPresentation(vpc)
 	if err != nil {
 		t.Fatalf("Failed to create presentation: %v", err)
 	}
@@ -314,8 +314,8 @@ func TestAddECDSAProof(t *testing.T) {
 		t.Fatalf("Failed to add ECDSA proof: %v", err)
 	}
 
-	// Get JSON from embedded presentation
-	embeddedPres := presentation.(*vp.EmbeddedPresentation)
+	// Get JSON from JSON presentation
+	embeddedPres := presentation.(*vp.JSONPresentationStruct)
 	presentationJSON, err := embeddedPres.Serialize()
 	presentationJSONBytes, err := json.Marshal(presentationJSON)
 	if err != nil {
@@ -355,7 +355,7 @@ func TestVerifyECDSAPresentation(t *testing.T) {
 		VerifiableCredentials: vcList,
 	}
 
-	presentation, err := vp.NewEmbeddedPresentation(vpc)
+	presentation, err := vp.NewJSONPresentation(vpc)
 	if err != nil {
 		t.Fatalf("Failed to create presentation: %v", err)
 	}
@@ -432,15 +432,15 @@ func GenerateVCTest() []vc.Credential {
 		},
 	}
 
-	credential, err := vc.NewEmbededCredential(vcc)
+	credential, err := vc.NewJSONCredential(vcc)
 	if err != nil {
 		fmt.Printf("Failed to create credential: %v\n", err)
 		return nil
 	}
-	// Add an embedded ECDSA proof
+	// Add a JSON ECDSA proof
 	err = credential.AddProof(privateKeyHex)
 	if err != nil {
-		fmt.Printf("Failed to add embedded ECDSA proof: %v\n", err)
+		fmt.Printf("Failed to add JSON ECDSA proof: %v\n", err)
 		return nil
 	}
 
@@ -561,29 +561,29 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		VerifiableCredentials: vcList,
 	}
 
-	t.Run("Embedded Presentation - AddProof Flow", func(t *testing.T) {
-		// Create embedded presentation
-		presentation, err := vp.NewEmbeddedPresentation(presentationContents)
+	t.Run("JSON Presentation - AddProof Flow", func(t *testing.T) {
+		// Create JSON presentation
+		presentation, err := vp.NewJSONPresentation(presentationContents)
 		if err != nil {
-			t.Fatalf("Failed to create embedded presentation: %v", err)
+			t.Fatalf("Failed to create JSON presentation: %v", err)
 		}
 
 		// Add proof using AddProof method
 		err = presentation.AddProof(privateKeyHex)
 		if err != nil {
-			t.Fatalf("Failed to add proof to embedded presentation: %v", err)
+			t.Fatalf("Failed to add proof to JSON presentation: %v", err)
 		}
 
 		// Verify the presentation
 		err = presentation.Verify()
 		if err != nil {
-			t.Fatalf("Failed to verify embedded presentation with proof: %v", err)
+			t.Fatalf("Failed to verify JSON presentation with proof: %v", err)
 		}
 
 		// Serialize and verify it has proof
 		serialized, err := presentation.Serialize()
 		if err != nil {
-			t.Fatalf("Failed to serialize embedded presentation: %v", err)
+			t.Fatalf("Failed to serialize JSON presentation: %v", err)
 		}
 
 		// Check that serialized presentation contains proof
@@ -596,11 +596,11 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 	})
 
-	t.Run("Embedded Presentation - GetSigningInput + AddCustomProof Flow", func(t *testing.T) {
-		// Create embedded presentation
-		presentation, err := vp.NewEmbeddedPresentation(presentationContents)
+	t.Run("JSON Presentation - GetSigningInput + AddCustomProof Flow", func(t *testing.T) {
+		// Create JSON presentation
+		presentation, err := vp.NewJSONPresentation(presentationContents)
 		if err != nil {
-			t.Fatalf("Failed to create embedded presentation: %v", err)
+			t.Fatalf("Failed to create JSON presentation: %v", err)
 		}
 
 		// Get signing input
@@ -630,13 +630,13 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		// Add custom proof
 		err = presentation.AddCustomProof(customProof)
 		if err != nil {
-			t.Fatalf("Failed to add custom proof to embedded presentation: %v", err)
+			t.Fatalf("Failed to add custom proof to JSON presentation: %v", err)
 		}
 
 		// Serialize and verify it has proof
 		serialized, err := presentation.Serialize()
 		if err != nil {
-			t.Fatalf("Failed to serialize embedded presentation with custom proof: %v", err)
+			t.Fatalf("Failed to serialize JSON presentation with custom proof: %v", err)
 		}
 
 		// Check that serialized presentation contains proof
@@ -743,9 +743,9 @@ func TestPresentationSignatureFlows(t *testing.T) {
 
 	t.Run("Error Cases", func(t *testing.T) {
 		// Test AddCustomProof with nil proof
-		presentation, err := vp.NewEmbeddedPresentation(presentationContents)
+		presentation, err := vp.NewJSONPresentation(presentationContents)
 		if err != nil {
-			t.Fatalf("Failed to create embedded presentation: %v", err)
+			t.Fatalf("Failed to create JSON presentation: %v", err)
 		}
 
 		err = presentation.AddCustomProof(nil)
@@ -772,7 +772,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 	})
 }
 
-func TestEmbeddedPresentationFlow(t *testing.T) {
+func TestJSONPresentationStructFlow(t *testing.T) {
 	// Initialize the presentation and credential packages
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
@@ -782,42 +782,42 @@ func TestEmbeddedPresentationFlow(t *testing.T) {
 	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
-	// Create both embedded and JWT credentials
-	embeddedVC, jwtVC := createTestCredentials(t, issuerDID, privateKeyHex)
+	// Create both JSON and JWT credentials
+	jsonVC, jwtVC := createTestCredentials(t, issuerDID, privateKeyHex)
 
-	// 1. Create embedded VP with both embedded VC and JWT VC
+	// 1. Create JSON VP with both JSON VC and JWT VC
 	presentationContents := vp.PresentationContents{
 		Context: []interface{}{
 			"https://www.w3.org/ns/credentials/v2",
 			"https://www.w3.org/ns/credentials/examples/v2",
 		},
-		ID:                    "urn:uuid:embedded-vp-test-12345678",
+		ID:                    "urn:uuid:json-vp-test-12345678",
 		Types:                 []string{"VerifiablePresentation"},
 		Holder:                holderDID,
-		VerifiableCredentials: []vc.Credential{embeddedVC, jwtVC},
+		VerifiableCredentials: []vc.Credential{jsonVC, jwtVC},
 	}
 
-	presentation, err := vp.NewEmbeddedPresentation(presentationContents)
+	presentation, err := vp.NewJSONPresentation(presentationContents)
 	if err != nil {
-		t.Fatalf("Failed to create embedded presentation: %v", err)
+		t.Fatalf("Failed to create JSON presentation: %v", err)
 	}
 
 	// 2. Use AddProof to add proof to VP with issuer private key
 	err = presentation.AddProof(privateKeyHex)
 	if err != nil {
-		t.Fatalf("Failed to add proof to embedded presentation: %v", err)
+		t.Fatalf("Failed to add proof to JSON presentation: %v", err)
 	}
 
 	// 3. Verify VP
 	err = presentation.Verify()
 	if err != nil {
-		t.Fatalf("Failed to verify embedded presentation: %v", err)
+		t.Fatalf("Failed to verify JSON presentation: %v", err)
 	}
 
 	// 4. Use .ToJSON to convert VP to JSON and parse it into another VP
 	jsonData, err := presentation.GetContents()
 	if err != nil {
-		t.Fatalf("Failed to convert embedded presentation to JSON: %v", err)
+		t.Fatalf("Failed to convert JSON presentation to JSON: %v", err)
 	}
 
 	// Parse the JSON into another VP
@@ -829,11 +829,11 @@ func TestEmbeddedPresentationFlow(t *testing.T) {
 	// 5. Verify the another VP
 	err = parsedPresentation.Verify()
 	if err != nil {
-		t.Fatalf("Failed to verify parsed embedded presentation: %v", err)
+		t.Fatalf("Failed to verify parsed JSON presentation: %v", err)
 	}
 
 	// Verify the presentation data matches
-	parsedEmbeddedPres := parsedPresentation.(*vp.EmbeddedPresentation)
+	parsedEmbeddedPres := parsedPresentation.(*vp.JSONPresentationStruct)
 	parsedJSONData, err := parsedEmbeddedPres.GetContents()
 	if err != nil {
 		t.Fatalf("Failed to convert parsed presentation to JSON: %v", err)
@@ -845,7 +845,7 @@ func TestEmbeddedPresentationFlow(t *testing.T) {
 	}
 }
 
-func TestCreateEmbeddedPresentationOfTwoEmbeddedCredentials(t *testing.T) {
+func TestCreateJSONPresentationStructOfTwoJSONCredentials(t *testing.T) {
 	// Initialize the presentation and credential packages
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
@@ -855,60 +855,60 @@ func TestCreateEmbeddedPresentationOfTwoEmbeddedCredentials(t *testing.T) {
 	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
-	// Create embedded credentials
-	embeddedVC, _ := createTestCredentials(t, issuerDID, privateKeyHex)
+	// Create JSON credentials
+	jsonVC, _ := createTestCredentials(t, issuerDID, privateKeyHex)
 
-	// Create embedded presentation
+	// Create JSON presentation
 	presentationContents := vp.PresentationContents{
 		Context: []interface{}{
 			"https://www.w3.org/ns/credentials/v2",
 			"https://www.w3.org/ns/credentials/examples/v2",
 		},
-		ID:                    "urn:uuid:embedded-vp-test-12345678",
+		ID:                    "urn:uuid:json-vp-test-12345678",
 		Types:                 []string{"VerifiablePresentation"},
 		Holder:                holderDID,
-		VerifiableCredentials: []vc.Credential{embeddedVC, embeddedVC},
+		VerifiableCredentials: []vc.Credential{jsonVC, jsonVC},
 	}
 
-	presentation, err := vp.NewEmbeddedPresentation(presentationContents)
+	presentation, err := vp.NewJSONPresentation(presentationContents)
 	if err != nil {
-		t.Fatalf("Failed to create embedded presentation: %v", err)
+		t.Fatalf("Failed to create JSON presentation: %v", err)
 	}
 
 	// Add proof to the presentation
 	err = presentation.AddProof(privateKeyHex)
 	if err != nil {
-		t.Fatalf("Failed to add proof to embedded presentation: %v", err)
+		t.Fatalf("Failed to add proof to JSON presentation: %v", err)
 	}
 
 	// Verify the presentation
 	err = presentation.Verify()
 	if err != nil {
-		t.Fatalf("Failed to verify embedded presentation: %v", err)
+		t.Fatalf("Failed to verify JSON presentation: %v", err)
 	}
 
 	// Get JSON format
 	jsonData, err := presentation.GetContents()
 	if err != nil {
-		t.Fatalf("Failed to convert embedded presentation to JSON: %v", err)
+		t.Fatalf("Failed to convert JSON presentation to JSON: %v", err)
 	}
 
 	// Parse the presentation
 	parsedPresentation, err := vp.ParsePresentation(jsonData)
 	if err != nil {
-		t.Fatalf("Failed to parse embedded presentation: %v", err)
+		t.Fatalf("Failed to parse JSON presentation: %v", err)
 	}
 
 	// Verify the parsed presentation
 	err = parsedPresentation.Verify()
 	if err != nil {
-		t.Fatalf("Failed to verify parsed embedded presentation: %v", err)
+		t.Fatalf("Failed to verify parsed JSON presentation: %v", err)
 	}
 
 	// println the json data
 	jsonData, err = parsedPresentation.GetContents()
 	if err != nil {
-		t.Fatalf("Failed to convert parsed embedded presentation to JSON: %v", err)
+		t.Fatalf("Failed to convert parsed JSON presentation to JSON: %v", err)
 	}
 }
 
@@ -922,8 +922,8 @@ func TestJWTPresentationFlow(t *testing.T) {
 	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
-	// Create both embedded and JWT credentials
-	embeddedVC, jwtVC := createTestCredentials(t, issuerDID, privateKeyHex)
+	// Create both JSON and JWT credentials
+	jsonVC, jwtVC := createTestCredentials(t, issuerDID, privateKeyHex)
 
 	// 1. Create JWT VP with both JWT VC and issuer private key
 	presentationContents := vp.PresentationContents{
@@ -934,7 +934,7 @@ func TestJWTPresentationFlow(t *testing.T) {
 		ID:                    "urn:uuid:jwt-vp-test-12345678",
 		Types:                 []string{"VerifiablePresentation"},
 		Holder:                holderDID,
-		VerifiableCredentials: []vc.Credential{embeddedVC, jwtVC},
+		VerifiableCredentials: []vc.Credential{jsonVC, jwtVC},
 	}
 
 	presentation, err := vp.NewJWTPresentation(presentationContents)
@@ -999,7 +999,7 @@ func TestJWTPresentationFlow(t *testing.T) {
 	}
 }
 
-// Helper function to create test credentials (both embedded and JWT)
+// Helper function to create test credentials (both JSON and JWT)
 func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Credential, vc.Credential) {
 	// Create credential contents
 	schema := vc.Schema{
@@ -1034,16 +1034,16 @@ func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Cr
 		},
 	}
 
-	// Create embedded credential
-	embeddedVC, err := vc.NewEmbededCredential(credentialContents)
+	// Create JSON credential
+	jsonVC, err := vc.NewJSONCredential(credentialContents)
 	if err != nil {
-		t.Fatalf("Failed to create embedded credential: %v", err)
+		t.Fatalf("Failed to create JSON credential: %v", err)
 	}
 
-	// Add proof to embedded credential
-	err = embeddedVC.AddProof(privateKeyHex)
+	// Add proof to JSON credential
+	err = jsonVC.AddProof(privateKeyHex)
 	if err != nil {
-		t.Fatalf("Failed to add proof to embedded credential: %v", err)
+		t.Fatalf("Failed to add proof to JSON credential: %v", err)
 	}
 
 	// Create JWT credential
@@ -1058,5 +1058,5 @@ func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Cr
 		t.Fatalf("Failed to add proof to JWT credential: %v", err)
 	}
 
-	return embeddedVC, jwtVC
+	return jsonVC, jwtVC
 }
