@@ -9,7 +9,6 @@ import (
 
 	"encoding/json"
 
-	"fmt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 )

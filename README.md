@@ -83,7 +83,9 @@ To create a Verifiable Credential, you need:
 1. Initialize the VC package with a DID resolver endpoint
 2. Define credential contents using `vc.CredentialContents`
 3. Create the credential using `vc.NewJSONCredential()` or `vc.NewJWTCredential()`
-4. Add an ECDSA proof using the issuer's private key
+4. Add a cryptographic proof using one of two methods:
+   - **Direct signing**: Provide private key to `AddProof()`
+   - **External signing**: Get signing string, sign externally, then add signature
 5. Serialize and verify the credential
 
 ### Parsing a Verifiable Credential
@@ -91,6 +93,50 @@ To create a Verifiable Credential, you need:
 1. Use `vc.ParseCredential()` to parse both JSON and JWT credentials
 2. Use `vc.ParseCredentialWithValidation()` for automatic validation and verification
 3. Access credential data using the `Credential` interface methods
+
+### Adding Proofs/Signatures
+
+The SDK supports two approaches for adding cryptographic proofs:
+
+#### **Method 1: Direct Signing**
+
+The SDK handles the entire signing process internally.
+
+```go
+// Add cryptographic proof (works for both JSON and JWT)
+err = credential.AddProof(privateKeyHex)
+```
+
+#### **Method 2: External Signing**
+
+Get the signing string, sign externally, then add the signature back.
+
+```go
+// Step 1: Get the signing string
+signingInput, err := credential.GetSigningInput()
+if err != nil {
+    log.Fatalf("Failed to get signing input: %v", err)
+}
+
+// Step 2: Sign externally (using your preferred signing method)
+signature := signExternally(signingInput, privateKey)
+
+// Step 3: Add the signature back
+// For JSON credentials - adds DataIntegrityProof
+err = credential.AddCustomProof(&dto.Proof{
+    Type:               "DataIntegrityProof",
+    Created:            time.Now().UTC().Format(time.RFC3339),
+    VerificationMethod: "did:example:issuer#key-1",
+    ProofPurpose:       "assertionMethod",
+    Cryptosuite:        "ecdsa-rdfc-2019",
+    ProofValue:         signature,
+})
+
+// For JWT credentials - sets signature directly
+err = jwtCredential.AddCustomProof(&dto.Proof{
+    Signature: signature,
+})
+```
 
 ### Available Options
 
@@ -172,6 +218,7 @@ func main() {
 
 	// Convert private key to hex format for the SDK
 	privateKeyHex := fmt.Sprintf("%x", privateKey.D.Bytes())
+	method := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce#key-1"
 
 	// Initialize VC package with DID resolver endpoint
 	vc.Init("https://api.ndadid.vn/api/v1/did")
@@ -239,10 +286,10 @@ func main() {
 		log.Fatalf("Failed to create credential: %v", err)
 	}
 
-	// Add an ECDSA proof using private key hex
+	// Add a cryptographic proof using private key hex
 	err = credential.AddProof(privateKeyHex)
 	if err != nil {
-		log.Fatalf("Failed to add ECDSA proof: %v", err)
+		log.Fatalf("Failed to add proof: %v", err)
 	}
 
 	// Serialize the credential to JSON
@@ -260,7 +307,7 @@ func main() {
 		log.Fatalf("Failed to parse VC: %v", err)
 	}
 	fmt.Println("Parsed VC type:", verifyVC.GetType())
-	fmt.Println("ECDSA proof verified successfully")
+	fmt.Println("Proof verified successfully")
 
 	// Example: Create JWT credential with custom verification method key
 	jwtCredential, err := vc.NewJWTCredential(vcc, vc.WithVerificationMethodKey("key-2"))
@@ -322,7 +369,9 @@ To create a Verifiable Presentation, you need:
 2. Create or obtain Verifiable Credentials to include
 3. Define presentation contents using `vp.PresentationContents`
 4. Create the presentation using `vp.NewJSONPresentation()` or `vp.NewJWTPresentation()`
-5. Add an ECDSA proof using the holder's private key
+5. Add a cryptographic proof using one of two methods:
+   - **Direct signing**: Provide private key to `AddProof()`
+   - **External signing**: Get signing string, sign externally, then add signature
 6. Serialize and verify the presentation
 
 ### Parsing a Verifiable Presentation
@@ -330,6 +379,50 @@ To create a Verifiable Presentation, you need:
 1. Use `vp.ParsePresentation()` to parse both JSON and JWT presentations
 2. Use `vp.ParsePresentationWithValidation()` for automatic validation and verification
 3. Access presentation data using the `Presentation` interface methods
+
+### Adding Proofs/Signatures
+
+The SDK supports two approaches for adding cryptographic proofs:
+
+#### **Method 1: Direct Signing**
+
+The SDK handles the entire signing process internally.
+
+```go
+// Add cryptographic proof (works for both JSON and JWT)
+err = presentation.AddProof(privateKeyHex)
+```
+
+#### **Method 2: External Signing**
+
+Get the signing string, sign externally, then add the signature back.
+
+```go
+// Step 1: Get the signing string
+signingInput, err := presentation.GetSigningInput()
+if err != nil {
+    log.Fatalf("Failed to get signing input: %v", err)
+}
+
+// Step 2: Sign externally (using your preferred signing method)
+signature := signExternally(signingInput, privateKey)
+
+// Step 3: Add the signature back
+// For JSON presentations - adds DataIntegrityProof
+err = presentation.AddCustomProof(&dto.Proof{
+    Type:               "DataIntegrityProof",
+    Created:            time.Now().UTC().Format(time.RFC3339),
+    VerificationMethod: "did:example:holder#key-1",
+    ProofPurpose:       "authentication",
+    Cryptosuite:        "ecdsa-rdfc-2019",
+    ProofValue:         signature,
+})
+
+// For JWT presentations - sets signature directly
+err = jwtPresentation.AddCustomProof(&dto.Proof{
+    Signature: signature,
+})
+```
 
 ### Available Options
 
@@ -411,6 +504,7 @@ func main() {
 
 	// Convert private key to hex format for the SDK
 	privateKeyHex := fmt.Sprintf("%x", privateKey.D.Bytes())
+	vmID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce#key-1"
 
 	// Initialize VP package with DID resolver endpoint
 	vp.Init("https://api.ndadid.vn/api/v1/did")
@@ -436,10 +530,10 @@ func main() {
 		log.Fatalf("Failed to create presentation: %v", err)
 	}
 
-	// Add an ECDSA proof using holder's private key
+	// Add a cryptographic proof using holder's private key
 	err = presentation.AddProof(privateKeyHex)
 	if err != nil {
-		log.Fatalf("Failed to add ECDSA proof: %v", err)
+		log.Fatalf("Failed to add proof: %v", err)
 	}
 
 	// Serialize the presentation to JSON
@@ -463,7 +557,7 @@ func main() {
 		log.Fatalf("Failed to get presentation contents: %v", err)
 	}
 	log.Printf("Parsed Presentation Contents:\n%s\n", string(contents))
-	log.Println("ECDSA proof verified successfully in the presentation")
+	log.Println("Proof verified successfully in the presentation")
 
 	// Example: Create JWT presentation with custom verification method key
 	jwtPresentation, err := vp.NewJWTPresentation(vpc, vp.WithVerificationMethodKey("key-2"))
