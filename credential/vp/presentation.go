@@ -8,6 +8,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
+	"strings"
 )
 
 // Config holds package configuration.
@@ -132,10 +133,25 @@ func ParsePresentationWithValidation(rawPresentation []byte) (Presentation, erro
 }
 
 func isJSONPresentation(rawPresentation []byte) bool {
-	return json.Valid(rawPresentation)
+	if len(rawPresentation) == 0 {
+		return false
+	}
+
+	if !json.Valid(rawPresentation) {
+		return false
+	}
+
+	var jsonMap map[string]interface{}
+	err := json.Unmarshal(rawPresentation, &jsonMap)
+	if err != nil {
+		return false
+	}
+
+	return true
 }
 
 func isJWTPresentation(valStr string) bool {
+	valStr = strings.Trim(valStr, "\"")
 	regex := `^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$`
 	match, _ := regexp.MatchString(regex, valStr)
 	return match

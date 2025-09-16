@@ -90,6 +90,9 @@ func ParseJWTPresentation(rawJWT string, opts ...PresentationOpt) (Presentation,
 		return nil, fmt.Errorf("invalid JWT format")
 	}
 
+	// prevent " from marshalling to json
+	rawJWT = strings.Trim(rawJWT, "\"")
+
 	// Split JWT into parts
 	parts := strings.Split(rawJWT, ".")
 
