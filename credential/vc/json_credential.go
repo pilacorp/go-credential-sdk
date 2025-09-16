@@ -9,30 +9,28 @@ import (
 )
 
 type JSONCredential struct {
-	presentationData CredentialData
-	proof            *dto.Proof
+	credentialData     CredentialData
+	proof              *dto.Proof
+	verificationMethod string
 }
 
 func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
-	options := GetOptions(opts...)
-
 	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}
 
-	if options.isValidateSchema {
-		if err := validateCredential(m); err != nil {
-			return nil, fmt.Errorf("failed to validate credential: %w", err)
-		}
+	options := getOptions(opts...)
+
+	e := &JSONCredential{
+		credentialData:     m,
+		verificationMethod: options.verificationMethodKey,
 	}
 
-	return &JSONCredential{presentationData: m}, nil
+	return e, e.executeOptions(opts...)
 }
 
 func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (Credential, error) {
-	options := GetOptions(opts...)
-
 	if !isJSONCredential(rawJSON) {
 		return nil, fmt.Errorf("invalid JSON format")
 	}
@@ -46,81 +44,85 @@ func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (Credential, err
 		return nil, fmt.Errorf("failed to unmarshal credential: %w", err)
 	}
 
-	if options.isValidateSchema {
-		if err := validateCredential(m); err != nil {
-			return nil, fmt.Errorf("failed to validate credential: %w", err)
-		}
-	}
+	e := &JSONCredential{credentialData: m}
 
-	if options.isVerifyProof {
-		isValid, err := (*jsonmap.JSONMap)(&m).VerifyProof(options.didBaseURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to verify proof: %w", err)
-		}
-		if !isValid {
-			return nil, fmt.Errorf("invalid proof")
-		}
-	}
-
-	return &JSONCredential{presentationData: m}, nil
+	return e, e.executeOptions(opts...)
 }
 
 func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
-	options := GetOptions(opts...)
+	err := e.executeOptions(opts...)
+	if err != nil {
+		return err
+	}
 
-	verificationMethod := fmt.Sprintf("%s#%s", e.presentationData["issuer"].(string), options.verificationMethodKey)
+	verificationMethod := fmt.Sprintf("%s#%s", e.credentialData["issuer"].(string), e.verificationMethod)
 
-	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(priv, verificationMethod, "assertionMethod", options.didBaseURL)
+	options := getOptions(opts...)
+
+	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(priv, verificationMethod, "assertionMethod", options.didBaseURL)
 }
 
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
+	return (*jsonmap.JSONMap)(&e.credentialData).Canonicalize()
 }
 
-func (e *JSONCredential) AddCustomProof(proof *dto.Proof) error {
+func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
 
-	e.proof = proof
-
-	return (*jsonmap.JSONMap)(&e.presentationData).AddCustomProof(e.proof)
-}
-
-func (e *JSONCredential) Verify(opts ...CredentialOpt) error {
-	options := GetOptions(opts...)
-
-	isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(options.didBaseURL)
+	err := e.executeOptions(opts...)
 	if err != nil {
 		return err
 	}
-	if !isValid {
-		return fmt.Errorf("invalid proof")
-	}
 
-	if options.isValidateSchema {
-		if err := validateCredential(e.presentationData); err != nil {
-			return fmt.Errorf("failed to validate credential: %w", err)
-		}
-	}
+	e.proof = proof
 
-	return nil
+	return (*jsonmap.JSONMap)(&e.credentialData).AddCustomProof(e.proof)
+}
+
+func (e *JSONCredential) Verify(opts ...CredentialOpt) error {
+	opts = append(opts, WithVerifyProof())
+
+	return e.executeOptions(opts...)
 }
 
 func (e *JSONCredential) Serialize() (interface{}, error) {
 	// Check if credential has proof
-	if e.presentationData["proof"] == nil {
+	if e.credentialData["proof"] == nil {
 		return nil, fmt.Errorf("credential must have proof before serialization")
 	}
 
 	// Return the JSON credential object directly
-	return map[string]interface{}(e.presentationData), nil
+	return map[string]interface{}(e.credentialData), nil
 }
 
 func (e *JSONCredential) GetContents() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.presentationData).ToJSON()
+	return (*jsonmap.JSONMap)(&e.credentialData).ToJSON()
 }
 
 func (e *JSONCredential) GetType() string {
 	return "JSON"
+}
+
+func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
+	options := getOptions(opts...)
+
+	if options.isValidateSchema {
+		if err := validateCredential(e.credentialData); err != nil {
+			return fmt.Errorf("failed to validate credential: %w", err)
+		}
+	}
+
+	if options.isVerifyProof {
+		isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(options.didBaseURL)
+		if err != nil {
+			return fmt.Errorf("failed to verify credential: %w", err)
+		}
+		if !isValid {
+			return fmt.Errorf("invalid proof")
+		}
+	}
+
+	return nil
 }

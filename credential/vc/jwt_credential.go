@@ -20,18 +20,10 @@ type JWTCredential struct {
 }
 
 func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
-	options := GetOptions(opts...)
-
 	// Convert CredentialContents to CredentialData
 	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
-	}
-
-	if options.isValidateSchema {
-		if err := validateCredential(m); err != nil {
-			return nil, fmt.Errorf("failed to validate credential: %w", err)
-		}
 	}
 
 	payloadData := CredentialData(m)
@@ -64,6 +56,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 		payload[key] = value
 	}
 
+	options := getOptions(opts...)
 	header := map[string]interface{}{
 		"typ": "JWT",
 		"alg": "ES256K",
@@ -86,17 +79,17 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 	// Create signing input (header.payload)
 	signingInput := headerEncoded + "." + payloadEncoded
 
-	// Return JWTCredential
-	return &JWTCredential{
+	e := &JWTCredential{
 		signingInput: signingInput,
 		payloadData:  payloadData,
 		signature:    "",
-	}, nil
+	}
+
+	// Return JWTCredential
+	return e, e.executeOptions(opts...)
 }
 
 func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error) {
-	options := GetOptions(opts...)
-
 	if !isJWTCredential(rawJWT) {
 		return nil, fmt.Errorf("invalid JWT format")
 	}
@@ -138,28 +131,16 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 		return nil, fmt.Errorf("vc claim is not a valid JSON object")
 	}
 
-	if options.isValidateSchema {
-		if err := validateCredential(vcMap); err != nil {
-			return nil, fmt.Errorf("failed to validate credential: %w", err)
-		}
-	}
-
-	if options.isVerifyProof {
-		verifier := jwt.NewJWTVerifier(options.didBaseURL)
-		if err := verifier.VerifyJWT(rawJWT); err != nil {
-			return nil, fmt.Errorf("failed to verify proof: %w", err)
-		}
-	}
-
 	// Create signing input (header.payload)
 	signingInput := headerEncoded + "." + payloadEncoded
 
-	// Return JWTCredential
-	return &JWTCredential{
+	e := &JWTCredential{
 		signingInput: signingInput,
 		payloadData:  CredentialData(vcMap),
 		signature:    signature,
-	}, nil
+	}
+
+	return e, e.executeOptions(opts...)
 }
 
 func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
@@ -169,6 +150,11 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	signature, err := signer.SignString(j.signingInput)
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
+	}
+
+	err = j.executeOptions(opts...)
+	if err != nil {
+		return err
 	}
 
 	// Update signature
@@ -181,13 +167,18 @@ func (j *JWTCredential) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
-func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
+func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
 
 	if len(proof.Signature) == 0 {
 		return fmt.Errorf("proof signature cannot be empty")
+	}
+
+	err := j.executeOptions(opts...)
+	if err != nil {
+		return err
 	}
 
 	// Use the provided signature directly
@@ -197,28 +188,9 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof) error {
 }
 
 func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
-	options := GetOptions(opts...)
+	opts = append(opts, WithVerifyProof())
 
-	// For signed JWT, verify signature
-	verifier := jwt.NewJWTVerifier(options.didBaseURL)
-
-	serialized, err := j.Serialize()
-	if err != nil {
-		return fmt.Errorf("failed to serialize credential: %w", err)
-	}
-
-	err = verifier.VerifyJWT(serialized.(string))
-	if err != nil {
-		return err
-	}
-
-	if options.isValidateSchema {
-		if err := validateCredential(j.payloadData); err != nil {
-			return fmt.Errorf("failed to validate credential: %w", err)
-		}
-	}
-
-	return nil
+	return j.executeOptions(opts...)
 }
 
 func (j *JWTCredential) Serialize() (interface{}, error) {
@@ -237,4 +209,29 @@ func (j *JWTCredential) GetContents() ([]byte, error) {
 
 func (j *JWTCredential) GetType() string {
 	return "JWT"
+}
+
+func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
+	options := getOptions(opts...)
+
+	if options.isValidateSchema {
+		if err := validateCredential(j.payloadData); err != nil {
+			return fmt.Errorf("failed to validate credential: %w", err)
+		}
+	}
+
+	if options.isVerifyProof {
+		serialized, err := j.Serialize()
+		if err != nil {
+			return fmt.Errorf("failed to serialize credential: %w", err)
+		}
+
+		verifier := jwt.NewJWTVerifier(options.didBaseURL)
+		err = verifier.VerifyJWT(serialized.(string))
+		if err != nil {
+			return fmt.Errorf("failed to verify credential: %w", err)
+		}
+	}
+
+	return nil
 }

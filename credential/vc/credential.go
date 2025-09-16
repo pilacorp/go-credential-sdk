@@ -29,7 +29,7 @@ type Credential interface {
 	AddProof(priv string, opts ...CredentialOpt) error
 
 	GetSigningInput() ([]byte, error)
-	AddCustomProof(proof *dto.Proof) error
+	AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error
 
 	// Verify verifies the credential
 	Verify(opts ...CredentialOpt) error
@@ -42,6 +42,8 @@ type Credential interface {
 	GetContents() ([]byte, error)
 
 	GetType() string
+
+	executeOptions(opts ...CredentialOpt) error
 }
 
 // CredentialData represents credential data in JSON format (suitable for both JWT and JSON credentials).
@@ -120,8 +122,8 @@ func WithVerifyProof() CredentialOpt {
 	}
 }
 
-// GetOptions returns the credential options.
-func GetOptions(opts ...CredentialOpt) *credentialOptions {
+// getOptions returns the credential options.
+func getOptions(opts ...CredentialOpt) *credentialOptions {
 	options := &credentialOptions{
 		isValidateSchema:      false,
 		isVerifyProof:         false,

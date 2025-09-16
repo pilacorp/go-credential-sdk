@@ -118,7 +118,7 @@ func TestParseCredential(t *testing.T) {
 			// Check the credential type and access the appropriate field
 			if _, ok := result.(*JSONCredential); ok {
 				embeddedCred := result.(*JSONCredential)
-				assert.Equal(t, tt.expected, CredentialData(embeddedCred.presentationData), "Credential mismatch")
+				assert.Equal(t, tt.expected, CredentialData(embeddedCred.credentialData), "Credential mismatch")
 			} else if _, ok := result.(*JWTCredential); ok {
 				jwtCred := result.(*JWTCredential)
 				payloadData, err := jwtCred.GetContents()
@@ -199,14 +199,10 @@ func TestCreateCredentialWithContents(t *testing.T) {
 			// For JSON credentials, we need to check the jsonCredential
 			embeddedCred, ok := result.(*JSONCredential)
 			assert.True(t, ok, "Result should be *JSONCredential")
-			assert.Equal(t, tt.expected, CredentialData(embeddedCred.presentationData), "JSON Credential mismatch")
+			assert.Equal(t, tt.expected, CredentialData(embeddedCred.credentialData), "JSON Credential mismatch")
 		})
 	}
 }
-
-// TestToJSON removed - JSONCredential doesn't have ToJSON method
-
-// TestParseCredentialContents removed - JSONCredential doesn't have ParseCredentialContents method
 
 func TestParseContext(t *testing.T) {
 	tests := []struct {
@@ -676,7 +672,6 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to marshal JWT credential: %v", err)
 		}
-		fmt.Println(string(byteJwkToken))
 		// Parse and verify the JWT credential
 		parsedCredential, err := ParseCredential(byteJwkToken)
 		assert.NoError(t, err, "Failed to parse JWT credential")

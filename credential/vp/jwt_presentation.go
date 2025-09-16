@@ -18,8 +18,6 @@ type JWTPresentation struct {
 }
 
 func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
-	options := GetOptions(opts...)
-
 	// Convert PresentationContents to PresentationData
 	m, err := serializePresentationContents(&vpc)
 	if err != nil {
@@ -47,6 +45,7 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 		payload[key] = value
 	}
 
+	options := getOptions(opts...)
 	header := map[string]interface{}{
 		"typ": "JWT",
 		"alg": "ES256K",
@@ -69,23 +68,17 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 	// Create signing input (header.payload)
 	signingInput := headerEncoded + "." + payloadEncoded
 
-	if options.isValidateVC {
-		if err := verifyCredentials(payloadData); err != nil {
-			return nil, fmt.Errorf("failed to validate presentation: %w", err)
-		}
-	}
-
-	// Return JWTPresentation
-	return &JWTPresentation{
+	e := &JWTPresentation{
 		signingInput: signingInput,
 		payloadData:  payloadData,
 		signature:    "",
-	}, nil
+	}
+
+	// Return JWTPresentation
+	return e, e.executeOptions(opts...)
 }
 
 func ParseJWTPresentation(rawJWT string, opts ...PresentationOpt) (Presentation, error) {
-	options := GetOptions(opts...)
-
 	if !isJWTPresentation(rawJWT) {
 		return nil, fmt.Errorf("invalid JWT format")
 	}
@@ -127,26 +120,19 @@ func ParseJWTPresentation(rawJWT string, opts ...PresentationOpt) (Presentation,
 		return nil, fmt.Errorf("vp claim is not a valid JSON object")
 	}
 
-	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(vpMap)); err != nil {
-			return nil, fmt.Errorf("failed to validate presentation: %w", err)
-		}
-	}
-
 	// Create signing input (header.payload)
 	signingInput := headerEncoded + "." + payloadEncoded
 
-	// Return JWTPresentation
-	return &JWTPresentation{
+	e := &JWTPresentation{
 		signingInput: signingInput,
 		payloadData:  PresentationData(vpMap),
 		signature:    signature,
-	}, nil
+	}
+
+	return e, e.executeOptions(opts...)
 }
 
 func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
-	options := GetOptions(opts...)
-
 	signer := jwt.NewJWTSigner(priv)
 
 	// Sign the existing signing input
@@ -155,14 +141,13 @@ func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
 
+	err = j.executeOptions(opts...)
+	if err != nil {
+		return err
+	}
+
 	// Update signature
 	j.signature = signature
-
-	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(j.payloadData)); err != nil {
-			return fmt.Errorf("failed to validate presentation: %w", err)
-		}
-	}
 
 	return nil
 }
@@ -171,7 +156,7 @@ func (j *JWTPresentation) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
-func (j *JWTPresentation) AddCustomProof(proof *dto.Proof) error {
+func (j *JWTPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
@@ -180,36 +165,20 @@ func (j *JWTPresentation) AddCustomProof(proof *dto.Proof) error {
 		return fmt.Errorf("proof signature cannot be empty")
 	}
 
-	// Use the provided signature directly
+	err := j.executeOptions(opts...)
+	if err != nil {
+		return err
+	}
+
 	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
 
 	return nil
 }
 
 func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
-	options := GetOptions(opts...)
+	opts = append(opts, WithVerifyProof())
 
-	// For signed JWT, verify signature
-	verifier := jwt.NewJWTVerifier(options.didBaseURL)
-
-	serialized, err := j.Serialize()
-	if err != nil {
-		return fmt.Errorf("failed to serialize presentation: %w", err)
-	}
-
-	err = verifier.VerifyJWT(serialized.(string))
-	if err != nil {
-		return err
-	}
-
-	// Verify embedded JWT credentials
-	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(j.payloadData)); err != nil {
-			return fmt.Errorf("failed to verify credentials: %w", err)
-		}
-	}
-
-	return nil
+	return j.executeOptions(opts...)
 }
 
 func (j *JWTPresentation) Serialize() (interface{}, error) {
@@ -228,4 +197,29 @@ func (j *JWTPresentation) GetContents() ([]byte, error) {
 
 func (j *JWTPresentation) GetType() string {
 	return "JWT"
+}
+
+func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
+	options := getOptions(opts...)
+
+	if options.isValidateVC {
+		if err := verifyCredentials(PresentationData(j.payloadData)); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+	}
+
+	if options.isVerifyProof {
+		serialized, err := j.Serialize()
+		if err != nil {
+			return fmt.Errorf("failed to serialize presentation: %w", err)
+		}
+
+		verifier := jwt.NewJWTVerifier(options.didBaseURL)
+		err = verifier.VerifyJWT(serialized.(string))
+		if err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+	}
+
+	return nil
 }

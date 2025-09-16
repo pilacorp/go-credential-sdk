@@ -60,12 +60,13 @@ go get github.com/piprate/json-gold/ld
 
 ## <a name="vc-features"></a>Features
 
-- Create W3C Verifiable Credentials with flexible context and schema support
+- Create W3C Verifiable Credentials in both JSON and JWT formats
 - Add ECDSA cryptographic proofs using private key hex strings
 - Support for credential status (revocation/suspension)
-- Serialize credentials to JSON
-- Parse and verify ECDSA proofs with DID resolution
+- Serialize credentials to their native format (JSON object or JWT string)
+- Parse and verify credentials with DID resolution
 - Custom field support in credential subjects
+- Flexible options for validation and verification
 
 ## <a name="vc-usage"></a>Usage
 
@@ -81,15 +82,68 @@ To create a Verifiable Credential, you need:
 
 1. Initialize the VC package with a DID resolver endpoint
 2. Define credential contents using `vc.CredentialContents`
-3. Create the credential using `vc.CreateCredentialWithContent`
+3. Create the credential using `vc.NewJSONCredential()` or `vc.NewJWTCredential()`
 4. Add an ECDSA proof using the issuer's private key
 5. Serialize and verify the credential
 
+### Parsing a Verifiable Credential
+
+1. Use `vc.ParseCredential()` to parse both JSON and JWT credentials
+2. Use `vc.ParseCredentialWithValidation()` for automatic validation and verification
+3. Access credential data using the `Credential` interface methods
+
+### Available Options
+
+The VC package provides several options to customize behavior:
+
+#### **vc.WithSchemaValidation()**
+
+Enables schema validation during credential creation and parsing.
+
+```go
+// Create credential with schema validation
+credential, err := vc.NewJSONCredential(contents, vc.WithSchemaValidation())
+
+// Parse credential with schema validation
+credential, err := vc.ParseCredential(data, vc.WithSchemaValidation())
+```
+
+#### **vc.WithVerifyProof()**
+
+Enables proof verification during credential parsing.
+
+```go
+// Parse credential with proof verification
+credential, err := vc.ParseCredential(data, vc.WithVerifyProof())
+
+// Parse credential with both validation and verification
+credential, err := vc.ParseCredential(data, vc.WithSchemaValidation(), vc.WithVerifyProof())
+```
+
+#### **vc.WithBaseURL(url)**
+
+Sets a custom DID resolver base URL for proof verification.
+
+```go
+// Use custom DID resolver
+credential, err := vc.ParseCredential(data, vc.WithBaseURL("https://custom-did-resolver.com/api/v1/did"))
+```
+
+#### **vc.WithVerificationMethodKey(key)**
+
+Sets a custom verification method key (default: "key-1").
+
+```go
+// Use custom verification method key
+credential, err := vc.NewJSONCredential(contents, vc.WithVerificationMethodKey("key-2"))
+```
+
 Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(url)
-- Default: https://auth-dev.pila.vn/api/v1/did
-- Dev-env: https://auth-dev.pila.vn/api/v1/did
+
+- Default: https://api.ndadid.vn/api/v1/did
 
 Supported Proof:
+
 - type: DataIntegrityProof
 - cryptosuite: ecdsa-rdfc-2019,
 
@@ -115,13 +169,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to generate private key: %v", err)
 	}
-	
+
 	// Convert private key to hex format for the SDK
 	privateKeyHex := fmt.Sprintf("%x", privateKey.D.Bytes())
-	method := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce#key-1"
-	
+
 	// Initialize VC package with DID resolver endpoint
-	vc.Init("https://auth-dev.pila.vn/api/v1/did")
+	vc.Init("https://api.ndadid.vn/api/v1/did")
 
 	// Define credential contents
 	vcc := vc.CredentialContents{
@@ -180,47 +233,64 @@ func main() {
 		},
 	}
 
-	// Create the credential
-	credential, err := vc.CreateCredentialWithContent(vcc)
+	// Create the credential (JSON format) with schema validation
+	credential, err := vc.NewJSONCredential(vcc, vc.WithSchemaValidation())
 	if err != nil {
 		log.Fatalf("Failed to create credential: %v", err)
 	}
 
-	// Add an ECDSA proof using private key hex and verification method
-	err = credential.AddECDSAProof(privateKeyHex, method)
+	// Add an ECDSA proof using private key hex
+	err = credential.AddProof(privateKeyHex)
 	if err != nil {
 		log.Fatalf("Failed to add ECDSA proof: %v", err)
 	}
 
 	// Serialize the credential to JSON
-	vcSerialized, err := credential.ToJSON()
+	vcSerialized, err := credential.Serialize()
 	if err != nil {
 		log.Fatalf("Failed to serialize VC: %v", err)
 	}
-	fmt.Printf("VC with Embedded Proof:\n%s\n\n", string(vcSerialized))
+	fmt.Printf("VC with Embedded Proof:\n%+v\n\n", vcSerialized)
 
-	// Parse and verify the credential
-	verifyVC, err := vc.ParseCredential(vcSerialized, vc.WithDisableValidation())
+	// Parse and verify the credential with validation and proof verification
+	verifyVC, err := vc.ParseCredential([]byte(fmt.Sprintf("%v", vcSerialized)),
+		vc.WithSchemaValidation(),
+		vc.WithVerifyProof())
 	if err != nil {
 		log.Fatalf("Failed to parse VC: %v", err)
 	}
-	fmt.Println("Parsed VC:", verifyVC)
+	fmt.Println("Parsed VC type:", verifyVC.GetType())
+	fmt.Println("ECDSA proof verified successfully")
 
-	// Verify the ECDSA proof (uses DID resolution for public key)
-	isValid, err := vc.VerifyECDSACredential(verifyVC)
+	// Example: Create JWT credential with custom verification method key
+	jwtCredential, err := vc.NewJWTCredential(vcc, vc.WithVerificationMethodKey("key-2"))
 	if err != nil {
-		log.Fatalf("Failed to verify ECDSA proof: %v", err)
+		log.Fatalf("Failed to create JWT credential: %v", err)
 	}
-	fmt.Println("ECDSA proof verified successfully - result:", isValid)
+
+	// Add proof to JWT credential
+	err = jwtCredential.AddProof(privateKeyHex)
+	if err != nil {
+		log.Fatalf("Failed to add proof to JWT credential: %v", err)
+	}
+
+	// Serialize JWT credential
+	jwtSerialized, err := jwtCredential.Serialize()
+	if err != nil {
+		log.Fatalf("Failed to serialize JWT credential: %v", err)
+	}
+	fmt.Printf("JWT Credential:\n%s\n", jwtSerialized)
 }
 ```
+
 **Notes:**
 
-- Replace `PrivateKey` and `VerificationMethod` with your actual key variables.
-- The package assumes you are familiar with W3C Verifiable Presentations standards.
+- Replace `privateKeyHex` with your actual private key in hex format.
+- The package assumes you are familiar with W3C Verifiable Credentials standards.
 - Ensure your DID resolver endpoint is accessible and supports the DID methods you're using.
-- VCs included in the presentation should be valid and properly signed.
-- When vc.ParseCredential from json, you can use `vc.WithDisableValidation()` to skip validation Credential Schema.
+- Use `vc.WithSchemaValidation()` to enable schema validation during creation/parsing.
+- Use `vc.WithVerifyProof()` to enable proof verification during parsing.
+- The `Credential` interface works with both JSON and JWT formats seamlessly.
 
 ---
 
@@ -228,14 +298,14 @@ func main() {
 
 ## <a name="vp-features"></a>Features
 
-- Create W3C Verifiable Presentations containing one or more VCs
+- Create W3C Verifiable Presentations in both JSON and JWT formats
 - Add ECDSA cryptographic proofs using holder's private key
 - Parse and verify presentation structure and proofs
 - Support for custom contexts and presentation types
 - DID resolution for proof verification
+- Flexible options for validation and verification
 
 ## <a name="vp-usage"></a>Usage
-
 
 ### Prerequisites for Creating a VP
 
@@ -251,15 +321,68 @@ To create a Verifiable Presentation, you need:
 1. Initialize the VP package with a DID resolver endpoint
 2. Create or obtain Verifiable Credentials to include
 3. Define presentation contents using `vp.PresentationContents`
-4. Create the presentation using `vp.CreatePresentationWithContent`
+4. Create the presentation using `vp.NewJSONPresentation()` or `vp.NewJWTPresentation()`
 5. Add an ECDSA proof using the holder's private key
 6. Serialize and verify the presentation
 
+### Parsing a Verifiable Presentation
+
+1. Use `vp.ParsePresentation()` to parse both JSON and JWT presentations
+2. Use `vp.ParsePresentationWithValidation()` for automatic validation and verification
+3. Access presentation data using the `Presentation` interface methods
+
+### Available Options
+
+The VP package provides several options to customize behavior:
+
+#### **vp.WithVCValidation()**
+
+Enables validation for credentials within the presentation.
+
+```go
+// Create presentation with VC validation
+presentation, err := vp.NewJSONPresentation(contents, vp.WithVCValidation())
+
+// Parse presentation with VC validation
+presentation, err := vp.ParsePresentation(data, vp.WithVCValidation())
+```
+
+#### **vp.WithVerifyProof()**
+
+Enables proof verification during presentation parsing.
+
+```go
+// Parse presentation with proof verification
+presentation, err := vp.ParsePresentation(data, vp.WithVerifyProof())
+
+// Parse presentation with both VC validation and proof verification
+presentation, err := vp.ParsePresentation(data, vp.WithVCValidation(), vp.WithVerifyProof())
+```
+
+#### **vp.WithBaseURL(url)**
+
+Sets a custom DID resolver base URL for proof verification.
+
+```go
+// Verify presentation using custom resolver
+err = presentation.Verify(vp.WithBaseURL("https://did-resolver.prod.company.com/api/v1/did"))
+```
+
+#### **vp.WithVerificationMethodKey(key)**
+
+Sets a custom verification method key (default: "key-1").
+
+```go
+// Use custom verification method key
+presentation, err := vp.NewJSONPresentation(contents, vp.WithVerificationMethodKey("key-2"))
+```
+
 Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(url)
-- Default: https://auth-dev.pila.vn/api/v1/did
-- Dev-env: https://auth-dev.pila.vn/api/v1/did
+
+- Default: https://api.ndadid.vn/api/v1/did
 
 Supported Proof:
+
 - type: DataIntegrityProof
 - cryptosuite: ecdsa-rdfc-2019,
 
@@ -285,13 +408,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to generate private key: %v", err)
 	}
-	
+
 	// Convert private key to hex format for the SDK
 	privateKeyHex := fmt.Sprintf("%x", privateKey.D.Bytes())
-	vmID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce#key-1"
-	
+
 	// Initialize VP package with DID resolver endpoint
-	vp.Init("https://auth-dev.pila.vn/api/v1/did")
+	vp.Init("https://api.ndadid.vn/api/v1/did")
 
 	// Assume vcList contains previously created VCs
 	// vcList := []*vc.Credential{credential1, credential2}
@@ -308,56 +430,71 @@ func main() {
 		VerifiableCredentials: vcList,
 	}
 
-	// Create the presentation
-	presentation, err := vp.CreatePresentationWithContent(vpc)
+	// Create the presentation (JSON format) with VC validation
+	presentation, err := vp.NewJSONPresentation(vpc, vp.WithVCValidation())
 	if err != nil {
 		log.Fatalf("Failed to create presentation: %v", err)
 	}
 
 	// Add an ECDSA proof using holder's private key
-	err = presentation.AddECDSAProof(privateKeyHex, vmID)
+	err = presentation.AddProof(privateKeyHex)
 	if err != nil {
 		log.Fatalf("Failed to add ECDSA proof: %v", err)
 	}
 
 	// Serialize the presentation to JSON
-	presentationJSON, err := presentation.ToJSON()
+	presentationJSON, err := presentation.Serialize()
 	if err != nil {
 		log.Fatalf("Failed to serialize presentation: %v", err)
 	}
-	fmt.Printf("VP with Embedded Proof:\n%s\n\n", string(presentationJSON))
+	fmt.Printf("VP with Embedded Proof:\n%+v\n\n", presentationJSON)
 
-	// Parse the presentation to verify its structure
-	parsedPresentation, err := vp.ParsePresentation(presentationJSON)
+	// Parse the presentation with VC validation and proof verification
+	parsedPresentation, err := vp.ParsePresentation([]byte(fmt.Sprintf("%v", presentationJSON)),
+		vp.WithVCValidation(),
+		vp.WithVerifyProof())
 	if err != nil {
 		log.Fatalf("Failed to parse presentation: %v", err)
 	}
 
-	// Parse presentation contents for inspection
-	parsedPresentationContent, err := parsedPresentation.ParsePresentationContents()
+	// Get presentation contents for inspection
+	contents, err := parsedPresentation.GetContents()
 	if err != nil {
-		log.Fatalf("Failed to parse presentation contents: %v", err)
+		log.Fatalf("Failed to get presentation contents: %v", err)
 	}
-	log.Printf("Parsed Presentation Contents:\n%+v\n", parsedPresentationContent)
-
-	// Verify the ECDSA proof in the presentation (uses DID resolution)
-	isValid, err := vp.VerifyECDSAPresentation(parsedPresentation)
-	if err != nil {
-		log.Fatalf("Error verifying ECDSA proof: %v", err)
-	}
-
-	if !isValid {
-		log.Fatal("ECDSA proof verification failed in the presentation")
-	}
+	log.Printf("Parsed Presentation Contents:\n%s\n", string(contents))
 	log.Println("ECDSA proof verified successfully in the presentation")
+
+	// Example: Create JWT presentation with custom verification method key
+	jwtPresentation, err := vp.NewJWTPresentation(vpc, vp.WithVerificationMethodKey("key-2"))
+	if err != nil {
+		log.Fatalf("Failed to create JWT presentation: %v", err)
+	}
+
+	// Add proof to JWT presentation
+	err = jwtPresentation.AddProof(privateKeyHex)
+	if err != nil {
+		log.Fatalf("Failed to add proof to JWT presentation: %v", err)
+	}
+
+	// Serialize JWT presentation
+	jwtSerialized, err := jwtPresentation.Serialize()
+	if err != nil {
+		log.Fatalf("Failed to serialize JWT presentation: %v", err)
+	}
+	fmt.Printf("JWT Presentation:\n%s\n", jwtSerialized)
 }
 ```
+
 **Notes:**
 
-- Replace `PrivateKey` and `VerificationMethod` with your actual key variables.
+- Replace `privateKeyHex` with your actual private key in hex format.
 - The package assumes you are familiar with W3C Verifiable Presentations standards.
 - Ensure your DID resolver endpoint is accessible and supports the DID methods you're using.
 - VCs included in the presentation should be valid and properly signed.
+- Use `vp.WithVCValidation()` to enable VC validation during presentation parsing.
+- Use `vp.WithVerifyProof()` to enable proof verification during parsing.
+- The `Presentation` interface works with both JSON and JWT formats seamlessly.
 
 ---
 
@@ -424,25 +561,124 @@ func main() {
 ## Key Differences from Previous Version
 
 ### Verifiable Credentials (VC)
-- Uses hex-encoded private keys instead of `*ecdsa.PrivateKey` objects
-- Requires initialization with DID resolver endpoint via `vc.Init()`
-- Supports flexible JSON-LD contexts with custom vocabulary mappings
-- Includes credential status support for revocation/suspension
-- Enhanced schema support with `vc.Schema` type
-- Verification uses DID resolution instead of requiring public key parameter
+
+- **Unified Interface**: Single `Credential` interface for both JSON and JWT formats
+- **Constructor Pattern**: Use `vc.NewJSONCredential()` or `vc.NewJWTCredential()` to create credentials
+- **Simplified API**: `AddProof()`, `Serialize()`, `Verify()` methods work consistently across formats
+- **Flexible Parsing**: `vc.ParseCredential()` automatically detects and parses both JSON and JWT formats
+- **Options Pattern**: Use `vc.WithSchemaValidation()`, `vc.WithVerifyProof()` for configuration
+- **Uses hex-encoded private keys** instead of `*ecdsa.PrivateKey` objects
+- **Requires initialization** with DID resolver endpoint via `vc.Init()`
+- **Supports flexible JSON-LD contexts** with custom vocabulary mappings
+- **Includes credential status support** for revocation/suspension
+- **Enhanced schema support** with `vc.Schema` type
+- **Verification uses DID resolution** instead of requiring public key parameter
 
 ### Verifiable Presentations (VP)
-- New VP package for creating and managing Verifiable Presentations
-- Similar initialization pattern with `vp.Init()` for DID resolution
-- Support for multiple VCs within a single presentation
-- Holder-based proof model (holder signs the presentation)
-- Comprehensive parsing and verification capabilities
+
+- **Unified Interface**: Single `Presentation` interface for both JSON and JWT formats
+- **Constructor Pattern**: Use `vp.NewJSONPresentation()` or `vp.NewJWTPresentation()` to create presentations
+- **Simplified API**: `AddProof()`, `Serialize()`, `Verify()` methods work consistently across formats
+- **Flexible Parsing**: `vp.ParsePresentation()` automatically detects and parses both JSON and JWT formats
+- **Options Pattern**: Use `vp.WithVCValidation()`, `vp.WithVerifyProof()` for configuration
+- **Similar initialization pattern** with `vp.Init()` for DID resolution
+- **Support for multiple VCs** within a single presentation
+- **Holder-based proof model** (holder signs the presentation)
+- **Comprehensive parsing and verification capabilities**
 
 ### General Improvements
-- Better error handling and logging patterns throughout
-- Support for custom fields in credential subjects
-- Enhanced JSON serialization and parsing
-- Integration with DID resolution services for cryptographic proof verification
+
+- **Consistent API Design**: Both VC and VP packages follow the same patterns
+- **Better error handling** and logging patterns throughout
+- **Support for custom fields** in credential subjects
+- **Enhanced JSON serialization and parsing**
+- **Integration with DID resolution services** for cryptographic proof verification
+- **Type Safety**: Strong typing with `CredentialData` and `PresentationData` types
+
+## Quick Reference
+
+### VC API
+
+```go
+// Create credentials
+jsonCred, err := vc.NewJSONCredential(contents)
+jwtCred, err := vc.NewJWTCredential(contents)
+
+// Parse credentials
+cred, err := vc.ParseCredential(data)
+cred, err := vc.ParseCredentialWithValidation(data)
+
+// Add proof and verify
+err = cred.AddProof(privateKeyHex)
+err = cred.Verify()
+result, err := cred.Serialize()
+```
+
+### VP API
+
+```go
+// Create presentations
+jsonPres, err := vp.NewJSONPresentation(contents)
+jwtPres, err := vp.NewJWTPresentation(contents)
+
+// Parse presentations
+pres, err := vp.ParsePresentation(data)
+pres, err := vp.ParsePresentationWithValidation(data)
+
+// Add proof and verify
+err = pres.AddProof(privateKeyHex)
+err = pres.Verify()
+result, err := pres.Serialize()
+```
+
+### Options Usage Examples
+
+#### **Combining Multiple Options**
+
+```go
+// Create credential with multiple options
+credential, err := vc.NewJSONCredential(contents,
+    vc.WithSchemaValidation(),
+    vc.WithVerificationMethodKey("key-2"))
+
+// Parse credential with all validation options
+credential, err := vc.ParseCredential(data,
+    vc.WithSchemaValidation(),
+    vc.WithVerifyProof(),
+    vc.WithBaseURL("https://custom-resolver.com/api/v1/did"))
+
+// Create presentation with VC validation
+presentation, err := vp.NewJSONPresentation(contents,
+    vp.WithVCValidation(),
+    vp.WithVerificationMethodKey("key-3"))
+```
+
+#### **Using ParseCredentialWithValidation and ParsePresentationWithValidation**
+
+```go
+// These are convenience functions that enable all validation options
+credential, err := vc.ParseCredentialWithValidation(data)
+// Equivalent to: vc.ParseCredential(data, vc.WithSchemaValidation(), vc.WithVerifyProof())
+
+presentation, err := vp.ParsePresentationWithValidation(data)
+// Equivalent to: vp.ParsePresentation(data, vp.WithVCValidation(), vp.WithVerifyProof())
+```
+
+#### **Options Summary**
+
+```go
+// VC options
+vc.WithSchemaValidation()                    // Enable schema validation
+vc.WithVerifyProof()                        // Enable proof verification
+vc.WithBaseURL(url)                         // Set custom DID resolver URL
+vc.WithVerificationMethodKey(key)           // Set custom verification method key
+
+// VP options
+vp.WithVCValidation()                       // Enable VC validation within presentation
+vp.WithVerifyProof()                        // Enable proof verification
+vp.WithBaseURL(url)                         // Set custom DID resolver URL
+vp.WithVerificationMethodKey(key)           // Set custom verification method key
+```
 
 ---
 

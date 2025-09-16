@@ -29,7 +29,7 @@ type Presentation interface {
 	AddProof(priv string, opts ...PresentationOpt) error
 
 	GetSigningInput() ([]byte, error)
-	AddCustomProof(proof *dto.Proof) error
+	AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error
 
 	Verify(opts ...PresentationOpt) error
 
@@ -41,6 +41,8 @@ type Presentation interface {
 	GetContents() ([]byte, error)
 
 	GetType() string
+
+	executeOptions(opts ...PresentationOpt) error
 }
 
 // PresentationData represents presentation data in JSON format (suitable for both JWT and JSON presentations).
@@ -94,7 +96,7 @@ func WithVerifyProof() PresentationOpt {
 	}
 }
 
-func GetOptions(opts ...PresentationOpt) *presentationOptions {
+func getOptions(opts ...PresentationOpt) *presentationOptions {
 	options := &presentationOptions{
 		isValidateVC:          false,
 		isVerifyProof:         false,
