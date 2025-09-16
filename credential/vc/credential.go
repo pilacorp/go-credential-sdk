@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -162,10 +163,25 @@ func ParseCredentialWithValidation(rawCredential []byte) (Credential, error) {
 }
 
 func isJSONCredential(rawCredential []byte) bool {
-	return json.Valid(rawCredential)
+	if len(rawCredential) == 0 {
+		return false
+	}
+
+	if !json.Valid(rawCredential) {
+		return false
+	}
+
+	var jsonMap map[string]interface{}
+	err := json.Unmarshal(rawCredential, &jsonMap)
+	if err != nil {
+		return false
+	}
+
+	return true
 }
 
 func isJWTCredential(valStr string) bool {
+	valStr = strings.Trim(valStr, "\"")
 	regex := `^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$`
 	match, _ := regexp.MatchString(regex, valStr)
 	return match

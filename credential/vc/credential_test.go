@@ -9,6 +9,7 @@ import (
 
 	"encoding/json"
 
+	"fmt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 )
@@ -671,9 +672,13 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.True(t, ok, "Serialized JWT credential should be a string")
 		assert.NotEmpty(t, jwtToken, "JWT token should not be empty")
 		assert.Equal(t, 3, len(strings.Split(jwtToken, ".")), "JWT should have 3 parts")
-
+		byteJwkToken, err := json.Marshal(jwtToken)
+		if err != nil {
+			t.Fatalf("Failed to marshal JWT credential: %v", err)
+		}
+		fmt.Println(string(byteJwkToken))
 		// Parse and verify the JWT credential
-		parsedCredential, err := ParseJWTCredential(jwtToken)
+		parsedCredential, err := ParseCredential(byteJwkToken)
 		assert.NoError(t, err, "Failed to parse JWT credential")
 		assert.NotNil(t, parsedCredential, "Parsed credential should not be nil")
 

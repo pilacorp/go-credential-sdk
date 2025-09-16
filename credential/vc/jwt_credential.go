@@ -101,6 +101,9 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 		return nil, fmt.Errorf("invalid JWT format")
 	}
 
+	// prevent " from marshalling to json
+	rawJWT = strings.Trim(rawJWT, "\"")
+
 	// Split JWT into parts
 	parts := strings.Split(rawJWT, ".")
 
