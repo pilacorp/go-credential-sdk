@@ -1,23 +1,37 @@
 package verificationmethod
 
 import (
+	"crypto/ecdsa"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
+	"github.com/ethereum/go-ethereum/crypto"
+	commoncrypto "github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 )
+
+// JWK represents a JSON Web Key structure
+type JWK struct {
+	Kty string `json:"kty"` // Key type
+	Crv string `json:"crv"` // Curve
+	X   string `json:"x"`   // X coordinate
+	Y   string `json:"y"`   // Y coordinate
+}
 
 // VerificationMethodEntry represents a single verification method in a DID Document.
 type VerificationMethodEntry struct {
 	ID           string `json:"id"`
 	Type         string `json:"type"`
 	Controller   string `json:"controller"`
-	PublicKeyHex string `json:"publicKeyHex"`
+	PublicKeyHex string `json:"publicKeyHex,omitempty"`
+	PublicKeyJwk *JWK   `json:"publicKeyJwk,omitempty"`
 }
 
 // DIDDocument represents the structure of a resolved DID Document.
@@ -27,7 +41,7 @@ type DIDDocument struct {
 	VerificationMethod  []VerificationMethodEntry `json:"verificationMethod"`
 	Authentication      []string                  `json:"authentication"`
 	AssertionMethod     []string                  `json:"assertionMethod"`
-	Controller          string                    `json:"controller"`
+	Controller          interface{}               `json:"controller"` // Can be string or []string
 	DIDDocumentMetadata map[string]interface{}    `json:"didDocumentMetadata"`
 }
 
@@ -62,12 +76,66 @@ func (r *Resolver) GetPublicKey(verificationMethodURL string) (string, error) {
 	// Find matching verification method
 	for _, vm := range doc.VerificationMethod {
 		if vm.ID == verificationMethodURL {
-			publicKey := strings.TrimPrefix(vm.PublicKeyHex, "0x")
-			return publicKey, nil
+			// format publicKeyHex
+			if vm.PublicKeyHex != "" {
+				publicKey := strings.TrimPrefix(vm.PublicKeyHex, "0x")
+				return publicKey, nil
+			}
+
+			// format publicKeyJwk
+			if vm.PublicKeyJwk != nil {
+				// Convert JWK to hex format
+				hexKey, err := r.jwkToHex(vm.PublicKeyJwk)
+				if err != nil {
+					return "", fmt.Errorf("failed to convert JWK to hex for verification method '%s': %w", verificationMethodURL, err)
+				}
+				return hexKey, nil
+			}
+
+			return "", fmt.Errorf("no public key found in verification method '%s'", verificationMethodURL)
 		}
 	}
 
 	return "", fmt.Errorf("verification method '%s' not found in DID document", verificationMethodURL)
+}
+
+// jwkToHex converts a JWK to hex format for secp256k1 keys
+func (r *Resolver) jwkToHex(jwk *JWK) (string, error) {
+	if jwk.Kty != "EC" {
+		return "", fmt.Errorf("unsupported key type: %s", jwk.Kty)
+	}
+
+	if jwk.Crv != "secp256k1" {
+		return "", fmt.Errorf("unsupported curve: %s", jwk.Crv)
+	}
+
+	// Decode base64url encoded coordinates
+	xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode X coordinate: %w", err)
+	}
+
+	yBytes, err := base64.RawURLEncoding.DecodeString(jwk.Y)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode Y coordinate: %w", err)
+	}
+
+	// Convert to big integers
+	x := new(big.Int).SetBytes(xBytes)
+	y := new(big.Int).SetBytes(yBytes)
+
+	// Create ECDSA public key
+	publicKey := &ecdsa.PublicKey{
+		Curve: crypto.S256(),
+		X:     x,
+		Y:     y,
+	}
+
+	// Convert to uncompressed format (0x04 + x + y)
+	uncompressed := crypto.FromECDSAPub(publicKey)
+
+	// Return as hex string
+	return hex.EncodeToString(uncompressed), nil
 }
 
 func (r *Resolver) GetDefaultPublicKey(issuer string) (string, error) {
@@ -78,8 +146,25 @@ func (r *Resolver) GetDefaultPublicKey(issuer string) (string, error) {
 	}
 
 	if len(doc.VerificationMethod) > 0 {
-		publicKey := strings.TrimPrefix(doc.VerificationMethod[0].PublicKeyHex, "0x")
-		return publicKey, nil
+		vm := doc.VerificationMethod[0]
+
+		// format publicKeyHex
+		if vm.PublicKeyHex != "" {
+			publicKey := strings.TrimPrefix(vm.PublicKeyHex, "0x")
+			return publicKey, nil
+		}
+
+		// format publicKeyJwk
+		if vm.PublicKeyJwk != nil {
+			// Convert JWK to hex format
+			hexKey, err := r.jwkToHex(vm.PublicKeyJwk)
+			if err != nil {
+				return "", fmt.Errorf("failed to convert JWK to hex for DID '%s': %w", issuer, err)
+			}
+			return hexKey, nil
+		}
+
+		return "", fmt.Errorf("no public key found in verification method for DID '%s'", issuer)
 	}
 
 	return "", fmt.Errorf("verification method not found in DID '%s' document", issuer)
@@ -128,8 +213,23 @@ func (r *Resolver) GetPublicKeyByIssuerAndSignMethod(issuer, signMethod string) 
 	// Find matching verification method by type
 	for _, vm := range doc.VerificationMethod {
 		if vm.Type == signMethod {
-			publicKey := strings.TrimPrefix(vm.PublicKeyHex, "0x")
-			return publicKey, vm.ID, nil
+			// format publicKeyHex
+			if vm.PublicKeyHex != "" {
+				publicKey := strings.TrimPrefix(vm.PublicKeyHex, "0x")
+				return publicKey, vm.ID, nil
+			}
+
+			// format publicKeyJwk
+			if vm.PublicKeyJwk != nil {
+				// Convert JWK to hex format
+				hexKey, err := r.jwkToHex(vm.PublicKeyJwk)
+				if err != nil {
+					return "", "", fmt.Errorf("failed to convert JWK to hex for issuer '%s': %w", issuer, err)
+				}
+				return hexKey, vm.ID, nil
+			}
+
+			return "", "", fmt.Errorf("no public key found in verification method for issuer '%s' with sign method '%s'", issuer, signMethod)
 		}
 	}
 
@@ -171,7 +271,7 @@ func (r *Resolver) CheckVerificationMethod(privateKey, verificationMethod string
 	}
 
 	// Verify key pair
-	if isValid, err := crypto.VerifyKeyPairFromHex(privateKey, publicKey); err != nil {
+	if isValid, err := commoncrypto.VerifyKeyPairFromHex(privateKey, publicKey); err != nil {
 		return false, fmt.Errorf("failed to verify key pair for '%s': %w", verificationMethod, err)
 	} else {
 		return isValid, nil
