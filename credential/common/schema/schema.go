@@ -1,4 +1,4 @@
-package processor
+package schema
 
 import (
 	"encoding/json"

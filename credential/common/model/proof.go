@@ -1,4 +1,4 @@
-package dto
+package model
 
 // Proof represents a Linked Data Proof for a Verifiable Credential.
 type Proof struct {

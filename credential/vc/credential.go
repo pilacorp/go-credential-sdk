@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 )
 
@@ -29,7 +28,7 @@ type Credential interface {
 	AddProof(priv string, opts ...CredentialOpt) error
 
 	GetSigningInput() ([]byte, error)
-	AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error
+	AddCustomProof(proof *model.Proof, opts ...CredentialOpt) error
 
 	// Verify verifies the credential
 	Verify(opts ...CredentialOpt) error

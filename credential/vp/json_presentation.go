@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 )
 
 type JSONPresentation struct {
 	presentationData   PresentationData
-	proof              *dto.Proof
+	proof              *model.Proof
 	verificationMethod string
 }
 
@@ -63,7 +62,7 @@ func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
 }
 
-func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
+func (e *JSONPresentation) AddCustomProof(proof *model.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}

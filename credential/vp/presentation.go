@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
+	"strings"
+
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
-	"strings"
 )
 
 // Config holds package configuration.
@@ -29,7 +29,7 @@ type Presentation interface {
 	AddProof(priv string, opts ...PresentationOpt) error
 
 	GetSigningInput() ([]byte, error)
-	AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error
+	AddCustomProof(proof *model.Proof, opts ...PresentationOpt) error
 
 	Verify(opts ...PresentationOpt) error
 

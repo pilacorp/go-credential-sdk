@@ -2,8 +2,6 @@ package util
 
 import (
 	"fmt"
-
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 )
 
 // JSONMap represents a JSON object as a map.
@@ -71,7 +69,7 @@ func SerializeContexts(contexts []interface{}) ([]interface{}, error) {
 }
 
 // serializeProofs converts a slice of Proof structs to a JSON-LD compatible format.
-func SerializeProofs(proofs []dto.Proof) interface{} {
+func SerializeProofs(proofs []model.Proof) interface{} {
 	if len(proofs) == 0 {
 		return nil
 	}
@@ -105,27 +103,27 @@ func SerializeProofs(proofs []dto.Proof) interface{} {
 }
 
 // parseProof converts a single proof map into a Proof struct.
-func ParseProof(proof map[string]interface{}) (dto.Proof, error) {
-	var result dto.Proof
+func ParseProof(proof map[string]interface{}) (model.Proof, error) {
+	var result model.Proof
 	if t, ok := proof["type"].(string); ok && t != "" {
 		result.Type = t
 	} else {
-		return dto.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing type field")
+		return model.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing type field")
 	}
 	if created, ok := proof["created"].(string); ok && created != "" {
 		result.Created = created
 	} else {
-		return dto.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing created field")
+		return model.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing created field")
 	}
 	if vm, ok := proof["verificationMethod"].(string); ok && vm != "" {
 		result.VerificationMethod = vm
 	} else {
-		return dto.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing verificationMethod field")
+		return model.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing verificationMethod field")
 	}
 	if pp, ok := proof["proofPurpose"].(string); ok && pp != "" {
 		result.ProofPurpose = pp
 	} else {
-		return dto.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing proofPurpose field")
+		return model.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing proofPurpose field")
 	}
 	if pv, ok := proof["proofValue"].(string); ok {
 		result.ProofValue = pv

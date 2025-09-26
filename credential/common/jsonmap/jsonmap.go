@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"time"
 
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/did"
+
 	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
-	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
+	"github.com/pilacorp/go-credential-sdk/credential/common/model"
+	"github.com/pilacorp/go-credential-sdk/credential/common/schema"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 // JSONMap represents a JSON object as a map.
@@ -61,12 +62,12 @@ func (m *JSONMap) Canonicalize() ([]byte, error) {
 		return nil, fmt.Errorf("failed to unmarshal JSONMap copy: %w", err)
 	}
 
-	canonicalDoc, err := processor.CanonicalizeDocument(doc)
+	canonicalDoc, err := schema.CanonicalizeDocument(doc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
 	}
 
-	return processor.ComputeDigest(canonicalDoc)
+	return schema.ComputeDigest(canonicalDoc)
 }
 
 // AddECDSAProof adds an ECDSA proof to the JSONMap.
@@ -90,7 +91,7 @@ func (m *JSONMap) AddECDSAProof(priv, verificationMethod, proofPurpose, didBaseU
 		return fmt.Errorf("private key and verification method do not match")
 	}
 
-	proof := &dto.Proof{
+	proof := &model.Proof{
 		Type:               DataIntegrityProof,
 		Created:            time.Now().UTC().Format(time.RFC3339),
 		VerificationMethod: verificationMethod,
@@ -108,27 +109,27 @@ func (m *JSONMap) AddECDSAProof(priv, verificationMethod, proofPurpose, didBaseU
 		return fmt.Errorf("failed to sign ECDSA proof: %w", err)
 	}
 	proof.ProofValue = hex.EncodeToString(signature)
-	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
+	(*m)["proof"] = util.SerializeProofs([]model.Proof{*proof})
 
 	return nil
 }
 
 // AddCustomProof adds custom proof to the JSONMap.
-func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
+func (m *JSONMap) AddCustomProof(proof *model.Proof) error {
 	if m == nil {
 		return fmt.Errorf("JSONMap is nil")
 	}
 	if proof == nil {
 		return fmt.Errorf("proof is nil")
 	}
-	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
+	(*m)["proof"] = util.SerializeProofs([]model.Proof{*proof})
 
 	return nil
 }
 
 // parseRawToProof converts a JSON object to a Proof struct.
-func ParseRawToProof(proof interface{}) (dto.Proof, error) {
-	var result dto.Proof
+func ParseRawToProof(proof interface{}) (model.Proof, error) {
+	var result model.Proof
 	proofMap, ok := proof.(map[string]interface{})
 	if !ok {
 		return result, fmt.Errorf("invalid proof format: expected map[string]interface{}, got %T", proof)
@@ -206,7 +207,7 @@ func (m *JSONMap) VerifyProof(didBaseURL string) (bool, error) {
 }
 
 // VerifyECDSA verifies an ECDSA-signed JSONMap.
-func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyECDSA(publicKey string, proof *model.Proof) (bool, error) {
 	doc, err := m.Canonicalize()
 	if err != nil {
 		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)

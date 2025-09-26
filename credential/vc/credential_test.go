@@ -9,7 +9,6 @@ import (
 
 	"encoding/json"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 )
 
@@ -628,7 +627,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.NotEmpty(t, signingInput, "Signing input should not be empty")
 
 		// Create a custom proof (simulating external signing)
-		customProof := &dto.Proof{
+		customProof := &model.Proof{
 			Type:               "EcdsaSecp256k1Signature2019",
 			Created:            "2024-01-01T00:00:00Z",
 			VerificationMethod: issuerDID + "#key-1",
@@ -698,7 +697,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.NotEmpty(t, signatureBytes, "Signature should not be empty")
 
 		// Create a custom proof with JWT signature
-		customProof := &dto.Proof{
+		customProof := &model.Proof{
 			Signature: signatureBytes,
 		}
 
@@ -887,7 +886,7 @@ func TestJWTCredentialAddCustomProofMustEqualsToAddProof(t *testing.T) {
 	}
 
 	// add custom proof
-	err = anotherJwtCredential.AddCustomProof(&dto.Proof{
+	err = anotherJwtCredential.AddCustomProof(&model.Proof{
 		Signature: signatureBytes,
 	})
 	if err != nil {

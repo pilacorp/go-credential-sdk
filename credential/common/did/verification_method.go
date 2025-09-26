@@ -1,4 +1,4 @@
-package verificationmethod
+package did
 
 import (
 	"crypto/ecdsa"
@@ -14,36 +14,10 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
+
 	commoncrypto "github.com/pilacorp/go-credential-sdk/credential/common/crypto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/model"
 )
-
-// JWK represents a JSON Web Key structure
-type JWK struct {
-	Kty string `json:"kty"` // Key type
-	Crv string `json:"crv"` // Curve
-	X   string `json:"x"`   // X coordinate
-	Y   string `json:"y"`   // Y coordinate
-}
-
-// VerificationMethodEntry represents a single verification method in a DID Document.
-type VerificationMethodEntry struct {
-	ID           string `json:"id"`
-	Type         string `json:"type"`
-	Controller   string `json:"controller"`
-	PublicKeyHex string `json:"publicKeyHex,omitempty"`
-	PublicKeyJwk *JWK   `json:"publicKeyJwk,omitempty"`
-}
-
-// DIDDocument represents the structure of a resolved DID Document.
-type DIDDocument struct {
-	Context             []string                  `json:"@context"`
-	ID                  string                    `json:"id"`
-	VerificationMethod  []VerificationMethodEntry `json:"verificationMethod"`
-	Authentication      []string                  `json:"authentication"`
-	AssertionMethod     []string                  `json:"assertionMethod"`
-	Controller          interface{}               `json:"controller"` // Can be string or []string
-	DIDDocumentMetadata map[string]interface{}    `json:"didDocumentMetadata"`
-}
 
 // Resolver is a client for resolving DIDs from a specific endpoint.
 type Resolver struct {
@@ -100,7 +74,7 @@ func (r *Resolver) GetPublicKey(verificationMethodURL string) (string, error) {
 }
 
 // jwkToHex converts a JWK to hex format for secp256k1 keys
-func (r *Resolver) jwkToHex(jwk *JWK) (string, error) {
+func (r *Resolver) jwkToHex(jwk *model.JWK) (string, error) {
 	if jwk.Kty != "EC" {
 		return "", fmt.Errorf("unsupported key type: %s", jwk.Kty)
 	}
@@ -171,7 +145,7 @@ func (r *Resolver) GetDefaultPublicKey(issuer string) (string, error) {
 }
 
 // ResolveToDoc fetches and parses a DID document from the resolver endpoint.
-func (r *Resolver) ResolveToDoc(did string) (*DIDDocument, error) {
+func (r *Resolver) ResolveToDoc(did string) (*model.DIDDocument, error) {
 	// Construct and encode API URL
 	encodedDID := url.PathEscape(did)
 	apiURL := r.baseURL + "/" + encodedDID
@@ -193,7 +167,7 @@ func (r *Resolver) ResolveToDoc(did string) (*DIDDocument, error) {
 		return nil, fmt.Errorf("failed to read response body from DID resolver: %w", err)
 	}
 
-	var doc DIDDocument
+	var doc model.DIDDocument
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal DID document JSON: %w", err)
 	}

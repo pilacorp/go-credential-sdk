@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 )
 
 type JSONCredential struct {
 	credentialData     CredentialData
-	proof              *dto.Proof
+	proof              *model.Proof
 	verificationMethod string
 }
 
@@ -66,7 +65,7 @@ func (e *JSONCredential) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.credentialData).Canonicalize()
 }
 
-func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
+func (e *JSONCredential) AddCustomProof(proof *model.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}

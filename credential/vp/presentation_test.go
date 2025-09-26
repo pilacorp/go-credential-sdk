@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
@@ -619,7 +618,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 
 		// Create a custom proof (simulating external signing)
-		customProof := &dto.Proof{
+		customProof := &model.Proof{
 			Signature: signature,
 		}
 
@@ -712,7 +711,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 
 		// Create a custom proof with JWT signature
-		customProof := &dto.Proof{
+		customProof := &model.Proof{
 			Signature: signature,
 		}
 

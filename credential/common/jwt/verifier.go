@@ -9,7 +9,8 @@ import (
 	"strings"
 
 	"github.com/ethereum/go-ethereum/crypto"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/did"
 )
 
 // JWTVerifier handles JWT verification operations

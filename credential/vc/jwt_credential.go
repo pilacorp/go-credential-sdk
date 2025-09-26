@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 )
@@ -167,7 +166,7 @@ func (j *JWTCredential) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
-func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
+func (j *JWTCredential) AddCustomProof(proof *model.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
