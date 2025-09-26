@@ -93,8 +93,19 @@ func (e *JSONCredential) Serialize() (interface{}, error) {
 		return nil, fmt.Errorf("credential must have proof before serialization")
 	}
 
-	// Return the JSON credential object directly
-	return map[string]interface{}(e.credentialData), nil
+	// Marshal the credential data to JSON
+	jsonData, err := json.Marshal(e.credentialData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal credential data: %w", err)
+	}
+
+	// Unmarshal the JSON data to a map
+	var data map[string]interface{}
+	if err := json.Unmarshal(jsonData, &data); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal credential data: %w", err)
+	}
+
+	return data, nil
 }
 
 func (e *JSONCredential) GetContents() ([]byte, error) {
