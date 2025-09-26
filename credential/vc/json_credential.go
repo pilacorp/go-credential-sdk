@@ -93,8 +93,8 @@ func (e *JSONCredential) Serialize() (interface{}, error) {
 		return nil, fmt.Errorf("credential must have proof before serialization")
 	}
 
-	// Return the JSON credential object directly
-	return map[string]interface{}(e.credentialData), nil
+	// Return the JSON credential object
+	return (*jsonmap.JSONMap)(&e.credentialData).ToJSON()
 }
 
 func (e *JSONCredential) GetContents() ([]byte, error) {
