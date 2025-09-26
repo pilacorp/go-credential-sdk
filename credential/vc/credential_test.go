@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"encoding/json"
 
@@ -1000,5 +1001,29 @@ func TestCreateJWTCredentialWithValidateSchemaFailNegativeSalary(t *testing.T) {
 	_, err := NewJWTCredential(credentialContents, WithSchemaValidation())
 	if err == nil {
 		t.Fatalf("Expected validation error for negative salary, but got no error")
+	}
+}
+
+func TestSerializeJSONCredential(t *testing.T) {
+	// create a json credential
+	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
+	jsonCredential, err := NewJSONCredential(credentialContents, WithSchemaValidation())
+	if err != nil {
+		t.Fatalf("Failed to create JSON credential: %v", err)
+	}
+	// add proof
+	err = jsonCredential.AddProof(testIssuerPrivateKey)
+	if err != nil {
+		t.Fatalf("Failed to add proof: %v", err)
+	}
+	// serialize the credential
+	serialized, err := jsonCredential.Serialize()
+	if err != nil {
+		t.Fatalf("Failed to serialize JSON credential: %v", err)
+	}
+	// test with structpb.NewStruct
+	_, err = structpb.NewStruct(serialized.(map[string]interface{}))
+	if err != nil {
+		t.Fatalf("Failed to create structpb: %v", err)
 	}
 }
