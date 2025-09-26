@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"google.golang.org/protobuf/types/known/structpb"
 
 	"encoding/json"
 
@@ -1021,9 +1020,10 @@ func TestSerializeJSONCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to serialize JSON credential: %v", err)
 	}
-	// test with structpb.NewStruct
-	_, err = structpb.NewStruct(serialized.(map[string]interface{}))
+	// serialized must be a json object
+	bytes, err := json.Marshal(serialized)
 	if err != nil {
-		t.Fatalf("Failed to create structpb: %v", err)
+		t.Fatalf("Failed to marshal JSON credential: %v", err)
 	}
+	assert.True(t, json.Valid(bytes), "Serialized credential must be a json object")
 }

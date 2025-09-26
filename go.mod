@@ -10,7 +10,6 @@ require (
 	github.com/stretchr/testify v1.10.0
 	github.com/xeipuuv/gojsonschema v1.2.0
 	golang.org/x/exp v0.0.0-20250718183923-645b1fa84792
-	google.golang.org/protobuf v1.34.2
 )
 
 require (
