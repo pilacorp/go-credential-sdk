@@ -42,6 +42,22 @@ func (m *JSONMap) ToJSON() ([]byte, error) {
 	return data, nil
 }
 
+func (m *JSONMap) ToMap() (map[string]interface{}, error) {
+	// Marshal the JSONMap to bytes
+	bytes, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal JSONMap: %w", err)
+	}
+
+	// Unmarshal the bytes to a map
+	var data map[string]interface{}
+	if err := json.Unmarshal(bytes, &data); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSONMap: %w", err)
+	}
+
+	return data, nil
+}
+
 // Canonicalize canonicalizes the JSONMap for signing or verification, excluding the proof field.
 func (m *JSONMap) Canonicalize() ([]byte, error) {
 	mCopy := make(JSONMap)

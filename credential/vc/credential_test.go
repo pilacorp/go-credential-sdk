@@ -1002,3 +1002,28 @@ func TestCreateJWTCredentialWithValidateSchemaFailNegativeSalary(t *testing.T) {
 		t.Fatalf("Expected validation error for negative salary, but got no error")
 	}
 }
+
+func TestSerializeJSONCredential(t *testing.T) {
+	// create a json credential
+	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
+	jsonCredential, err := NewJSONCredential(credentialContents, WithSchemaValidation())
+	if err != nil {
+		t.Fatalf("Failed to create JSON credential: %v", err)
+	}
+	// add proof
+	err = jsonCredential.AddProof(testIssuerPrivateKey)
+	if err != nil {
+		t.Fatalf("Failed to add proof: %v", err)
+	}
+	// serialize the credential
+	serialized, err := jsonCredential.Serialize()
+	if err != nil {
+		t.Fatalf("Failed to serialize JSON credential: %v", err)
+	}
+	// serialized must be a json object
+	bytes, err := json.Marshal(serialized)
+	if err != nil {
+		t.Fatalf("Failed to marshal JSON credential: %v", err)
+	}
+	assert.True(t, json.Valid(bytes), "Serialized credential must be a json object")
+}
