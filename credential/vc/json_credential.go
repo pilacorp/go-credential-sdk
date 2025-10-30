@@ -96,8 +96,18 @@ func (e *JSONCredential) Serialize() (interface{}, error) {
 	return (*jsonmap.JSONMap)(&e.credentialData).ToMap()
 }
 
-func (e *JSONCredential) GetContents() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.credentialData).ToJSON()
+func (e *JSONCredential) GetContents() (*CredentialContents, error) {
+	contents := &CredentialContents{}
+	data, err := (*jsonmap.JSONMap)(&e.credentialData).ToJSON()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
+	}
+
+	if err := json.Unmarshal(data, &contents); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal credential contents: %w", err)
+	}
+
+	return contents, nil
 }
 
 func (e *JSONCredential) GetType() string {

@@ -39,7 +39,7 @@ type Credential interface {
 	// - For embedded credentials: returns the JSON object with proof
 	Serialize() (interface{}, error)
 
-	GetContents() ([]byte, error)
+	GetContents() (*CredentialContents, error)
 
 	GetType() string
 
@@ -51,15 +51,15 @@ type CredentialData jsonmap.JSONMap
 
 // CredentialContents represents the structured contents of a Credential.
 type CredentialContents struct {
-	Context          []interface{} // JSON-LD contexts
-	ID               string        // Credential identifier
-	Types            []string      // Credential types
-	Issuer           string        // Issuer identifier
-	ValidFrom        time.Time     // Issuance date
-	ValidUntil       time.Time     // Expiration date
-	CredentialStatus []Status      // Credential status entries
-	Subject          []Subject     // Credential subjects
-	Schemas          []Schema      // Credential schemas
+	Context          []interface{} `json:"@context"`          // JSON-LD contexts
+	ID               string        `json:"id"`                // Credential identifier
+	Types            []string      `json:"type"`              // Credential types
+	Issuer           string        `json:"issuer"`            // Issuer identifier
+	ValidFrom        time.Time     `json:"validFrom"`         // Issuance date
+	ValidUntil       time.Time     `json:"validUntil"`        // Expiration date
+	CredentialStatus []Status      `json:"credentialStatus"`  // Credential status entries
+	Subject          []Subject     `json:"credentialSubject"` // Credential subjects
+	Schemas          []Schema      `json:"credentialSchema"`  // Credential schemas
 }
 
 // Status represents the credentialStatus field as per W3C Verifiable Credentials.
@@ -73,14 +73,65 @@ type Status struct {
 
 // Subject represents the credentialSubject field.
 type Subject struct {
-	ID           string                 // Subject identifier
-	CustomFields map[string]interface{} // Additional subject data
+	ID           string                 `json:"id"`           // Subject identifier
+	CustomFields map[string]interface{} `json:"customFields"` // Additional subject data
 }
 
 // Schema represents a credential schema with an ID and type.
 type Schema struct {
-	ID   string // Schema identifier
-	Type string // Schema type
+	ID   string `json:"id"`   // Schema identifier
+	Type string `json:"type"` // Schema type
+}
+
+// UnmarshalJSON for CredentialContents supports fields that may be provided
+// as a single element or an array: @context, type, credentialSubject,
+// credentialSchema, credentialStatus. It reuses existing parse helpers.
+func (c *CredentialContents) UnmarshalJSON(data []byte) error {
+	var m CredentialData
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+
+	// Parse using existing helpers to minimize changes
+	if err := parseContext(m, c); err != nil {
+		return err
+	}
+	if err := parseID(m, c); err != nil {
+		return err
+	}
+	if err := parseTypes(m, c); err != nil {
+		return err
+	}
+	if err := parseIssuer(m, c); err != nil {
+		return err
+	}
+	if err := parseDates(m, c); err != nil {
+		return err
+	}
+	if err := parseSubject(m, c); err != nil {
+		return err
+	}
+	if err := parseSchema(m, c); err != nil {
+		return err
+	}
+	if err := parseStatus(m, c); err != nil {
+		return err
+	}
+	// proofs are ignored for contents
+	_ = parseProofs(m, c)
+
+	return nil
+}
+
+// MarshalJSON ensures output matches VC conventions by reusing
+// serializeCredentialContents to produce '@context' and singletons
+// when there is only one element.
+func (c CredentialContents) MarshalJSON() ([]byte, error) {
+	m, err := serializeCredentialContents(&c)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(m)
 }
 
 // CredentialOpt configures credential processing options.

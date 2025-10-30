@@ -203,8 +203,18 @@ func (j *JWTCredential) Serialize() (interface{}, error) {
 	}
 }
 
-func (j *JWTCredential) GetContents() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&j.payloadData).ToJSON()
+func (j *JWTCredential) GetContents() (*CredentialContents, error) {
+	contents := &CredentialContents{}
+	data, err := (*jsonmap.JSONMap)(&j.payloadData).ToJSON()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
+	}
+
+	if err := contents.UnmarshalJSON(data); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal credential contents: %w", err)
+	}
+
+	return contents, nil
 }
 
 func (j *JWTCredential) GetType() string {
