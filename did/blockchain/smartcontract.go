@@ -22,7 +22,7 @@ import (
 )
 
 // The ABI path constant is restored as requested.
-const smc_abi_path = "pkg/blockchain/did-contract/did_registry_smc_abi.json"
+const smc_abi_path = "did/blockchain/did-contract/did_registry_smc_abi.json"
 const AttributeName = "type"
 
 // HardhatArtifact struct is restored to parse the ABI file.

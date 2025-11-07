@@ -7,21 +7,14 @@ import (
 	"strings"
 
 	"github.com/ethereum/go-ethereum/crypto"
-
-	"github.com/pilacorp/go-did-sdk/blockchain"
+	"github.com/pilacorp/go-credential-sdk/did/blockchain"
+	"github.com/pilacorp/go-credential-sdk/did/config"
 )
 
 // DIDChain represents the configuration for interacting with the Ethereum DID Registry
 type DIDGenerator struct {
 	didMethod string
 }
-
-// TODO: Move to Package config level
-const (
-	RPC        = "https://rpc-testnet.pila.vn"
-	ChainID    = 6789
-	DIDAddress = "0x0000000000000000000000000000000000018888"
-)
 
 // NewDIDChain initializes a new DIDChain instance
 func NewDIDGenerator(method string) *DIDGenerator {
@@ -39,11 +32,11 @@ func (d *DIDGenerator) GenerateDID(ctx context.Context, newDID CreateDID) (*DID,
 	// Create DID document
 	doc := d.generateDIDDocument(did, &newDID)
 
-	didRegistry, err := blockchain.NewEthereumDIDRegistry(RPC, DIDAddress, ChainID)
+	didRegistry, err := blockchain.NewEthereumDIDRegistry(config.RPC(), config.DIDAddress(), config.ChainID())
 	if err != nil {
 		return nil, err
 	}
-	tx, err := didRegistry.GenerateSetAttributeTx(ctx, did.PrivateKey, did.Identifier, string(newDID.Type))
+	tx, err := didRegistry.GenerateSetAttributeTx(ctx, did.PrivateKey, did.Address, string(newDID.Type))
 	if err != nil {
 		return nil, err
 	}
