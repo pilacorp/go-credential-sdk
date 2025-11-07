@@ -16,6 +16,13 @@ type DIDGenerator struct {
 	didMethod string
 }
 
+// TODO: Move to Package config level
+const (
+	RPC        = "https://rpc-testnet.pila.vn"
+	ChainID    = 6789
+	DIDAddress = "0x0000000000000000000000000000000000018888"
+)
+
 // NewDIDChain initializes a new DIDChain instance
 func NewDIDGenerator(method string) *DIDGenerator {
 	return &DIDGenerator{
@@ -32,9 +39,7 @@ func (d *DIDGenerator) GenerateDID(ctx context.Context, newDID CreateDID) (*DID,
 	// Create DID document
 	doc := d.generateDIDDocument(did, &newDID)
 
-	//Create Transaction
-	//TODO: Move RPC, DID address, chainID to config
-	didRegistry, err := blockchain.NewEthereumDIDRegistry("", "", 0)
+	didRegistry, err := blockchain.NewEthereumDIDRegistry(RPC, DIDAddress, ChainID)
 	if err != nil {
 		return nil, err
 	}
