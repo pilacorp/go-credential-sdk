@@ -1,10 +1,5 @@
 package config
 
-import (
-	"os"
-	"strconv"
-)
-
 // Default values
 const (
 	DefaultRPC        = "https://rpc-testnet.pila.vn"
@@ -12,35 +7,32 @@ const (
 	DefaultDIDAddress = "0x0000000000000000000000000000000000018888"
 )
 
-// Environment variable names
-const (
-	EnvRPC        = "DID_RPC_URL"
-	EnvChainID    = "DID_CHAIN_ID"
-	EnvDIDAddress = "DID_CONTRACT_ADDRESS"
-)
-
-// RPC returns the RPC URL from environment variable or default value
-func RPC() string {
-	if rpc := os.Getenv(EnvRPC); rpc != "" {
-		return rpc
-	}
-	return DefaultRPC
+// Config holds the configuration for DID operations
+type Config struct {
+	RPC        string
+	ChainID    int64
+	DIDAddress string
 }
 
-// ChainID returns the Chain ID from environment variable or default value
-func ChainID() int64 {
-	if chainIDStr := os.Getenv(EnvChainID); chainIDStr != "" {
-		if chainID, err := strconv.ParseInt(chainIDStr, 10, 64); err == nil {
-			return chainID
-		}
+// New creates a new Config instance with the provided values.
+// If a value is empty/zero, it will use the default value.
+// Pass an empty Config{} to use all defaults.
+func New(cfg Config) *Config {
+	result := &Config{
+		RPC:        DefaultRPC,
+		ChainID:    DefaultChainID,
+		DIDAddress: DefaultDIDAddress,
 	}
-	return DefaultChainID
-}
 
-// DIDAddress returns the DID contract address from environment variable or default value
-func DIDAddress() string {
-	if addr := os.Getenv(EnvDIDAddress); addr != "" {
-		return addr
+	if cfg.RPC != "" {
+		result.RPC = cfg.RPC
 	}
-	return DefaultDIDAddress
+	if cfg.ChainID != 0 {
+		result.ChainID = cfg.ChainID
+	}
+	if cfg.DIDAddress != "" {
+		result.DIDAddress = cfg.DIDAddress
+	}
+
+	return result
 }

@@ -14,11 +14,13 @@ import (
 // DIDChain represents the configuration for interacting with the Ethereum DID Registry
 type DIDGenerator struct {
 	didMethod string
+	config    config.Config
 }
 
 // NewDIDChain initializes a new DIDChain instance
-func NewDIDGenerator(method string) *DIDGenerator {
+func NewDIDGenerator(method string, c config.Config) *DIDGenerator {
 	return &DIDGenerator{
+		config:    c,
 		didMethod: method,
 	}
 }
@@ -32,7 +34,7 @@ func (d *DIDGenerator) GenerateDID(ctx context.Context, newDID CreateDID) (*DID,
 	// Create DID document
 	doc := d.generateDIDDocument(did, &newDID)
 
-	didRegistry, err := blockchain.NewEthereumDIDRegistry(config.RPC(), config.DIDAddress(), config.ChainID())
+	didRegistry, err := blockchain.NewEthereumDIDRegistry(d.config.RPC, d.config.DIDAddress, d.config.ChainID)
 	if err != nil {
 		return nil, err
 	}
