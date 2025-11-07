@@ -1,6 +1,6 @@
 package did
 
-import "github.com/pilacorp/go-did-sdk/blockchain"
+import "github.com/pilacorp/go-credential-sdk/did/blockchain"
 
 type DIDType string
 
