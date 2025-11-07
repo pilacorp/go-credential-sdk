@@ -33,6 +33,7 @@ func (d *DIDGenerator) GenerateDID(ctx context.Context, newDID CreateDID) (*DID,
 	doc := d.generateDIDDocument(did, &newDID)
 
 	//Create Transaction
+	//TODO: Move RPC, DID address, chainID to config
 	didRegistry, err := blockchain.NewEthereumDIDRegistry("", "", 0)
 	if err != nil {
 		return nil, err
