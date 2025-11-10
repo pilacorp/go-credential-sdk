@@ -7,22 +7,37 @@ import (
 	"strings"
 
 	"github.com/ethereum/go-ethereum/crypto"
+
 	"github.com/pilacorp/go-credential-sdk/did/blockchain"
 	"github.com/pilacorp/go-credential-sdk/did/config"
 )
 
 // DIDChain represents the configuration for interacting with the Ethereum DID Registry
 type DIDGenerator struct {
-	didMethod string
-	config    config.Config
+	config config.Config
+}
+type Option func(*DIDGenerator)
+
+// WithConfig sets the configuration for the DIDGenerator.
+func WithConfig(c config.Config) Option {
+	return func(g *DIDGenerator) {
+		g.config = c
+	}
 }
 
 // NewDIDChain initializes a new DIDChain instance
-func NewDIDGenerator(method string, c config.Config) *DIDGenerator {
-	return &DIDGenerator{
-		config:    c,
-		didMethod: method,
+func NewDIDGenerator(options ...Option) *DIDGenerator {
+	g := &DIDGenerator{
+		config: *config.New(config.Config{}), // The zero-value or a "default"
 	}
+
+	// 2. Loop over all provided options and apply them
+	for _, opt := range options {
+		opt(g)
+	}
+
+	// 3. Return the configured generator
+	return g
 }
 
 func (d *DIDGenerator) GenerateDID(ctx context.Context, newDID CreateDID) (*DID, error) {
@@ -34,7 +49,7 @@ func (d *DIDGenerator) GenerateDID(ctx context.Context, newDID CreateDID) (*DID,
 	// Create DID document
 	doc := d.generateDIDDocument(did, &newDID)
 
-	didRegistry, err := blockchain.NewEthereumDIDRegistry(d.config.RPC, d.config.DIDAddress, d.config.ChainID)
+	didRegistry, err := blockchain.NewEthereumDIDRegistry(d.config.DIDAddress, d.config.ChainID)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +85,7 @@ func (d *DIDGenerator) generateECDSADID() (*KeyPair, error) {
 	publicKeyHex := strings.ToLower("0x" + fmt.Sprintf("%x", crypto.CompressPubkey(publicKeyECDSA)))
 
 	// Create DID identifier: ${method}:${address}
-	identifier := strings.ToLower(fmt.Sprintf("%s:%s", d.didMethod, address))
+	identifier := strings.ToLower(fmt.Sprintf("%s:%s", d.config.Method, address))
 
 	// Create KeyPair
 	keyPair := &KeyPair{

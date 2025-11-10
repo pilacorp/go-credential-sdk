@@ -2,9 +2,10 @@ package config
 
 // Default values
 const (
-	DefaultRPC        = "https://rpc-testnet.pila.vn"
+	DefaultRPC        = ""
 	DefaultChainID    = 6789
 	DefaultDIDAddress = "0x0000000000000000000000000000000000018888"
+	DefaultMethod     = "did:nda"
 )
 
 // Config holds the configuration for DID operations
@@ -12,6 +13,7 @@ type Config struct {
 	RPC        string
 	ChainID    int64
 	DIDAddress string
+	Method     string
 }
 
 // New creates a new Config instance with the provided values.
@@ -22,6 +24,7 @@ func New(cfg Config) *Config {
 		RPC:        DefaultRPC,
 		ChainID:    DefaultChainID,
 		DIDAddress: DefaultDIDAddress,
+		Method:     DefaultMethod,
 	}
 
 	if cfg.RPC != "" {
@@ -32,6 +35,9 @@ func New(cfg Config) *Config {
 	}
 	if cfg.DIDAddress != "" {
 		result.DIDAddress = cfg.DIDAddress
+	}
+	if cfg.Method != "" {
+		result.Method = cfg.Method
 	}
 
 	return result

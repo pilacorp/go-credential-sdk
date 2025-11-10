@@ -44,17 +44,12 @@ type SubmitTxResult struct {
 }
 
 // NewEthereumDIDRegistry creates a new instance of the Ethereum DID Registry client
-func NewEthereumDIDRegistry(RPCURL, DIDAddress string, chainID int64) (*EthereumDIDRegistry, error) {
-	if RPCURL == "" || DIDAddress == "" {
+func NewEthereumDIDRegistry(DIDAddress string, chainID int64) (*EthereumDIDRegistry, error) {
+	if DIDAddress == "" {
 		return nil, fmt.Errorf("invalid configuration: RPC URL or DID address missing")
 	}
 
 	contractAddr := common.HexToAddress(DIDAddress)
-
-	client, err := ethclient.Dial(RPCURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Ethereum client: %w", err)
-	}
 
 	// --- File-based ABI loading (restored from original) ---
 	file, err := os.Open(smc_abi_path)
@@ -84,11 +79,11 @@ func NewEthereumDIDRegistry(RPCURL, DIDAddress string, chainID int64) (*Ethereum
 	// --- End of file-based ABI loading ---
 
 	// Create a new bound contract
-	contract := bind.NewBoundContract(contractAddr, parsedABI, client, client, client)
+	contract := bind.NewBoundContract(contractAddr, parsedABI, nil, nil, nil)
 
 	return &EthereumDIDRegistry{
 		contract: contract,
-		client:   client, // Store the client
+		client:   nil, // Store the client
 		chainID:  chainID,
 	}, nil
 }
@@ -150,18 +145,6 @@ func (e *EthereumDIDRegistry) newSignedTransactOpts(ctx context.Context, private
 
 	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	// Fetch the pending nonce
-	nonce, err := e.client.PendingNonceAt(ctx, fromAddress)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get pending nonce: %w", err)
-	}
-
-	// Fetch the suggested gas price
-	gasPrice, err := e.client.SuggestGasPrice(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to suggest gas price: %w", err)
-	}
-
 	chainID := big.NewInt(e.chainID)
 
 	// Create a signer function
@@ -176,13 +159,15 @@ func (e *EthereumDIDRegistry) newSignedTransactOpts(ctx context.Context, private
 	// Create the auth object
 	auth := &bind.TransactOpts{
 		From:     fromAddress,
-		Nonce:    big.NewInt(int64(nonce)),
+		Nonce:    big.NewInt(0),
 		Value:    big.NewInt(0), // Assuming no ETH is sent
-		GasLimit: uint64(0),     // Set to 0 for automatic gas estimation
-		GasPrice: gasPrice,
+		GasLimit: uint64(80000), // Set to 0 for automatic gas estimation
+		GasPrice: big.NewInt(0),
 		Context:  ctx,
 		Signer:   signer,
 	}
 
 	return auth, nil
 }
+
+//TODO: Implement a function sign tx with get nonce and gas price from rpc
