@@ -1,30 +1,31 @@
-## How to Get the Package
-To add the go-credential-sdk to your project, you can use the following go get command in your terminal:
+# NDA DID SDK (`nda-did`)
+
+**Official Go SDK for generating Decentralized Identifiers (DIDs) locally.**
+
+This SDK allows you to:
+- Generate **NDA-compliant DIDs** locally with full control over keys.
+  - Create **DID Documents** with customizable metadata.
+  - Anchor DIDs on the **NDA Chain** via pre-signed transactions.
+- **Re-generate failed registration transactions** without losing the DID or keys.
+
+---
+
+## ✨ Key Features
+
+- Local DID Generation - Create DIDs with private/public key pairs and full DID Document
+  - Customizable DID Document: Attach structured data (name, type, etc.) to your DID.
+  - Pre-signed Transactions: Generate blockchain-ready transactions for NDA Chain anchoring.
+- Transaction Regeneration: Re-create failed `SubmitDIDTX` without regenerating keys or DID.
+---
+
+## 🚀 Installation
+
+Add the SDK to your Go project:
 
 ```bash
 go get github.com/pilacorp/go-credential-sdk/did
 ```
-This will download the SDK, including the did package, and make it available for import in your project.
-
-## ✨ Key Features
-Based on the code, the did package provides the following core functionality:
-
-- DID Generation: A did.NewDIDGenerator() function to initialize a generator.
-
-- DID Customization: Ability to specify properties for the new DID using the did.CreateDID struct, including:
-
-  + Type (e.g., did.TypePeople)
-
-  + Hash
-
-  + Metadata (using a map[string]interface{})
-
-DID Document Creation: The GenerateDID method produces a full did.DIDDocument.
-
-Blockchain Integration: The generation result also includes blockchain.SubmitTxResult, indicating it likely handles the necessary blockchain transaction for anchoring the DID.
-
-Register DID: After generate DID, DID will be registered to a registry API. It Sends the DID Document to a registry API for public registration.
-## 🚀 Example: Creating and Registering a DID
+##  Example: Creating and Registering a DID
 
 Here is the complete, runnable example flow for generating a new DID and registering it with an API.
 
@@ -33,170 +34,128 @@ This code performs two main actions:
 Locally: Generates a new DID, key pair, and DID Document.
 
 Remotely: Sends this new DID Document to a registry API to make it public.
+### Core model
 
+```go
+type DIDType string
+
+const (
+    TypeItem     DIDType = "item"
+    TypePeople   DIDType = "people"
+    TypeLocation DIDType = "location"
+    TypeDefault  DIDType = "default"
+)
+
+type CreateDID struct {
+    Type     DIDType                `json:"type"`
+    Metadata map[string]interface{} `json:"metadata"`
+    Hash     string                 `json:"hash,omitempty"`
+}
+
+type DIDDocument struct {
+    Context            []string               `json:"@context"`
+    Id                 string                 `json:"id"`
+    Controller         string                 `json:"controller"`
+    VerificationMethod []VerificationMethod   `json:"verificationMethod"`
+    Authentication     []string               `json:"authentication"`
+    AssertionMethod    []string               `json:"assertionMethod"`
+    DocumentMetadata   map[string]interface{} `json:"didDocumentMetadata"`
+}
+```
+Example
 ```go
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
+  "bytes"
+  "context"
+  "encoding/json"
+  "fmt"
+  "io"
+  "log"
+  "net/http"
 
-	"github.com/pilacorp/go-credential-sdk/did"
-	"github.com/pilacorp/go-credential-sdk/did/blockchain"
+  "github.com/pilacorp/go-credential-sdk/did"
+  "github.com/pilacorp/go-credential-sdk/did/blockchain"
 )
 
-// NewDID defines the JSON payload structure for the registration API
 type NewDID struct {
-	IssuerDID   string                    `json:"issuer_did"`
-	Document    did.DIDDocument           `json:"document"`
-	Transaction blockchain.SubmitTxResult `json:"transaction"`
+  IssuerDID   string                    `json:"issuer_did"`
+  Document    did.DIDDocument           `json:"document"`
+  Transaction blockchain.SubmitTxResult `json:"transaction"`
 }
 
 func main() {
-	ctx := context.Background()
+  ctx := context.Background()
+  didGenerator := did.NewDIDGenerator()
 
-	// 1. Initialize the DID Generator
-	didGenerator := did.NewDIDGenerator()
+  // Step 1: Define DID properties
+  createDID := did.CreateDID{
+    Type: did.TypePeople,
+    Metadata: map[string]interface{}{
+      "name": "Alice Johnson",
+    },
+  }
 
-	// 2. Define the properties for the new DID
-	createDID := did.CreateDID{
-		Type: did.TypePeople,
-		Hash: "", // Can be left empty
-		Metadata: map[string]interface{}{
-			"name": "User 1",
-		},
-	}
+  // Step 2: Generate DID + Transaction
+  fmt.Println("Generating DID and pre-signed transaction...")
+  generated, err := didGenerator.GenerateDID(ctx, createDID)
+  if err != nil {
+    log.Fatalf("DID generation failed: %v", err)
+  }
 
-	// 3. Generate the DID
-	// This step creates the private key, public key, and DID Document locally
-	fmt.Println("Generating DID...")
-	generatedDID, err := didGenerator.GenerateDID(ctx, createDID)
-	if err != nil {
-		log.Fatalf("Failed to generate DID: %v", err)
-	}
+  fmt.Printf("DID: %s\n", generated.Document.Id)
+  fmt.Printf("Private Key (save securely!): %s\n", generated.Secret.PrivateKeyHex)
 
-	// Print the generated DID Document
-	fmt.Println("\n=== Generated DID Document ===")
-	didJSON, err := json.MarshalIndent(generatedDID.Document, "", "  ")
-	if err != nil {
-		log.Fatalf("Failed to marshal DID: %v", err)
-	}
-	fmt.Println(string(didJSON))
+  // Step 3: Submit to NDA DID Registry
+  apiURL := "https://api.ndadid.vn/api/v1/did/register"
+  payload := NewDID{
+    IssuerDID:   "did:nda:0x3fa4902238e3416886a68bc006c1f352d723e37a", // Authorized issuer
+    Document:    generated.Document,
+    Transaction: generated.Transaction,
+  }
 
-	// IMPORTANT: 'generatedDID' contains the new DID's private key.
-	// You will need this key to sign Verifiable Credentials as this new issuer.
-	// Do NOT send the private key to the API.
+  body, _ := json.Marshal(payload)
+  req, _ := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(body))
+  req.Header.Set("Content-Type", "application/json")
+  req.Header.Set("x-api-key", "YOUR_API_KEY_HERE")
 
-	// 4. Send the new DID Document to the registry API
-	fmt.Println("\n=== Sending DID to API Registry ===")
-	apiURL := "https://api.ndadid.vn/api/v1/did/register"
+  client := &http.Client{}
+  resp, err := client.Do(req)
+  if err != nil {
+    log.Fatalf("API request failed: %v", err)
+  }
+  defer resp.Body.Close()
 
-	// This is the payload for the registration request.
-	// Note: This API requires a pre-existing "IssuerDID" to authorize the registration.
-	reqDID := NewDID{
-		IssuerDID:   "did:nda:0x3fa4902238e3416886a68bc006c1f352d723e37a", // The DID authorized to register new DIDs
-		Document:    generatedDID.Document,                                // The new DID Document
-		Transaction: generatedDID.Transaction,                             // The associated blockchain transaction
-	}
+  respBody, _ := io.ReadAll(resp.Body)
+  fmt.Printf("Status: %s\nResponse: %s\n", resp.Status, string(respBody))
 
-	// Marshal the payload to JSON
-	requestBody, err := json.Marshal(reqDID)
-	if err != nil {
-		log.Fatalf("Failed to marshal DID for API request: %v", err)
-	}
-
-	// 5. Create and send the HTTP POST request
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(requestBody))
-	if err != nil {
-		log.Fatalf("Failed to create HTTP request: %v", err)
-	}
-
-	apiKey := "xxxxxxxxx" // <-- Replace with your actual API key
-
-	// Set required headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("accept", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-
-	// Send request
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatalf("Failed to send API request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// 6. Read and print the API response
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Fatalf("Failed to read API response: %v", err)
-	}
-
-	fmt.Printf("API Response Status: %s\n", resp.Status)
-	fmt.Printf("API Response Body:\n%s\n", string(responseBody))
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		fmt.Println("\n✓ DID successfully submitted to API")
-	} else {
-		log.Fatalf("API request failed with status %d", resp.StatusCode)
-	}
-}
-
-```
-#### Model 
-```
-type DIDType string
-
-const (
-	TypeItem     DIDType = "item"
-	TypePeople   DIDType = "people"
-	TypeLocation DIDType = "location"
-	TypeDefault  DIDType = "default"
-)
-
-// KeyPair represents the generated wallet and DID identifier
-type KeyPair struct {
-	Address    string `json:"address"`
-	PublicKey  string `json:"publicKey"`
-	PrivateKey string `json:"privateKey"`
-	Identifier string `json:"identifier"`
-}
-
-type CreateDID struct {
-	Type     DIDType                `json:"type"`
-	Metadata map[string]interface{} `json:"metadata"`
-	Hash     string                 `json:"hash"`
-}
-
-type DIDDocument struct {
-	Context            []string               `json:"@context"`
-	Id                 string                 `json:"id"`
-	Controller         string                 `json:"controller"`
-	VerificationMethod []VerificationMethod   `json:"verificationMethod"`
-	Authentication     []string               `json:"authentication"` //=id
-	AssertionMethod    []string               `json:"assertionMethod"`
-	DocumentMetadata   map[string]interface{} `json:"didDocumentMetadata"`
-}
-type VerificationMethod struct {
-	Id           string `json:"id"`
-	Type         string `json:"type"`                   //
-	Controller   string `json:"controller"`             //key
-	PublicKeyHex string `json:"publicKeyHex,omitempty"` // Return real public key
-}
-
-type DID struct {
-	DID         string                    `json:"did"`
-	Secret      Secret                    `json:"secret"`
-	Document    DIDDocument               `json:"document"`
-	Transaction blockchain.SubmitTxResult `json:"transaction"`
-}
-
-type Secret struct {
-	PrivateKeyHex string `json:"privateKeyHex"`
+  if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+    fmt.Println("DID registered successfully!")
+  }
 }
 ```
+## Regenerating TX when First Transaction was Failed
+Use Case: If the original blockchain transaction fails (e.g., due to network issues, low gas, or timeout), you can recreate the transaction using the original private key and metadata — without changing the DID or keys.
+
+Note: when use ReGenerateDIDTX, make sure correct RPC Config in package
+```go
+func (d *DIDGenerator) ReGenerateDIDTX(
+    ctx context.Context,
+    privKey string,
+    didMetadata map[string]interface{},
+) (*blockchain.SubmitDIDTX, error)
+```
+
+## 📡 API Reference
+
+Endpoint - Method - Purpose
+
+`POST /api/v1/did/registerRegister new DIDRequires x-api-key and authorized issuer_did`
+
+## 🔐 Security Best Practices
+
+- Store PrivateKeyHex securely (e.g., encrypted vault, HSM).
+- Use environment variables for API keys.
+- Never commit keys to version control.
+- Validate all metadata before submission.
