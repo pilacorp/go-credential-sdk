@@ -63,6 +63,12 @@ type DIDDocument struct {
 }
 ```
 Example
+
+For creating a DID, you can follow these steps:
+- Step 1: Init package → Using NewDIDGenerator with optional config
+- Step 2: Generate DID → Using GenerateDID(...)
+- Step 3: Register DID → Call API via sendDIDToAPI
+
 ```go
 package main
 
@@ -75,64 +81,129 @@ import (
   "log"
   "net/http"
 
+  // --- Assumed Imports ---
   "github.com/pilacorp/go-credential-sdk/did"
   "github.com/pilacorp/go-credential-sdk/did/blockchain"
+  "github.com/pilacorp/go-credential-sdk/did/config"
 )
 
+// NewDID represents the payload sent to the DID registration API
 type NewDID struct {
-  IssuerDID   string                    `json:"issuer_did"`
-  Document    did.DIDDocument           `json:"document"`
-  Transaction blockchain.SubmitTxResult `json:"transaction"`
+  IssuerDID   string                 `json:"issuer_did"`
+  Document    did.DIDDocument        `json:"document"`
+  Transaction blockchain.SubmitDIDTX `json:"transaction"`
 }
 
 func main() {
   ctx := context.Background()
-  didGenerator := did.NewDIDGenerator()
 
-  // Step 1: Define DID properties
+  // ========================================
+  // STEP 1: Init Package with Configuration
+  // ========================================
+  fmt.Println("Step 1: Initializing DID Generator with config...")
+  didGenerator := did.NewDIDGenerator(
+    did.WithConfig(config.Config{
+      RPC:        "https://rpc-testnet.pila.vn",
+      ChainID:    6789,
+      DIDAddress: "0x0000000000000000000000000000000000018888",
+      Method:     "did:pila",
+    }),
+  )
+  fmt.Println("DID Generator initialized successfully.\n")
+
+  // ========================================
+  // STEP 2: Generate DID
+  // ========================================
+  fmt.Println("Step 2: Generating new DID...")
   createDID := did.CreateDID{
     Type: did.TypePeople,
+    Hash: "",
     Metadata: map[string]interface{}{
-      "name": "Alice Johnson",
+      "name": "User 1",
     },
   }
 
-  // Step 2: Generate DID + Transaction
-  fmt.Println("Generating DID and pre-signed transaction...")
-  generated, err := didGenerator.GenerateDID(ctx, createDID)
+  generatedDID, err := didGenerator.GenerateDID(ctx, createDID)
   if err != nil {
-    log.Fatalf("DID generation failed: %v", err)
+    log.Fatalf("Failed to generate DID: %v", err)
   }
 
-  fmt.Printf("DID: %s\n", generated.Document.Id)
-  fmt.Printf("Private Key (save securely!): %s\n", generated.Secret.PrivateKeyHex)
+  fmt.Println("DID generated successfully!")
+  didJSON, _ := json.MarshalIndent(generatedDID, "", "  ")
+  fmt.Println(string(didJSON))
 
-  // Step 3: Submit to NDA DID Registry
-  apiURL := "https://api.ndadid.vn/api/v1/did/register"
-  payload := NewDID{
-    IssuerDID:   "did:nda:0x3fa4902238e3416886a68bc006c1f352d723e37a", // Authorized issuer
-    Document:    generated.Document,
-    Transaction: generated.Transaction,
+  // ========================================
+  // STEP 3: Register DID via API
+  // ========================================
+  fmt.Println("\nStep 3: Preparing and submitting DID to registry API...")
+
+  // Re-generate transaction using private key and metadata
+  newTx, err := didGenerator.ReGenerateDIDTX(ctx, generatedDID.Secret.PrivateKeyHex, generatedDID.Document.DocumentMetadata)
+  if err != nil {
+    log.Fatalf("Failed to re-generate DID transaction: %v", err)
   }
 
-  body, _ := json.Marshal(payload)
-  req, _ := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(body))
-  req.Header.Set("Content-Type", "application/json")
-  req.Header.Set("x-api-key", "YOUR_API_KEY_HERE")
+  reqDID := NewDID{
+    IssuerDID:   "did:nda:testnet:0x3fa4902238e3416886a68bc006c1f352d723e37a", // Replace your Issuer DID
+    Document:    generatedDID.Document,
+    Transaction: *newTx,
+  }
 
-  client := &http.Client{}
-  resp, err := client.Do(req)
+  apiURL := "https://auth-dev.pila.vn/api/v1/did/register"
+  apiKey := "YOUR_API_KEY"
+
+  responseBody, err := sendDIDToAPI(ctx, apiURL, apiKey, reqDID)
   if err != nil {
     log.Fatalf("API request failed: %v", err)
   }
+
+  fmt.Printf("API Response:\n%s\n", responseBody)
+  fmt.Println("\nDID successfully registered on the blockchain!")
+}
+
+// sendDIDToAPI sends the DID registration request to the remote API
+func sendDIDToAPI(
+        ctx context.Context,
+        apiURL string,
+        apiKey string,
+        reqDID NewDID,
+) (string, error) {
+
+  client := &http.Client{}
+
+  requestBody, err := json.Marshal(reqDID)
+  if err != nil {
+    return "", fmt.Errorf("failed to marshal request body: %w", err)
+  }
+
+  req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(requestBody))
+  if err != nil {
+    return "", fmt.Errorf("failed to create HTTP request: %w", err)
+  }
+
+  req.Header.Set("Content-Type", "application/json")
+  req.Header.Set("accept", "application/json")
+  req.Header.Set("x-api-key", apiKey)
+
+  resp, err := client.Do(req)
+  if err != nil {
+    return "", fmt.Errorf("failed to send request: %w", err)
+  }
   defer resp.Body.Close()
 
-  respBody, _ := io.ReadAll(resp.Body)
-  fmt.Printf("Status: %s\nResponse: %s\n", resp.Status, string(respBody))
-
-  if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-    fmt.Println("DID registered successfully!")
+  responseBodyBytes, err := io.ReadAll(resp.Body)
+  if err != nil {
+    return "", fmt.Errorf("failed to read response body: %w", err)
   }
+
+  responseBodyString := string(responseBodyBytes)
+  fmt.Printf("API Status: %s\n", resp.Status)
+
+  if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+    return "", fmt.Errorf("API error %d: %s", resp.StatusCode, responseBodyString)
+  }
+
+  return responseBodyString, nil
 }
 ```
 ## Regenerating TX when First Transaction was Failed
