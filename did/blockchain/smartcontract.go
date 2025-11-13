@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"io"
 	"math/big"
 	"os"
@@ -17,7 +18,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -34,22 +34,22 @@ type HardhatArtifact struct {
 }
 
 type EthereumDIDRegistry struct {
-	contract *bind.BoundContract
-	client   *ethclient.Client // Store the client for fetching nonce/gas
-	chainID  int64
+	contract  *bind.BoundContract
+	rpcClient string // Store the client for fetching nonce/gas
+	chainID   int64
 }
-type SubmitTxResult struct {
+type SubmitDIDTX struct {
 	TxHex  string // Hex-encoded RLP transaction
 	TxHash string // Transaction hash
 }
 
 // NewEthereumDIDRegistry creates a new instance of the Ethereum DID Registry client
-func NewEthereumDIDRegistry(DIDAddress string, chainID int64) (*EthereumDIDRegistry, error) {
-	if DIDAddress == "" {
+func NewEthereumDIDRegistry(rpcURL string, didAddress string, chainID int64) (*EthereumDIDRegistry, error) {
+	if didAddress == "" {
 		return nil, fmt.Errorf("invalid configuration: RPC URL or DID address missing")
 	}
 
-	contractAddr := common.HexToAddress(DIDAddress)
+	contractAddr := common.HexToAddress(didAddress)
 
 	// --- File-based ABI loading (restored from original) ---
 	file, err := os.Open(smc_abi_path)
@@ -82,17 +82,17 @@ func NewEthereumDIDRegistry(DIDAddress string, chainID int64) (*EthereumDIDRegis
 	contract := bind.NewBoundContract(contractAddr, parsedABI, nil, nil, nil)
 
 	return &EthereumDIDRegistry{
-		contract: contract,
-		client:   nil, // Store the client
-		chainID:  chainID,
+		contract:  contract,
+		rpcClient: rpcURL, // Store the client
+		chainID:   chainID,
 	}, nil
 }
 
 // GenerateSetAttributeTx generates a raw, unsigned transaction for setting an attribute.
 // This function retains the optimizations (accepts *ecdsa.PrivateKey and *big.Int validity).
-func (e *EthereumDIDRegistry) GenerateSetAttributeTx(ctx context.Context, privKey, address, value string) (*SubmitTxResult, error) {
+func (e *EthereumDIDRegistry) GenerateSetAttributeTx(ctx context.Context, privKey, address, value string) (*SubmitDIDTX, error) {
 
-	result := SubmitTxResult{}
+	result := SubmitDIDTX{}
 	privateKey, err := ParsePrivateKey(privKey)
 	if err != nil {
 		return &result, err
@@ -105,7 +105,7 @@ func (e *EthereumDIDRegistry) GenerateSetAttributeTx(ctx context.Context, privKe
 	}
 
 	// Get the auth object with dynamic nonce and gas
-	auth, err := e.newSignedTransactOpts(ctx, privateKey)
+	auth, err := e.newDefaultTransactionOpts(ctx, privateKey)
 	if err != nil {
 		return &result, fmt.Errorf("failed to create transaction options: %w", err)
 	}
@@ -133,10 +133,10 @@ func (e *EthereumDIDRegistry) GenerateSetAttributeTx(ctx context.Context, privKe
 	return &result, nil
 }
 
-// newSignedTransactOpts creates a *bind.TransactOpts with a signer function
+// newDefaultTransactionOpts creates a *bind.TransactOpts with a signer function and default config
 // and dynamically fetches the nonce and suggested gas price.
 // (This is the optimized function from the previous step)
-func (e *EthereumDIDRegistry) newSignedTransactOpts(ctx context.Context, privateKey *ecdsa.PrivateKey) (*bind.TransactOpts, error) {
+func (e *EthereumDIDRegistry) newDefaultTransactionOpts(ctx context.Context, privateKey *ecdsa.PrivateKey) (*bind.TransactOpts, error) {
 	publicKey := privateKey.Public()
 	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
 	if !ok {
@@ -170,4 +170,104 @@ func (e *EthereumDIDRegistry) newSignedTransactOpts(ctx context.Context, private
 	return auth, nil
 }
 
-//TODO: Implement a function sign tx with get nonce and gas price from rpc
+// TODO: Implement a function sign tx with get nonce and gas price from rpc
+
+// GenerateSetAttributeTx generates a raw, unsigned transaction for setting an attribute.
+// This function retains the optimizations (accepts *ecdsa.PrivateKey and *big.Int validity).
+func (e *EthereumDIDRegistry) ReGenerateSetAttributeTx(ctx context.Context, privKey, value string) (*SubmitDIDTX, error) {
+
+	result := SubmitDIDTX{}
+	privateKey, err := ParsePrivateKey(privKey)
+	publicKeyECDSA, ok := privateKey.Public().(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("-----error casting public key to ECDSA")
+	}
+	address := strings.ToLower(crypto.PubkeyToAddress(*publicKeyECDSA).Hex())
+	if err != nil {
+		return &result, err
+	}
+
+	// Prepare inputs
+	didAddress, nameBytes, valueBytes, validity, err := PrepareAttributeInputs(address, AttributeName, value)
+	if err != nil {
+		return &result, err
+	}
+
+	// Get the auth object with dynamic nonce and gas
+	auth, err := e.newTransactionOpts(ctx, privateKey)
+	if err != nil {
+		return &result, fmt.Errorf("failed to create transaction options: %w", err)
+	}
+
+	// We are only generating, not sending
+	auth.NoSend = true
+
+	// Use the contract's Transact method
+	tx, err := e.contract.Transact(auth, "setAttribute", didAddress, nameBytes, valueBytes, validity)
+	if err != nil {
+		return &result, fmt.Errorf("failed to generate setAttribute Tx: %v", err)
+	}
+
+	// Serialize transaction to hex.
+	var buf bytes.Buffer
+	if err := rlp.Encode(&buf, tx); err != nil {
+		return &result, fmt.Errorf("failed to serialize transaction: %w", err)
+	}
+
+	txBytes := buf.Bytes()
+	result.TxHex = hex.EncodeToString(txBytes)
+	result.TxHash = tx.Hash().Hex()
+
+	return &result, nil
+}
+
+// Get nonce and gas price from rpc
+func (e *EthereumDIDRegistry) newTransactionOpts(ctx context.Context, privateKey *ecdsa.PrivateKey) (*bind.TransactOpts, error) {
+	publicKey := privateKey.Public()
+	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("error casting public key to ECDSA")
+	}
+
+	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
+	client, err := ethclient.Dial(e.rpcClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to NDAChain client: %w", err)
+	}
+
+	// Fetch the pending nonce
+	nonce, err := client.PendingNonceAt(ctx, fromAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pending nonce: %w", err)
+	}
+
+	// Fetch the suggested gas price
+	gasPrice, err := client.SuggestGasPrice(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to suggest gas price: %w", err)
+	}
+
+	chainID := big.NewInt(e.chainID)
+
+	// Create a signer function
+	signer := func(address common.Address, tx *types.Transaction) (*types.Transaction, error) {
+		signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
+		if err != nil {
+			return nil, err
+		}
+		return signedTx, nil
+	}
+
+	// Create the auth object
+	auth := &bind.TransactOpts{
+		From:     fromAddress,
+		Nonce:    big.NewInt(int64(nonce)),
+		Value:    big.NewInt(0), // Assuming no ETH is sent
+		GasLimit: uint64(0),     // Set to 0 for automatic gas estimation
+		GasPrice: gasPrice,
+		Context:  ctx,
+		Signer:   signer,
+	}
+
+	return auth, nil
+}

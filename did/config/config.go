@@ -2,7 +2,7 @@ package config
 
 // Default values
 const (
-	DefaultRPC        = ""
+	DefaultRPC        = "https://rpc-testnet.pila.vn"
 	DefaultChainID    = 6789
 	DefaultDIDAddress = "0x0000000000000000000000000000000000018888"
 	DefaultMethod     = "did:nda"

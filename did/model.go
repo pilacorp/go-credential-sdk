@@ -42,10 +42,10 @@ type VerificationMethod struct {
 }
 
 type DID struct {
-	DID         string                    `json:"did"`
-	Secret      Secret                    `json:"secret"`
-	Document    DIDDocument               `json:"document"`
-	Transaction blockchain.SubmitTxResult `json:"transaction"`
+	DID         string                 `json:"did"`
+	Secret      Secret                 `json:"secret"`
+	Document    DIDDocument            `json:"document"`
+	Transaction blockchain.SubmitDIDTX `json:"transaction"`
 }
 
 type Secret struct {

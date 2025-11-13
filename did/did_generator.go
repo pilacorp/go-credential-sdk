@@ -49,7 +49,7 @@ func (d *DIDGenerator) GenerateDID(ctx context.Context, newDID CreateDID) (*DID,
 	// Create DID document
 	doc := d.generateDIDDocument(did, &newDID)
 
-	didRegistry, err := blockchain.NewEthereumDIDRegistry(d.config.DIDAddress, d.config.ChainID)
+	didRegistry, err := blockchain.NewEthereumDIDRegistry(d.config.RPC, d.config.DIDAddress, d.config.ChainID)
 	if err != nil {
 		return nil, err
 	}
@@ -125,4 +125,31 @@ func (d *DIDGenerator) generateDIDDocument(did *KeyPair, didReq *CreateDID) *DID
 	}
 
 	return document
+}
+
+func (d *DIDGenerator) ReGenerateDIDTX(ctx context.Context, privKey string, didMetadata map[string]interface{}) (*blockchain.SubmitDIDTX, error) {
+
+	privHexString := strings.TrimPrefix(privKey, "0x")
+	privateKey, err := crypto.HexToECDSA(privHexString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse private key: %v", err)
+	}
+	publicKey := privateKey.PublicKey
+	address := crypto.PubkeyToAddress(publicKey).Hex()
+
+	if value, ok := didMetadata["type"]; !ok || value == "" {
+		return nil, fmt.Errorf("did type is required")
+	}
+
+	didRegistry, err := blockchain.NewEthereumDIDRegistry(d.config.RPC, d.config.DIDAddress, d.config.ChainID)
+	if err != nil {
+		return nil, err
+	}
+
+	newTx, err := didRegistry.GenerateSetAttributeTx(ctx, privKey, address, fmt.Sprintf("%v", (didMetadata["type"])))
+	if err != nil {
+		return newTx, err
+	}
+
+	return newTx, nil
 }
