@@ -39,9 +39,13 @@ func TestParsePresentation(t *testing.T) {
 	// For JSON presentations, we can get the JSON directly
 	var vpByte []byte
 	if embeddedPres, ok := pParsed.(*vp.JSONPresentation); ok {
-		vpByte, err = embeddedPres.GetContents()
+		contents, err := embeddedPres.GetContents()
 		if err != nil {
-			t.Fatalf("ToJSON failed: %v", err)
+			t.Fatalf("GetContents failed: %v", err)
+		}
+		vpByte, err = json.Marshal(contents)
+		if err != nil {
+			t.Fatalf("Marshal contents failed: %v", err)
 		}
 	} else {
 		// For JWT presentations, serialize to get the JWT string
@@ -57,31 +61,47 @@ func TestParsePresentation(t *testing.T) {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	if m["ID"] != vpc.ID {
-		t.Errorf("Expected ID '%s', got %v", vpc.ID, m["ID"])
+	if m["id"] != vpc.ID {
+		t.Errorf("Expected ID '%s', got %v", vpc.ID, m["id"])
 	}
 
-	if m["Holder"] != vpc.Holder {
-		t.Errorf("Expected holder '%s', got %v", vpc.Holder, m["Holder"])
+	if m["holder"] != vpc.Holder {
+		t.Errorf("Expected holder '%s', got %v", vpc.Holder, m["holder"])
 	}
 
-	credentials, ok := m["VerifiableCredentials"].([]interface{})
-	if !ok {
-		t.Fatalf("Expected VerifiableCredentials to be a slice, got %T", m["VerifiableCredentials"])
+	// Normalize verifiableCredential to slice
+	var credentials []interface{}
+	switch vcAny := m["verifiableCredential"].(type) {
+	case nil:
+		t.Fatalf("verifiableCredential missing")
+	case []interface{}:
+		credentials = vcAny
+	default:
+		credentials = []interface{}{vcAny}
 	}
 
 	if len(credentials) != len(vpc.VerifiableCredentials) {
 		t.Fatalf("Expected %d verifiableCredentials, got %d", len(vpc.VerifiableCredentials), len(credentials))
 	}
 
-	if len(m["Types"].([]interface{})) == len(vpc.Types) {
-		for i, k := range m["Types"].([]interface{}) {
-			if k != vpc.Types[i] {
-				t.Fatalf("Expected type '%s', got %v", vpc.Types[i], k)
+	// type can be string or array
+	switch tv := m["type"].(type) {
+	case string:
+		if len(vpc.Types) != 1 || tv != vpc.Types[0] {
+			t.Fatalf("Expected single type '%v', got '%v'", vpc.Types, tv)
+		}
+	case []interface{}:
+		if len(tv) != len(vpc.Types) {
+			t.Errorf("Expected %d types, got %d", len(vpc.Types), len(tv))
+		} else {
+			for i, k := range tv {
+				if k != vpc.Types[i] {
+					t.Fatalf("Expected type '%s', got %v", vpc.Types[i], k)
+				}
 			}
 		}
-	} else {
-		t.Errorf("Expected %d types, got %d", len(vpc.Types), len(m["Types"].([]interface{})))
+	default:
+		t.Fatalf("unexpected type field type: %T", tv)
 	}
 
 }
@@ -154,11 +174,15 @@ func TestCreatePresentationWithContent(t *testing.T) {
 				t.Fatalf("CreatePresentationWithContent failed: %v", err)
 			}
 
-			// Get JSON from JSON presentation
+			// Get structured contents and marshal to JSON for assertions
 			embeddedPres := p.(*vp.JSONPresentation)
-			data, err := embeddedPres.GetContents()
+			cont, err := embeddedPres.GetContents()
 			if err != nil {
 				t.Fatalf("GetContents failed: %v", err)
+			}
+			data, err := json.Marshal(cont)
+			if err != nil {
+				t.Fatalf("Marshal contents failed: %v", err)
 			}
 
 			var m map[string]interface{}
@@ -215,11 +239,15 @@ func TestParsePresentationContents(t *testing.T) {
 		t.Fatalf("Failed to marshal PresentationContents: %v", err)
 	}
 
-	// Get JSON from JSON presentation
+	// Get structured contents and marshal to JSON
 	embeddedPres := pContent.(*vp.JSONPresentation)
-	pJson, err := embeddedPres.GetContents()
+	pc, err := embeddedPres.GetContents()
 	if err != nil {
 		t.Fatalf("GetContents failed: %v", err)
+	}
+	pJson, err := json.Marshal(pc)
+	if err != nil {
+		t.Fatalf("Marshal contents failed: %v", err)
 	}
 
 	p, err := vp.ParsePresentation(pJson)
@@ -227,11 +255,15 @@ func TestParsePresentationContents(t *testing.T) {
 		t.Fatalf("ParsePresentation failed: %v", err)
 	}
 
-	// Get JSON from JSON presentation and parse it
+	// Get structured contents and marshal to JSON for checks
 	embeddedPres = p.(*vp.JSONPresentation)
-	jsonData, err := embeddedPres.GetContents()
+	pc2, err := embeddedPres.GetContents()
 	if err != nil {
 		t.Fatalf("GetContents failed: %v", err)
+	}
+	jsonData, err := json.Marshal(pc2)
+	if err != nil {
+		t.Fatalf("Marshal contents failed: %v", err)
 	}
 
 	var m map[string]interface{}
@@ -810,10 +842,14 @@ func TestJSONPresentationFlow(t *testing.T) {
 		t.Fatalf("Failed to verify JSON presentation: %v", err)
 	}
 
-	// 4. Use .ToJSON to convert VP to JSON and parse it into another VP
-	jsonData, err := presentation.GetContents()
+	// 4. Serialize contents to JSON and parse into another VP
+	pc, err := presentation.GetContents()
 	if err != nil {
-		t.Fatalf("Failed to convert JSON presentation to JSON: %v", err)
+		t.Fatalf("GetContents failed: %v", err)
+	}
+	jsonData, err := json.Marshal(pc)
+	if err != nil {
+		t.Fatalf("Marshal contents failed: %v", err)
 	}
 
 	// Parse the JSON into another VP
@@ -830,9 +866,13 @@ func TestJSONPresentationFlow(t *testing.T) {
 
 	// Verify the presentation data matches
 	parsedEmbeddedPres := parsedPresentation.(*vp.JSONPresentation)
-	parsedJSONData, err := parsedEmbeddedPres.GetContents()
+	parsedPC, err := parsedEmbeddedPres.GetContents()
 	if err != nil {
-		t.Fatalf("Failed to convert parsed presentation to JSON: %v", err)
+		t.Fatalf("GetContents failed: %v", err)
+	}
+	parsedJSONData, err := json.Marshal(parsedPC)
+	if err != nil {
+		t.Fatalf("Marshal contents failed: %v", err)
 	}
 
 	// Compare the JSON data (should be identical)
@@ -883,10 +923,14 @@ func TestCreateJSONPresentationOfTwoJSONCredentials(t *testing.T) {
 		t.Fatalf("Failed to verify JSON presentation: %v", err)
 	}
 
-	// Get JSON format
-	jsonData, err := presentation.GetContents()
+	// Get structured contents and marshal to JSON
+	pc, err := presentation.GetContents()
 	if err != nil {
-		t.Fatalf("Failed to convert JSON presentation to JSON: %v", err)
+		t.Fatalf("GetContents failed: %v", err)
+	}
+	jsonData, err := json.Marshal(pc)
+	if err != nil {
+		t.Fatalf("Marshal contents failed: %v", err)
 	}
 
 	// Parse the presentation
@@ -902,9 +946,13 @@ func TestCreateJSONPresentationOfTwoJSONCredentials(t *testing.T) {
 	}
 
 	// println the json data
-	jsonData, err = parsedPresentation.GetContents()
+	parsedPC2, err := parsedPresentation.GetContents()
 	if err != nil {
-		t.Fatalf("Failed to convert parsed JSON presentation to JSON: %v", err)
+		t.Fatalf("GetContents failed: %v", err)
+	}
+	jsonData, err = json.Marshal(parsedPC2)
+	if err != nil {
+		t.Fatalf("Marshal contents failed: %v", err)
 	}
 }
 
@@ -992,6 +1040,108 @@ func TestJWTPresentationFlow(t *testing.T) {
 	parts := strings.Split(jwtToken, ".")
 	if len(parts) != 3 {
 		t.Fatalf("JWT should have 3 parts separated by dots, got %d", len(parts))
+	}
+}
+
+// --- New tests for PresentationContents (Un)MarshalJSON behavior ---
+
+func TestPresentationContents_UnmarshalJSON_SingleAndArray(t *testing.T) {
+	// Single forms for @context and type
+	singleJSON := []byte(`{
+        "@context": "https://www.w3.org/ns/credentials/v2",
+        "id": "urn:uuid:abcd",
+        "type": "VerifiablePresentation",
+        "holder": "did:example:holder"
+    }`)
+
+	var pc vp.PresentationContents
+	if err := json.Unmarshal(singleJSON, &pc); err != nil {
+		t.Fatalf("unmarshal single failed: %v", err)
+	}
+	if pc.ID != "urn:uuid:abcd" || pc.Holder != "did:example:holder" {
+		t.Fatalf("unexpected id/holder: %v %v", pc.ID, pc.Holder)
+	}
+	if len(pc.Context) != 1 || pc.Context[0] != "https://www.w3.org/ns/credentials/v2" {
+		t.Fatalf("unexpected context: %v", pc.Context)
+	}
+	if len(pc.Types) != 1 || pc.Types[0] != "VerifiablePresentation" {
+		t.Fatalf("unexpected types: %v", pc.Types)
+	}
+
+	// Array forms for @context and type
+	arrayJSON := []byte(`{
+        "@context": ["https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"],
+        "id": "urn:uuid:efgh",
+        "type": ["VerifiablePresentation", "CustomType"],
+        "holder": "did:example:holder2"
+    }`)
+
+	var pc2 vp.PresentationContents
+	if err := json.Unmarshal(arrayJSON, &pc2); err != nil {
+		t.Fatalf("unmarshal array failed: %v", err)
+	}
+	if pc2.ID != "urn:uuid:efgh" || pc2.Holder != "did:example:holder2" {
+		t.Fatalf("unexpected id/holder: %v %v", pc2.ID, pc2.Holder)
+	}
+	if len(pc2.Context) != 2 {
+		t.Fatalf("unexpected context len: %v", pc2.Context)
+	}
+	if len(pc2.Types) != 2 || pc2.Types[1] != "CustomType" {
+		t.Fatalf("unexpected types: %v", pc2.Types)
+	}
+}
+
+func TestPresentationContents_MarshalJSON_SingletonAndArray(t *testing.T) {
+	// Singleton emission
+	pc := vp.PresentationContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:      "urn:uuid:abcd",
+		Types:   []string{"VerifiablePresentation"},
+		Holder:  "did:example:holder",
+	}
+	b, err := json.Marshal(pc)
+	if err != nil {
+		t.Fatalf("marshal single failed: %v", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal back failed: %v", err)
+	}
+	// Expect singleton either as string or single-item array
+	switch ctx := m["@context"].(type) {
+	case string:
+		// ok
+	case []interface{}:
+		if len(ctx) != 1 || ctx[0] != "https://www.w3.org/ns/credentials/v2" {
+			t.Fatalf("@context should be single-item array, got %v", ctx)
+		}
+	default:
+		t.Fatalf("@context unexpected type: %T", ctx)
+	}
+	if _, ok := m["type"].(string); !ok {
+		t.Fatalf("type should be string for singleton, got %T", m["type"])
+	}
+
+	// Array emission
+	pc2 := vp.PresentationContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"},
+		ID:      "urn:uuid:efgh",
+		Types:   []string{"VerifiablePresentation", "CustomType"},
+		Holder:  "did:example:holder2",
+	}
+	b2, err := json.Marshal(pc2)
+	if err != nil {
+		t.Fatalf("marshal array failed: %v", err)
+	}
+	var m2 map[string]interface{}
+	if err := json.Unmarshal(b2, &m2); err != nil {
+		t.Fatalf("unmarshal back failed: %v", err)
+	}
+	if _, ok := m2["@context"].([]interface{}); !ok {
+		t.Fatalf("@context should be array for multiple, got %T", m2["@context"])
+	}
+	if ta, ok := m2["type"].([]interface{}); !ok || len(ta) != 2 {
+		t.Fatalf("type should be array len 2, got %v (%T)", m2["type"], m2["type"])
 	}
 }
 

@@ -124,8 +124,12 @@ func TestParseCredential(t *testing.T) {
 				if err != nil {
 					t.Fatalf("GetContents failed: %v", err)
 				}
+				data, err := json.Marshal(payloadData)
+				if err != nil {
+					t.Fatalf("Failed to serialize payload data: %v", err)
+				}
 				var payloadMap map[string]interface{}
-				err = json.Unmarshal(payloadData, &payloadMap)
+				err = json.Unmarshal(data, &payloadMap)
 				if err != nil {
 					t.Fatalf("Failed to unmarshal payload: %v", err)
 				}
@@ -528,13 +532,8 @@ func TestCreateCredentialJWT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetContents failed: %v", err)
 	}
-	var payloadMap map[string]interface{}
-	err = json.Unmarshal(payloadData, &payloadMap)
-	if err != nil {
-		t.Fatalf("Failed to unmarshal payload: %v", err)
-	}
-	assert.Equal(t, credentialContents.ID, payloadMap["id"], "Credential ID should match")
-	assert.Equal(t, credentialContents.Issuer, payloadMap["issuer"], "Issuer should match")
+	assert.Equal(t, credentialContents.ID, payloadData.ID, "Credential ID should match")
+	assert.Equal(t, credentialContents.Issuer, payloadData.Issuer, "Issuer should match")
 
 	// Verify the credential
 	err = credential.Verify()
@@ -1026,4 +1025,24 @@ func TestSerializeJSONCredential(t *testing.T) {
 		t.Fatalf("Failed to marshal JSON credential: %v", err)
 	}
 	assert.True(t, json.Valid(bytes), "Serialized credential must be a json object")
+}
+
+// Test MarshalJSON for CredentialContents
+func TestMarshalJSONForCredentialContents(t *testing.T) {
+	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
+	data, err := credentialContents.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal CredentialContents: %v", err)
+	}
+	assert.True(t, json.Valid(data), "Serialized credential must be a json object")
+}
+
+// Test UnmarshalJSON for CredentialContents
+func TestUnmarshalJSONForCredentialContents(t *testing.T) {
+	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
+	data, err := credentialContents.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal CredentialContents: %v", err)
+	}
+	assert.True(t, json.Valid(data), "Serialized credential must be a json object")
 }
