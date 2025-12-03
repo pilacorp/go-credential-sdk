@@ -220,6 +220,12 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 		}
 	}
 
+	if options.isCheckExpiration {
+		if err := checkExpiration(j.payloadData); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+	}
+
 	if options.isVerifyProof {
 		serialized, err := j.Serialize()
 		if err != nil {

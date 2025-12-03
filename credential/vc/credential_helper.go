@@ -455,6 +455,41 @@ func validateCredential(m CredentialData) error {
 	return nil
 }
 
+// checkExpiration checks if the credential is not valid yet or expired.
+func checkExpiration(c CredentialData) error {
+	// Check if the credential is valid from a specific time
+	validFrom, err := parseStringField(c, "validFrom")
+	if err != nil {
+		return fmt.Errorf("failed to parse validFrom: %w", err)
+	}
+	if validFrom != "" {
+		validFromTime, err := time.Parse(time.RFC3339, validFrom)
+		if err != nil {
+			return fmt.Errorf("failed to parse validFrom: %w", err)
+		}
+		if time.Now().Before(validFromTime) {
+			return fmt.Errorf("credential is not valid yet")
+		}
+	}
+
+	// Check if the credential is valid until a specific
+	validUntil, err := parseStringField(c, "validUntil")
+	if err != nil {
+		return fmt.Errorf("failed to parse validUntil: %w", err)
+	}
+	if validUntil != "" {
+		validUntilTime, err := time.Parse(time.RFC3339, validUntil)
+		if err != nil {
+			return fmt.Errorf("failed to parse validUntil: %w", err)
+		}
+		if time.Now().After(validUntilTime) {
+			return fmt.Errorf("credential is expired")
+		}
+	}
+
+	return nil
+}
+
 // convertToArray ensures a value is represented as an array.
 func convertToArray(value interface{}) []interface{} {
 	if value == nil {
