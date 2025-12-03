@@ -90,6 +90,7 @@ type CredentialOpt func(*credentialOptions)
 type credentialOptions struct {
 	isValidateSchema      bool
 	isVerifyProof         bool
+	isCheckRevocation     bool
 	didBaseURL            string
 	verificationMethodKey string
 }
@@ -122,11 +123,19 @@ func WithVerifyProof() CredentialOpt {
 	}
 }
 
+// WithCheckRevocation enables revocation check during credential parsing.
+func WithCheckRevocation() CredentialOpt {
+	return func(c *credentialOptions) {
+		c.isCheckRevocation = true
+	}
+}
+
 // getOptions returns the credential options.
 func getOptions(opts ...CredentialOpt) *credentialOptions {
 	options := &credentialOptions{
 		isValidateSchema:      false,
 		isVerifyProof:         false,
+		isCheckRevocation:     false,
 		didBaseURL:            config.BaseURL,
 		verificationMethodKey: "key-1",
 	}

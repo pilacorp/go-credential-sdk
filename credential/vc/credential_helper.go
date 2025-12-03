@@ -3,10 +3,12 @@ package vc
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/xeipuuv/gojsonschema"
 
+	credentialstatus "github.com/pilacorp/go-credential-sdk/credential/common/credential-status"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 )
 
@@ -450,6 +452,57 @@ func validateCredential(m CredentialData) error {
 		if !result.Valid() {
 			return fmt.Errorf("credential validation failed: %v", result.Errors())
 		}
+	}
+
+	return nil
+}
+
+// checkRevocation checks that credentialStatus is present and, if using a
+// status list, verifies the credential is not revoked.
+func checkRevocation(c CredentialData) error {
+	// If there's no credentialStatus at all, treat as not using revocation → no error.
+	rawStatus, ok := c["credentialStatus"]
+	if !ok || rawStatus == nil {
+		return nil
+	}
+
+	statusMap, ok := rawStatus.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("credentialStatus must be an object")
+	}
+
+	rawStatusListCredential, ok := statusMap["statusListCredential"]
+	if !ok || rawStatusListCredential == nil {
+		return fmt.Errorf("credentialStatus.statusListCredential is required")
+	}
+
+	statusListCredential, ok := rawStatusListCredential.(string)
+	if !ok || statusListCredential == "" {
+		return fmt.Errorf("credentialStatus.statusListCredential must be a non-empty string")
+	}
+
+	rawStatusListIndex, ok := statusMap["statusListIndex"]
+	if !ok || rawStatusListIndex == nil {
+		return fmt.Errorf("credentialStatus.statusListIndex is required")
+	}
+
+	statusListIndex, ok := rawStatusListIndex.(string)
+	if !ok || statusListIndex == "" {
+		return fmt.Errorf("credentialStatus.statusListIndex must be a non-empty string")
+	}
+
+	position, err := strconv.Atoi(statusListIndex)
+	if err != nil {
+		return fmt.Errorf("invalid credentialStatus.statusListIndex: %w", err)
+	}
+
+	// Call status list API and check revocation based on encodedList bits.
+	isRevoked, err := credentialstatus.FetchAndCheckRevocation(statusListCredential, position)
+	if err != nil {
+		return fmt.Errorf("failed to check revocation: %w", err)
+	}
+	if isRevoked {
+		return fmt.Errorf("credential is revoked")
 	}
 
 	return nil

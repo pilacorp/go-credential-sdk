@@ -220,6 +220,12 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 		}
 	}
 
+	if options.isCheckRevocation {
+		if err := checkRevocation(j.payloadData); err != nil {
+			return fmt.Errorf("failed to check revocation: %w", err)
+		}
+	}
+
 	if options.isVerifyProof {
 		serialized, err := j.Serialize()
 		if err != nil {
