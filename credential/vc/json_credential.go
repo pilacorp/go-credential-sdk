@@ -114,6 +114,8 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	if options.isVerifyProof {
+		// print did base url
+		fmt.Printf("did base url: %s\n", options.didBaseURL)
 		isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(options.didBaseURL)
 		if err != nil {
 			return fmt.Errorf("failed to verify credential: %w", err)

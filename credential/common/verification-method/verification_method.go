@@ -73,8 +73,16 @@ func (r *Resolver) GetPublicKey(verificationMethodURL string) (string, error) {
 		return "", fmt.Errorf("failed to resolve DID '%s': %w", didPart, err)
 	}
 
+	// print verification method url
+	fmt.Printf("verification method url: %s\n", verificationMethodURL)
+
 	// Find matching verification method
 	for _, vm := range doc.VerificationMethod {
+		// print vm id
+		fmt.Printf("vm id: %s\n", vm.ID)
+		// print vm public key hex
+		fmt.Printf("vm public key hex: %s\n", vm.PublicKeyHex)
+
 		if vm.ID == verificationMethodURL {
 			// format publicKeyHex
 			if vm.PublicKeyHex != "" {
@@ -175,6 +183,9 @@ func (r *Resolver) ResolveToDoc(did string) (*DIDDocument, error) {
 	// Construct and encode API URL
 	encodedDID := url.PathEscape(did)
 	apiURL := r.baseURL + "/" + encodedDID
+
+	// print api url
+	fmt.Printf("api url: %s\n", apiURL)
 
 	// Perform HTTP GET request
 	resp, err := r.client.Get(apiURL)
