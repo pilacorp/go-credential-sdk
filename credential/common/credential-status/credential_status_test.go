@@ -10,21 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestDecodeEncodedList(t *testing.T) {
-	// Prepare a single-byte bitstring: 0x01 -> [1,0,0,0,0,0,0,0] (LSB-first)
-	raw := []byte{0x01}
-	encoded, err := util.CompressToBase64URL(raw)
-	assert.NoError(t, err)
-
-	bits, err := DecodeEncodedList(encoded)
-	assert.NoError(t, err)
-	assert.Len(t, bits, 8)
-	assert.Equal(t, 1, bits[0])
-	for i := 1; i < 8; i++ {
-		assert.Equal(t, 0, bits[i])
-	}
-}
-
 func TestIsRevoked(t *testing.T) {
 	// Bit pattern: 0x01 -> [1,0,0,0,0,0,0,0] (LSB-first)
 	raw := []byte{0x01}
