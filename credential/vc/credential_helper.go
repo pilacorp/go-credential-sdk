@@ -471,6 +471,11 @@ func checkRevocation(c CredentialData) error {
 		return fmt.Errorf("credentialStatus must be an object")
 	}
 
+	// If credentialStatus is an empty object, also treat it as "no revocation info".
+	if len(statusMap) == 0 {
+		return nil
+	}
+
 	rawStatusListCredential, ok := statusMap["statusListCredential"]
 	if !ok || rawStatusListCredential == nil {
 		return fmt.Errorf("credentialStatus.statusListCredential is required")

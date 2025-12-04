@@ -480,13 +480,9 @@ func TestCheckRevocation_RevokedJSONCredential(t *testing.T) {
 	  }
 	}`)
 
-	var credData CredentialData
-	err := json.Unmarshal(credentialJSON, &credData)
-	assert.NoError(t, err)
-
-	err = checkRevocation(credData)
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
 	assert.Error(t, err)
-	assert.Equal(t, err.Error(), "credential is revoked")
+	assert.Contains(t, err.Error(), "credential is revoked")
 }
 
 func TestCheckRevocation_NotRevokedJSONCredential(t *testing.T) {
@@ -520,11 +516,64 @@ func TestCheckRevocation_NotRevokedJSONCredential(t *testing.T) {
 	  }
 	}`)
 
-	var credData CredentialData
-	err := json.Unmarshal(credentialJSON, &credData)
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
 	assert.NoError(t, err)
+}
 
-	err = checkRevocation(credData)
+func TestCheckRevocation_EmptyStatusJSONCredential(t *testing.T) {
+	credentialJSON := []byte(`{
+	  "id": "did:nda:testnet:593c544e-6df8-4bfa-bc61-c45b53b07b03",
+	  "type": "VerifiableCredential",
+	  "issuer": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	  "@context": [
+	    "https://www.w3.org/ns/credentials/v2",
+	    "https://www.w3.org/ns/credentials/examples/v2"
+	  ],
+	  "validFrom": "2025-09-25T07:57:04Z",
+	  "validUntil": "2026-09-25T07:57:04Z",
+	  "credentialSchema": {
+	    "id": "https://auth-dev.pila.vn/api/v1/schemas/63a39bc9-b52b-42cb-be7e-28c096d93174",
+	    "type": "JsonSchema"
+	  },
+	  "credentialStatus": {},
+	  "credentialSubject": {
+	    "id": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	    "age": 10,
+	    "name": "Test Create JSON",
+	    "salary": 50000,
+	    "department": "Engineering"
+	  }
+	}`)
+
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
+	assert.NoError(t, err)
+}
+
+func TestCheckRevocation_NoStatusFieldJSONCredential(t *testing.T) {
+	credentialJSON := []byte(`{
+	  "id": "did:nda:testnet:593c544e-6df8-4bfa-bc61-c45b53b07b03",
+	  "type": "VerifiableCredential",
+	  "issuer": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	  "@context": [
+	    "https://www.w3.org/ns/credentials/v2",
+	    "https://www.w3.org/ns/credentials/examples/v2"
+	  ],
+	  "validFrom": "2025-09-25T07:57:04Z",
+	  "validUntil": "2026-09-25T07:57:04Z",
+	  "credentialSchema": {
+	    "id": "https://auth-dev.pila.vn/api/v1/schemas/63a39bc9-b52b-42cb-be7e-28c096d93174",
+	    "type": "JsonSchema"
+	  },
+	  "credentialSubject": {
+	    "id": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	    "age": 10,
+	    "name": "Test Create JSON",
+	    "salary": 50000,
+	    "department": "Engineering"
+	  }
+	}`)
+
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
 	assert.NoError(t, err)
 }
 
