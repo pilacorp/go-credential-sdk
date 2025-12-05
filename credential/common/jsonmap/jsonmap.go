@@ -1,9 +1,11 @@
 package jsonmap
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
@@ -165,6 +167,9 @@ func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 	if pv, ok := proofMap["proofValue"].(string); ok {
 		result.ProofValue = pv
 	}
+	if jws, ok := proofMap["jws"].(string); ok {
+		result.JWS = jws
+	}
 	if pv, ok := proofMap["cryptosuite"].(string); ok {
 		result.Cryptosuite = pv
 	}
@@ -205,8 +210,7 @@ func (m *JSONMap) VerifyProof(didBaseURL string) (bool, error) {
 
 		return crypto.VerifyJwtProof((*map[string]interface{})(m), publicKey)
 	} else if proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY {
-
-		return m.verifyEcdsaProofLegacy()
+		return m.verifyEcdsaProofLegacy(didBaseURL, &proof)
 	} else if proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019 {
 		resolver := verificationmethod.NewResolver(didBaseURL)
 		publicKey, err := resolver.GetPublicKey(proof.VerificationMethod)
@@ -232,15 +236,27 @@ func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) 
 }
 
 // verifyEcdsaProofLegacy verifies an ECDSA-signed JSONMap.
-// This function support lecacy VC for compatibility
-func (m *JSONMap) verifyEcdsaProofLegacy() (bool, error) {
+// This function support legacy VC for compatibility
+// It handles both proofValue (JSON-LD signature) and jws (JWT signature) formats
+func (m *JSONMap) verifyEcdsaProofLegacy(didBaseURL string, proof *dto.Proof) (bool, error) {
+	proofMap, ok := (*m)["proof"].(map[string]interface{})
+	if !ok {
+		return false, fmt.Errorf("proof is missing or invalid in the request")
+	}
 
-	proofValue, ok := (*m)["proof"].(map[string]interface{})["proofValue"].(string)
+	// Check if proof has jws field (JWT-based signature)
+	if jws, ok := proofMap["jws"].(string); ok && jws != "" {
+		return m.verifyJWS(jws, didBaseURL, proof)
+	}
+
+	// Otherwise, check for proofValue (JSON-LD signature)
+	proofValue, ok := proofMap["proofValue"].(string)
 	if !ok || proofValue == "" {
 		return false, fmt.Errorf("proof value is missing or invalid in the request")
 	}
-	publicKeyHex, ok := (*m)["proof"].(map[string]interface{})["verificationMethod"].(string)
-	if !ok || proofValue == "" {
+
+	verificationMethod, ok := proofMap["verificationMethod"].(string)
+	if !ok || verificationMethod == "" {
 		return false, fmt.Errorf("proof verificationMethod is missing or invalid in the request")
 	}
 
@@ -262,6 +278,18 @@ func (m *JSONMap) verifyEcdsaProofLegacy() (bool, error) {
 		return false, fmt.Errorf("failed to marshal request to JSON: %w", err)
 	}
 
+	// Resolve public key from verification method
+	resolver := verificationmethod.NewResolver(didBaseURL)
+	publicKeyHex, err := resolver.GetPublicKey(verificationMethod)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve public key: %w", err)
+	}
+
+	// Ensure public key has 0x prefix for KeyToBytes
+	if !strings.HasPrefix(publicKeyHex, "0x") {
+		publicKeyHex = "0x" + publicKeyHex
+	}
+
 	pubBytes, err := crypto.KeyToBytes(publicKeyHex)
 	if err != nil {
 		return false, fmt.Errorf("failed to convert public key to bytes: %w", err)
@@ -270,4 +298,57 @@ func (m *JSONMap) verifyEcdsaProofLegacy() (bool, error) {
 	verified := crypto.VerifyJSONSignature(pubBytes, message, signatureBytes)
 
 	return verified, nil
+}
+
+// verifyJWS verifies a JWS (JSON Web Signature) token in EcdsaSecp256k1Signature2019 proof
+func (m *JSONMap) verifyJWS(jwsToken string, didBaseURL string, proof *dto.Proof) (bool, error) {
+	if proof.VerificationMethod == "" {
+		return false, fmt.Errorf("verificationMethod is required for JWS verification")
+	}
+
+	// Extract signature and message from JWS token
+	signature, message, err := getSignatureAndMessageFromJWS(jwsToken)
+	if err != nil {
+		return false, fmt.Errorf("failed to extract signature and message from JWS: %w", err)
+	}
+
+	// Resolve public key from verification method
+	resolver := verificationmethod.NewResolver(didBaseURL)
+	publicKeyHex, err := resolver.GetDefaultPublicKey(proof.VerificationMethod)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve public key: %w", err)
+	}
+
+	// Ensure public key has 0x prefix for KeyToBytes
+	if !strings.HasPrefix(publicKeyHex, "0x") {
+		publicKeyHex = "0x" + publicKeyHex
+	}
+
+	pubBytes, err := crypto.KeyToBytes(publicKeyHex)
+	if err != nil {
+		return false, fmt.Errorf("failed to convert public key to bytes: %w", err)
+	}
+
+	verified := crypto.VerifySignature(pubBytes, message, signature)
+
+	return verified, nil
+}
+
+// getSignatureAndMessageFromJWS extracts signature and message from a JWS token
+func getSignatureAndMessageFromJWS(jwsToken string) ([]byte, []byte, error) {
+	parts := strings.Split(jwsToken, ".")
+	if len(parts) != 3 {
+		return nil, nil, fmt.Errorf("invalid JWS format: expected 3 parts, got %d", len(parts))
+	}
+
+	headerB64, payloadB64, signatureB64 := parts[0], parts[1], parts[2]
+
+	signature, err := base64.RawURLEncoding.DecodeString(signatureB64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	message := []byte(headerB64 + "." + payloadB64)
+
+	return signature, message, nil
 }
