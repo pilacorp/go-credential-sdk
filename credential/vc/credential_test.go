@@ -313,6 +313,39 @@ func TestParseDates(t *testing.T) {
 	assert.Equal(t, fixedTime.Add(24*time.Hour), contents.ValidUntil)
 }
 
+func TestCheckExpiration_ValidWindow(t *testing.T) {
+	now := time.Now()
+	credential := CredentialData{
+		"validFrom":  now.Add(-1 * time.Hour).Format(time.RFC3339),
+		"validUntil": now.Add(1 * time.Hour).Format(time.RFC3339),
+	}
+
+	err := checkExpiration(credential)
+	assert.NoError(t, err)
+}
+
+func TestCheckExpiration_NotValidYet(t *testing.T) {
+	now := time.Now()
+	credential := CredentialData{
+		"validFrom": now.Add(1 * time.Hour).Format(time.RFC3339),
+	}
+
+	err := checkExpiration(credential)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "credential is not valid yet")
+}
+
+func TestCheckExpiration_Expired(t *testing.T) {
+	now := time.Now()
+	credential := CredentialData{
+		"validUntil": now.Add(-1 * time.Hour).Format(time.RFC3339),
+	}
+
+	err := checkExpiration(credential)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "credential is expired")
+}
+
 func TestParseSubject(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -90,6 +90,7 @@ type CredentialOpt func(*credentialOptions)
 type credentialOptions struct {
 	isValidateSchema      bool
 	isVerifyProof         bool
+	isCheckExpiration     bool
 	isCheckRevocation     bool
 	didBaseURL            string
 	verificationMethodKey string
@@ -123,6 +124,10 @@ func WithVerifyProof() CredentialOpt {
 	}
 }
 
+// WithCheckExpiration enables expiration check during credential parsing.
+func WithCheckExpiration() CredentialOpt {
+	return func(c *credentialOptions) {
+		c.isCheckExpiration = true
 // WithCheckRevocation enables revocation check during credential parsing.
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {
@@ -135,6 +140,7 @@ func getOptions(opts ...CredentialOpt) *credentialOptions {
 	options := &credentialOptions{
 		isValidateSchema:      false,
 		isVerifyProof:         false,
+		isCheckExpiration:     false,
 		isCheckRevocation:     false,
 		didBaseURL:            config.BaseURL,
 		verificationMethodKey: "key-1",

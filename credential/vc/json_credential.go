@@ -113,6 +113,9 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		}
 	}
 
+	if options.isCheckExpiration {
+		if err := checkExpiration(e.credentialData); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
 	if options.isCheckRevocation {
 		if err := checkRevocation(e.credentialData); err != nil {
 			return fmt.Errorf("failed to check revocation: %w", err)
