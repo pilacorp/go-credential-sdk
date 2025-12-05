@@ -1,13 +1,12 @@
 package vc
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-
-	"encoding/json"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
@@ -440,6 +439,156 @@ func TestParseStringField(t *testing.T) {
 	_, err = parseStringField(CredentialData{"id": 123}, "id")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "field \"id\" must be a string")
+}
+
+func TestCheckRevocation_RevokedJSONCredential(t *testing.T) {
+	credentialJSON := []byte(`{
+	  "id": "did:nda:testnet:95c00e62-76ff-46a1-b2bc-f1d3b80d0aa9",
+	  "type": "VerifiableCredential",
+	  "proof": {
+	    "type": "DataIntegrityProof",
+	    "created": "2025-12-03T14:31:25Z",
+	    "proofValue": "e693cea7102b8edee4ccc12a48682fe2836a28c52cc6936600ec39e962cec89b729ccf98d96c2124ee23cee9cdacaef0c31565a98a09b3a5087bb0c7cdf1df48",
+	    "cryptosuite": "ecdsa-rdfc-2019",
+	    "proofPurpose": "assertionMethod",
+	    "verificationMethod": "did:nda:testnet:0x222137fb0099115bd0b0446c4d66c81ccf41e0bb#key-1"
+	  },
+	  "issuer": "did:nda:testnet:0x222137fb0099115bd0b0446c4d66c81ccf41e0bb",
+	  "@context": [
+	    "https://www.w3.org/ns/credentials/v2",
+	    "https://www.w3.org/ns/credentials/examples/v2"
+	  ],
+	  "validFrom": "2025-08-29T09:01:51Z",
+	  "validUntil": "2026-08-29T09:01:51Z",
+	  "credentialSchema": {
+	    "id": "https://auth-dev.pila.vn/api/v1/schemas/71a14ce1-c8fa-4df4-960b-e18bb6282cee",
+	    "type": "JsonSchema"
+	  },
+	  "credentialStatus": {
+	    "id": "did:nda:testnet:0x222137fb0099115bd0b0446c4d66c81ccf41e0bb/credentials/status/0#18",
+	    "type": "BitstringStatusListEntry",
+	    "statusPurpose": "revocation",
+	    "statusListIndex": "18",
+	    "statusListCredential": "https://auth-dev.pila.vn/api/v1/issuers/did:nda:testnet:0x222137fb0099115bd0b0446c4d66c81ccf41e0bb/credentials/status/0"
+	  },
+	  "credentialSubject": {
+	    "id": "did:nda:testnet:0x222137fb0099115bd0b0446c4d66c81ccf41e0bb",
+	    "age": 10,
+	    "name": "Test Create",
+	    "salary": 50000,
+	    "department": "Engineering"
+	  }
+	}`)
+
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "credential is revoked")
+}
+
+func TestCheckRevocation_NotRevokedJSONCredential(t *testing.T) {
+	credentialJSON := []byte(`{
+	  "id": "did:nda:testnet:593c544e-6df8-4bfa-bc61-c45b53b07b03",
+	  "type": "VerifiableCredential",
+	  "issuer": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	  "@context": [
+	    "https://www.w3.org/ns/credentials/v2",
+	    "https://www.w3.org/ns/credentials/examples/v2"
+	  ],
+	  "validFrom": "2025-09-25T07:57:04Z",
+	  "validUntil": "2026-09-25T07:57:04Z",
+	  "credentialSchema": {
+	    "id": "https://auth-dev.pila.vn/api/v1/schemas/63a39bc9-b52b-42cb-be7e-28c096d93174",
+	    "type": "JsonSchema"
+	  },
+	  "credentialStatus": {
+	    "id": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212/credentials/status/260#790",
+	    "type": "BitstringStatusListEntry",
+	    "statusPurpose": "revocation",
+	    "statusListIndex": "790",
+	    "statusListCredential": "https://auth-dev.pila.vn/api/v1/issuers/did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212/credentials/status/260"
+	  },
+	  "credentialSubject": {
+	    "id": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	    "age": 10,
+	    "name": "Test Create JSON",
+	    "salary": 50000,
+	    "department": "Engineering"
+	  }
+	}`)
+
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
+	assert.NoError(t, err)
+}
+
+func TestCheckRevocation_EmptyStatusJSONCredential(t *testing.T) {
+	credentialJSON := []byte(`{
+	  "id": "did:nda:testnet:593c544e-6df8-4bfa-bc61-c45b53b07b03",
+	  "type": "VerifiableCredential",
+	  "issuer": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	  "@context": [
+	    "https://www.w3.org/ns/credentials/v2",
+	    "https://www.w3.org/ns/credentials/examples/v2"
+	  ],
+	  "validFrom": "2025-09-25T07:57:04Z",
+	  "validUntil": "2026-09-25T07:57:04Z",
+	  "credentialSchema": {
+	    "id": "https://auth-dev.pila.vn/api/v1/schemas/63a39bc9-b52b-42cb-be7e-28c096d93174",
+	    "type": "JsonSchema"
+	  },
+	  "credentialStatus": {},
+	  "credentialSubject": {
+	    "id": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	    "age": 10,
+	    "name": "Test Create JSON",
+	    "salary": 50000,
+	    "department": "Engineering"
+	  }
+	}`)
+
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
+	assert.NoError(t, err)
+}
+
+func TestCheckRevocation_NoStatusFieldJSONCredential(t *testing.T) {
+	credentialJSON := []byte(`{
+	  "id": "did:nda:testnet:593c544e-6df8-4bfa-bc61-c45b53b07b03",
+	  "type": "VerifiableCredential",
+	  "issuer": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	  "@context": [
+	    "https://www.w3.org/ns/credentials/v2",
+	    "https://www.w3.org/ns/credentials/examples/v2"
+	  ],
+	  "validFrom": "2025-09-25T07:57:04Z",
+	  "validUntil": "2026-09-25T07:57:04Z",
+	  "credentialSchema": {
+	    "id": "https://auth-dev.pila.vn/api/v1/schemas/63a39bc9-b52b-42cb-be7e-28c096d93174",
+	    "type": "JsonSchema"
+	  },
+	  "credentialSubject": {
+	    "id": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	    "age": 10,
+	    "name": "Test Create JSON",
+	    "salary": 50000,
+	    "department": "Engineering"
+	  }
+	}`)
+
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
+	assert.NoError(t, err)
+}
+
+func TestCheckRevocation_RevokedJWTCredential(t *testing.T) {
+	revokedJWT := "eyJhbGciOiJFUzI1NksiLCJraWQiOiJkaWQ6bmRhOnRlc3RuZXQ6MHgyMjIxMzdmYjAwOTkxMTViZDBiMDQ0NmM0ZDY2YzgxY2NmNDFlMGJiI2tleS0xIiwidHlwIjoiSldUIn0.eyJleHAiOjE3ODc5OTQxMTEsImlhdCI6MTc1NjQ1ODExMSwiaXNzIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYiIsImp0aSI6ImRpZDpuZGE6dGVzdG5ldDpjOGFjZjdmNC05ZDQzLTRhYjctYWRhOC03NjZmYmU3NTA2ZDMiLCJuYmYiOjE3NTY0NTgxMTEsInN1YiI6ImRpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIiLCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvbnMvY3JlZGVudGlhbHMvdjIiLCJodHRwczovL3d3dy53My5vcmcvbnMvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjIiXSwiY3JlZGVudGlhbFNjaGVtYSI6eyJpZCI6Imh0dHBzOi8vYXV0aC1kZXYucGlsYS52bi9hcGkvdjEvc2NoZW1hcy83MWExNGNlMS1jOGZhLTRkZjQtOTYwYi1lMThiYjYyODJjZWUiLCJ0eXBlIjoiSnNvblNjaGVtYSJ9LCJjcmVkZW50aWFsU3RhdHVzIjp7ImlkIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYi9jcmVkZW50aWFscy9zdGF0dXMvMCMxNSIsInN0YXR1c0xpc3RDcmVkZW50aWFsIjoiaHR0cHM6Ly9hdXRoLWRldi5waWxhLnZuL2FwaS92MS9pc3N1ZXJzL2RpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIvY3JlZGVudGlhbHMvc3RhdHVzLzAiLCJzdGF0dXNMaXN0SW5kZXgiOiIxNSIsInN0YXR1c1B1cnBvc2UiOiJyZXZvY2F0aW9uIiwidHlwZSI6IkJpdHN0cmluZ1N0YXR1c0xpc3RFbnRyeSJ9LCJjcmVkZW50aWFsU3ViamVjdCI6eyJhZ2UiOjEwLCJkZXBhcnRtZW50IjoiRW5naW5lZXJpbmciLCJpZCI6ImRpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIiLCJuYW1lIjoiVGVzdCBDcmVhdGUiLCJzYWxhcnkiOjUwMDAwfSwiaWQiOiJkaWQ6bmRhOnRlc3RuZXQ6YzhhY2Y3ZjQtOWQ0My00YWI3LWFkYTgtNzY2ZmJlNzUwNmQzIiwiaXNzdWVyIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYiIsInR5cGUiOiJWZXJpZmlhYmxlQ3JlZGVudGlhbCIsInZhbGlkRnJvbSI6IjIwMjUtMDgtMjlUMDk6MDE6NTFaIiwidmFsaWRVbnRpbCI6IjIwMjYtMDgtMjlUMDk6MDE6NTFaIn19.P5ulGrKwY9KlxwqSN3Bs6aTQSGqS4z--brmJp3XtcTomXe8mse7gD3MHZF8C74V9zvgXV6RIM0vFzqdxzVUfnQ"
+
+	_, err := ParseCredential([]byte(revokedJWT), WithCheckRevocation())
+	assert.Error(t, err)
+}
+
+func TestCheckRevocation_NotRevokedJWTCredential(t *testing.T) {
+	notRevokedJWT := "eyJhbGciOiJFUzI1NksiLCJraWQiOiJkaWQ6bmRhOnRlc3RuZXQ6MHgyMjIxMzdmYjAwOTkxMTViZDBiMDQ0NmM0ZDY2YzgxY2NmNDFlMGJiI2tleS0xIiwidHlwIjoiSldUIn0.eyJleHAiOjE3ODc5OTQxMTEsImlhdCI6MTc1NjQ1ODExMSwiaXNzIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYiIsImp0aSI6ImRpZDpuZGE6dGVzdG5ldDpjMGExNDU3YS1kYTdmLTRlYTQtOWZmOC0xYTgxMDFhZjViMjAiLCJuYmYiOjE3NTY0NTgxMTEsInN1YiI6ImRpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIiLCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvbnMvY3JlZGVudGlhbHMvdjIiLCJodHRwczovL3d3dy53My5vcmcvbnMvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjIiXSwiY3JlZGVudGlhbFNjaGVtYSI6eyJpZCI6Imh0dHBzOi8vYXV0aC1kZXYucGlsYS52bi9hcGkvdjEvc2NoZW1hcy83MWExNGNlMS1jOGZhLTRkZjQtOTYwYi1lMThiYjYyODJjZWUiLCJ0eXBlIjoiSnNvblNjaGVtYSJ9LCJjcmVkZW50aWFsU3RhdHVzIjp7ImlkIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYi9jcmVkZW50aWFscy9zdGF0dXMvMCMxNyIsInN0YXR1c0xpc3RDcmVkZW50aWFsIjoiaHR0cHM6Ly9hdXRoLWRldi5waWxhLnZuL2FwaS92MS9pc3N1ZXJzL2RpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIvY3JlZGVudGlhbHMvc3RhdHVzLzAiLCJzdGF0dXNMaXN0SW5kZXgiOiIxNyIsInN0YXR1c1B1cnBvc2UiOiJyZXZvY2F0aW9uIiwidHlwZSI6IkJpdHN0cmluZ1N0YXR1c0xpc3RFbnRyeSJ9LCJjcmVkZW50aWFsU3ViamVjdCI6eyJhZ2UiOjEwLCJkZXBhcnRtZW50IjoiRW5naW5lZXJpbmciLCJpZCI6ImRpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIiLCJuYW1lIjoiVGVzdCBDcmVhdGUiLCJzYWxhcnkiOjUwMDAwfSwiaWQiOiJkaWQ6bmRhOnRlc3RuZXQ6YzBhMTQ1N2EtZGE3Zi00ZWE0LTlmZjgtMWE4MTAxYWY1YjIwIiwiaXNzdWVyIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYiIsInR5cGUiOiJWZXJpZmlhYmxlQ3JlZGVudGlhbCIsInZhbGlkRnJvbSI6IjIwMjUtMDgtMjlUMDk6MDE6NTFaIiwidmFsaWRVbnRpbCI6IjIwMjYtMDgtMjlUMDk6MDE6NTFaIn19.95u0K9WTZdmAr-s7jCTppk75VqpM-vyMZVARhopZBoE418g4T3tT_1UhNZMrgFmPgvEqvLl1xJ-ZvHXqpwMKqw"
+
+	_, err := ParseCredential([]byte(notRevokedJWT), WithCheckRevocation())
+	assert.NoError(t, err)
 }
 
 func TestCreateCredentialJWT(t *testing.T) {
