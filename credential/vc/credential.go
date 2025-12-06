@@ -128,6 +128,9 @@ func WithVerifyProof() CredentialOpt {
 func WithCheckExpiration() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckExpiration = true
+	}
+}
+
 // WithCheckRevocation enables revocation check during credential parsing.
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {

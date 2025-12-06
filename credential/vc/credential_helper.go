@@ -487,6 +487,11 @@ func checkExpiration(c CredentialData) error {
 		if time.Now().After(validUntilTime) {
 			return fmt.Errorf("credential is expired")
 		}
+	}
+
+	return nil
+}
+
 // checkRevocation checks that credentialStatus is present and, if using a
 // status list, verifies the credential is not revoked.
 func checkRevocation(c CredentialData) error {
