@@ -3,10 +3,58 @@ package vp
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
+
+// parseStringField extracts a string field from PresentationData.
+func parseStringField(obj PresentationData, fieldName string) (string, error) {
+	if value, ok := obj[fieldName]; ok {
+		if str, ok := value.(string); ok {
+			return str, nil
+		}
+		return "", fmt.Errorf("field %q must be a string, got %T", fieldName, value)
+	}
+
+	return "", nil
+}
+
+// checkExpiration checks if the presentation is within its valid time window.
+func checkExpiration(p PresentationData) error {
+	// Check if the presentation is valid from a specific time
+	validFrom, err := parseStringField(p, "validFrom")
+	if err != nil {
+		return fmt.Errorf("failed to parse validFrom: %w", err)
+	}
+	if validFrom != "" {
+		validFromTime, err := time.Parse(time.RFC3339, validFrom)
+		if err != nil {
+			return fmt.Errorf("failed to parse validFrom: %w", err)
+		}
+		if time.Now().Before(validFromTime) {
+			return fmt.Errorf("presentation is not valid yet")
+		}
+	}
+
+	// Check if the presentation is valid until a specific time
+	validUntil, err := parseStringField(p, "validUntil")
+	if err != nil {
+		return fmt.Errorf("failed to parse validUntil: %w", err)
+	}
+	if validUntil != "" {
+		validUntilTime, err := time.Parse(time.RFC3339, validUntil)
+		if err != nil {
+			return fmt.Errorf("failed to parse validUntil: %w", err)
+		}
+		if time.Now().After(validUntilTime) {
+			return fmt.Errorf("presentation is expired")
+		}
+	}
+
+	return nil
+}
 
 // verifyCredentials verifies the signatures of a slice of Verifiable Credentials.
 func verifyCredentials(jsonPresentation PresentationData) error {
@@ -61,6 +109,12 @@ func serializePresentationContents(vpc *PresentationContents) (PresentationData,
 	}
 	if vpc.Holder != "" {
 		vpJSON["holder"] = vpc.Holder
+	}
+	if !vpc.ValidFrom.IsZero() {
+		vpJSON["validFrom"] = vpc.ValidFrom.Format(time.RFC3339)
+	}
+	if !vpc.ValidUntil.IsZero() {
+		vpJSON["validUntil"] = vpc.ValidUntil.Format(time.RFC3339)
 	}
 	if len(vpc.VerifiableCredentials) > 0 {
 		// Serialize credentials for presentation storage
@@ -131,6 +185,27 @@ func parseHolder(vp PresentationData, contents *PresentationContents) error {
 	return nil
 }
 
+// parseDates extracts validFrom and validUntil fields from a Presentation.
+func parseDates(vp PresentationData, contents *PresentationContents) error {
+	if validFrom, ok := vp["validFrom"].(string); ok {
+		t, err := time.Parse(time.RFC3339, validFrom)
+		if err != nil {
+			return fmt.Errorf("failed to parse validFrom: %w", err)
+		}
+		contents.ValidFrom = t
+	}
+
+	if validUntil, ok := vp["validUntil"].(string); ok {
+		t, err := time.Parse(time.RFC3339, validUntil)
+		if err != nil {
+			return fmt.Errorf("failed to parse validUntil: %w", err)
+		}
+		contents.ValidUntil = t
+	}
+
+	return nil
+}
+
 // parseVerifiableCredentials extracts the verifiableCredential field from a Presentation.
 func parseVerifiableCredentials(vp PresentationData, contents *PresentationContents) error {
 	vcs, ok := vp["verifiableCredential"].([]interface{})
@@ -182,6 +257,7 @@ func parsePresentationContents(vp PresentationData) (PresentationContents, error
 		parseID,
 		parseTypes,
 		parseHolder,
+		parseDates,
 		parseVerifiableCredentials,
 		parseProofs,
 	}

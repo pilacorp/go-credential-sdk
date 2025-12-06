@@ -1,6 +1,7 @@
 package vp_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -1055,4 +1056,378 @@ func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Cr
 	}
 
 	return jsonVC, jwtVC
+}
+
+func TestJWTPresentationWithTimeFields(t *testing.T) {
+	vp.Init("https://auth-dev.pila.vn/api/v1/did")
+	vc.Init("https://auth-dev.pila.vn/api/v1/did")
+
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+
+	// Create test credentials
+	vcList := GenerateVCTest()
+	if vcList == nil {
+		t.Fatal("Failed to generate test credentials")
+	}
+
+	// Fixed time for testing
+	fixedTime := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
+	validFrom := fixedTime
+	validUntil := fixedTime.Add(24 * time.Hour * 30) // 30 days later
+
+	presentationContents := vp.PresentationContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+		},
+		ID:                    "urn:uuid:test-presentation-123",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                holderDID,
+		ValidFrom:             validFrom,
+		ValidUntil:            validUntil,
+		VerifiableCredentials: vcList,
+	}
+
+	// Create JWT presentation
+	presentation, err := vp.NewJWTPresentation(presentationContents)
+	if err != nil {
+		t.Fatalf("Failed to create JWT presentation: %v", err)
+	}
+
+	// Add proof
+	err = presentation.AddProof(privateKeyHex)
+	if err != nil {
+		t.Fatalf("Failed to add proof: %v", err)
+	}
+
+	// Serialize to get JWT token
+	serialized, err := presentation.Serialize()
+	if err != nil {
+		t.Fatalf("Failed to serialize presentation: %v", err)
+	}
+
+	jwtToken, ok := serialized.(string)
+	if !ok {
+		t.Fatal("Expected JWT presentation to serialize to string")
+	}
+
+	// Decode JWT payload to verify claims
+	parts := strings.Split(jwtToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("JWT should have 3 parts, got %d", len(parts))
+	}
+
+	// Decode payload (second part)
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("Failed to decode payload: %v", err)
+	}
+
+	var payloadMap map[string]interface{}
+	err = json.Unmarshal(payloadBytes, &payloadMap)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal payload: %v", err)
+	}
+
+	// Verify JWT claims
+	if iss, ok := payloadMap["iss"].(string); !ok || iss != holderDID {
+		t.Errorf("Expected iss claim to be %s, got %v", holderDID, payloadMap["iss"])
+	}
+
+	if sub, ok := payloadMap["sub"].(string); !ok || sub != holderDID {
+		t.Errorf("Expected sub claim to be %s, got %v", holderDID, payloadMap["sub"])
+	}
+
+	if jti, ok := payloadMap["jti"].(string); !ok || jti != presentationContents.ID {
+		t.Errorf("Expected jti claim to be %s, got %v", presentationContents.ID, payloadMap["jti"])
+	}
+
+	// Verify exp claim (expiration time)
+	exp, ok := payloadMap["exp"].(float64)
+	if !ok {
+		t.Errorf("Expected exp claim to be a number, got %T", payloadMap["exp"])
+	} else {
+		expectedExp := float64(validUntil.Unix())
+		if exp != expectedExp {
+			t.Errorf("Expected exp claim to be %f, got %f", expectedExp, exp)
+		}
+	}
+
+	// Verify iat claim (issued at)
+	iat, ok := payloadMap["iat"].(float64)
+	if !ok {
+		t.Errorf("Expected iat claim to be a number, got %T", payloadMap["iat"])
+	} else {
+		expectedIat := float64(validFrom.Unix())
+		if iat != expectedIat {
+			t.Errorf("Expected iat claim to be %f, got %f", expectedIat, iat)
+		}
+	}
+
+	// Verify nbf claim (not before)
+	nbf, ok := payloadMap["nbf"].(float64)
+	if !ok {
+		t.Errorf("Expected nbf claim to be a number, got %T", payloadMap["nbf"])
+	} else {
+		expectedNbf := float64(validFrom.Unix())
+		if nbf != expectedNbf {
+			t.Errorf("Expected nbf claim to be %f, got %f", expectedNbf, nbf)
+		}
+	}
+
+	// Verify vp claim exists
+	vpData, ok := payloadMap["vp"]
+	if !ok {
+		t.Fatal("Expected vp claim in JWT payload")
+	}
+
+	vpMap, ok := vpData.(map[string]interface{})
+	if !ok {
+		t.Fatal("Expected vp claim to be a map")
+	}
+
+	// Verify vp contains the presentation data
+	if vpID, ok := vpMap["id"].(string); !ok || vpID != presentationContents.ID {
+		t.Errorf("Expected vp.id to be %s, got %v", presentationContents.ID, vpMap["id"])
+	}
+}
+
+func TestJWTPresentationWithoutTimeFields(t *testing.T) {
+	vp.Init("https://auth-dev.pila.vn/api/v1/did")
+	vc.Init("https://auth-dev.pila.vn/api/v1/did")
+
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+
+	// Create test credentials
+	vcList := GenerateVCTest()
+	if vcList == nil {
+		t.Fatal("Failed to generate test credentials")
+	}
+
+	// Presentation without time fields (zero values)
+	presentationContents := vp.PresentationContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+		},
+		ID:                    "urn:uuid:test-presentation-no-time",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                holderDID,
+		VerifiableCredentials: vcList,
+		// ValidFrom and ValidUntil are zero values (time.Time{})
+	}
+
+	// Create JWT presentation
+	presentation, err := vp.NewJWTPresentation(presentationContents)
+	if err != nil {
+		t.Fatalf("Failed to create JWT presentation: %v", err)
+	}
+
+	// Add proof
+	err = presentation.AddProof(privateKeyHex)
+	if err != nil {
+		t.Fatalf("Failed to add proof: %v", err)
+	}
+
+	// Serialize to get JWT token
+	serialized, err := presentation.Serialize()
+	if err != nil {
+		t.Fatalf("Failed to serialize presentation: %v", err)
+	}
+
+	jwtToken, ok := serialized.(string)
+	if !ok {
+		t.Fatal("Expected JWT presentation to serialize to string")
+	}
+
+	// Decode JWT payload
+	parts := strings.Split(jwtToken, ".")
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("Failed to decode payload: %v", err)
+	}
+
+	var payloadMap map[string]interface{}
+	err = json.Unmarshal(payloadBytes, &payloadMap)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal payload: %v", err)
+	}
+
+	// Verify that exp, iat, nbf are NOT present when time fields are zero
+	if _, exists := payloadMap["exp"]; exists {
+		t.Error("Expected exp claim to be absent when ValidUntil is zero")
+	}
+
+	if _, exists := payloadMap["iat"]; exists {
+		t.Error("Expected iat claim to be absent when ValidFrom is zero")
+	}
+
+	if _, exists := payloadMap["nbf"]; exists {
+		t.Error("Expected nbf claim to be absent when ValidFrom is zero")
+	}
+
+	// But other claims should still be present
+	if _, exists := payloadMap["iss"]; !exists {
+		t.Error("Expected iss claim to be present")
+	}
+
+	if _, exists := payloadMap["jti"]; !exists {
+		t.Error("Expected jti claim to be present")
+	}
+}
+
+func TestParsePresentationWithTimeFields(t *testing.T) {
+	vp.Init("https://auth-dev.pila.vn/api/v1/did")
+	vc.Init("https://auth-dev.pila.vn/api/v1/did")
+
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+
+	// Create test credentials
+	vcList := GenerateVCTest()
+	if vcList == nil {
+		t.Fatal("Failed to generate test credentials")
+	}
+
+	// Fixed time for testing
+	fixedTime := time.Date(2025, 6, 20, 14, 0, 0, 0, time.UTC)
+	validFrom := fixedTime
+	validUntil := fixedTime.Add(24 * time.Hour * 60) // 60 days later
+
+	presentationContents := vp.PresentationContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+		},
+		ID:                    "urn:uuid:test-parse-time",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                holderDID,
+		ValidFrom:             validFrom,
+		ValidUntil:            validUntil,
+		VerifiableCredentials: vcList,
+	}
+
+	// Create JWT presentation
+	presentation, err := vp.NewJWTPresentation(presentationContents)
+	if err != nil {
+		t.Fatalf("Failed to create JWT presentation: %v", err)
+	}
+
+	// Add proof
+	err = presentation.AddProof(privateKeyHex)
+	if err != nil {
+		t.Fatalf("Failed to add proof: %v", err)
+	}
+
+	// Serialize to get JWT token
+	serialized, err := presentation.Serialize()
+	if err != nil {
+		t.Fatalf("Failed to serialize presentation: %v", err)
+	}
+
+	jwtToken := serialized.(string)
+
+	// Parse the JWT presentation back
+	parsedPresentation, err := vp.ParsePresentation([]byte(jwtToken))
+	if err != nil {
+		t.Fatalf("Failed to parse JWT presentation: %v", err)
+	}
+
+	if parsedPresentation == nil {
+		t.Fatal("Parsed presentation should not be nil")
+	}
+
+	// Get contents to verify time fields are preserved in the vp claim
+	contents, err := parsedPresentation.GetContents()
+	if err != nil {
+		t.Fatalf("Failed to get contents: %v", err)
+	}
+
+	var vpMap map[string]interface{}
+	err = json.Unmarshal(contents, &vpMap)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal contents: %v", err)
+	}
+
+	// Verify validFrom and validUntil are in the vp claim
+	if validFromStr, ok := vpMap["validFrom"].(string); ok {
+		parsedValidFrom, err := time.Parse(time.RFC3339, validFromStr)
+		if err != nil {
+			t.Fatalf("Failed to parse validFrom: %v", err)
+		}
+		if !parsedValidFrom.Equal(validFrom) {
+			t.Errorf("Expected validFrom to be %v, got %v", validFrom, parsedValidFrom)
+		}
+	} else {
+		t.Error("Expected validFrom field in vp claim")
+	}
+
+	if validUntilStr, ok := vpMap["validUntil"].(string); ok {
+		parsedValidUntil, err := time.Parse(time.RFC3339, validUntilStr)
+		if err != nil {
+			t.Fatalf("Failed to parse validUntil: %v", err)
+		}
+		if !parsedValidUntil.Equal(validUntil) {
+			t.Errorf("Expected validUntil to be %v, got %v", validUntil, parsedValidUntil)
+		}
+	} else {
+		t.Error("Expected validUntil field in vp claim")
+	}
+}
+
+func TestParseDatesInPresentation(t *testing.T) {
+	fixedTime, _ := time.Parse(time.RFC3339, "2025-08-05T10:00:00Z")
+	expectedValidUntil := fixedTime.Add(24 * time.Hour)
+
+	// Create a JSON presentation with time fields
+	jsonPresentation := `{
+		"@context": ["https://www.w3.org/ns/credentials/v2"],
+		"type": "VerifiablePresentation",
+		"id": "urn:uuid:test",
+		"holder": "did:example:holder",
+		"validFrom": "` + fixedTime.Format(time.RFC3339) + `",
+		"validUntil": "` + expectedValidUntil.Format(time.RFC3339) + `"
+	}`
+
+	contents, err := vp.ParsePresentation([]byte(jsonPresentation))
+	if err != nil {
+		t.Fatalf("Failed to parse presentation: %v", err)
+	}
+
+	// Get contents to verify dates were parsed
+	contentsBytes, err := contents.GetContents()
+	if err != nil {
+		t.Fatalf("Failed to get contents: %v", err)
+	}
+
+	var vpMap map[string]interface{}
+	err = json.Unmarshal(contentsBytes, &vpMap)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal contents: %v", err)
+	}
+
+	// Verify validFrom
+	if validFromStr, ok := vpMap["validFrom"].(string); ok {
+		parsedValidFrom, err := time.Parse(time.RFC3339, validFromStr)
+		if err != nil {
+			t.Fatalf("Failed to parse validFrom: %v", err)
+		}
+		if !parsedValidFrom.Equal(fixedTime) {
+			t.Errorf("Expected validFrom to be %v, got %v", fixedTime, parsedValidFrom)
+		}
+	} else {
+		t.Error("Expected validFrom field in parsed presentation")
+	}
+
+	// Verify validUntil
+	if validUntilStr, ok := vpMap["validUntil"].(string); ok {
+		parsedValidUntil, err := time.Parse(time.RFC3339, validUntilStr)
+		if err != nil {
+			t.Fatalf("Failed to parse validUntil: %v", err)
+		}
+		if !parsedValidUntil.Equal(expectedValidUntil) {
+			t.Errorf("Expected validUntil to be %v, got %v", expectedValidUntil, parsedValidUntil)
+		}
+	} else {
+		t.Error("Expected validUntil field in parsed presentation")
+	}
 }

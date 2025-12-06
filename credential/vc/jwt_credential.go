@@ -223,6 +223,9 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	if options.isCheckExpiration {
 		if err := checkExpiration(j.payloadData); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+	}
+
 	if options.isCheckRevocation {
 		if err := checkRevocation(j.payloadData); err != nil {
 			return fmt.Errorf("failed to check revocation: %w", err)

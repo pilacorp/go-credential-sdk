@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
+	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
-	"strings"
 )
 
 // Config holds package configuration.
@@ -54,6 +55,8 @@ type PresentationContents struct {
 	ID                    string
 	Types                 []string
 	Holder                string
+	ValidFrom             time.Time // Issuance date
+	ValidUntil            time.Time // Expiration date
 	VerifiableCredentials []vc.Credential
 }
 
@@ -64,6 +67,7 @@ type PresentationOpt func(*presentationOptions)
 type presentationOptions struct {
 	isValidateVC          bool
 	isVerifyProof         bool
+	isCheckExpiration     bool
 	didBaseURL            string
 	verificationMethodKey string
 }
@@ -96,10 +100,18 @@ func WithVerifyProof() PresentationOpt {
 	}
 }
 
+// WithCheckExpiration enables expiration check during presentation parsing.
+func WithCheckExpiration() PresentationOpt {
+	return func(p *presentationOptions) {
+		p.isCheckExpiration = true
+	}
+}
+
 func getOptions(opts ...PresentationOpt) *presentationOptions {
 	options := &presentationOptions{
 		isValidateVC:          false,
 		isVerifyProof:         false,
+		isCheckExpiration:     false,
 		didBaseURL:            config.BaseURL,
 		verificationMethodKey: "key-1",
 	}

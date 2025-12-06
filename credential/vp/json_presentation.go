@@ -111,6 +111,12 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		}
 	}
 
+	if options.isCheckExpiration {
+		if err := checkExpiration(PresentationData(e.presentationData)); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+	}
+
 	if options.isVerifyProof {
 		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(options.didBaseURL)
 		if err != nil {

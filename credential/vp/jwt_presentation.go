@@ -32,6 +32,13 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 		otherClaims["iss"] = vpc.Holder
 		otherClaims["sub"] = vpc.Holder
 	}
+	if !vpc.ValidUntil.IsZero() {
+		otherClaims["exp"] = vpc.ValidUntil.Unix()
+	}
+	if !vpc.ValidFrom.IsZero() {
+		otherClaims["iat"] = vpc.ValidFrom.Unix()
+		otherClaims["nbf"] = vpc.ValidFrom.Unix()
+	}
 	if vpc.ID != "" {
 		otherClaims["jti"] = vpc.ID
 	}
@@ -205,6 +212,12 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 	if options.isValidateVC {
 		if err := verifyCredentials(PresentationData(j.payloadData)); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+	}
+
+	if options.isCheckExpiration {
+		if err := checkExpiration(PresentationData(j.payloadData)); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 
