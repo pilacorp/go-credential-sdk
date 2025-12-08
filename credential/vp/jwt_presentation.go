@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
-	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 )
 
@@ -198,8 +197,12 @@ func (j *JWTPresentation) Serialize() (interface{}, error) {
 	}
 }
 
-func (j *JWTPresentation) GetContents() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&j.payloadData).ToJSON()
+func (j *JWTPresentation) GetContents() (*PresentationContents, error) {
+	contents, err := parsePresentationContents(j.payloadData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse presentation contents: %w", err)
+	}
+	return &contents, nil
 }
 
 func (j *JWTPresentation) GetType() string {
