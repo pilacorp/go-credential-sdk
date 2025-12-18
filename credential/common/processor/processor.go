@@ -2,7 +2,10 @@ package processor
 
 import (
 	"crypto/sha256"
+	_ "embed"
+	"encoding/json"
 	"fmt"
+
 	"github.com/piprate/json-gold/ld"
 )
 
@@ -38,13 +41,61 @@ func WithRemoveAllInvalidRDF() ProcessorOpt {
 	}
 }
 
+//go:embed w3c.credential.v2.json
+var w3cCredentialV2Context []byte
+
+//go:embed w3c.credential.examples.v2.json
+var w3cCredentialExamplesV2Context []byte
+
+// Well-known W3C context URLs mapped to their embedded JSON bytes.
+var wellKnownContexts = map[string][]byte{
+	"https://www.w3.org/ns/credentials/v2":                 w3cCredentialV2Context,
+	"https://www.w3.org/ns/credentials/v2.jsonld":          w3cCredentialV2Context,
+	"https://www.w3.org/ns/credentials/examples/v2":        w3cCredentialExamplesV2Context,
+	"https://www.w3.org/ns/credentials/examples/v2.jsonld": w3cCredentialExamplesV2Context,
+}
+
+// localContextDocumentLoader wraps a default loader and checks for local context files first
+type localContextDocumentLoader struct {
+	fallback ld.DocumentLoader
+}
+
+// LoadDocument implements ld.DocumentLoader interface
+func (l *localContextDocumentLoader) LoadDocument(url string) (*ld.RemoteDocument, error) {
+	// Check if this is a well-known context that should be loaded locally
+	if doc := loadLocalContext(url); doc != nil {
+		return doc, nil
+	}
+
+	// Fallback to default loader (network)
+	return l.fallback.LoadDocument(url)
+}
+
+// loadLocalContext attempts to load a context from embedded data.
+func loadLocalContext(url string) *ld.RemoteDocument {
+	data, ok := wellKnownContexts[url]
+	if !ok || len(data) == 0 {
+		return nil
+	}
+
+	var doc map[string]interface{}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+
+	return &ld.RemoteDocument{
+		DocumentURL: url,
+		Document:    doc,
+	}
+}
+
 // defaultDocumentLoader is a shared caching loader to prevent repeated fetches across function calls.
 var defaultDocumentLoader ld.DocumentLoader
 
 func init() {
 	innerLoader := ld.NewDefaultDocumentLoader(nil) // HTTP client
-	defaultDocumentLoader = ld.NewCachingDocumentLoader(innerLoader)
-
+	localLoader := &localContextDocumentLoader{fallback: innerLoader}
+	defaultDocumentLoader = ld.NewCachingDocumentLoader(localLoader)
 }
 
 // CanonicalizeDocument canonicalizes a document using JSON-LD processing.
