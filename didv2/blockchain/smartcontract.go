@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"math/big"
-	"os"
 	"strconv"
 	"strings"
 
@@ -22,7 +21,8 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
-const smc_abi_path = "didv2/blockchain/did-contract/did_registry_smc_abi.json"
+//go:embed did-contract/did_registry_smc_abi.json
+var smcABIJSON []byte
 
 type DIDType uint8
 
@@ -62,23 +62,9 @@ func NewEthereumDIDRegistry(address string, chainID int64) (*EthereumDIDRegistry
 
 	contractAddr := common.HexToAddress(address)
 
-	file, err := os.Open(smc_abi_path)
-	if err != nil {
-		slog.ErrorContext(context.Background(), "Error opening abi file", "error", err)
-		return nil, fmt.Errorf("error opening abi file: %v", err)
-	}
-	defer file.Close()
-
-	// Read file contents
-	data, err := io.ReadAll(file)
-	if err != nil {
-		slog.ErrorContext(context.Background(), "Error reading abi file", "error", err)
-		return nil, fmt.Errorf("error reading abi file: %v", err)
-	}
-
-	// Parse JSON into an array of DIDRegistry
+	// Parse JSON from embedded ABI file
 	var artifact hardhatArtifact
-	err = json.Unmarshal(data, &artifact)
+	err := json.Unmarshal(smcABIJSON, &artifact)
 	if err != nil {
 		slog.ErrorContext(context.Background(), "Error parsing smc abi JSON", "error", err)
 		return nil, fmt.Errorf("error parsing smc abi JSON: %v", err)
