@@ -22,7 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
-const smc_abi_path = "pkg/blockchain/DIDcontract/did_registry_smc_abi.json"
+const smc_abi_path = "did-contract/did_registry_smc_abi.json"
 
 type DIDType uint8
 
