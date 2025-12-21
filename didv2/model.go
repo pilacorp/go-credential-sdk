@@ -1,6 +1,13 @@
 package didv2
 
-import "github.com/pilacorp/go-credential-sdk/didv2/blockchain"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/pilacorp/go-credential-sdk/didv2/blockchain"
+)
 
 // KeyPair represents the generated wallet and DID identifier
 type KeyPair struct {
@@ -22,7 +29,6 @@ type ReGenerateDIDRxRequest struct {
 
 type CreateDID struct {
 	IssuerAddress string                 `json:"issuerAddress"`
-	IssuerPkHex   string                 `json:"issuerPrivateKeyHex"`
 	Type          blockchain.DIDType     `json:"type"`
 	Metadata      map[string]interface{} `json:"metadata"`
 	Hash          string                 `json:"hash"`
@@ -38,6 +44,22 @@ type DIDDocument struct {
 	AssertionMethod    []string               `json:"assertionMethod"`
 	DocumentMetadata   map[string]interface{} `json:"didDocumentMetadata"`
 }
+
+// Hash calculates the Keccak256 hash of a DID document
+func (doc *DIDDocument) Hash() (string, error) {
+	// Marshal document to JSON
+	docJSON, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal DID document: %w", err)
+	}
+
+	// Calculate Keccak256 hash
+	hash := crypto.Keccak256Hash(docJSON)
+
+	// Convert to hex string with 0x prefix
+	return strings.ToLower(hash.Hex()), nil
+}
+
 type VerificationMethod struct {
 	Id           string `json:"id"`
 	Type         string `json:"type"`                   //

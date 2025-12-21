@@ -9,65 +9,98 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/pilacorp/go-credential-sdk/didv2/blockchain"
-	"github.com/pilacorp/go-credential-sdk/didv2/config"
+	"github.com/pilacorp/go-credential-sdk/didv2/signer"
+)
+
+const (
+	defaultChainID    = int64(6789)
+	defaultDIDAddress = "0x0000000000000000000000000000000000018888"
+	defaultMethod     = "did:nda"
 )
 
 // DIDGenerator handles DID generation and transaction creation
 type DIDGenerator struct {
-	config config.Config
+	chainID    int64
+	didAddress string
+	method     string
+	registry   *blockchain.EthereumDIDRegistry
 }
 
-// Option configures a DIDGenerator
-type Option func(*DIDGenerator)
-
-// WithConfig sets the configuration for the DIDGenerator
-func WithConfig(c config.Config) Option {
-	return func(g *DIDGenerator) {
-		g.config = c
-	}
-}
-
-// NewDIDGenerator creates a new DIDGenerator instance with the provided options
-func NewDIDGenerator(options ...Option) *DIDGenerator {
+// NewDIDGenerator creates a new DIDGenerator with default values
+func NewDIDGenerator(chainID int64, didAddress string, method string) (*DIDGenerator, error) {
 	g := &DIDGenerator{
-		config: *config.New(config.Config{}),
+		chainID:    defaultChainID,
+		didAddress: defaultDIDAddress,
+		method:     defaultMethod,
 	}
 
-	for _, opt := range options {
-		opt(g)
+	if chainID != 0 {
+		g.chainID = chainID
+	}
+	if didAddress != "" {
+		g.didAddress = didAddress
+	}
+	if method != "" {
+		g.method = method
 	}
 
-	return g
+	registry, err := blockchain.NewEthereumDIDRegistry(g.didAddress, g.chainID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create registry: %w", err)
+	}
+	g.registry = registry
+
+	return g, nil
 }
 
 // GenerateDID generates a new DID with a newly created key pair
-func (d *DIDGenerator) GenerateDID(ctx context.Context, req CreateDID) (*DID, error) {
-	// Generate a new key pair
+func (d *DIDGenerator) GenerateDID(
+	ctx context.Context,
+	signer signer.Signer,
+	issuerAddress string,
+	didType blockchain.DIDType,
+	hash string,
+	deadline uint,
+	metadata map[string]interface{},
+) (*DID, error) {
+	// 1. Generate a new key pair
 	keyPair, err := d.generateECDSADID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate key pair: %w", err)
 	}
 
-	// Create registry client
-	registry, err := blockchain.NewEthereumDIDRegistry(d.config.DIDAddress, d.config.ChainID)
+	// 2. Generate DID document
+	doc := d.generateDIDDocument(keyPair, didType, hash, metadata)
+
+	// Calculate document hash (TODO: correct the implementation)
+	docHash, err := doc.Hash()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create registry: %w", err)
+		return nil, fmt.Errorf("failed to hash DID document: %w", err)
 	}
 
-	// Create issuer signature
-	signature, err := d.createIssuerSignature(registry, req.IssuerAddress, req.IssuerPkHex, keyPair.Address, req.Hash, req.Type, req.Deadline)
+	// 3. Create payload to sign using document hash
+	payload, err := d.registry.IssueDIDPayload(issuerAddress, keyPair.Address, docHash, didType, deadline)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create issuer signature: %w", err)
+		return nil, fmt.Errorf("failed to create payload: %w", err)
 	}
 
-	// Create DID transaction
-	txResult, err := registry.CreateDIDTx(ctx, signature, req.IssuerAddress, keyPair.PrivateKey, keyPair.Address, req.Hash, req.Type, req.Deadline)
+	// 4. Sign the payload using the signer
+	signatureBytes, err := signer.Sign(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign payload: %w", err)
+	}
+
+	// Convert signature bytes to signature object
+	signature, err := blockchain.BytesToSignature(signatureBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert signature: %w", err)
+	}
+
+	// 5. Create DID transaction
+	txResult, err := d.registry.CreateDIDTx(ctx, signature, issuerAddress, keyPair.PrivateKey, keyPair.Address, docHash, didType, deadline)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DID transaction: %w", err)
 	}
-
-	// Generate DID document
-	doc := d.generateDIDDocument(keyPair, &req)
 
 	return &DID{
 		DID: keyPair.Identifier,
@@ -91,7 +124,7 @@ func (d *DIDGenerator) ReGenerateDIDTx(ctx context.Context, req ReGenerateDIDRxR
 	}
 
 	// Create registry client
-	registry, err := blockchain.NewEthereumDIDRegistry(d.config.DIDAddress, d.config.ChainID)
+	registry, err := blockchain.NewEthereumDIDRegistry(d.didAddress, d.chainID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registry: %w", err)
 	}
@@ -175,7 +208,7 @@ func (d *DIDGenerator) createKeyPairFromECDSA(privateKey *ecdsa.PrivateKey) (*Ke
 	address := strings.ToLower(crypto.PubkeyToAddress(*publicKeyECDSA).Hex())
 	privateKeyHex := strings.ToLower("0x" + fmt.Sprintf("%x", crypto.FromECDSA(privateKey)))
 	publicKeyHex := strings.ToLower("0x" + fmt.Sprintf("%x", crypto.CompressPubkey(publicKeyECDSA)))
-	identifier := strings.ToLower(fmt.Sprintf("%s:%s", d.config.Method, address))
+	identifier := strings.ToLower(fmt.Sprintf("%s:%s", d.method, address))
 
 	return &KeyPair{
 		Address:    address,
@@ -185,20 +218,34 @@ func (d *DIDGenerator) createKeyPairFromECDSA(privateKey *ecdsa.PrivateKey) (*Ke
 	}, nil
 }
 
+// didTypeToString converts blockchain.DIDType to string representation
+func (d *DIDGenerator) didTypeToString(didType blockchain.DIDType) string {
+	switch didType {
+	case blockchain.DIDTypePeople:
+		return "people"
+	case blockchain.DIDTypeItem:
+		return "item"
+	case blockchain.DIDTypeActivity:
+		return "activity"
+	case blockchain.DIDTypeLocation:
+		return "location"
+	default:
+		return "default"
+	}
+}
+
 // generateDIDDocument creates a DID document from a key pair and request metadata
-func (d *DIDGenerator) generateDIDDocument(keyPair *KeyPair, req *CreateDID) *DIDDocument {
-	metadata := make(map[string]interface{})
+func (d *DIDGenerator) generateDIDDocument(keyPair *KeyPair, didType blockchain.DIDType, hash string, metadata map[string]interface{}) *DIDDocument {
+	docMetadata := make(map[string]interface{})
 
 	// Copy existing metadata if present
-	if req.Metadata != nil {
-		for k, v := range req.Metadata {
-			metadata[k] = v
-		}
+	for k, v := range metadata {
+		docMetadata[k] = v
 	}
 
 	// Always set type and hash
-	metadata["type"] = req.Type
-	metadata["hash"] = req.Hash
+	docMetadata["type"] = d.didTypeToString(didType)
+	docMetadata["hash"] = hash
 
 	document := &DIDDocument{
 		Context: []string{
@@ -215,7 +262,7 @@ func (d *DIDGenerator) generateDIDDocument(keyPair *KeyPair, req *CreateDID) *DI
 		}},
 		Authentication:   []string{keyPair.Identifier + "#key-1"},
 		AssertionMethod:  []string{keyPair.Identifier + "#key-1"},
-		DocumentMetadata: metadata,
+		DocumentMetadata: docMetadata,
 	}
 
 	return document

@@ -50,7 +50,7 @@ type hardhatArtifact struct {
 
 type EthereumDIDRegistry struct {
 	contract     *bind.BoundContract
-	chainID      int64
+	chainID      *big.Int
 	contractAddr common.Address
 }
 
@@ -81,7 +81,7 @@ func NewEthereumDIDRegistry(address string, chainID int64) (*EthereumDIDRegistry
 
 	return &EthereumDIDRegistry{
 		contract:     contract,
-		chainID:      chainID,
+		chainID:      big.NewInt(chainID),
 		contractAddr: contractAddr,
 	}, nil
 }
@@ -100,16 +100,35 @@ func (e *EthereumDIDRegistry) CreateDIDTx(
 		return nil, err
 	}
 
-	auth, err := e.getAuthFirstSubmit(ctx, privateKey)
+	auth, err := e.getAuth(ctx, privateKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get auth: %w", err)
 	}
 
-	// only build transaciton, not send transaction to chain.
-	auth.NoSend = true
+	docHash = strings.TrimPrefix(docHash, "0x")
+	docHashBytes, err := hex.DecodeString(docHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode doc hash: %w", err)
+	}
+
+	var docHashBytes32 [32]byte
+	copy(docHashBytes32[:], docHashBytes)
+
+	v := uint8(issuerSig.V.Uint64())
+
+	var rBytes, sBytes []byte
+	rBytes = issuerSig.R.Bytes()
+	sBytes = issuerSig.S.Bytes()
+	var r, s [32]byte
+	copy(r[32-len(rBytes):], rBytes)
+	copy(s[32-len(sBytes):], sBytes)
+
+	deadlineBigInt := big.NewInt(int64(deadline))
+
+	issuerAddr := common.HexToAddress(issuerAddress)
 
 	// 2. use contract to build create did transaction.
-	tx, err := e.contract.Transact(auth, "createDID", issuerAddress, didType, docHash, deadline, issuerSig.V, issuerSig.R, issuerSig.S)
+	tx, err := e.contract.Transact(auth, "createDID", issuerAddr, didType, docHashBytes32, deadlineBigInt, v, r, s)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate createDID Tx: %v", err)
 	}
@@ -139,8 +158,8 @@ func (e *EthereumDIDRegistry) IssueDIDPayload(issuerAddress, didAddress, docHash
 	return CreateEIP191Payload(e.contractAddr, payload)
 }
 
-// This function is used to submit the first transaction to the blockchain only (set attributes)
-func (e *EthereumDIDRegistry) getAuthFirstSubmit(ctx context.Context, privateKey *ecdsa.PrivateKey) (*bind.TransactOpts, error) {
+// getAuth gets the auth for the transaction.
+func (e *EthereumDIDRegistry) getAuth(ctx context.Context, privateKey *ecdsa.PrivateKey) (*bind.TransactOpts, error) {
 	publicKey := privateKey.Public()
 	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
 	if !ok {
@@ -149,28 +168,26 @@ func (e *EthereumDIDRegistry) getAuthFirstSubmit(ctx context.Context, privateKey
 
 	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
 
-	// Hardcoded chain ID - replace with your network's chain ID
-	chainID := big.NewInt(e.chainID) // 1
-
 	// Create a signer function that will use the private key for signing
 	signer := func(address common.Address, tx *types.Transaction) (*types.Transaction, error) {
 		// This function will be called when a transaction needs to be signed
-		signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
+		signedTx, err := types.SignTx(tx, types.NewEIP155Signer(e.chainID), privateKey)
 		if err != nil {
 			return nil, err
 		}
 		return signedTx, nil
 	}
 
-	// Create the auth with hardcoded values
+	// Create the auth with no send transaction to chain.
 	auth := &bind.TransactOpts{
-		From:     fromAddress, // This should be derived from your private key
+		From:     fromAddress,
 		Nonce:    big.NewInt(0),
 		Value:    big.NewInt(0),
 		GasLimit: uint64(80000),
 		GasPrice: big.NewInt(0),
 		Context:  ctx,
-		Signer:   signer, // Use our custom signer function
+		Signer:   signer,
+		NoSend:   true,
 	}
 
 	return auth, nil
