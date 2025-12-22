@@ -3,7 +3,6 @@ package blockchain
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
@@ -16,9 +15,8 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
 //go:embed did-contract/did_registry_smc_abi.json
@@ -90,20 +88,14 @@ func NewEthereumDIDRegistry(address string, chainID int64) (*EthereumDIDRegistry
 func (e *EthereumDIDRegistry) CreateDIDTx(
 	ctx context.Context,
 	issuerSig *Signature,
-	issuerAddress, didPriv, didAddress, docHash string,
+	issuerAddress, didAddress, docHash string,
+	txSigner signer.Signer,
 	didType DIDType,
 	deadline uint,
 ) (*SubmitTxResult, error) {
-	// 1. create auth with didPrv.
-	privateKey, err := ParsePrivateKey(didPriv)
-	if err != nil {
-		return nil, err
-	}
-
-	auth, err := e.getAuth(ctx, privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get auth: %w", err)
-	}
+	// 1. create auth using a generic signer based on the DID private key.
+	fromAddress := common.HexToAddress(didAddress)
+	auth := e.getAuth(ctx, fromAddress, signer.TxSignerFn(e.chainID, txSigner))
 
 	docHash = strings.TrimPrefix(docHash, "0x")
 	docHashBytes, err := hex.DecodeString(docHash)
@@ -145,6 +137,40 @@ func (e *EthereumDIDRegistry) CreateDIDTx(
 	}, nil
 }
 
+// AddIssuerTx builds an unsigned transaction for the addIssuer admin call.
+// - txSigner is the signer for the transaction.
+// - issuerAddress is the address that will receive ISSUER_ROLE.
+// - permissions is the list of DIDType values the issuer is allowed to issue.
+func (e *EthereumDIDRegistry) AddIssuerTx(
+	ctx context.Context,
+	txSigner signer.Signer,
+	issuerAddress string,
+	permissions []DIDType,
+) (*SubmitTxResult, error) {
+	// 1. create auth using the transaction signer.
+	adminAddr := common.HexToAddress(issuerAddress)
+	auth := e.getAuth(ctx, adminAddr, signer.TxSignerFn(e.chainID, txSigner))
+
+	issuerAddr := common.HexToAddress(issuerAddress)
+
+	// 2. use contract to build addIssuer transaction.
+	tx, err := e.contract.Transact(auth, "addIssuer", issuerAddr, permissions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate addIssuer Tx: %v", err)
+	}
+
+	// 3. serialize transaction to hex.
+	var buf bytes.Buffer
+	if err := rlp.Encode(&buf, tx); err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
+	}
+
+	return &SubmitTxResult{
+		TxHex:  hex.EncodeToString(buf.Bytes()),
+		TxHash: tx.Hash().Hex(),
+	}, nil
+}
+
 // IssueDIDPayload creates a payload for the create DID transaction, which is signed by the issuer.
 func (e *EthereumDIDRegistry) IssueDIDPayload(issuerAddress, didAddress, docHash string, didType DIDType, deadline uint) ([]byte, error) {
 	payload, err := SolidityPacked(
@@ -158,37 +184,17 @@ func (e *EthereumDIDRegistry) IssueDIDPayload(issuerAddress, didAddress, docHash
 	return CreateEIP191Payload(e.contractAddr, payload)
 }
 
-// getAuth gets the auth for the transaction.
-func (e *EthereumDIDRegistry) getAuth(ctx context.Context, privateKey *ecdsa.PrivateKey) (*bind.TransactOpts, error) {
-	publicKey := privateKey.Public()
-	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("error casting public key to ECDSA")
-	}
-
-	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
-
-	// Create a signer function that will use the private key for signing
-	signer := func(address common.Address, tx *types.Transaction) (*types.Transaction, error) {
-		// This function will be called when a transaction needs to be signed
-		signedTx, err := types.SignTx(tx, types.NewEIP155Signer(e.chainID), privateKey)
-		if err != nil {
-			return nil, err
-		}
-		return signedTx, nil
-	}
-
+// getAuth gets the auth for the transaction using an abstract signer function.
+func (e *EthereumDIDRegistry) getAuth(ctx context.Context, fromAddress common.Address, signerFn bind.SignerFn) *bind.TransactOpts {
 	// Create the auth with no send transaction to chain.
-	auth := &bind.TransactOpts{
+	return &bind.TransactOpts{
 		From:     fromAddress,
 		Nonce:    big.NewInt(0),
 		Value:    big.NewInt(0),
 		GasLimit: uint64(80000),
 		GasPrice: big.NewInt(0),
 		Context:  ctx,
-		Signer:   signer,
+		Signer:   signerFn,
 		NoSend:   true,
 	}
-
-	return auth, nil
 }

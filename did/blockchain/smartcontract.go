@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/ethereum/go-ethereum/ethclient"
-	"io"
+	"log/slog"
 	"math/big"
-	"os"
 	"strings"
+
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -21,9 +22,10 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
-// The ABI path constant is restored as requested.
-const smc_abi_path = "did/blockchain/did-contract/did_registry_smc_abi.json"
 const AttributeName = "type"
+
+//go:embed did-contract/did_registry_smc_abi.json
+var smcABIJSON []byte
 
 // HardhatArtifact struct is restored to parse the ABI file.
 type HardhatArtifact struct {
@@ -51,23 +53,11 @@ func NewEthereumDIDRegistry(rpcURL string, didAddress string, chainID int64) (*E
 
 	contractAddr := common.HexToAddress(didAddress)
 
-	// --- File-based ABI loading (restored from original) ---
-	file, err := os.Open(smc_abi_path)
-	if err != nil {
-		return nil, fmt.Errorf("error opening abi file: %v", err)
-	}
-	defer file.Close()
-
-	// Read file contents
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("error reading abi file: %v", err)
-	}
-
-	// Parse JSON into the HardhatArtifact struct
+	// Parse JSON from embedded ABI file
 	var artifact HardhatArtifact
-	err = json.Unmarshal(data, &artifact)
+	err := json.Unmarshal(smcABIJSON, &artifact)
 	if err != nil {
+		slog.ErrorContext(context.Background(), "Error parsing smc abi JSON", "error", err)
 		return nil, fmt.Errorf("error parsing smc abi JSON: %v", err)
 	}
 
@@ -76,7 +66,6 @@ func NewEthereumDIDRegistry(rpcURL string, didAddress string, chainID int64) (*E
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse ABI: %v", err)
 	}
-	// --- End of file-based ABI loading ---
 
 	// Create a new bound contract
 	contract := bind.NewBoundContract(contractAddr, parsedABI, nil, nil, nil)

@@ -56,7 +56,7 @@ func NewDIDGenerator(chainID int64, didAddress string, method string) (*DIDGener
 // GenerateDID generates a new DID with a newly created key pair
 func (d *DIDGenerator) GenerateDID(
 	ctx context.Context,
-	signer signer.Signer,
+	sigSigner signer.Signer,
 	issuerAddress string,
 	didType blockchain.DIDType,
 	hash string,
@@ -84,8 +84,8 @@ func (d *DIDGenerator) GenerateDID(
 		return nil, fmt.Errorf("failed to create payload: %w", err)
 	}
 
-	// 4. Sign the payload using the signer
-	signatureBytes, err := signer.Sign(payload)
+	// 4. Sign the payload using the sigSigner
+	signatureBytes, err := sigSigner.Sign(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign payload: %w", err)
 	}
@@ -97,7 +97,14 @@ func (d *DIDGenerator) GenerateDID(
 	}
 
 	// 5. Create DID transaction
-	txResult, err := d.registry.CreateDIDTx(ctx, signature, issuerAddress, keyPair.PrivateKey, keyPair.Address, docHash, didType, deadline)
+	// keyPair.PrivateKey is stored with "0x" prefix; HexToECDSA expects raw hex.
+	privHex := strings.TrimPrefix(keyPair.PrivateKey, "0x")
+	txSigner, err := signer.NewDefaultSigner(privHex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tx signer: %w", err)
+	}
+
+	txResult, err := d.registry.CreateDIDTx(ctx, signature, issuerAddress, keyPair.Address, docHash, txSigner, didType, deadline)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DID transaction: %w", err)
 	}
@@ -113,69 +120,6 @@ func (d *DIDGenerator) GenerateDID(
 			TxHash: txResult.TxHash,
 		},
 	}, nil
-}
-
-// ReGenerateDIDTx regenerates a DID transaction using an existing private key
-func (d *DIDGenerator) ReGenerateDIDTx(ctx context.Context, req ReGenerateDIDRxRequest) (*blockchain.SubmitTxResult, error) {
-	// Derive key pair from existing private key
-	keyPair, err := d.deriveKeyPairFromPrivateKey(req.DIDPkHex)
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive key pair: %w", err)
-	}
-
-	// Create registry client
-	registry, err := blockchain.NewEthereumDIDRegistry(d.didAddress, d.chainID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create registry: %w", err)
-	}
-
-	// Create issuer signature
-	signature, err := d.createIssuerSignature(registry, req.IssuerAddress, req.IssuerPkHex, keyPair.Address, req.Hash, req.Type, req.Deadline)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create issuer signature: %w", err)
-	}
-
-	// Create DID transaction
-	txResult, err := registry.CreateDIDTx(ctx, signature, req.IssuerAddress, req.DIDPkHex, keyPair.Address, req.Hash, req.Type, req.Deadline)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create DID transaction: %w", err)
-	}
-
-	return txResult, nil
-}
-
-// createIssuerSignature creates and signs the issuer payload for DID creation
-func (d *DIDGenerator) createIssuerSignature(
-	registry *blockchain.EthereumDIDRegistry,
-	issuerAddress, issuerPkHex, didAddress, docHash string,
-	didType blockchain.DIDType,
-	deadline uint,
-) (*blockchain.Signature, error) {
-	// Create payload
-	payload, err := registry.IssueDIDPayload(issuerAddress, didAddress, docHash, didType, deadline)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create payload: %w", err)
-	}
-
-	// Parse issuer private key
-	issuerKey, err := blockchain.ParsePrivateKey(issuerPkHex)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse issuer private key: %w", err)
-	}
-
-	// Sign payload
-	signatureBytes, err := blockchain.SignPayload(issuerKey, payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign payload: %w", err)
-	}
-
-	// Convert to signature object
-	signature, err := blockchain.BytesToSignature(signatureBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert signature: %w", err)
-	}
-
-	return signature, nil
 }
 
 // generateECDSADID generates a new ECDSA key pair and creates a KeyPair
