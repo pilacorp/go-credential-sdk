@@ -7,6 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/didv2/blockchain"
+	"github.com/pilacorp/go-credential-sdk/didv2/jsoncanonicalizer"
 )
 
 // KeyPair represents the generated wallet and DID identifier
@@ -47,14 +48,17 @@ type DIDDocument struct {
 
 // Hash calculates the Keccak256 hash of a DID document
 func (doc *DIDDocument) Hash() (string, error) {
-	// Marshal document to JSON
 	docJSON, err := json.Marshal(doc)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal DID document: %w", err)
 	}
 
-	// Calculate Keccak256 hash
-	hash := crypto.Keccak256Hash(docJSON)
+	docToHash, err := jsoncanonicalizer.Transform(docJSON)
+	if err != nil {
+		return "", fmt.Errorf("failed to transform DID document: %w", err)
+	}
+
+	hash := crypto.Keccak256Hash(docToHash)
 
 	// Convert to hex string with 0x prefix
 	return strings.ToLower(hash.Hex()), nil
