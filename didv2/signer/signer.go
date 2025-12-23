@@ -26,10 +26,8 @@ func NewDefaultSigner(privHex string) (Signer, error) {
 	return &DefaultSigner{priv: priv}, nil
 }
 
-func (s *DefaultSigner) Sign(payload []byte) ([]byte, error) {
-	hash := crypto.Keccak256Hash(payload)
-
-	signature, err := crypto.Sign(hash.Bytes(), s.priv)
+func (s *DefaultSigner) Sign(hashPayload []byte) ([]byte, error) {
+	signature, err := crypto.Sign(hashPayload, s.priv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign payload: %w", err)
 	}
