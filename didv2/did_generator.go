@@ -99,7 +99,7 @@ func (d *DIDGenerator) GenerateDID(
 	// 5. Create DID transaction
 	// keyPair.PrivateKey is stored with "0x" prefix; HexToECDSA expects raw hex.
 	privHex := strings.TrimPrefix(keyPair.PrivateKey, "0x")
-	txSigner, err := signer.NewDefaultSigner(privHex)
+	txSigner, err := signer.NewTxSigner(privHex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tx signer: %w", err)
 	}

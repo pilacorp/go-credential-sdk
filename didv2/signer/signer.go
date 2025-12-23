@@ -14,19 +14,19 @@ type Signer interface {
 	Sign(payload []byte) ([]byte, error)
 }
 
-type DefaultSigner struct {
+type TxSigner struct {
 	priv *ecdsa.PrivateKey
 }
 
-func NewDefaultSigner(privHex string) (Signer, error) {
+func NewTxSigner(privHex string) (Signer, error) {
 	priv, err := crypto.HexToECDSA(privHex)
 	if err != nil {
 		return nil, err
 	}
-	return &DefaultSigner{priv: priv}, nil
+	return &TxSigner{priv: priv}, nil
 }
 
-func (s *DefaultSigner) Sign(hashPayload []byte) ([]byte, error) {
+func (s *TxSigner) Sign(hashPayload []byte) ([]byte, error) {
 	signature, err := crypto.Sign(hashPayload, s.priv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign payload: %w", err)
@@ -35,13 +35,6 @@ func (s *DefaultSigner) Sign(hashPayload []byte) ([]byte, error) {
 	if len(signature) != 65 {
 		return nil, fmt.Errorf("invalid signature length: expected 65 bytes, got %d", len(signature))
 	}
-
-	// Normalize recovery ID to Ethereum format: 27 or 28
-	v := signature[64]
-	if v < 27 {
-		v += 27
-	}
-	signature[64] = v
 
 	return signature, nil
 }
