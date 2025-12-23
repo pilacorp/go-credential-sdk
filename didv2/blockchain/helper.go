@@ -220,6 +220,12 @@ func BytesToSignature(signature []byte) (*Signature, error) {
 		return nil, fmt.Errorf("failed to convert s to big.Int")
 	}
 
+	// normalize recovery id
+	recoveryID := v.Uint64()
+	if recoveryID == 0 || recoveryID == 1 {
+		v = big.NewInt(int64(recoveryID + 27))
+	}
+
 	return &Signature{
 		V: v,
 		R: rInt,
