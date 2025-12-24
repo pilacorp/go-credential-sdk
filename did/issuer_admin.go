@@ -1,59 +1,54 @@
-package didv2
+package did
 
 import (
 	"context"
 	"fmt"
+	"strings"
 
-	"github.com/pilacorp/go-credential-sdk/didv2/blockchain"
-	"github.com/pilacorp/go-credential-sdk/didv2/signer"
+	"github.com/pilacorp/go-credential-sdk/did/blockchain"
+	"github.com/pilacorp/go-credential-sdk/did/signer"
 )
 
 // IssuerAdmin provides helpers for admin operations on the DID registry smart contract,
 // such as granting ISSUER_ROLE to new issuers.
 type IssuerAdmin struct {
-	chainID  int64
-	registry *blockchain.EthereumDIDRegistry
+	registry *blockchain.EthereumDIDRegistryV2
 }
 
 // NewIssuerAdmin creates a new IssuerAdmin using the same defaults as DIDGenerator
 // when chainID or didAddress are not provided.
 func NewIssuerAdmin(chainID int64, didAddress string) (*IssuerAdmin, error) {
-	a := &IssuerAdmin{
-		chainID: defaultChainID,
-	}
-
-	if chainID != 0 {
-		a.chainID = chainID
+	if chainID == 0 {
+		chainID = defaultChainID
 	}
 	if didAddress == "" {
 		didAddress = defaultDIDAddress
 	}
 
-	registry, err := blockchain.NewEthereumDIDRegistry(didAddress, a.chainID)
+	registry, err := blockchain.NewEthereumDIDRegistryV2(strings.TrimPrefix(didAddress, "0x"), chainID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registry: %w", err)
 	}
-	a.registry = registry
 
-	return a, nil
+	return &IssuerAdmin{registry: registry}, nil
 }
 
-// BuildAddIssuerTx creates a transaction payload that calls addIssuer on the registry
+// CreateIssuerTx creates a transaction payload that calls addIssuer on the registry
 // contract (DIdRegistry.sol:110-116).
 //
 // - ctx:        context for transaction building
-// - adminPkHex: hex-encoded private key of an account with ADMIN_ROLE
-// - issuerAddr: address to grant ISSUER_ROLE
+// - txSigner:   signer for the transaction
+// - issuerAddress: address of the issuer
 // - perms:      list of DID types the issuer is allowed to issue
-func (a *IssuerAdmin) BuildAddIssuerTx(
+func (a *IssuerAdmin) CreateIssuerTx(
 	ctx context.Context,
 	txSigner signer.Signer,
-	issuerAddr string,
+	issuerAddress string,
 	perms []blockchain.DIDType,
 ) (*blockchain.SubmitTxResult, error) {
 	if a.registry == nil {
 		return nil, fmt.Errorf("registry not initialized")
 	}
 
-	return a.registry.AddIssuerTx(ctx, txSigner, issuerAddr, perms)
+	return a.registry.CreateIssuerTx(ctx, txSigner, issuerAddress, perms)
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -14,19 +15,19 @@ type Signer interface {
 	Sign(payload []byte) ([]byte, error)
 }
 
-type TxSigner struct {
+type DefaultSigner struct {
 	priv *ecdsa.PrivateKey
 }
 
-func NewTxSigner(privHex string) (Signer, error) {
-	priv, err := crypto.HexToECDSA(privHex)
+func NewDefaultSigner(privHex string) (Signer, error) {
+	priv, err := crypto.HexToECDSA(strings.TrimPrefix(privHex, "0x"))
 	if err != nil {
 		return nil, err
 	}
-	return &TxSigner{priv: priv}, nil
+	return &DefaultSigner{priv: priv}, nil
 }
 
-func (s *TxSigner) Sign(hashPayload []byte) ([]byte, error) {
+func (s *DefaultSigner) Sign(hashPayload []byte) ([]byte, error) {
 	signature, err := crypto.Sign(hashPayload, s.priv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign payload: %w", err)

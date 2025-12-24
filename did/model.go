@@ -1,6 +1,14 @@
 package did
 
-import "github.com/pilacorp/go-credential-sdk/did/blockchain"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/pilacorp/go-credential-sdk/did/blockchain"
+	"github.com/pilacorp/go-credential-sdk/did/jsoncanonicalizer"
+)
 
 type DIDType string
 
@@ -34,6 +42,25 @@ type DIDDocument struct {
 	AssertionMethod    []string               `json:"assertionMethod"`
 	DocumentMetadata   map[string]interface{} `json:"didDocumentMetadata"`
 }
+
+// Hash calculates the Keccak256 hash of a DID document
+func (doc *DIDDocument) Hash() (string, error) {
+	docJSON, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal DID document: %w", err)
+	}
+
+	docToHash, err := jsoncanonicalizer.Transform(docJSON)
+	if err != nil {
+		return "", fmt.Errorf("failed to transform DID document: %w", err)
+	}
+
+	hash := crypto.Keccak256Hash(docToHash)
+
+	// Convert to hex string with 0x prefix
+	return strings.ToLower(hash.Hex()), nil
+}
+
 type VerificationMethod struct {
 	Id           string `json:"id"`
 	Type         string `json:"type"`                   //

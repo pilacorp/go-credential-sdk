@@ -16,11 +16,11 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/pilacorp/go-credential-sdk/didv2/signer"
+	"github.com/pilacorp/go-credential-sdk/did/signer"
 )
 
-//go:embed did-contract/did_registry_smc_abi.json
-var smcABIJSON []byte
+//go:embed did-contract/did_registry_smc_abi_v2.json
+var smcABIJSONV2 []byte
 
 type DIDType uint8
 
@@ -38,22 +38,14 @@ type Signature struct {
 	S *big.Int
 }
 
-// hardhatArtifact represents the structure of a Hardhat artifact JSON
-type hardhatArtifact struct {
-	Format       string          `json:"_format"`
-	ContractName string          `json:"contractName"`
-	SourceName   string          `json:"sourceName"`
-	ABI          json.RawMessage `json:"abi"`
-}
-
-type EthereumDIDRegistry struct {
+type EthereumDIDRegistryV2 struct {
 	contract     *bind.BoundContract
 	chainID      *big.Int
 	contractAddr common.Address
 }
 
 // NewEthereumDIDRegistry creates a new instance of the Ethereum DID Registry client
-func NewEthereumDIDRegistry(address string, chainID int64) (*EthereumDIDRegistry, error) {
+func NewEthereumDIDRegistryV2(address string, chainID int64) (*EthereumDIDRegistryV2, error) {
 	if address == "" {
 		return nil, fmt.Errorf("invalid configuration: RPC URL or DID address missing")
 	}
@@ -61,8 +53,8 @@ func NewEthereumDIDRegistry(address string, chainID int64) (*EthereumDIDRegistry
 	contractAddr := common.HexToAddress(address)
 
 	// Parse JSON from embedded ABI file
-	var artifact hardhatArtifact
-	err := json.Unmarshal(smcABIJSON, &artifact)
+	var artifact HardhatArtifact
+	err := json.Unmarshal(smcABIJSONV2, &artifact)
 	if err != nil {
 		slog.ErrorContext(context.Background(), "Error parsing smc abi JSON", "error", err)
 		return nil, fmt.Errorf("error parsing smc abi JSON: %v", err)
@@ -77,7 +69,7 @@ func NewEthereumDIDRegistry(address string, chainID int64) (*EthereumDIDRegistry
 	// Create a new bound contract
 	contract := bind.NewBoundContract(contractAddr, parsedABI, nil, nil, nil)
 
-	return &EthereumDIDRegistry{
+	return &EthereumDIDRegistryV2{
 		contract:     contract,
 		chainID:      big.NewInt(chainID),
 		contractAddr: contractAddr,
@@ -85,7 +77,7 @@ func NewEthereumDIDRegistry(address string, chainID int64) (*EthereumDIDRegistry
 }
 
 // CreateDIDTx creates a new DID transaction.
-func (e *EthereumDIDRegistry) CreateDIDTx(
+func (e *EthereumDIDRegistryV2) CreateDIDTx(
 	ctx context.Context,
 	issuerSig *Signature,
 	issuerAddress, didAddress, docHash string,
@@ -95,7 +87,7 @@ func (e *EthereumDIDRegistry) CreateDIDTx(
 ) (*SubmitTxResult, error) {
 	// 1. create auth using a generic signer based on the DID private key.
 	fromAddress := common.HexToAddress(didAddress)
-	auth := e.getAuth(ctx, fromAddress, signer.TxSignerFn(e.chainID, txSigner))
+	auth := e.getAuthV2(ctx, fromAddress, signer.TxSignerFn(e.chainID, txSigner))
 
 	docHash = strings.TrimPrefix(docHash, "0x")
 	docHashBytes, err := hex.DecodeString(docHash)
@@ -137,26 +129,24 @@ func (e *EthereumDIDRegistry) CreateDIDTx(
 	}, nil
 }
 
-// AddIssuerTx builds an unsigned transaction for the addIssuer admin call.
+// CreateIssuerTx builds an unsigned transaction for the createIssuer admin call.
 // - txSigner is the signer for the transaction.
-// - issuerAddress is the address that will receive ISSUER_ROLE.
+// - didAddress is the address that will receive ISSUER_ROLE.
 // - permissions is the list of DIDType values the issuer is allowed to issue.
-func (e *EthereumDIDRegistry) AddIssuerTx(
+func (e *EthereumDIDRegistryV2) CreateIssuerTx(
 	ctx context.Context,
 	txSigner signer.Signer,
-	issuerAddress string,
+	didAddress string,
 	permissions []DIDType,
 ) (*SubmitTxResult, error) {
 	// 1. create auth using the transaction signer.
-	adminAddr := common.HexToAddress(issuerAddress)
-	auth := e.getAuth(ctx, adminAddr, signer.TxSignerFn(e.chainID, txSigner))
+	didAdrr := common.HexToAddress(didAddress)
+	auth := e.getAuthV2(ctx, didAdrr, signer.TxSignerFn(e.chainID, txSigner))
 
-	issuerAddr := common.HexToAddress(issuerAddress)
-
-	// 2. use contract to build addIssuer transaction.
-	tx, err := e.contract.Transact(auth, "addIssuer", issuerAddr, permissions)
+	// 2. use contract to build createIssuer transaction.
+	tx, err := e.contract.Transact(auth, "createIssuer", didAdrr, permissions)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate addIssuer Tx: %v", err)
+		return nil, fmt.Errorf("failed to generate createIssuer Tx: %v", err)
 	}
 
 	// 3. serialize transaction to hex.
@@ -172,7 +162,7 @@ func (e *EthereumDIDRegistry) AddIssuerTx(
 }
 
 // IssueDIDPayload creates a payload for the create DID transaction, which is signed by the issuer.
-func (e *EthereumDIDRegistry) IssueDIDPayload(issuerAddress, didAddress, docHash string, didType DIDType, deadline uint) ([]byte, error) {
+func (e *EthereumDIDRegistryV2) IssueDIDPayload(issuerAddress, didAddress, docHash string, didType DIDType, deadline uint) ([]byte, error) {
 	payload, err := SolidityPacked(
 		[]string{"string", "address", "address", "uint8", "bytes32", "uint256"},
 		[]string{"CREATE_DID", issuerAddress, didAddress, strconv.Itoa(int(didType)), docHash, strconv.FormatUint(uint64(deadline), 10)},
@@ -185,7 +175,7 @@ func (e *EthereumDIDRegistry) IssueDIDPayload(issuerAddress, didAddress, docHash
 }
 
 // getAuth gets the auth for the transaction using an abstract signer function.
-func (e *EthereumDIDRegistry) getAuth(ctx context.Context, fromAddress common.Address, signerFn bind.SignerFn) *bind.TransactOpts {
+func (e *EthereumDIDRegistryV2) getAuthV2(ctx context.Context, fromAddress common.Address, signerFn bind.SignerFn) *bind.TransactOpts {
 	// Create the auth with no send transaction to chain.
 	return &bind.TransactOpts{
 		From:     fromAddress,

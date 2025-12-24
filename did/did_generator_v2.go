@@ -1,4 +1,4 @@
-package didv2
+package did
 
 import (
 	"context"
@@ -8,8 +8,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/pilacorp/go-credential-sdk/didv2/blockchain"
-	"github.com/pilacorp/go-credential-sdk/didv2/signer"
+	"github.com/pilacorp/go-credential-sdk/did/blockchain"
+	"github.com/pilacorp/go-credential-sdk/did/signer"
 )
 
 const (
@@ -19,16 +19,16 @@ const (
 )
 
 // DIDGenerator handles DID generation and transaction creation
-type DIDGenerator struct {
+type DIDGeneratorV2 struct {
 	chainID    int64
 	didAddress string
 	method     string
-	registry   *blockchain.EthereumDIDRegistry
+	registry   *blockchain.EthereumDIDRegistryV2
 }
 
 // NewDIDGenerator creates a new DIDGenerator with default values
-func NewDIDGenerator(chainID int64, didAddress string, method string) (*DIDGenerator, error) {
-	g := &DIDGenerator{
+func NewDIDGeneratorV2(chainID int64, didAddress string, method string) (*DIDGeneratorV2, error) {
+	g := &DIDGeneratorV2{
 		chainID:    defaultChainID,
 		didAddress: defaultDIDAddress,
 		method:     defaultMethod,
@@ -44,7 +44,7 @@ func NewDIDGenerator(chainID int64, didAddress string, method string) (*DIDGener
 		g.method = method
 	}
 
-	registry, err := blockchain.NewEthereumDIDRegistry(g.didAddress, g.chainID)
+	registry, err := blockchain.NewEthereumDIDRegistryV2(g.didAddress, g.chainID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registry: %w", err)
 	}
@@ -54,7 +54,7 @@ func NewDIDGenerator(chainID int64, didAddress string, method string) (*DIDGener
 }
 
 // GenerateDID generates a new DID with a newly created key pair
-func (d *DIDGenerator) GenerateDID(
+func (d *DIDGeneratorV2) GenerateDID(
 	ctx context.Context,
 	sigSigner signer.Signer,
 	issuerAddress string,
@@ -78,14 +78,16 @@ func (d *DIDGenerator) GenerateDID(
 		return nil, fmt.Errorf("failed to hash DID document: %w", err)
 	}
 
-	// 3. Create payload to sign using document hash
+	// 3. Create hash payload to sign
 	payload, err := d.registry.IssueDIDPayload(issuerAddress, keyPair.Address, docHash, didType, deadline)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create payload: %w", err)
 	}
 
+	hashPayload := crypto.Keccak256(payload)
+
 	// 4. Sign the payload using the sigSigner
-	signatureBytes, err := sigSigner.Sign(payload)
+	signatureBytes, err := sigSigner.Sign(hashPayload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign payload: %w", err)
 	}
@@ -98,8 +100,7 @@ func (d *DIDGenerator) GenerateDID(
 
 	// 5. Create DID transaction
 	// keyPair.PrivateKey is stored with "0x" prefix; HexToECDSA expects raw hex.
-	privHex := strings.TrimPrefix(keyPair.PrivateKey, "0x")
-	txSigner, err := signer.NewTxSigner(privHex)
+	txSigner, err := signer.NewDefaultSigner(keyPair.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tx signer: %w", err)
 	}
@@ -114,8 +115,8 @@ func (d *DIDGenerator) GenerateDID(
 		Secret: Secret{
 			PrivateKeyHex: keyPair.PrivateKey,
 		},
-		Document: doc,
-		Transaction: &blockchain.SubmitTxResult{
+		Document: *doc,
+		Transaction: blockchain.SubmitDIDTX{
 			TxHex:  txResult.TxHex,
 			TxHash: txResult.TxHash,
 		},
@@ -123,7 +124,7 @@ func (d *DIDGenerator) GenerateDID(
 }
 
 // generateECDSADID generates a new ECDSA key pair and creates a KeyPair
-func (d *DIDGenerator) generateECDSADID() (*KeyPair, error) {
+func (d *DIDGeneratorV2) generateECDSADID() (*KeyPair, error) {
 	privateKey, err := crypto.GenerateKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate private key: %w", err)
@@ -133,7 +134,7 @@ func (d *DIDGenerator) generateECDSADID() (*KeyPair, error) {
 }
 
 // deriveKeyPairFromPrivateKey derives a KeyPair from an existing private key hex string
-func (d *DIDGenerator) deriveKeyPairFromPrivateKey(privateKeyHex string) (*KeyPair, error) {
+func (d *DIDGeneratorV2) deriveKeyPairFromPrivateKey(privateKeyHex string) (*KeyPair, error) {
 	privateKey, err := blockchain.ParsePrivateKey(privateKeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse private key: %w", err)
@@ -143,7 +144,7 @@ func (d *DIDGenerator) deriveKeyPairFromPrivateKey(privateKeyHex string) (*KeyPa
 }
 
 // createKeyPairFromECDSA creates a KeyPair from an ECDSA private key
-func (d *DIDGenerator) createKeyPairFromECDSA(privateKey *ecdsa.PrivateKey) (*KeyPair, error) {
+func (d *DIDGeneratorV2) createKeyPairFromECDSA(privateKey *ecdsa.PrivateKey) (*KeyPair, error) {
 	publicKeyECDSA, ok := privateKey.Public().(*ecdsa.PublicKey)
 	if !ok {
 		return nil, fmt.Errorf("failed to cast public key to ECDSA")
@@ -163,7 +164,7 @@ func (d *DIDGenerator) createKeyPairFromECDSA(privateKey *ecdsa.PrivateKey) (*Ke
 }
 
 // didTypeToString converts blockchain.DIDType to string representation
-func (d *DIDGenerator) didTypeToString(didType blockchain.DIDType) string {
+func (d *DIDGeneratorV2) didTypeToString(didType blockchain.DIDType) string {
 	switch didType {
 	case blockchain.DIDTypePeople:
 		return "people"
@@ -179,7 +180,7 @@ func (d *DIDGenerator) didTypeToString(didType blockchain.DIDType) string {
 }
 
 // generateDIDDocument creates a DID document from a key pair and request metadata
-func (d *DIDGenerator) generateDIDDocument(keyPair *KeyPair, didType blockchain.DIDType, hash string, metadata map[string]interface{}) *DIDDocument {
+func (d *DIDGeneratorV2) generateDIDDocument(keyPair *KeyPair, didType blockchain.DIDType, hash string, metadata map[string]interface{}) *DIDDocument {
 	docMetadata := make(map[string]interface{})
 
 	// Copy existing metadata if present
