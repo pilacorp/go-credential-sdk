@@ -32,6 +32,21 @@ const (
 	DIDTypeLocation DIDType = 4
 )
 
+func (didType DIDType) ToString() string {
+	switch didType {
+	case DIDTypePeople:
+		return "people"
+	case DIDTypeItem:
+		return "item"
+	case DIDTypeActivity:
+		return "activity"
+	case DIDTypeLocation:
+		return "location"
+	default:
+		return "item"
+	}
+}
+
 // Signature represents the signature of a transaction
 type Signature struct {
 	V *big.Int
@@ -254,9 +269,6 @@ func (e *EthereumDIDRegistryV2) IssueDIDPayload(
 
 	// IMPORTANT: this action string must match the contract verifier exactly.
 	const Action = "CAP_CREATE"
-
-	// print all
-	slog.Info("IssueDIDPayload", "signerAddress", signerAddress, "didAddress", didAddress, "didType", didType, "epoch", epoch, "capId", capId)
 
 	payload, err := SolidityPacked(
 		[]string{"string", "address", "address", "uint8", "uint64", "bytes32"},
