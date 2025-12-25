@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -24,7 +23,7 @@ type DIDGeneratorV2 struct {
 	chainID    int64
 	didAddress string
 	method     string
-	registry   *blockchain.EthereumDIDRegistryV2
+	registry   *blockchain.DIDContract
 }
 
 // NewDIDGenerator creates a new DIDGenerator with default values
@@ -34,8 +33,6 @@ func NewDIDGeneratorV2(chainID int64, didAddress string, method string, rpcURL s
 		didAddress: defaultDIDAddress,
 		method:     defaultMethod,
 	}
-
-	slog.Info("NewDIDGeneratorV2", "chainID", chainID, "didAddress", didAddress, "method", method, "rpcURL", rpcURL)
 
 	if chainID != 0 {
 		g.chainID = chainID
@@ -47,10 +44,11 @@ func NewDIDGeneratorV2(chainID int64, didAddress string, method string, rpcURL s
 		g.method = method
 	}
 
-	registry, err := blockchain.NewEthereumDIDRegistryV2(g.didAddress, g.chainID, rpcURL)
+	registry, err := blockchain.NewDIDContract(g.didAddress, g.chainID, rpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registry: %w", err)
 	}
+
 	g.registry = registry
 
 	return g, nil
@@ -67,7 +65,6 @@ func (d *DIDGeneratorV2) GenerateDID(
 	epoch uint64,
 	metadata map[string]interface{},
 ) (*DID, error) {
-
 	// 1. Generate a new key pair (this DID will be msg.sender on-chain)
 	keyPair, err := d.generateECDSADID()
 	if err != nil {

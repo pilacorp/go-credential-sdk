@@ -54,15 +54,15 @@ type Signature struct {
 	S *big.Int
 }
 
-type EthereumDIDRegistryV2 struct {
+type DIDContract struct {
 	contract     *bind.BoundContract
 	chainID      *big.Int
 	contractAddr common.Address
-	rpcURL       string
+	rpcClient    *ethclient.Client
 }
 
 // NewEthereumDIDRegistry creates a new instance of the Ethereum DID Registry client
-func NewEthereumDIDRegistryV2(address string, chainID int64, rpcURL string) (*EthereumDIDRegistryV2, error) {
+func NewDIDContract(address string, chainID int64, rpcURL string) (*DIDContract, error) {
 	if address == "" {
 		return nil, fmt.Errorf("invalid configuration: RPC URL or DID address missing")
 	}
@@ -95,26 +95,28 @@ func NewEthereumDIDRegistryV2(address string, chainID int64, rpcURL string) (*Et
 	// Create a new bound contract
 	contract := bind.NewBoundContract(contractAddr, parsedABI, client, client, nil)
 
-	return &EthereumDIDRegistryV2{
+	return &DIDContract{
 		contract:     contract,
 		chainID:      big.NewInt(chainID),
 		contractAddr: contractAddr,
-		rpcURL:       rpcURL,
+		rpcClient:    client,
 	}, nil
 }
 
 // CreateDIDTx creates a new DID transaction.
-func (e *EthereumDIDRegistryV2) CreateDIDTx(
+func (e *DIDContract) CreateDIDTx(
 	ctx context.Context,
 	issuerSig *Signature,
 	signerAddress, didAddress, docHash, capId string, // capId NEW, deadline removed
 	txSigner signer.Signer,
 	didType DIDType,
 ) (*SubmitTxResult, error) {
-
 	// 1. Auth for msg.sender = didAddress
 	fromAddress := common.HexToAddress(didAddress)
-	auth := e.getAuthV2(ctx, fromAddress, signer.TxSignerFn(e.chainID, txSigner))
+	auth, err := e.getAuthV2(ctx, fromAddress, signer.TxSignerFn(e.chainID, txSigner), false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get auth: %w", err)
+	}
 
 	// 2. docHash -> bytes32
 	docHash = strings.TrimPrefix(docHash, "0x")
@@ -181,24 +183,18 @@ func (e *EthereumDIDRegistryV2) CreateDIDTx(
 	}, nil
 }
 
-// CreateIssuerTx builds an unsigned transaction for the createIssuer admin call.
-// - txSigner is the signer for the transaction.
-// - didAddress is the address that will receive ISSUER_ROLE.
-// - permissions is the list of DIDType values the issuer is allowed to issue.
-func (e *EthereumDIDRegistryV2) CreateIssuerTx(
-	ctx context.Context,
-	txSigner signer.Signer,
-	didAddress string,
-	permissions []DIDType,
-) (*SubmitTxResult, error) {
+// AddIssuerTx creates a new addIssuer transaction.
+func (e *DIDContract) AddIssuerTx(ctx context.Context, txSigner signer.Signer, signerAddress, issuerAddress string, permissions []DIDType) (*SubmitTxResult, error) {
 	// 1. create auth using the transaction signer.
-	didAdrr := common.HexToAddress(didAddress)
-	auth := e.getAuthV2(ctx, didAdrr, signer.TxSignerFn(e.chainID, txSigner))
+	auth, err := e.getAuthV2(ctx, common.HexToAddress(signerAddress), signer.TxSignerFn(e.chainID, txSigner), true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get auth: %w", err)
+	}
 
 	// 2. use contract to build createIssuer transaction.
-	tx, err := e.contract.Transact(auth, "createIssuer", didAdrr, permissions)
+	tx, err := e.contract.Transact(auth, "addIssuer", common.HexToAddress(issuerAddress), permissions)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate createIssuer Tx: %v", err)
+		return nil, fmt.Errorf("failed to generate addIssuer Tx: %v", err)
 	}
 
 	// 3. serialize transaction to hex.
@@ -213,16 +209,12 @@ func (e *EthereumDIDRegistryV2) CreateIssuerTx(
 	}, nil
 }
 
-func (e *EthereumDIDRegistryV2) GetCapabilityEpoch(
+func (e *DIDContract) GetCapabilityEpoch(
 	ctx context.Context,
 	signerAddr string,
 ) (uint64, error) {
 	if signerAddr == "" {
 		return 0, fmt.Errorf("invalid configuration: signer address missing")
-	}
-
-	if e.rpcURL == "" {
-		return 0, fmt.Errorf("invalid configuration: RPC URL missing")
 	}
 
 	signer := common.HexToAddress(signerAddr)
@@ -250,7 +242,7 @@ func (e *EthereumDIDRegistryV2) GetCapabilityEpoch(
 
 // IssueDIDPayload creates the signed payload used by _requireValidCapCreate(...).
 // It MUST match the Solidity hashing layout (type order + encodePacked).
-func (e *EthereumDIDRegistryV2) IssueDIDPayload(
+func (e *DIDContract) IssueDIDPayload(
 	_ context.Context,
 	signerAddress, didAddress string,
 	didType DIDType,
@@ -283,17 +275,40 @@ func (e *EthereumDIDRegistryV2) IssueDIDPayload(
 	return CreateEIP191Payload(e.contractAddr, payload)
 }
 
+// get nonce from blockchain
+func (e *DIDContract) getNonce(ctx context.Context, address common.Address) (uint64, error) {
+	nonce, err := e.rpcClient.PendingNonceAt(ctx, address)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get nonce: %w", err)
+	}
+
+	return nonce, nil
+}
+
 // getAuth gets the auth for the transaction using an abstract signer function.
-func (e *EthereumDIDRegistryV2) getAuthV2(ctx context.Context, fromAddress common.Address, signerFn bind.SignerFn) *bind.TransactOpts {
+func (e *DIDContract) getAuthV2(ctx context.Context, fromAddress common.Address, signerFn bind.SignerFn, nonceRequired bool) (*bind.TransactOpts, error) {
+	var (
+		nonce uint64
+		err   error
+	)
+
+	if nonceRequired {
+		nonce, err = e.getNonce(ctx, fromAddress)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get nonce: %w", err)
+		}
+
+	}
+
 	// Create the auth with no send transaction to chain.
 	return &bind.TransactOpts{
 		From:     fromAddress,
-		Nonce:    big.NewInt(0),
+		Nonce:    big.NewInt(int64(nonce)),
 		Value:    big.NewInt(0),
 		GasLimit: uint64(200000),
 		GasPrice: big.NewInt(0),
 		Context:  ctx,
 		Signer:   signerFn,
 		NoSend:   true,
-	}
+	}, nil
 }
