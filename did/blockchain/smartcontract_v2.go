@@ -259,9 +259,10 @@ func (e *EthereumDIDRegistryV2) IssueDIDPayload(
 	slog.Info("IssueDIDPayload", "signerAddress", signerAddress, "didAddress", didAddress, "didType", didType, "epoch", epoch, "capId", capId)
 
 	payload, err := SolidityPacked(
-		[]string{"string", "address", "address", "uint8", "uint256", "bytes32"},
+		[]string{"string", "address", "address", "uint8", "uint64", "bytes32"},
 		[]string{Action, signerAddress, didAddress, strconv.Itoa(int(didType)), strconv.FormatUint(epoch, 10), capId},
 	)
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to pack solidity values: %w", err)
 	}

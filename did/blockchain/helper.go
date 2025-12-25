@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
-	"strconv"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -118,23 +117,46 @@ func SolidityPacked(types []string, values []string) ([]byte, error) {
 			encoded = addr.Bytes()
 
 		case abi.UintTy:
-			// Handle uint types (uint8, uint256, etc.)
-			if arg.Type.Size == 8 {
-				// uint8
-				val, err := strconv.ParseUint(value, 10, 8)
-				if err != nil {
-					return nil, fmt.Errorf("invalid uint8 %s: %w", value, err)
+			// Handle uint types according to Solidity's abi.encodePacked
+			// uint8: 1 byte, uint16: 2 bytes, uint32: 4 bytes, uint64: 8 bytes, uint256: 32 bytes
+			size := arg.Type.Size
+			val, ok := new(big.Int).SetString(value, 10)
+			if !ok {
+				return nil, fmt.Errorf("invalid uint value: %s", value)
+			}
+
+			switch size {
+			case 8: // uint8
+				if val.Uint64() > 0xff {
+					return nil, fmt.Errorf("value %s exceeds uint8 max value", value)
 				}
-				encoded = []byte{byte(val)}
-			} else {
-				// uint256 or other large uint types
-				val, ok := new(big.Int).SetString(value, 10)
-				if !ok {
-					return nil, fmt.Errorf("invalid uint256: %s", value)
+				encoded = []byte{byte(val.Uint64())}
+			case 16: // uint16
+				if val.Uint64() > 0xffff {
+					return nil, fmt.Errorf("value %s exceeds uint16 max value", value)
 				}
-				// Convert to 32-byte big-endian representation
+				encoded = make([]byte, 2)
+				valBytes := val.Bytes()
+				copy(encoded[2-len(valBytes):], valBytes)
+			case 32: // uint32
+				if val.Uint64() > 0xffffffff {
+					return nil, fmt.Errorf("value %s exceeds uint32 max value", value)
+				}
+				encoded = make([]byte, 4)
+				valBytes := val.Bytes()
+				copy(encoded[4-len(valBytes):], valBytes)
+			case 64: // uint64
+				if val.BitLen() > 64 {
+					return nil, fmt.Errorf("value %s exceeds uint64 max value", value)
+				}
+				encoded = make([]byte, 8)
+				valBytes := val.Bytes()
+				copy(encoded[8-len(valBytes):], valBytes)
+			case 256: // uint256
 				encoded = make([]byte, 32)
 				val.FillBytes(encoded)
+			default:
+				return nil, fmt.Errorf("unsupported uint size: %d", size)
 			}
 
 		case abi.FixedBytesTy:
