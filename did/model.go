@@ -16,7 +16,7 @@ const (
 	TypeItem     DIDType = "item"
 	TypePeople   DIDType = "people"
 	TypeLocation DIDType = "location"
-	TypeDefault  DIDType = "default"
+	TypeActivity DIDType = "activity"
 )
 
 // KeyPair represents the generated wallet and DID identifier
@@ -77,4 +77,23 @@ type DID struct {
 
 type Secret struct {
 	PrivateKeyHex string `json:"privateKeyHex"`
+}
+
+func (didType DIDType) ToBlockchainType() blockchain.DIDType {
+	switch didType {
+	case TypePeople:
+		return blockchain.DIDTypePeople
+	case TypeItem:
+		return blockchain.DIDTypeItem
+	case TypeActivity:
+		return blockchain.DIDTypeActivity
+	case TypeLocation:
+		return blockchain.DIDTypeLocation
+	default:
+		return blockchain.DIDTypeItem
+	}
+}
+
+func ToBlockchainType(didType string) DIDType {
+	return DIDType(didType)
 }

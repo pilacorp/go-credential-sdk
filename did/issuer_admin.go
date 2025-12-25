@@ -17,7 +17,7 @@ type IssuerAdmin struct {
 
 // NewIssuerAdmin creates a new IssuerAdmin using the same defaults as DIDGenerator
 // when chainID or didAddress are not provided.
-func NewIssuerAdmin(chainID int64, didAddress string) (*IssuerAdmin, error) {
+func NewIssuerAdmin(chainID int64, didAddress string, rpcURL string) (*IssuerAdmin, error) {
 	if chainID == 0 {
 		chainID = defaultChainID
 	}
@@ -25,7 +25,7 @@ func NewIssuerAdmin(chainID int64, didAddress string) (*IssuerAdmin, error) {
 		didAddress = defaultDIDAddress
 	}
 
-	registry, err := blockchain.NewEthereumDIDRegistryV2(strings.TrimPrefix(didAddress, "0x"), chainID)
+	registry, err := blockchain.NewEthereumDIDRegistryV2(strings.TrimPrefix(didAddress, "0x"), chainID, rpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registry: %w", err)
 	}
