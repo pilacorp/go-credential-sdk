@@ -18,7 +18,7 @@ func TestIssueDIDPayload(t *testing.T) {
 	chainID := int64(704)
 	rpcURL := "http://localhost:8545"
 
-	registry, err := NewEthereumDIDRegistryV2(contractAddr, chainID, rpcURL)
+	registry, err := NewDIDContract(contractAddr, chainID, rpcURL)
 	if err != nil {
 		t.Skipf("Skipping test due to RPC connection error: %v", err)
 	}
