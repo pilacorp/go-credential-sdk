@@ -58,7 +58,7 @@ func NewDIDGeneratorV2(chainID int64, didAddress string, method string, rpcURL s
 func (d *DIDGeneratorV2) GenerateDID(
 	ctx context.Context,
 	sigSigner signer.Signer, // signs the cap payload (signer in SMC)
-	signerAddress string, // address param "signer" in createDID(...)
+	signerDID string, // address param "signer" in createDID(...)
 	didType blockchain.DIDType,
 	hash string,
 	capId string,
@@ -72,7 +72,7 @@ func (d *DIDGeneratorV2) GenerateDID(
 	}
 
 	// 2. Generate DID document
-	doc := d.generateDIDDocument(keyPair, didType, hash, metadata)
+	doc := d.generateDIDDocument(keyPair, didType, hash, metadata, signerDID)
 
 	// 3. Calculate document hash
 	docHash, err := doc.Hash()
@@ -81,6 +81,9 @@ func (d *DIDGeneratorV2) GenerateDID(
 	}
 
 	// 4. Create payload to sign for _requireValidCapCreate(...)
+	parts := strings.Split(signerDID, ":")
+	signerAddress := parts[len(parts)-1]
+
 	payload, err := d.registry.IssueDIDPayload(
 		ctx,
 		signerAddress,
@@ -176,7 +179,7 @@ func (d *DIDGeneratorV2) createKeyPairFromECDSA(privateKey *ecdsa.PrivateKey) (*
 }
 
 // generateDIDDocument creates a DID document from a key pair and request metadata
-func (d *DIDGeneratorV2) generateDIDDocument(keyPair *KeyPair, didType blockchain.DIDType, hash string, metadata map[string]interface{}) *DIDDocument {
+func (d *DIDGeneratorV2) generateDIDDocument(keyPair *KeyPair, didType blockchain.DIDType, hash string, metadata map[string]interface{}, signerDID string) *DIDDocument {
 	docMetadata := make(map[string]interface{})
 
 	// Copy existing metadata if present
@@ -194,7 +197,7 @@ func (d *DIDGeneratorV2) generateDIDDocument(keyPair *KeyPair, didType blockchai
 			"https://www.w3.org/ns/did/v1",
 		},
 		Id:         keyPair.Identifier,
-		Controller: keyPair.Identifier,
+		Controller: signerDID,
 		VerificationMethod: []VerificationMethod{{
 			Id:           keyPair.Identifier + "#key-1",
 			Type:         "EcdsaSecp256k1VerificationKey2019",
