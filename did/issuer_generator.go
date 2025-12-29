@@ -8,6 +8,40 @@ import (
 	"github.com/pilacorp/go-credential-sdk/did/signer"
 )
 
+type IssuerConfig struct {
+	ChainID    int64
+	DIDAddress string
+	RPCURL     string
+}
+
+type OptionIssuer func(*IssuerConfig)
+
+func WithChainID(chainID int64) OptionIssuer {
+	return func(c *IssuerConfig) {
+		c.ChainID = chainID
+	}
+}
+
+func WithDIDAddress(didAddress string) OptionIssuer {
+	return func(c *IssuerConfig) {
+		c.DIDAddress = didAddress
+	}
+}
+
+func WithRPCURL(rpcURL string) OptionIssuer {
+	return func(c *IssuerConfig) {
+		c.RPCURL = rpcURL
+	}
+}
+
+func WithIssuerConfig(config *IssuerConfig) OptionIssuer {
+	return func(c *IssuerConfig) {
+		c.ChainID = config.ChainID
+		c.DIDAddress = config.DIDAddress
+		c.RPCURL = config.RPCURL
+	}
+}
+
 // IssuerGenerator provides helpers for admin operations on the DID registry smart contract,
 // such as granting ISSUER_ROLE to new issuers.
 type IssuerGenerator struct {
@@ -16,15 +50,17 @@ type IssuerGenerator struct {
 
 // NewIssuerGenerator creates a new IssuerAdmin using the same defaults as DIDGenerator
 // when chainID or didAddress are not provided.
-func NewIssuerGenerator(chainID int64, didAddress string, rpcURL string) (*IssuerGenerator, error) {
-	if chainID == 0 {
-		chainID = defaultChainID
+func NewIssuerGenerator(options ...OptionIssuer) (*IssuerGenerator, error) {
+	config := executeOptionsIssuer(options...)
+
+	if config.ChainID == 0 {
+		config.ChainID = defaultChainIDV2
 	}
-	if didAddress == "" {
-		didAddress = defaultDIDAddress
+	if config.DIDAddress == "" {
+		config.DIDAddress = defaultDIDAddressV2
 	}
 
-	registry, err := blockchain.NewDIDContract(didAddress, chainID, rpcURL)
+	registry, err := blockchain.NewDIDContract(config.DIDAddress, config.ChainID, config.RPCURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registry: %w", err)
 	}
@@ -48,4 +84,18 @@ func (a *IssuerGenerator) AddIssuerTx(
 	}
 
 	return a.registry.AddIssuerTx(ctx, txSigner, signerAddress, issuerAddress, permissions)
+}
+
+func executeOptionsIssuer(options ...OptionIssuer) *IssuerConfig {
+	configIssuer := &IssuerConfig{
+		ChainID:    defaultChainIDV2,
+		DIDAddress: defaultDIDAddressV2,
+		RPCURL:     defaultRPCV2,
+	}
+
+	for _, opt := range options {
+		opt(configIssuer)
+	}
+
+	return configIssuer
 }

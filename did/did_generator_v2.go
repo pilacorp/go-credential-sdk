@@ -2,7 +2,6 @@ package did
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"fmt"
 	"strings"
 
@@ -13,45 +12,87 @@ import (
 )
 
 const (
-	defaultChainID    = int64(6789)
-	defaultDIDAddress = "0x0000000000000000000000000000000000018888"
-	defaultMethod     = "did:nda"
+	defaultRPCV2        = "https://rpc-testnet-new.pila.vn"
+	defaultChainIDV2    = int64(704)
+	defaultDIDAddressV2 = "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"
+	defaultMethodV2     = "did:nda"
+	defaultEpochV2      = uint64(0)
 )
+
+type ConfigV2 struct {
+	RPC        string
+	ChainID    int64
+	DIDAddress string
+	Method     string
+	Epoch      uint64
+	CapID      string
+}
+
+type OptionV2 func(*ConfigV2)
+
+func WithRPCV2(rpc string) OptionV2 {
+	return func(c *ConfigV2) {
+		c.RPC = rpc
+	}
+}
+
+func WithChainIDV2(chainID int64) OptionV2 {
+	return func(c *ConfigV2) {
+		c.ChainID = chainID
+	}
+}
+
+func WithDIDAddressV2(didAddress string) OptionV2 {
+	return func(c *ConfigV2) {
+		c.DIDAddress = didAddress
+	}
+}
+
+func WithMethodV2(method string) OptionV2 {
+	return func(c *ConfigV2) {
+		c.Method = method
+	}
+}
+
+func WithEpochV2(epoch uint64) OptionV2 {
+	return func(c *ConfigV2) {
+		c.Epoch = epoch
+	}
+}
+
+func WithConfigV2(config *ConfigV2) OptionV2 {
+	return func(c *ConfigV2) {
+		c.RPC = config.RPC
+		c.ChainID = config.ChainID
+		c.DIDAddress = config.DIDAddress
+		c.Method = config.Method
+		c.Epoch = config.Epoch
+	}
+}
 
 // DIDGenerator handles DID generation and transaction creation
 type DIDGeneratorV2 struct {
-	chainID    int64
-	didAddress string
-	method     string
-	registry   *blockchain.DIDContract
+	chainID         int64
+	contractAddress string
+	method          string
+	registry        *blockchain.DIDContract
 }
 
 // NewDIDGenerator creates a new DIDGenerator with default values
-func NewDIDGeneratorV2(chainID int64, didAddress string, method string, rpcURL string) (*DIDGeneratorV2, error) {
-	g := &DIDGeneratorV2{
-		chainID:    defaultChainID,
-		didAddress: defaultDIDAddress,
-		method:     defaultMethod,
-	}
+func NewDIDGeneratorV2(options ...OptionV2) (*DIDGeneratorV2, error) {
+	configV2 := executeOptionsV2(options...)
 
-	if chainID != 0 {
-		g.chainID = chainID
-	}
-	if didAddress != "" {
-		g.didAddress = didAddress
-	}
-	if method != "" {
-		g.method = method
-	}
-
-	registry, err := blockchain.NewDIDContract(g.didAddress, g.chainID, rpcURL)
+	registry, err := blockchain.NewDIDContract(configV2.DIDAddress, configV2.ChainID, configV2.RPC)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registry: %w", err)
 	}
 
-	g.registry = registry
-
-	return g, nil
+	return &DIDGeneratorV2{
+		chainID:         configV2.ChainID,
+		contractAddress: configV2.DIDAddress,
+		method:          configV2.Method,
+		registry:        registry,
+	}, nil
 }
 
 // GenerateDID generates a new DID with a newly created key pair
@@ -61,18 +102,19 @@ func (d *DIDGeneratorV2) GenerateDID(
 	signerDID string, // address param "signer" in createDID(...)
 	didType blockchain.DIDType,
 	hash string,
-	capId string,
-	epoch uint64,
 	metadata map[string]interface{},
+	options ...OptionV2,
 ) (*DID, error) {
+	configV2 := executeOptionsV2(options...)
+
 	// 1. Generate a new key pair (this DID will be msg.sender on-chain)
-	keyPair, err := d.generateECDSADID()
+	keyPair, err := generateECDSADID(configV2.Method)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate key pair: %w", err)
 	}
 
 	// 2. Generate DID document
-	doc := d.generateDIDDocument(keyPair, didType, hash, metadata, signerDID)
+	doc := generateDIDDocument(keyPair, didType, hash, metadata, signerDID)
 
 	// 3. Calculate document hash
 	docHash, err := doc.Hash()
@@ -89,8 +131,8 @@ func (d *DIDGeneratorV2) GenerateDID(
 		signerAddress,
 		keyPair.Address, // did (msg.sender)
 		didType,
-		capId,
-		epoch,
+		configV2.CapID,
+		configV2.Epoch,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create payload: %w", err)
@@ -122,7 +164,7 @@ func (d *DIDGeneratorV2) GenerateDID(
 		signerAddress,   // signer param
 		keyPair.Address, // msg.sender (did)
 		docHash,
-		capId,
+		configV2.CapID,
 		txSigner,
 		didType,
 	)
@@ -148,66 +190,24 @@ func (d *DIDGeneratorV2) GetCapabilityEpoch(ctx context.Context, signerAddress s
 	return d.registry.GetCapabilityEpoch(ctx, signerAddress)
 }
 
-// generateECDSADID generates a new ECDSA key pair and creates a KeyPair
-func (d *DIDGeneratorV2) generateECDSADID() (*KeyPair, error) {
-	privateKey, err := crypto.GenerateKey()
+func executeOptionsV2(options ...OptionV2) *ConfigV2 {
+	capId, err := RandomHex(32)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate private key: %w", err)
+		panic(fmt.Errorf("failed to generate cap id: %w", err))
 	}
 
-	return d.createKeyPairFromECDSA(privateKey)
-}
-
-// createKeyPairFromECDSA creates a KeyPair from an ECDSA private key
-func (d *DIDGeneratorV2) createKeyPairFromECDSA(privateKey *ecdsa.PrivateKey) (*KeyPair, error) {
-	publicKeyECDSA, ok := privateKey.Public().(*ecdsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("failed to cast public key to ECDSA")
+	configV2 := &ConfigV2{
+		RPC:        defaultRPCV2,
+		ChainID:    defaultChainIDV2,
+		DIDAddress: defaultDIDAddressV2,
+		Method:     defaultMethodV2,
+		Epoch:      defaultEpochV2,
+		CapID:      capId,
 	}
 
-	address := strings.ToLower(crypto.PubkeyToAddress(*publicKeyECDSA).Hex())
-	privateKeyHex := strings.ToLower("0x" + fmt.Sprintf("%x", crypto.FromECDSA(privateKey)))
-	publicKeyHex := strings.ToLower("0x" + fmt.Sprintf("%x", crypto.CompressPubkey(publicKeyECDSA)))
-	identifier := strings.ToLower(fmt.Sprintf("%s:%s", d.method, address))
-
-	return &KeyPair{
-		Address:    address,
-		PublicKey:  publicKeyHex,
-		PrivateKey: privateKeyHex,
-		Identifier: identifier,
-	}, nil
-}
-
-// generateDIDDocument creates a DID document from a key pair and request metadata
-func (d *DIDGeneratorV2) generateDIDDocument(keyPair *KeyPair, didType blockchain.DIDType, hash string, metadata map[string]interface{}, signerDID string) *DIDDocument {
-	docMetadata := make(map[string]interface{})
-
-	// Copy existing metadata if present
-	for k, v := range metadata {
-		docMetadata[k] = v
+	for _, opt := range options {
+		opt(configV2)
 	}
 
-	// Always set type and hash
-	docMetadata["type"] = didType.ToString()
-	docMetadata["hash"] = hash
-
-	document := &DIDDocument{
-		Context: []string{
-			"https://w3id.org/security/v1",
-			"https://www.w3.org/ns/did/v1",
-		},
-		Id:         keyPair.Identifier,
-		Controller: signerDID,
-		VerificationMethod: []VerificationMethod{{
-			Id:           keyPair.Identifier + "#key-1",
-			Type:         "EcdsaSecp256k1VerificationKey2019",
-			Controller:   keyPair.Identifier,
-			PublicKeyHex: keyPair.PublicKey,
-		}},
-		Authentication:   []string{keyPair.Identifier + "#key-1"},
-		AssertionMethod:  []string{keyPair.Identifier + "#key-1"},
-		DocumentMetadata: docMetadata,
-	}
-
-	return document
+	return configV2
 }
