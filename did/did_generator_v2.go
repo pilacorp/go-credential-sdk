@@ -106,23 +106,37 @@ func (d *DIDGeneratorV2) GenerateDID(
 	options ...OptionV2,
 ) (*DID, error) {
 	configV2 := executeOptionsV2(options...)
-
-	// 1. Generate a new key pair (this DID will be msg.sender on-chain)
+	// Generate a new key pair (this DID will be msg.sender on-chain)
 	keyPair, err := generateECDSADID(configV2.Method)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate key pair: %w", err)
 	}
 
-	// 2. Generate DID document
+	return d.GenerateCreateDIDTx(ctx, sigSigner, signerDID, didType, keyPair, hash, metadata, options...)
+}
+
+func (d *DIDGeneratorV2) GenerateCreateDIDTx(
+	ctx context.Context,
+	sigSigner signer.Signer,
+	signerDID string,
+	didType blockchain.DIDType,
+	keyPair *KeyPair,
+	hash string,
+	metadata map[string]interface{},
+	options ...OptionV2,
+) (*DID, error) {
+	configV2 := executeOptionsV2(options...)
+
+	// 1. Generate DID document
 	doc := generateDIDDocument(keyPair, didType, hash, metadata, signerDID)
 
-	// 3. Calculate document hash
+	// 2. Calculate document hash
 	docHash, err := doc.Hash()
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash DID document: %w", err)
 	}
 
-	// 4. Create payload to sign for _requireValidCapCreate(...)
+	// 3. Create payload to sign for _requireValidCapCreate(...)
 	parts := strings.Split(signerDID, ":")
 	signerAddress := parts[len(parts)-1]
 
@@ -140,7 +154,7 @@ func (d *DIDGeneratorV2) GenerateDID(
 
 	hashPayload := crypto.Keccak256(payload)
 
-	// 5. Sign the payload using sigSigner (this becomes v,r,s)
+	// 4. Sign the payload using sigSigner (this becomes v,r,s)
 	signatureBytes, err := sigSigner.Sign(hashPayload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign payload: %w", err)
@@ -151,13 +165,13 @@ func (d *DIDGeneratorV2) GenerateDID(
 		return nil, fmt.Errorf("failed to convert signature: %w", err)
 	}
 
-	// 6. Create transaction signer for msg.sender (the DID keypair)
+	// 5. Create transaction signer for msg.sender (the DID keypair)
 	txSigner, err := signer.NewDefaultSigner(keyPair.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tx signer: %w", err)
 	}
 
-	// 7. Create DID transaction (matches new createDID signature)
+	// 6. Create DID transaction (matches new createDID signature)
 	txResult, err := d.registry.CreateDIDTx(
 		ctx,
 		signature,
