@@ -69,9 +69,9 @@ type VerificationMethod struct {
 }
 
 type DID struct {
-	DID         string                 `json:"did"`
-	Secret      Secret                 `json:"secret"`
-	Document    DIDDocument            `json:"document"`
+	DID         string                    `json:"did"`
+	Secret      Secret                    `json:"secret"`
+	Document    DIDDocument               `json:"document"`
 	Transaction blockchain.SubmitTxResult `json:"transaction"`
 }
 
@@ -94,6 +94,17 @@ func (didType DIDType) ToBlockchainType() blockchain.DIDType {
 	}
 }
 
-func ToBlockchainType(didType string) DIDType {
-	return DIDType(didType)
+func ToBlockchainType(didType string) blockchain.DIDType {
+	switch didType {
+	case "people":
+		return blockchain.DIDTypePeople
+	case "item":
+		return blockchain.DIDTypeItem
+	case "activity":
+		return blockchain.DIDTypeActivity
+	case "location":
+		return blockchain.DIDTypeLocation
+	default:
+		return blockchain.DIDTypeItem
+	}
 }
