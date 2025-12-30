@@ -11,23 +11,24 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-type Signer interface {
+type SignerProvider interface {
 	Sign(payload []byte) ([]byte, error)
+	GetAddress() string
 }
 
-type DefaultSigner struct {
+type DefaultProvider struct {
 	priv *ecdsa.PrivateKey
 }
 
-func NewDefaultSigner(privHex string) (Signer, error) {
+func NewDefaultProvider(privHex string) (SignerProvider, error) {
 	priv, err := crypto.HexToECDSA(strings.TrimPrefix(privHex, "0x"))
 	if err != nil {
 		return nil, err
 	}
-	return &DefaultSigner{priv: priv}, nil
+	return &DefaultProvider{priv: priv}, nil
 }
 
-func (s *DefaultSigner) Sign(hashPayload []byte) ([]byte, error) {
+func (s *DefaultProvider) Sign(hashPayload []byte) ([]byte, error) {
 	signature, err := crypto.Sign(hashPayload, s.priv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign payload: %w", err)
@@ -40,9 +41,13 @@ func (s *DefaultSigner) Sign(hashPayload []byte) ([]byte, error) {
 	return signature, nil
 }
 
-// TxSignerFn creates a bind.SignerFn-compatible function using a generic Signer.
-// It hashes the transaction with EIP-155 and signs it via the provided Signer.
-func TxSignerFn(chainID *big.Int, s Signer) func(address common.Address, tx *types.Transaction) (*types.Transaction, error) {
+func (s *DefaultProvider) GetAddress() string {
+	return crypto.PubkeyToAddress(s.priv.PublicKey).Hex()
+}
+
+// TxSignerFn creates a bind.SignerFn-compatible function using a generic SignerProvider.
+// It hashes the transaction with EIP-155 and signs it via the provided SignerProvider.
+func TxSignerFn(chainID *big.Int, s SignerProvider) func(address common.Address, tx *types.Transaction) (*types.Transaction, error) {
 	return func(address common.Address, tx *types.Transaction) (*types.Transaction, error) {
 		eip155Signer := types.NewEIP155Signer(chainID)
 		h := eip155Signer.Hash(tx)

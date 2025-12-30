@@ -48,7 +48,7 @@ func (d *DIDGenerator) GenerateDID(ctx context.Context, newDID CreateDID) (*DID,
 	// Create DID document
 	doc := generateDIDDocument(
 		did,
-		newDID.Type.ToBlockchainType(),
+		newDID.Type,
 		newDID.Hash,
 		newDID.Metadata,
 		did.Identifier,

@@ -17,11 +17,19 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/pilacorp/go-credential-sdk/did/signer"
+	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
-//go:embed did-contract/did_registry_smc_abi_v2.json
-var smcABIJSONV2 []byte
+//go:embed did-contract/did_registry_smc_abi.json
+var smcABIJSON []byte
+
+// HardhatArtifact struct is restored to parse the ABI file.
+type HardhatArtifact struct {
+	Format       string          `json:"_format"`
+	ContractName string          `json:"contractName"`
+	SourceName   string          `json:"sourceName"`
+	ABI          json.RawMessage `json:"abi"`
+}
 
 type DIDType uint8
 
@@ -44,6 +52,21 @@ func (didType DIDType) ToString() string {
 		return "location"
 	default:
 		return "item"
+	}
+}
+
+func ParseDIDType(didType string) (DIDType, error) {
+	switch didType {
+	case "people":
+		return DIDTypePeople, nil
+	case "item":
+		return DIDTypeItem, nil
+	case "activity":
+		return DIDTypeActivity, nil
+	case "location":
+		return DIDTypeLocation, nil
+	default:
+		return 0, fmt.Errorf("invalid DID type: %s", didType)
 	}
 }
 
@@ -80,7 +103,7 @@ func NewDIDContract(address string, chainID int64, rpcURL string) (*DIDContract,
 
 	// Parse JSON from embedded ABI file
 	var artifact HardhatArtifact
-	err = json.Unmarshal(smcABIJSONV2, &artifact)
+	err = json.Unmarshal(smcABIJSON, &artifact)
 	if err != nil {
 		slog.ErrorContext(context.Background(), "Error parsing smc abi JSON", "error", err)
 		return nil, fmt.Errorf("error parsing smc abi JSON: %v", err)
@@ -107,13 +130,13 @@ func NewDIDContract(address string, chainID int64, rpcURL string) (*DIDContract,
 func (e *DIDContract) CreateDIDTx(
 	ctx context.Context,
 	issuerSig *Signature,
-	signerAddress, didAddress, docHash, capId string, // capId NEW, deadline removed
-	txSigner signer.Signer,
+	didAddress, docHash, capId string, // capId NEW, deadline removed
+	txProvider signer.SignerProvider,
 	didType DIDType,
 ) (*SubmitTxResult, error) {
 	// 1. Auth for msg.sender = didAddress
 	fromAddress := common.HexToAddress(didAddress)
-	auth, err := e.getAuthV2(ctx, fromAddress, signer.TxSignerFn(e.chainID, txSigner), false)
+	auth, err := e.getAuthV2(ctx, fromAddress, signer.TxSignerFn(e.chainID, txProvider), false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth: %w", err)
 	}
@@ -152,14 +175,12 @@ func (e *DIDContract) CreateDIDTx(
 	copy(r[32-len(rBytes):], rBytes)
 	copy(s[32-len(sBytes):], sBytes)
 
-	signerAddr := common.HexToAddress(signerAddress)
-
 	// 5. Transact with NEW arg list:
 	// createDID(address signer, DIDType didType, bytes32 docHash, bytes32 capId, uint8 v, bytes32 r, bytes32 s)
 	tx, err := e.contract.Transact(
 		auth,
 		"createDID",
-		signerAddr,
+		common.HexToAddress(txProvider.GetAddress()),
 		didType,
 		docHashBytes32,
 		capIdBytes32,
@@ -184,9 +205,9 @@ func (e *DIDContract) CreateDIDTx(
 }
 
 // AddIssuerTx creates a new addIssuer transaction.
-func (e *DIDContract) AddIssuerTx(ctx context.Context, txSigner signer.Signer, signerAddress, issuerAddress string, permissions []DIDType) (*SubmitTxResult, error) {
+func (e *DIDContract) AddIssuerTx(ctx context.Context, txProvider signer.SignerProvider, signerAddress, issuerAddress string, permissions []DIDType) (*SubmitTxResult, error) {
 	// 1. create auth using the transaction signer.
-	auth, err := e.getAuthV2(ctx, common.HexToAddress(signerAddress), signer.TxSignerFn(e.chainID, txSigner), true)
+	auth, err := e.getAuthV2(ctx, common.HexToAddress(signerAddress), signer.TxSignerFn(e.chainID, txProvider), true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth: %w", err)
 	}

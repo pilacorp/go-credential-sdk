@@ -1,4 +1,4 @@
-package did
+package didv2
 
 import (
 	"crypto/ecdsa"
@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/pilacorp/go-credential-sdk/didv2/blockchain"
 )
 
 // generateECDSADID generates a new ECDSA key pair and creates a KeyPair
@@ -40,7 +41,7 @@ func generateECDSADID(method string) (*KeyPair, error) {
 }
 
 // generateDIDDocument creates a DID document from a key pair and request metadata
-func generateDIDDocument(keyPair *KeyPair, didType DIDType, hash string, metadata map[string]interface{}, signerDID string) *DIDDocument {
+func generateDIDDocument(keyPair *KeyPair, didType blockchain.DIDType, hash string, metadata map[string]interface{}, signerDID string) *DIDDocument {
 	docMetadata := make(map[string]interface{})
 
 	// Copy existing metadata if present
@@ -49,7 +50,7 @@ func generateDIDDocument(keyPair *KeyPair, didType DIDType, hash string, metadat
 	}
 
 	// Always set type and hash
-	docMetadata["type"] = string(didType)
+	docMetadata["type"] = didType.ToString()
 	docMetadata["hash"] = hash
 
 	document := &DIDDocument{
