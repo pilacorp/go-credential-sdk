@@ -18,6 +18,7 @@ const (
 	defaultDIDAddress = "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"
 	defaultMethod     = "did:nda"
 	defaultEpoch      = uint64(0)
+	defaultNonce      = uint64(0)
 )
 
 type DIDConfig struct {
@@ -26,9 +27,11 @@ type DIDConfig struct {
 	DIDAddress     string
 	Method         string
 	SignerProvider signer.SignerProvider
+	Nonce          uint64 // optional, default 0
 	Epoch          uint64 // optional, default 0
 	CapID          string // optional, auto-generated random hex if not provided
-	SyncEpoch      bool   // optional, default false
+	syncEpoch      bool   // optional, default false, if true, will sync the epoch from the blockchain
+	syncNonce      bool   // optional, default false, if true, will sync the nonce from the blockchain
 }
 
 type DIDOption func(*DIDConfig)
@@ -71,7 +74,13 @@ func WithSignerProvider(signerProvider signer.SignerProvider) DIDOption {
 
 func WithSyncEpoch(syncEpoch bool) DIDOption {
 	return func(c *DIDConfig) {
-		c.SyncEpoch = syncEpoch
+		c.syncEpoch = syncEpoch
+	}
+}
+
+func WithSyncNonce(syncNonce bool) DIDOption {
+	return func(c *DIDConfig) {
+		c.syncNonce = syncNonce
 	}
 }
 
@@ -174,7 +183,7 @@ func (d *DIDGenerator) ReGenerateDID(
 		return nil, fmt.Errorf("signer provider is required")
 	}
 
-	if config.SyncEpoch {
+	if config.syncEpoch {
 		epoch, err := d.registry.GetCapabilityEpoch(ctx, config.SignerProvider.GetAddress())
 		if err != nil {
 			return nil, fmt.Errorf("failed to get capability epoch: %w", err)
@@ -228,7 +237,16 @@ func (d *DIDGenerator) ReGenerateDID(
 		return nil, fmt.Errorf("failed to create tx provider: %w", err)
 	}
 
-	// 6. Create DID transaction (matches new createDID signature)
+	// 6. Get nonce from blockchain if syncNonce is true
+	if config.syncNonce {
+		nonce, err := d.GetNonce(ctx, txProvider.GetAddress())
+		if err != nil {
+			return nil, fmt.Errorf("failed to get nonce: %w", err)
+		}
+		config.Nonce = nonce
+	}
+
+	// 7. Create DID transaction (matches new createDID signature)
 	txResult, err := d.registry.CreateDIDTx(
 		ctx,
 		signature,
@@ -237,6 +255,7 @@ func (d *DIDGenerator) ReGenerateDID(
 		config.CapID,
 		txProvider,
 		didType,
+		config.Nonce,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DID transaction: %w", err)
@@ -278,6 +297,9 @@ func (d *DIDGenerator) executeOptions(options ...DIDOption) (*DIDConfig, error) 
 		Method:     d.method,
 		Epoch:      d.epoch,
 		CapID:      capID,
+		Nonce:      defaultNonce,
+		syncEpoch:  false,
+		syncNonce:  false,
 	}
 
 	for _, opt := range options {

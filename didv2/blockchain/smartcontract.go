@@ -133,10 +133,11 @@ func (e *DIDContract) CreateDIDTx(
 	didAddress, docHash, capId string, // capId NEW, deadline removed
 	txProvider signer.SignerProvider,
 	didType DIDType,
+	nonce uint64,
 ) (*SubmitTxResult, error) {
 	// 1. Auth for msg.sender = didAddress
 	fromAddress := common.HexToAddress(didAddress)
-	auth, err := e.getAuthV2(ctx, fromAddress, signer.TxSignerFn(e.chainID, txProvider), false)
+	auth, err := e.getAuthV2(ctx, fromAddress, signer.TxSignerFn(e.chainID, txProvider), int64(nonce))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth: %w", err)
 	}
@@ -205,9 +206,9 @@ func (e *DIDContract) CreateDIDTx(
 }
 
 // AddIssuerTx creates a new addIssuer transaction.
-func (e *DIDContract) AddIssuerTx(ctx context.Context, txProvider signer.SignerProvider, signerAddress, issuerAddress string, permissions []DIDType) (*SubmitTxResult, error) {
+func (e *DIDContract) AddIssuerTx(ctx context.Context, txProvider signer.SignerProvider, signerAddress, issuerAddress string, permissions []DIDType, nonce int) (*SubmitTxResult, error) {
 	// 1. create auth using the transaction signer.
-	auth, err := e.getAuthV2(ctx, common.HexToAddress(signerAddress), signer.TxSignerFn(e.chainID, txProvider), true)
+	auth, err := e.getAuthV2(ctx, common.HexToAddress(signerAddress), signer.TxSignerFn(e.chainID, txProvider), int64(nonce))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth: %w", err)
 	}
@@ -307,24 +308,11 @@ func (e *DIDContract) GetNonce(ctx context.Context, address common.Address) (uin
 }
 
 // getAuth gets the auth for the transaction using an abstract signer function.
-func (e *DIDContract) getAuthV2(ctx context.Context, fromAddress common.Address, signerFn bind.SignerFn, nonceRequired bool) (*bind.TransactOpts, error) {
-	var (
-		nonce uint64
-		err   error
-	)
-
-	if nonceRequired {
-		nonce, err = e.GetNonce(ctx, fromAddress)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get nonce: %w", err)
-		}
-
-	}
-
+func (e *DIDContract) getAuthV2(ctx context.Context, fromAddress common.Address, signerFn bind.SignerFn, nonce int64) (*bind.TransactOpts, error) {
 	// Create the auth with no send transaction to chain.
 	return &bind.TransactOpts{
 		From:     fromAddress,
-		Nonce:    big.NewInt(int64(nonce)),
+		Nonce:    big.NewInt(nonce),
 		Value:    big.NewInt(0),
 		GasLimit: uint64(200000),
 		GasPrice: big.NewInt(0),
