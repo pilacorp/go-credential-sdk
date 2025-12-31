@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/pilacorp/go-credential-sdk/didv2/blockchain"
@@ -27,6 +28,7 @@ type DIDConfig struct {
 	SignerProvider signer.SignerProvider
 	Epoch          uint64 // optional, default 0
 	CapID          string // optional, auto-generated random hex if not provided
+	SyncEpoch      bool   // optional, default false
 }
 
 type DIDOption func(*DIDConfig)
@@ -67,6 +69,12 @@ func WithSignerProvider(signerProvider signer.SignerProvider) DIDOption {
 	}
 }
 
+func WithSyncEpoch(syncEpoch bool) DIDOption {
+	return func(c *DIDConfig) {
+		c.SyncEpoch = syncEpoch
+	}
+}
+
 func WithDIDConfig(config *DIDConfig) DIDOption {
 	return func(c *DIDConfig) {
 		c.RPC = config.RPC
@@ -78,18 +86,37 @@ func WithDIDConfig(config *DIDConfig) DIDOption {
 
 // DIDGenerator handles DID generation and transaction creation
 type DIDGenerator struct {
+	rpc             string
 	chainID         int64
 	contractAddress string
 	method          string
+	epoch           uint64
 	registry        *blockchain.DIDContract
 	defaultProvider signer.SignerProvider
 }
 
 // NewDIDGenerator creates a new DIDGenerator with default values
 func NewDIDGenerator(options ...DIDOption) (*DIDGenerator, error) {
-	d := &DIDGenerator{}
+	d := &DIDGenerator{
+		rpc:             defaultRPC,
+		chainID:         defaultChainID,
+		contractAddress: defaultDIDAddress,
+		method:          defaultMethod,
+		epoch:           defaultEpoch,
+	}
 
-	config := d.executeOptions(options...)
+	config, err := d.executeOptions(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute options: %w", err)
+	}
+
+	if config.DIDAddress == "" {
+		return nil, fmt.Errorf("DID address is required")
+	}
+
+	if config.RPC == "" {
+		return nil, fmt.Errorf("RPC is required")
+	}
 
 	registry, err := blockchain.NewDIDContract(config.DIDAddress, config.ChainID, config.RPC)
 	if err != nil {
@@ -102,6 +129,8 @@ func NewDIDGenerator(options ...DIDOption) (*DIDGenerator, error) {
 		method:          config.Method,
 		registry:        registry,
 		defaultProvider: config.SignerProvider,
+		epoch:           config.Epoch,
+		rpc:             config.RPC,
 	}, nil
 }
 
@@ -113,9 +142,13 @@ func (d *DIDGenerator) GenerateDID(
 	metadata map[string]interface{},
 	options ...DIDOption,
 ) (*DID, error) {
-	config := d.executeOptions(options...)
+	config, err := d.executeOptions(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute options: %w", err)
+	}
+
 	// Generate a new key pair (this DID will be msg.sender on-chain)
-	keyPair, err := generateECDSADID(config.Method)
+	keyPair, err := GenerateECDSADID(config.Method)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate key pair: %w", err)
 	}
@@ -132,12 +165,27 @@ func (d *DIDGenerator) ReGenerateDID(
 	metadata map[string]interface{},
 	options ...DIDOption,
 ) (*DID, error) {
-	config := d.executeOptions(options...)
+	config, err := d.executeOptions(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute options: %w", err)
+	}
+
+	if config.SignerProvider == nil {
+		return nil, fmt.Errorf("signer provider is required")
+	}
+
+	if config.SyncEpoch {
+		epoch, err := d.registry.GetCapabilityEpoch(ctx, config.SignerProvider.GetAddress())
+		if err != nil {
+			return nil, fmt.Errorf("failed to get capability epoch: %w", err)
+		}
+		config.Epoch = epoch
+	}
 
 	signerDID := fmt.Sprintf("%s:%s", config.Method, config.SignerProvider.GetAddress())
-	
+
 	// 1. Generate DID document
-	doc := generateDIDDocument(keyPair, didType, hash, metadata, signerDID)
+	doc := GenerateDIDDocument(keyPair, didType, hash, metadata, signerDID)
 
 	// 2. Calculate document hash
 	docHash, err := doc.Hash()
@@ -212,18 +260,23 @@ func (d *DIDGenerator) GetCapabilityEpoch(ctx context.Context, signerAddress str
 	return d.registry.GetCapabilityEpoch(ctx, signerAddress)
 }
 
-func (d *DIDGenerator) executeOptions(options ...DIDOption) *DIDConfig {
+// GetNonce gets the nonce of a signer
+func (d *DIDGenerator) GetNonce(ctx context.Context, signerAddress string) (uint64, error) {
+	return d.registry.GetNonce(ctx, common.HexToAddress(signerAddress))
+}
+
+func (d *DIDGenerator) executeOptions(options ...DIDOption) (*DIDConfig, error) {
 	capID, err := RandomHex(32)
 	if err != nil {
-		panic(fmt.Errorf("failed to generate cap id: %w", err))
+		return nil, fmt.Errorf("failed to generate cap id: %w", err)
 	}
 
 	config := &DIDConfig{
-		RPC:        defaultRPC,
-		ChainID:    defaultChainID,
-		DIDAddress: defaultDIDAddress,
-		Method:     defaultMethod,
-		Epoch:      defaultEpoch,
+		RPC:        d.rpc,
+		ChainID:    d.chainID,
+		DIDAddress: d.contractAddress,
+		Method:     d.method,
+		Epoch:      d.epoch,
 		CapID:      capID,
 	}
 
@@ -235,5 +288,5 @@ func (d *DIDGenerator) executeOptions(options ...DIDOption) *DIDConfig {
 		config.SignerProvider = d.defaultProvider
 	}
 
-	return config
+	return config, nil
 }

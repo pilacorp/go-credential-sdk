@@ -297,7 +297,7 @@ func (e *DIDContract) IssueDIDPayload(
 }
 
 // get nonce from blockchain
-func (e *DIDContract) getNonce(ctx context.Context, address common.Address) (uint64, error) {
+func (e *DIDContract) GetNonce(ctx context.Context, address common.Address) (uint64, error) {
 	nonce, err := e.rpcClient.PendingNonceAt(ctx, address)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get nonce: %w", err)
@@ -314,7 +314,7 @@ func (e *DIDContract) getAuthV2(ctx context.Context, fromAddress common.Address,
 	)
 
 	if nonceRequired {
-		nonce, err = e.getNonce(ctx, fromAddress)
+		nonce, err = e.GetNonce(ctx, fromAddress)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get nonce: %w", err)
 		}

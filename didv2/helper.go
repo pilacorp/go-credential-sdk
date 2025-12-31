@@ -11,8 +11,8 @@ import (
 	"github.com/pilacorp/go-credential-sdk/didv2/blockchain"
 )
 
-// generateECDSADID generates a new ECDSA key pair and creates a KeyPair
-func generateECDSADID(method string) (*KeyPair, error) {
+// GenerateECDSADID generates a new ECDSA key pair and creates a KeyPair
+func GenerateECDSADID(method string) (*KeyPair, error) {
 	privateKey, err := crypto.GenerateKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate private key: %v", err)
@@ -40,8 +40,8 @@ func generateECDSADID(method string) (*KeyPair, error) {
 	return keyPair, nil
 }
 
-// generateDIDDocument creates a DID document from a key pair and request metadata
-func generateDIDDocument(keyPair *KeyPair, didType blockchain.DIDType, hash string, metadata map[string]interface{}, signerDID string) *DIDDocument {
+// GenerateDIDDocument creates a DID document from a key pair and request metadata
+func GenerateDIDDocument(keyPair *KeyPair, didType blockchain.DIDType, hash string, metadata map[string]interface{}, signerDID string) *DIDDocument {
 	docMetadata := make(map[string]interface{})
 
 	// Copy existing metadata if present
