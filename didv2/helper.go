@@ -50,8 +50,12 @@ func GenerateDIDDocument(keyPair *KeyPair, didType blockchain.DIDType, hash stri
 	}
 
 	// Always set type and hash
-	docMetadata["type"] = didType.ToString()
-	docMetadata["hash"] = hash
+	if didType.ToString() != "" {
+		docMetadata["type"] = didType.ToString()
+	}
+	if hash != "" {
+		docMetadata["hash"] = hash
+	}
 
 	document := &DIDDocument{
 		Context: []string{

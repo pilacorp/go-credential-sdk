@@ -49,8 +49,12 @@ func generateDIDDocument(keyPair *KeyPair, didType DIDType, hash string, metadat
 	}
 
 	// Always set type and hash
-	docMetadata["type"] = string(didType)
-	docMetadata["hash"] = hash
+	if didType != "" {
+		docMetadata["type"] = string(didType)
+	}
+	if hash != "" {
+		docMetadata["hash"] = hash
+	}
 
 	document := &DIDDocument{
 		Context: []string{
