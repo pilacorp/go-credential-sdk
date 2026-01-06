@@ -6,30 +6,49 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
 	"math/big"
-	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
+// -- Embeds & ABI Handling --
+
 //go:embed did-contract/did_registry_smc_abi.json
 var smcABIJSON []byte
 
-// HardhatArtifact struct is restored to parse the ABI file.
-type HardhatArtifact struct {
-	Format       string          `json:"_format"`
-	ContractName string          `json:"contractName"`
-	SourceName   string          `json:"sourceName"`
-	ABI          json.RawMessage `json:"abi"`
+var (
+	parsedABI    abi.ABI
+	parseABIOnce sync.Once
+	errParseABI  error
+)
+
+// loadABI ensures the ABI is parsed exactly once.
+func loadABI() (abi.ABI, error) {
+	parseABIOnce.Do(func() {
+		type hardhatArtifact struct {
+			ABI json.RawMessage `json:"abi"`
+		}
+		var artifact hardhatArtifact
+		if err := json.Unmarshal(smcABIJSON, &artifact); err != nil {
+			errParseABI = fmt.Errorf("failed to unmarshal artifact JSON: %w", err)
+			return
+		}
+		parsedABI, errParseABI = abi.JSON(strings.NewReader(string(artifact.ABI)))
+	})
+	return parsedABI, errParseABI
 }
+
+// -- Types --
 
 type DIDType uint8
 
@@ -40,8 +59,8 @@ const (
 	DIDTypeLocation DIDType = 4
 )
 
-func (didType DIDType) ToString() string {
-	switch didType {
+func (d DIDType) String() string {
+	switch d {
 	case DIDTypePeople:
 		return "people"
 	case DIDTypeItem:
@@ -51,12 +70,13 @@ func (didType DIDType) ToString() string {
 	case DIDTypeLocation:
 		return "location"
 	default:
-		return "item"
+		return "unknown"
 	}
 }
 
-func ParseDIDType(didType string) (DIDType, error) {
-	switch didType {
+// ParseDIDType converts a string to a DIDType.
+func ParseDIDType(s string) (DIDType, error) {
+	switch strings.ToLower(s) {
 	case "people":
 		return DIDTypePeople, nil
 	case "item":
@@ -66,125 +86,124 @@ func ParseDIDType(didType string) (DIDType, error) {
 	case "location":
 		return DIDTypeLocation, nil
 	default:
-		return 0, fmt.Errorf("invalid DID type: %s", didType)
+		return 0, fmt.Errorf("invalid DID type: %s", s)
 	}
 }
 
-// Signature represents the signature of a transaction
 type Signature struct {
 	V *big.Int
 	R *big.Int
 	S *big.Int
 }
 
-type DIDContract struct {
-	contract     *bind.BoundContract
-	chainID      *big.Int
-	contractAddr common.Address
-	rpcClient    *ethclient.Client
+// ClientConfig holds configuration for the DIDContract client.
+type ClientConfig struct {
+	RPCURL          string
+	ContractAddress string
+	ChainID         int64
+	// Optional: defaults to 0 if not set, suitable for gas-free subnets.
+	// For mainnet/L2, these should be configured or estimated dynamically.
+	GasPrice *big.Int
+	GasLimit uint64
 }
 
-// NewEthereumDIDRegistry creates a new instance of the Ethereum DID Registry client
-func NewDIDContract(address string, chainID int64, rpcURL string) (*DIDContract, error) {
-	if address == "" {
-		return nil, fmt.Errorf("invalid configuration: RPC URL or DID address missing")
+type DIDContract struct {
+	contract     *bind.BoundContract
+	client       *ethclient.Client
+	chainID      *big.Int
+	contractAddr common.Address
+	gasPrice     *big.Int
+	gasLimit     uint64
+}
+
+// -- Constructor --
+
+// NewDIDContract creates a new instance of the Ethereum DID Registry client.
+func NewDIDContract(cfg ClientConfig) (*DIDContract, error) {
+	if cfg.RPCURL == "" {
+		return nil, errors.New("RPC URL is required")
+	}
+	if cfg.ContractAddress == "" {
+		return nil, errors.New("contract address is required")
 	}
 
-	if rpcURL == "" {
-		return nil, fmt.Errorf("invalid configuration: RPC URL missing")
-	}
-
-	client, err := ethclient.Dial(rpcURL)
+	client, err := ethclient.Dial(cfg.RPCURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial RPC: %w", err)
 	}
 
-	contractAddr := common.HexToAddress(address)
-
-	// Parse JSON from embedded ABI file
-	var artifact HardhatArtifact
-	err = json.Unmarshal(smcABIJSON, &artifact)
+	contractABI, err := loadABI()
 	if err != nil {
-		slog.ErrorContext(context.Background(), "Error parsing smc abi JSON", "error", err)
-		return nil, fmt.Errorf("error parsing smc abi JSON: %v", err)
+		return nil, err
 	}
 
-	// Parse the ABI from the artifact
-	parsedABI, err := abi.JSON(strings.NewReader(string(artifact.ABI)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse ABI: %v", err)
-	}
+	addr := common.HexToAddress(cfg.ContractAddress)
+	contract := bind.NewBoundContract(addr, contractABI, client, client, nil)
 
-	// Create a new bound contract
-	contract := bind.NewBoundContract(contractAddr, parsedABI, client, client, nil)
+	// Set defaults if zero
+	gasLimit := cfg.GasLimit
+	if gasLimit == 0 {
+		gasLimit = 200000 // Default safety limit
+	}
+	gasPrice := cfg.GasPrice
+	if gasPrice == nil {
+		gasPrice = big.NewInt(0)
+	}
 
 	return &DIDContract{
 		contract:     contract,
-		chainID:      big.NewInt(chainID),
-		contractAddr: contractAddr,
-		rpcClient:    client,
+		client:       client,
+		chainID:      big.NewInt(cfg.ChainID),
+		contractAddr: addr,
+		gasPrice:     gasPrice,
+		gasLimit:     gasLimit,
 	}, nil
 }
 
+// -- Transaction Methods --
+
+type CreateDIDRequest struct {
+	IssuerSig     *Signature
+	IssuerAddress string
+	DocHash       string
+	CapID         string
+	TxProvider    signer.SignerProvider
+	DIDType       DIDType
+	Nonce         uint64
+}
+
 // CreateDIDTx creates a new DID transaction.
-func (e *DIDContract) CreateDIDTx(
-	ctx context.Context,
-	issuerSig *Signature,
-	issuerAddress, docHash, capId string,
-	txProvider signer.SignerProvider,
-	didType DIDType,
-	nonce uint64,
-) (*SubmitTxResult, error) {
-	// 1. Auth for msg.sender = didAddress
-	fromAddress := common.HexToAddress(txProvider.GetAddress())
-	auth, err := e.getAuthV2(ctx, fromAddress, signer.TxSignerFn(e.chainID, txProvider), int64(nonce))
+func (e *DIDContract) CreateDIDTx(ctx context.Context, req CreateDIDRequest) (*SubmitTxResult, error) {
+	// 1. Prepare Auth
+	auth, err := e.getTransactOpts(ctx, req.TxProvider, int64(req.Nonce))
 	if err != nil {
-		return nil, fmt.Errorf("failed to get auth: %w", err)
+		return nil, err
 	}
 
-	// 2. docHash -> bytes32
-	docHash = strings.TrimPrefix(docHash, "0x")
-	docHashBytes, err := hex.DecodeString(docHash)
+	// 2. Parse Hex Inputs
+	docHashBytes, err := hexToBytes32(req.DocHash)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode doc hash: %w", err)
+		return nil, fmt.Errorf("invalid docHash: %w", err)
 	}
-	if len(docHashBytes) != 32 {
-		return nil, fmt.Errorf("invalid docHash length: expected 32 bytes, got %d", len(docHashBytes))
-	}
-	var docHashBytes32 [32]byte
-	copy(docHashBytes32[:], docHashBytes)
-
-	// 3. capId -> bytes32
-	capId = strings.TrimPrefix(capId, "0x")
-	capIdBytes, err := hex.DecodeString(capId)
+	capIdBytes, err := hexToBytes32(req.CapID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode capId: %w", err)
+		return nil, fmt.Errorf("invalid capId: %w", err)
 	}
-	if len(capIdBytes) != 32 {
-		return nil, fmt.Errorf("invalid capId length: expected 32 bytes, got %d", len(capIdBytes))
-	}
-	var capIdBytes32 [32]byte
-	copy(capIdBytes32[:], capIdBytes)
 
-	// 4. signature v,r,s (pad r,s to 32 bytes)
-	v := uint8(issuerSig.V.Uint64())
+	// 3. Prepare Signature Components
+	v := uint8(req.IssuerSig.V.Uint64())
+	r := bytesToBytes32(req.IssuerSig.R.Bytes())
+	s := bytesToBytes32(req.IssuerSig.S.Bytes())
 
-	rBytes := issuerSig.R.Bytes()
-	sBytes := issuerSig.S.Bytes()
-
-	var r, s [32]byte
-	copy(r[32-len(rBytes):], rBytes)
-	copy(s[32-len(sBytes):], sBytes)
-
-	// 5. Transact with NEW arg list:
-	// createDID(address signer, DIDType didType, bytes32 docHash, bytes32 capId, uint8 v, bytes32 r, bytes32 s)
+	// 4. Build Transaction
+	// createDID(address,uint8,bytes32,bytes32,uint8,bytes32,bytes32)
 	tx, err := e.contract.Transact(
 		auth,
 		"createDID",
-		common.HexToAddress(issuerAddress),
-		didType,
-		docHashBytes32,
-		capIdBytes32,
+		common.HexToAddress(req.IssuerAddress),
+		req.DIDType,
+		docHashBytes,
+		capIdBytes,
 		v,
 		r,
 		s,
@@ -193,131 +212,120 @@ func (e *DIDContract) CreateDIDTx(
 		return nil, fmt.Errorf("failed to generate createDID Tx: %w", err)
 	}
 
-	// 6. Serialize tx
-	var buf bytes.Buffer
-	if err := rlp.Encode(&buf, tx); err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
-	}
-
-	return &SubmitTxResult{
-		TxHex:  hex.EncodeToString(buf.Bytes()),
-		TxHash: tx.Hash().Hex(),
-	}, nil
+	return serializeTx(tx)
 }
 
 // AddIssuerTx creates a new addIssuer transaction.
-func (e *DIDContract) AddIssuerTx(ctx context.Context, txProvider signer.SignerProvider, signerAddress, issuerAddress string, permissions []DIDType, nonce int) (*SubmitTxResult, error) {
-	// 1. create auth using the transaction signer.
-	auth, err := e.getAuthV2(ctx, common.HexToAddress(signerAddress), signer.TxSignerFn(e.chainID, txProvider), int64(nonce))
+func (e *DIDContract) AddIssuerTx(ctx context.Context, txProvider signer.SignerProvider, issuerAddress string, permissions []DIDType, nonce int) (*SubmitTxResult, error) {
+	auth, err := e.getTransactOpts(ctx, txProvider, int64(nonce))
 	if err != nil {
-		return nil, fmt.Errorf("failed to get auth: %w", err)
+		return nil, err
 	}
 
-	// 2. use contract to build createIssuer transaction.
 	tx, err := e.contract.Transact(auth, "addIssuer", common.HexToAddress(issuerAddress), permissions)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate addIssuer Tx: %v", err)
+		return nil, fmt.Errorf("failed to generate addIssuer Tx: %w", err)
 	}
 
-	// 3. serialize transaction to hex.
-	var buf bytes.Buffer
-	if err := rlp.Encode(&buf, tx); err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
-	}
-
-	return &SubmitTxResult{
-		TxHex:  hex.EncodeToString(buf.Bytes()),
-		TxHash: tx.Hash().Hex(),
-	}, nil
+	return serializeTx(tx)
 }
 
-func (e *DIDContract) GetCapabilityEpoch(
-	ctx context.Context,
-	signerAddr string,
-) (uint64, error) {
-	if signerAddr == "" {
-		return 0, fmt.Errorf("invalid configuration: signer address missing")
-	}
+// -- Read Methods --
 
-	signer := common.HexToAddress(signerAddr)
+func (e *DIDContract) GetCapabilityEpoch(ctx context.Context, signerAddr string) (uint64, error) {
+	if signerAddr == "" {
+		return 0, errors.New("signer address is required")
+	}
 
 	var out []interface{}
-	callOpts := &bind.CallOpts{
-		Context: ctx,
+	err := e.contract.Call(&bind.CallOpts{Context: ctx}, &out, "getCapabilityEpoch", common.HexToAddress(signerAddr))
+	if err != nil {
+		return 0, fmt.Errorf("contract call failed: %w", err)
 	}
 
-	if err := e.contract.Call(callOpts, &out, "getCapabilityEpoch", signer); err != nil {
-		return 0, fmt.Errorf("getCapabilityEpoch call failed: %w", err)
-	}
-
-	if len(out) != 1 {
-		return 0, fmt.Errorf("unexpected outputs len=%d", len(out))
+	if len(out) == 0 {
+		return 0, errors.New("contract returned no data")
 	}
 
 	epoch, ok := out[0].(uint64)
 	if !ok {
-		return 0, fmt.Errorf("unexpected output type: %T (value=%v)", out[0], out[0])
+		return 0, fmt.Errorf("unexpected output type: %T", out[0])
 	}
 
 	return epoch, nil
 }
 
-// IssueDIDPayload creates the signed payload used by _requireValidCapCreate(...).
-// It MUST match the Solidity hashing layout (type order + encodePacked).
-func (e *DIDContract) IssueDIDPayload(
-	_ context.Context,
-	signerAddress, didAddress string,
-	didType DIDType,
-	capId string,
-	epoch uint64,
-) ([]byte, error) {
-	// Normalize bytes32 hex inputs
-	capId = strings.TrimSpace(capId)
-	if !strings.HasPrefix(capId, "0x") {
-		capId = "0x" + capId
-	}
-	// Basic sanity: bytes32 is 32 bytes = 64 hex chars + "0x" => len 66
-	if len(capId) != 66 {
-		return nil, fmt.Errorf("invalid capId length: expected bytes32 hex (66 chars with 0x), got %d", len(capId))
-	}
-
-	// IMPORTANT: this action string must match the contract verifier exactly.
-	const Action = "CAP_CREATE"
-
-	payload, err := SolidityPacked(
-		[]string{"string", "address", "address", "uint8", "uint64", "bytes32"},
-		[]string{Action, signerAddress, didAddress, strconv.Itoa(int(didType)), strconv.FormatUint(epoch, 10), capId},
-	)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to pack solidity values: %w", err)
-	}
-
-	// Same EIP-191 wrapper you used previously
-	return CreateEIP191Payload(e.contractAddr, payload)
-}
-
-// get nonce from blockchain
 func (e *DIDContract) GetNonce(ctx context.Context, address common.Address) (uint64, error) {
-	nonce, err := e.rpcClient.PendingNonceAt(ctx, address)
+	nonce, err := e.client.PendingNonceAt(ctx, address)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get nonce: %w", err)
 	}
-
 	return nonce, nil
 }
 
-// getAuth gets the auth for the transaction using an abstract signer function.
-func (e *DIDContract) getAuthV2(ctx context.Context, fromAddress common.Address, signerFn bind.SignerFn, nonce int64) (*bind.TransactOpts, error) {
-	// Create the auth with no send transaction to chain.
+// -- Helpers --
+
+// hexToBytes32 decodes a hex string (with or without 0x) into a 32-byte array.
+func hexToBytes32(s string) ([32]byte, error) {
+	s = strings.TrimPrefix(s, "0x")
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if len(b) != 32 {
+		return [32]byte{}, fmt.Errorf("length must be 32 bytes, got %d", len(b))
+	}
+	var out [32]byte
+	copy(out[:], b)
+	return out, nil
+}
+
+// bytesToBytes32 copies a slice into a 32-byte array, left-padding if necessary is handled by standard big.Int behavior usually,
+// but here we align strictly to the end for standard Ethereum signatures (r/s).
+func bytesToBytes32(in []byte) [32]byte {
+	var out [32]byte
+	if len(in) > 32 {
+		// Truncate if too long (unlikely for standard R/S but safe to handle)
+		copy(out[:], in[len(in)-32:])
+	} else {
+		// Right-align (standard for numbers, though R/S usually come as exactly 32 bytes)
+		copy(out[32-len(in):], in)
+	}
+	return out
+}
+
+func serializeTx(tx *types.Transaction) (*SubmitTxResult, error) {
+	var buf bytes.Buffer
+	if err := rlp.Encode(&buf, tx); err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
+	}
+	return &SubmitTxResult{
+		TxHex:  hex.EncodeToString(buf.Bytes()),
+		TxHash: tx.Hash().Hex(),
+	}, nil
+}
+
+// getTransactOpts creates the auth options for a transaction.
+func (e *DIDContract) getTransactOpts(ctx context.Context, provider signer.SignerProvider, nonce int64) (*bind.TransactOpts, error) {
+	fromAddress := common.HexToAddress(provider.GetAddress())
+	signerFn := func(addr common.Address, tx *types.Transaction) (*types.Transaction, error) {
+		eip155Signer := types.NewEIP155Signer(e.chainID)
+		h := eip155Signer.Hash(tx)
+		sig, err := provider.Sign(h.Bytes())
+		if err != nil {
+			return nil, err
+		}
+		return tx.WithSignature(eip155Signer, sig)
+	}
+
 	return &bind.TransactOpts{
 		From:     fromAddress,
 		Nonce:    big.NewInt(nonce),
 		Value:    big.NewInt(0),
-		GasLimit: uint64(200000),
-		GasPrice: big.NewInt(0),
+		GasLimit: e.gasLimit,
+		GasPrice: e.gasPrice,
 		Context:  ctx,
 		Signer:   signerFn,
-		NoSend:   true,
+		NoSend:   true, // We are returning the raw TX, not sending it immediately
 	}, nil
 }

@@ -10,6 +10,8 @@ import (
 	"github.com/pilacorp/go-credential-sdk/didv2/jsoncanonicalizer"
 )
 
+// -- Types --
+
 type DIDType string
 
 const (
@@ -19,7 +21,7 @@ const (
 	TypeActivity DIDType = "activity"
 )
 
-// KeyPair represents the generated wallet and DID identifier
+// KeyPair represents the generated wallet and DID identifier.
 type KeyPair struct {
 	Address    string `json:"address"`
 	PublicKey  string `json:"publicKey"`
@@ -38,12 +40,32 @@ type DIDDocument struct {
 	Id                 string                 `json:"id"`
 	Controller         string                 `json:"controller"`
 	VerificationMethod []VerificationMethod   `json:"verificationMethod"`
-	Authentication     []string               `json:"authentication"` //=id
+	Authentication     []string               `json:"authentication"`
 	AssertionMethod    []string               `json:"assertionMethod"`
 	DocumentMetadata   map[string]interface{} `json:"didDocumentMetadata"`
 }
 
-// Hash calculates the Keccak256 hash of a DID document
+type VerificationMethod struct {
+	Id           string `json:"id"`
+	Type         string `json:"type"`
+	Controller   string `json:"controller"`
+	PublicKeyHex string `json:"publicKeyHex,omitempty"`
+}
+
+type DID struct {
+	DID         string                    `json:"did"`
+	Secret      Secret                    `json:"secret"`
+	Document    DIDDocument               `json:"document"`
+	Transaction blockchain.SubmitTxResult `json:"transaction"`
+}
+
+type Secret struct {
+	PrivateKeyHex string `json:"privateKeyHex"`
+}
+
+// -- Methods --
+
+// Hash calculates the Keccak256 hash of a DID document.
 func (doc *DIDDocument) Hash() (string, error) {
 	docJSON, err := json.Marshal(doc)
 	if err != nil {
@@ -56,27 +78,7 @@ func (doc *DIDDocument) Hash() (string, error) {
 	}
 
 	hash := crypto.Keccak256Hash(docToHash)
-
-	// Convert to hex string with 0x prefix
 	return strings.ToLower(hash.Hex()), nil
-}
-
-type VerificationMethod struct {
-	Id           string `json:"id"`
-	Type         string `json:"type"`                   //
-	Controller   string `json:"controller"`             //key
-	PublicKeyHex string `json:"publicKeyHex,omitempty"` // Return real public key
-}
-
-type DID struct {
-	DID         string                    `json:"did"`
-	Secret      Secret                    `json:"secret"`
-	Document    DIDDocument               `json:"document"`
-	Transaction blockchain.SubmitTxResult `json:"transaction"`
-}
-
-type Secret struct {
-	PrivateKeyHex string `json:"privateKeyHex"`
 }
 
 func (didType DIDType) ToBlockchainType() blockchain.DIDType {

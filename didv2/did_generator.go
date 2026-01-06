@@ -6,144 +6,55 @@ import (
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
-
 	"github.com/pilacorp/go-credential-sdk/didv2/blockchain"
 	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
-const (
-	defaultRPC        = "https://rpc-testnet-new.pila.vn"
-	defaultChainID    = int64(704)
-	defaultDIDAddress = "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"
-	defaultMethod     = "did:nda"
-	defaultEpoch      = uint64(0)
-	defaultNonce      = uint64(0)
-)
-
-type DIDConfig struct {
-	RPC            string
-	ChainID        int64
-	DIDAddress     string
-	Method         string
-	SignerProvider signer.SignerProvider
-	Nonce          uint64 // optional, default 0
-	Epoch          uint64 // optional, default 0
-	CapID          string // optional, auto-generated random hex if not provided
-	syncEpoch      bool   // optional, default false, if true, will sync the epoch from the blockchain
-	syncNonce      bool   // optional, default false, if true, will sync the nonce from the blockchain
-}
-
-type DIDOption func(*DIDConfig)
-
-func WithRPCV2(rpc string) DIDOption {
-	return func(c *DIDConfig) {
-		c.RPC = rpc
-	}
-}
-
-func WithDIDChainID(chainID int64) DIDOption {
-	return func(c *DIDConfig) {
-		c.ChainID = chainID
-	}
-}
-
-func WithDIDAddressSMC(didAddress string) DIDOption {
-	return func(c *DIDConfig) {
-		c.DIDAddress = didAddress
-	}
-}
-
-func WithMethod(method string) DIDOption {
-	return func(c *DIDConfig) {
-		c.Method = method
-	}
-}
-
-func WithEpoch(epoch uint64) DIDOption {
-	return func(c *DIDConfig) {
-		c.Epoch = epoch
-	}
-}
-
-func WithSignerProvider(signerProvider signer.SignerProvider) DIDOption {
-	return func(c *DIDConfig) {
-		c.SignerProvider = signerProvider
-	}
-}
-
-func WithSyncEpoch(syncEpoch bool) DIDOption {
-	return func(c *DIDConfig) {
-		c.syncEpoch = syncEpoch
-	}
-}
-
-func WithSyncNonce(syncNonce bool) DIDOption {
-	return func(c *DIDConfig) {
-		c.syncNonce = syncNonce
-	}
-}
-
-func WithDIDConfig(config *DIDConfig) DIDOption {
-	return func(c *DIDConfig) {
-		c.RPC = config.RPC
-		c.ChainID = config.ChainID
-		c.DIDAddress = config.DIDAddress
-		c.Method = config.Method
-	}
-}
-
-// DIDGenerator handles DID generation and transaction creation
+// DIDGenerator handles DID generation and transaction creation.
 type DIDGenerator struct {
-	rpc             string
-	chainID         int64
-	contractAddress string
-	method          string
-	epoch           uint64
-	registry        *blockchain.DIDContract
-	defaultProvider signer.SignerProvider
+	baseConfig DIDConfig
+	registry   *blockchain.DIDContract
 }
 
-// NewDIDGenerator creates a new DIDGenerator with default values
+// NewDIDGenerator creates a new DIDGenerator.
 func NewDIDGenerator(options ...DIDOption) (*DIDGenerator, error) {
-	d := &DIDGenerator{
-		rpc:             defaultRPC,
-		chainID:         defaultChainID,
-		contractAddress: defaultDIDAddress,
-		method:          defaultMethod,
-		epoch:           defaultEpoch,
+	cfg := DIDConfig{
+		RPC:           DefaultRPC,
+		ChainID:       DefaultChainID,
+		DIDSMCAddress: DefaultDIDSMCAddress,
+		Method:        DefaultMethod,
 	}
 
-	config, err := d.executeOptions(options...)
+	for _, opt := range options {
+		opt(&cfg)
+	}
+
+	if cfg.RPC == "" {
+		return nil, fmt.Errorf("RPC URL is required")
+	}
+	if cfg.DIDSMCAddress == "" {
+		return nil, fmt.Errorf("DID contract address is required")
+	}
+
+	clientCfg := blockchain.ClientConfig{
+		RPCURL:          cfg.RPC,
+		ContractAddress: cfg.DIDSMCAddress,
+		ChainID:         cfg.ChainID,
+		GasLimit:        300000,
+	}
+
+	registry, err := blockchain.NewDIDContract(clientCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute options: %w", err)
-	}
-
-	if config.DIDAddress == "" {
-		return nil, fmt.Errorf("DID address is required")
-	}
-
-	if config.RPC == "" {
-		return nil, fmt.Errorf("RPC is required")
-	}
-
-	registry, err := blockchain.NewDIDContract(config.DIDAddress, config.ChainID, config.RPC)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create registry: %w", err)
+		return nil, fmt.Errorf("failed to initialize blockchain client: %w", err)
 	}
 
 	return &DIDGenerator{
-		chainID:         config.ChainID,
-		contractAddress: config.DIDAddress,
-		method:          config.Method,
-		registry:        registry,
-		defaultProvider: config.SignerProvider,
-		epoch:           config.Epoch,
-		rpc:             config.RPC,
+		baseConfig: cfg,
+		registry:   registry,
 	}, nil
 }
 
-// GenerateDID generates a new DID with a newly created key pair
+// GenerateDID generates a new key pair and registers it as a DID.
 func (d *DIDGenerator) GenerateDID(
 	ctx context.Context,
 	didType blockchain.DIDType,
@@ -151,22 +62,18 @@ func (d *DIDGenerator) GenerateDID(
 	metadata map[string]interface{},
 	options ...DIDOption,
 ) (*DID, error) {
-	config, err := d.executeOptions(options...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute options: %w", err)
-	}
+	cfg := d.resolveConfig(options...)
 
-	// Generate a new key pair (this DID will be msg.sender on-chain)
-	keyPair, err := GenerateECDSADID(config.Method)
+	keyPair, err := GenerateECDSAKeyPair(cfg.Method)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate key pair: %w", err)
 	}
 
-	return d.ReGenerateDID(ctx, didType, keyPair, hash, metadata, options...)
+	return d.GenerateDIDTX(ctx, didType, keyPair, hash, metadata, options...)
 }
 
-// ReGenerateDID generates a createDID transaction for existing DID
-func (d *DIDGenerator) ReGenerateDID(
+// GenerateDIDTX creates a transaction to register an existing key pair.
+func (d *DIDGenerator) GenerateDIDTX(
 	ctx context.Context,
 	didType blockchain.DIDType,
 	keyPair *KeyPair,
@@ -174,141 +81,111 @@ func (d *DIDGenerator) ReGenerateDID(
 	metadata map[string]interface{},
 	options ...DIDOption,
 ) (*DID, error) {
-	config, err := d.executeOptions(options...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute options: %w", err)
+	cfg := d.resolveConfig(options...)
+
+	if cfg.SignerProvider == nil {
+		return nil, fmt.Errorf("signer provider is required to authorize creation")
 	}
 
-	if config.SignerProvider == nil {
-		return nil, fmt.Errorf("signer provider is required")
-	}
-
-	if config.syncEpoch {
-		epoch, err := d.registry.GetCapabilityEpoch(ctx, config.SignerProvider.GetAddress())
+	// 1. Sync State
+	if cfg.SyncEpoch {
+		epoch, err := d.registry.GetCapabilityEpoch(ctx, cfg.SignerProvider.GetAddress())
 		if err != nil {
-			return nil, fmt.Errorf("failed to get capability epoch: %w", err)
+			return nil, fmt.Errorf("failed to sync epoch: %w", err)
 		}
-		config.Epoch = epoch
+		cfg.Epoch = epoch
 	}
 
-	signerDID := fmt.Sprintf("%s:%s", config.Method, config.SignerProvider.GetAddress())
-
-	// 1. Generate DID document
+	// 2. Prepare DID Document
+	signerDID := fmt.Sprintf("%s:%s", cfg.Method, cfg.SignerProvider.GetAddress())
 	doc := GenerateDIDDocument(keyPair, didType, hash, metadata, signerDID)
-
-	// 2. Calculate document hash
 	docHash, err := doc.Hash()
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash DID document: %w", err)
 	}
 
-	// 3. Create payload to sign for _requireValidCapCreate(...)
-	parts := strings.Split(signerDID, ":")
-	signerAddress := parts[len(parts)-1]
-
-	payload, err := d.registry.IssueDIDPayload(
-		ctx,
-		signerAddress,
-		keyPair.Address, // did (msg.sender)
+	// 3. Create & Sign Payload
+	payloadHash, err := computeDSOPayload(
+		cfg.SignerProvider.GetAddress(),
+		keyPair.Address,
 		didType,
-		config.CapID,
-		config.Epoch,
+		cfg.CapID,
+		cfg.Epoch,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create payload: %w", err)
+		return nil, fmt.Errorf("failed to compute payload hash: %w", err)
 	}
 
-	hashPayload := crypto.Keccak256(payload)
-
-	// 4. Sign the payload using sigSigner (this becomes v,r,s)
-	signatureBytes, err := config.SignerProvider.Sign(hashPayload)
+	sigBytes, err := cfg.SignerProvider.Sign(payloadHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign payload: %w", err)
 	}
 
-	signature, err := blockchain.BytesToSignature(signatureBytes)
+	issuerSig, err := signatureFromBytes(sigBytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert signature: %w", err)
+		return nil, fmt.Errorf("invalid signature format: %w", err)
 	}
 
-	// 5. Create transaction signer for msg.sender (the DID keypair)
+	// 4. Submit Transaction
 	txProvider, err := signer.NewDefaultProvider(keyPair.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tx provider: %w", err)
 	}
 
-	// 6. Get nonce from blockchain if syncNonce is true
-	if config.syncNonce {
-		nonce, err := d.GetNonce(ctx, txProvider.GetAddress())
+	if cfg.SyncNonce {
+		nonce, err := d.registry.GetNonce(ctx, common.HexToAddress(txProvider.GetAddress()))
 		if err != nil {
-			return nil, fmt.Errorf("failed to get nonce: %w", err)
+			return nil, fmt.Errorf("failed to sync nonce: %w", err)
 		}
-		config.Nonce = nonce
+		cfg.Nonce = nonce
 	}
 
-	// 7. Create DID transaction (matches new createDID signature)
-	txResult, err := d.registry.CreateDIDTx(
-		ctx,
-		signature,
-		signerAddress,
-		docHash,
-		config.CapID,
-		txProvider,
-		didType,
-		config.Nonce,
-	)
+	req := blockchain.CreateDIDRequest{
+		IssuerSig:     issuerSig,
+		IssuerAddress: cfg.SignerProvider.GetAddress(),
+		DocHash:       docHash,
+		CapID:         cfg.CapID,
+		TxProvider:    txProvider,
+		DIDType:       didType,
+		Nonce:         cfg.Nonce,
+	}
+
+	txResult, err := d.registry.CreateDIDTx(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create DID transaction: %w", err)
+		return nil, fmt.Errorf("blockchain tx failed: %w", err)
 	}
 
 	return &DID{
-		DID: keyPair.Identifier,
-		Secret: Secret{
-			PrivateKeyHex: keyPair.PrivateKey,
-		},
-		Document: *doc,
-		Transaction: blockchain.SubmitTxResult{
-			TxHex:  txResult.TxHex,
-			TxHash: txResult.TxHash,
-		},
+		DID:         keyPair.Identifier,
+		Secret:      Secret{PrivateKeyHex: keyPair.PrivateKey},
+		Document:    *doc,
+		Transaction: *txResult,
 	}, nil
 }
 
-// GetSignerEpoch gets the capability epoch of a signer
-func (d *DIDGenerator) GetCapabilityEpoch(ctx context.Context, signerAddress string) (uint64, error) {
-	return d.registry.GetCapabilityEpoch(ctx, signerAddress)
+func (d *DIDGenerator) GetCapabilityEpoch(ctx context.Context, address string) (uint64, error) {
+	return d.registry.GetCapabilityEpoch(ctx, address)
 }
 
-// GetNonce gets the nonce of a signer
-func (d *DIDGenerator) GetNonce(ctx context.Context, signerAddress string) (uint64, error) {
-	return d.registry.GetNonce(ctx, common.HexToAddress(signerAddress))
+func (d *DIDGenerator) GetNonce(ctx context.Context, address string) (uint64, error) {
+	return d.registry.GetNonce(ctx, common.HexToAddress(address))
 }
 
-func (d *DIDGenerator) executeOptions(options ...DIDOption) (*DIDConfig, error) {
-	capID, err := RandomHex(32)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate cap id: %w", err)
-	}
-
-	config := &DIDConfig{
-		RPC:        d.rpc,
-		ChainID:    d.chainID,
-		DIDAddress: d.contractAddress,
-		Method:     d.method,
-		Epoch:      d.epoch,
-		CapID:      capID,
-		Nonce:      defaultNonce,
-		syncEpoch:  false,
-		syncNonce:  false,
-	}
-
+// resolveConfig merges run-time options with the base configuration.
+func (d *DIDGenerator) resolveConfig(options ...DIDOption) DIDConfig {
+	cfg := d.baseConfig
 	for _, opt := range options {
-		opt(config)
+		opt(&cfg)
 	}
 
-	if config.SignerProvider == nil {
-		config.SignerProvider = d.defaultProvider
+	if cfg.CapID == "" {
+		hexStr, err := RandomHex(32)
+		if err != nil {
+			// Fallback (highly unlikely)
+			cfg.CapID = "0x" + strings.Repeat("0", 64)
+		} else {
+			cfg.CapID = hexStr // RandomHex already adds "0x"
+		}
 	}
-
-	return config, nil
+	return cfg
 }
