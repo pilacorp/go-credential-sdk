@@ -218,11 +218,331 @@ func (d *DIDGenerator) ReGenerateDIDTX(
 ) (*blockchain.SubmitDIDTX, error)
 ```
 
+---
+
+## 🆕 DID Contract V2
+
+**New version of DID contract with enhanced capabilities and signing requirements.**
+
+The V2 contract introduces a capability-based signing model where a signer (issuer) must sign a capability payload to authorize DID creation. This provides better security and control over DID issuance.
+
+### Key Differences from V1
+
+- **Capability-based Authorization**: Requires a signer (issuer) to sign a capability payload before creating a DID
+- **Dual Signing**: Both the issuer (capability signer) and the DID keypair (transaction signer) are involved
+- **Epoch Support**: Optional capability epoch for managing authorization lifecycle
+- **Enhanced Security**: More granular control over who can issue DIDs
+
+### Core Model V2
+
+```go
+type ConfigV2 struct {
+    RPC        string
+    ChainID    int64
+    DIDAddress string
+    Method     string
+    Epoch      uint64  // Optional: capability epoch (default: 0)
+    CapID      string  // Auto-generated random hex if not provided
+}
+
+type Signer interface {
+    Sign(payload []byte) ([]byte, error)
+}
+```
+
+### Initialization V2
+
+```go
+import (
+    "github.com/pilacorp/go-credential-sdk/did"
+    "github.com/pilacorp/go-credential-sdk/did/signer"
+)
+
+// Initialize V2 DID Generator
+didGeneratorV2, err := did.NewDIDGeneratorV2(
+    did.WithConfigV2(&did.ConfigV2{
+        ChainID:    704,
+        DIDAddress: "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A",
+        Method:     "did:nda",
+        RPC:        "https://rpc-testnet-new.pila.vn",
+        Epoch:      0, // Optional: set capability epoch
+    }),
+)
+if err != nil {
+    log.Fatalf("Failed to initialize DID generator V2: %v", err)
+}
+```
+
+### GenerateDID V2 Function
+
+```go
+func (d *DIDGeneratorV2) GenerateDID(
+    ctx context.Context,
+    sigSigner signer.Signer,    // Signs the capability payload (issuer's signer)
+    signerDID string,            // Issuer DID (e.g., "did:nda:0x...")
+    didType blockchain.DIDType,  // DID type (People, Item, Location, Activity)
+    hash string,                 // Optional hash
+    metadata map[string]interface{}, // DID metadata
+    options ...OptionV2,         // Optional: override config per call
+) (*DID, error)
+```
+
+**Parameters:**
+- `sigSigner`: Implements `signer.Signer` interface - signs the capability payload (typically the issuer's private key)
+- `signerDID`: Full DID string of the issuer/authorizer (e.g., `"did:nda:0x3fa4902238e3416886a68bc006c1f352d723e37a"`)
+- `didType`: Type of DID being created (`blockchain.DIDTypePeople`, `DIDTypeItem`, `DIDTypeLocation`, `DIDTypeActivity`)
+- `hash`: Optional hash string
+- `metadata`: Map of metadata to attach to the DID document
+- `options`: Optional V2 config overrides (e.g., `did.WithEpochV2(epoch)`)
+
+**Returns:**
+- `*DID`: Contains the generated DID, private key, document, and transaction
+
+### Example 1: Using Vault Signer (Recommended for Production)
+
+This example shows how to use a vault-based signer for secure key management:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/pilacorp/go-credential-sdk/did"
+    "github.com/pilacorp/go-credential-sdk/did/blockchain"
+    "github.com/pilacorp/go-credential-sdk/did/signer"
+)
+
+// vaultSigner implements signer.Signer interface using vault
+type vaultSigner struct {
+    vault   *Vault // Your vault implementation
+    ctx     context.Context
+    address string // Issuer address
+}
+
+func (vs *vaultSigner) Sign(hashPayload []byte) ([]byte, error) {
+    // Sign using vault - returns ECDSA signature (65 bytes: v, r, s)
+    return vs.vault.SignMessage(vs.ctx, hashPayload, vs.address)
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Step 1: Initialize V2 DID Generator
+    didGeneratorV2, err := did.NewDIDGeneratorV2(
+        did.WithConfigV2(&did.ConfigV2{
+            ChainID:    704,
+            DIDAddress: "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A",
+            Method:     "did:nda",
+            RPC:        "https://rpc-testnet-new.pila.vn",
+        }),
+    )
+    if err != nil {
+        log.Fatalf("Failed to initialize DID generator: %v", err)
+    }
+
+    // Step 2: Create vault signer for issuer
+    issuerDID := "did:nda:0x3fa4902238e3416886a68bc006c1f352d723e37a"
+    issuerAddress := "0x3fa4902238e3416886a68bc006c1f352d723e37a" // Extract from issuerDID
+    
+    vaultSigner := &vaultSigner{
+        vault:   yourVaultInstance,
+        ctx:     ctx,
+        address: issuerAddress,
+    }
+
+    // Step 3: Generate DID with V2
+    generatedDID, err := didGeneratorV2.GenerateDID(
+        ctx,
+        vaultSigner,                    // Issuer's signer (signs capability)
+        issuerDID,                      // Issuer DID
+        blockchain.DIDTypePeople,       // DID type
+        "",                             // Hash (optional)
+        map[string]interface{}{        // Metadata
+            "name": "User 1",
+            "type": "people",
+        },
+    )
+    if err != nil {
+        log.Fatalf("Failed to generate DID: %v", err)
+    }
+
+    fmt.Printf("Generated DID: %s\n", generatedDID.DID)
+    fmt.Printf("Private Key: %s\n", generatedDID.Secret.PrivateKeyHex)
+    fmt.Printf("Transaction Hash: %s\n", generatedDID.Transaction.TxHash)
+}
+```
+
+### Example 2: Using Default Signer (For Testing/Development)
+
+This example shows how to use a default signer with a private key directly:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/pilacorp/go-credential-sdk/did"
+    "github.com/pilacorp/go-credential-sdk/did/blockchain"
+    "github.com/pilacorp/go-credential-sdk/did/signer"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Step 1: Initialize V2 DID Generator
+    didGeneratorV2, err := did.NewDIDGeneratorV2(
+        did.WithConfigV2(&did.ConfigV2{
+            ChainID:    704,
+            DIDAddress: "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A",
+            Method:     "did:nda",
+            RPC:        "https://rpc-testnet-new.pila.vn",
+        }),
+    )
+    if err != nil {
+        log.Fatalf("Failed to initialize DID generator: %v", err)
+    }
+
+    // Step 2: Create default signer from issuer's private key
+    issuerPrivateKey := "0x..." // Issuer's private key
+    adminSigner, err := signer.NewDefaultSigner(issuerPrivateKey)
+    if err != nil {
+        log.Fatalf("Failed to create signer: %v", err)
+    }
+
+    // Step 3: Generate DID
+    issuerDID := "did:nda:0x3fa4902238e3416886a68bc006c1f352d723e37a"
+    generatedDID, err := didGeneratorV2.GenerateDID(
+        ctx,
+        adminSigner,                   // Issuer's signer
+        issuerDID,                     // Issuer DID
+        blockchain.DIDTypePeople,      // DID type
+        "",                            // Hash
+        map[string]interface{}{       // Metadata
+            "type": "issuer",
+        },
+    )
+    if err != nil {
+        log.Fatalf("Failed to generate DID: %v", err)
+    }
+
+    fmt.Printf("Generated DID: %s\n", generatedDID.DID)
+}
+```
+
+### Example 3: Using Capability Epoch
+
+If you need to manage capability epochs, you can retrieve and set them:
+
+```go
+// Get current capability epoch for a signer
+capabilityEpoch, err := didGeneratorV2.GetCapabilityEpoch(ctx, issuerAddress)
+if err != nil {
+    log.Fatalf("Failed to get capability epoch: %v", err)
+}
+
+// Generate DID with specific epoch
+generatedDID, err := didGeneratorV2.GenerateDID(
+    ctx,
+    vaultSigner,
+    issuerDID,
+    blockchain.DIDTypePeople,
+    "",
+    metadata,
+    did.WithEpochV2(capabilityEpoch), // Override epoch
+)
+```
+
+### GetCapabilityEpoch
+
+Retrieve the current capability epoch for a signer address:
+
+```go
+func (d *DIDGeneratorV2) GetCapabilityEpoch(
+    ctx context.Context,
+    signerAddress string, // Issuer's address (without 0x prefix or with)
+) (uint64, error)
+```
+
+**Usage:**
+```go
+issuerAddress := "0x3fa4902238e3416886a68bc006c1f352d723e37a"
+epoch, err := didGeneratorV2.GetCapabilityEpoch(ctx, issuerAddress)
+if err != nil {
+    return fmt.Errorf("failed to get capability epoch: %w", err)
+}
+```
+
+### Implementing Custom Signer
+
+To use a custom signing mechanism (e.g., HSM, hardware wallet), implement the `signer.Signer` interface:
+
+```go
+type Signer interface {
+    Sign(payload []byte) ([]byte, error)
+}
+```
+
+The `Sign` method must:
+- Accept a byte slice (the hash of the capability payload)
+- Return a 65-byte ECDSA signature: `[v (1 byte)][r (32 bytes)][s (32 bytes)]`
+- Handle errors appropriately
+
+**Example Custom Signer:**
+```go
+type customSigner struct {
+    // Your signing mechanism
+}
+
+func (cs *customSigner) Sign(hashPayload []byte) ([]byte, error) {
+    // Implement your signing logic
+    // Must return 65-byte signature: [v][r][s]
+    signature := yourSigningFunction(hashPayload)
+    return signature, nil
+}
+```
+
+### Configuration Options V2
+
+```go
+// Individual options
+did.WithRPCV2("https://rpc-testnet-new.pila.vn")
+did.WithChainIDV2(704)
+did.WithDIDAddressV2("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A")
+did.WithMethodV2("did:nda")
+did.WithEpochV2(0)
+
+// Or use WithConfigV2 for all at once
+did.WithConfigV2(&did.ConfigV2{
+    RPC:        "https://rpc-testnet-new.pila.vn",
+    ChainID:    704,
+    DIDAddress: "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A",
+    Method:     "did:nda",
+    Epoch:      0,
+})
+```
+
+### Default Values V2
+
+- `RPC`: `"https://rpc-testnet-new.pila.vn"`
+- `ChainID`: `704`
+- `DIDAddress`: `"0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"`
+- `Method`: `"did:nda"`
+- `Epoch`: `0`
+- `CapID`: Auto-generated random 32-byte hex string
+
+---
+
 ## 📡 API Reference
 
 Endpoint - Method - Purpose
 
-`POST /api/v1/did/registerRegister new DIDRequires x-api-key and authorized issuer_did`
+`POST /api/v1/did/register` Register new DIDRequires x-api-key and authorized issuer_did
 
 ## 🔐 Security Best Practices
 
