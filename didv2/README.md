@@ -61,6 +61,7 @@ didGenerator, err := didv2.NewDIDGenerator(
     didv2.WithDIDChainID(704),
     didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"),
     didv2.WithMethod("did:nda"),
+    // didv2.WithSignerProvider(signerProvider), // this is optional, you can provide when you generate DID
 )
 if err != nil {
     log.Fatalf("Failed to initialize DID generator: %v", err)
@@ -79,12 +80,7 @@ The SDK provides sensible defaults:
 
 ## Creating DID Transactions
 
-There are 2 main functions to create DID transactions:
-
-1. **`GenerateDID`**: Creates a new DID with automatically generated key pair
-2. **`GenerateDIDTX`**: Creates a transaction for a DID that already has a key pair
-
-### Example 1: GenerateDID - Create New DID with New Key Pair
+GenerateDID - Create New DID with New Key Pair
 
 ```go
 package main
@@ -102,22 +98,23 @@ import (
 func main() {
     ctx := context.Background()
 
-    // 1. Initialize DID Generator
+    // 1. Create signer provider (issuer who authorizes DID creation)
+    issuerPrivateKey := "0x..." // Private key of the issuer
+    signerProvider, err := signer.NewDefaultProvider(issuerPrivateKey)
+    if err != nil {
+        log.Fatalf("Failed to create signer provider: %v", err)
+    }
+
+    // 2. Initialize DID Generator
     didGenerator, err := didv2.NewDIDGenerator(
         didv2.WithRPC("https://rpc-testnet-new.pila.vn"),
         didv2.WithDIDChainID(704),
         didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"),
         didv2.WithMethod("did:nda"),
+        didv2.WithSignerProvider(signerProvider),
     )
     if err != nil {
         log.Fatalf("Failed to initialize DID generator: %v", err)
-    }
-
-    // 2. Create signer provider (issuer who authorizes DID creation)
-    issuerPrivateKey := "0x..." // Private key of the issuer
-    signerProvider, err := signer.NewDefaultProvider(issuerPrivateKey)
-    if err != nil {
-        log.Fatalf("Failed to create signer provider: %v", err)
     }
 
     // 3. Generate DID with auto-generated key pair
@@ -129,9 +126,6 @@ func main() {
             "name": "User 1",
             "type": "people",
         },
-        didv2.WithSignerProvider(signerProvider),
-        didv2.WithSyncEpoch(true),  // Automatically sync capability epoch
-        didv2.WithSyncNonce(true),  // Automatically sync transaction nonce
     )
     if err != nil {
         log.Fatalf("Failed to generate DID: %v", err)
@@ -141,96 +135,7 @@ func main() {
     fmt.Printf("Private Key: %s\n", generatedDID.Secret.PrivateKeyHex)
     fmt.Printf("Transaction Hash: %s\n", generatedDID.Transaction.TxHash)
     fmt.Printf("Transaction Hex: %s\n", generatedDID.Transaction.TxHex)
-
-    // 4. Submit transaction to blockchain to register DID
 }
-```
-
-### Example 2: GenerateDIDTX - Create Transaction for Existing Key Pair
-
-```go
-package main
-
-import (
-    "context"
-    "crypto/ecdsa"
-    "fmt"
-    "log"
-    "strings"
-
-    "github.com/ethereum/go-ethereum/crypto"
-    "github.com/pilacorp/go-credential-sdk/didv2"
-    "github.com/pilacorp/go-credential-sdk/didv2/blockchain"
-    "github.com/pilacorp/go-credential-sdk/didv2/signer"
-)
-
-func main() {
-    ctx := context.Background()
-
-    // 1. Initialize DID Generator
-    didGenerator, err := didv2.NewDIDGenerator(
-        didv2.WithRPC("https://rpc-testnet-new.pila.vn"),
-        didv2.WithDIDChainID(704),
-        didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"),
-        didv2.WithMethod("did:nda"),
-    )
-    if err != nil {
-        log.Fatalf("Failed to initialize DID generator: %v", err)
-    }
-
-    // 2. Create signer provider (issuer)
-    issuerPrivateKey := "0x..." // Private key of the issuer
-    signerProvider, err := signer.NewDefaultProvider(issuerPrivateKey)
-    if err != nil {
-        log.Fatalf("Failed to create signer provider: %v", err)
-    }
-
-    // 3. Create KeyPair from existing private key
-    existingPrivateKeyHex := "0x..." // Private key of the DID to create transaction for
-    
-    privKey, err := crypto.HexToECDSA(strings.TrimPrefix(existingPrivateKeyHex, "0x"))
-    if err != nil {
-        log.Fatalf("Failed to parse private key: %v", err)
-    }
-
-    publicKeyECDSA := privKey.Public().(*ecdsa.PublicKey)
-    address := strings.ToLower(crypto.PubkeyToAddress(*publicKeyECDSA).Hex())
-    privateKeyHex := strings.ToLower("0x" + fmt.Sprintf("%x", crypto.FromECDSA(privKey)))
-    publicKeyHex := strings.ToLower("0x" + fmt.Sprintf("%x", crypto.CompressPubkey(publicKeyECDSA)))
-    identifier := strings.ToLower(fmt.Sprintf("did:nda:%s", address))
-
-    keyPair := &didv2.KeyPair{
-        Address:    address,
-        PublicKey:  publicKeyHex,
-        PrivateKey: privateKeyHex,
-        Identifier: identifier,
-    }
-
-    // 4. Generate transaction for existing key pair
-    generatedDID, err := didGenerator.GenerateDIDTX(
-        ctx,
-        blockchain.DIDTypePeople, // DID type
-        keyPair,                  // Existing key pair
-        "",                       // Hash (optional)
-        map[string]interface{}{  // Metadata
-            "name": "User 1",
-            "type": "people",
-        },
-        didv2.WithSignerProvider(signerProvider),
-        didv2.WithSyncEpoch(true),
-        didv2.WithSyncNonce(true),
-    )
-    if err != nil {
-        log.Fatalf("Failed to generate DID transaction: %v", err)
-    }
-
-    fmt.Printf("DID: %s\n", generatedDID.DID)
-    fmt.Printf("Transaction Hash: %s\n", generatedDID.Transaction.TxHash)
-    fmt.Printf("Transaction Hex: %s\n", generatedDID.Transaction.TxHex)
-
-    // 5. Submit transaction to blockchain to register DID
-}
-```
 
 ---
 
@@ -354,9 +259,6 @@ Creates a new DID generator instance with the provided configuration options.
 
 #### `GenerateDID(ctx, didType, hash, metadata, options ...) (*DID, error)`
 Generates a new DID with an automatically generated key pair.
-
-#### `GenerateDIDTX(ctx, didType, keyPair, hash, metadata, options ...) (*DID, error)`
-Generates a transaction for an existing key pair.
 
 ---
 
