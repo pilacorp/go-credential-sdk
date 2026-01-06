@@ -218,11 +218,13 @@ func (d *DIDGenerator) ReGenerateDIDTX(
 ) (*blockchain.SubmitDIDTX, error)
 ```
 
+---
+
 ## 📡 API Reference
 
 Endpoint - Method - Purpose
 
-`POST /api/v1/did/registerRegister new DIDRequires x-api-key and authorized issuer_did`
+`POST /api/v1/did/register` Register new DIDRequires x-api-key and authorized issuer_did
 
 ## 🔐 Security Best Practices
 

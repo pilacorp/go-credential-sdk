@@ -2,15 +2,12 @@ package blockchain
 
 import (
 	"crypto/ecdsa"
-	"encoding/hex"
 	"fmt"
 	"math/big"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // MaxAttributeNameLength defines the maximum length for attribute names (32 bytes).
@@ -59,16 +56,4 @@ func PrepareAttributeInputs(address, name, value string) (common.Address, [32]by
 
 	// Validity is passed in, so we just return
 	return didAddress, nameBytes, valueBytes, validity, nil
-}
-
-func TxFromHex(rawTxHex string) (*types.Transaction, error) {
-	b, err := hex.DecodeString(rawTxHex)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode hex string: %w", err)
-	}
-	var tx types.Transaction
-	if err := rlp.DecodeBytes(b, &tx); err != nil {
-		return nil, fmt.Errorf("failed to decode RLP: %w", err)
-	}
-	return &tx, nil
 }

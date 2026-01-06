@@ -1,4 +1,4 @@
-module github.com/pilacorp/go-credential-sdk/did
+module github.com/pilacorp/go-credential-sdk/didv2
 
 go 1.24.0
 

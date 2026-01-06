@@ -1,6 +1,8 @@
 package did
 
-import "github.com/pilacorp/go-credential-sdk/did/blockchain"
+import (
+	"github.com/pilacorp/go-credential-sdk/did/blockchain"
+)
 
 type DIDType string
 
@@ -8,7 +10,7 @@ const (
 	TypeItem     DIDType = "item"
 	TypePeople   DIDType = "people"
 	TypeLocation DIDType = "location"
-	TypeDefault  DIDType = "default"
+	TypeActivity DIDType = "activity"
 )
 
 // KeyPair represents the generated wallet and DID identifier
@@ -34,6 +36,7 @@ type DIDDocument struct {
 	AssertionMethod    []string               `json:"assertionMethod"`
 	DocumentMetadata   map[string]interface{} `json:"didDocumentMetadata"`
 }
+
 type VerificationMethod struct {
 	Id           string `json:"id"`
 	Type         string `json:"type"`                   //
@@ -50,4 +53,8 @@ type DID struct {
 
 type Secret struct {
 	PrivateKeyHex string `json:"privateKeyHex"`
+}
+
+func ToBlockchainType(didType string) DIDType {
+	return DIDType(didType)
 }
