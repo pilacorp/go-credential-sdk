@@ -30,7 +30,7 @@ type DIDOption func(*DIDConfig)
 
 // -- Option Functions --
 
-func WithRPCV2(rpc string) DIDOption {
+func WithRPC(rpc string) DIDOption {
 	return func(c *DIDConfig) { c.RPC = rpc }
 }
 
@@ -64,4 +64,37 @@ func WithSyncNonce(sync bool) DIDOption {
 
 func WithCapID(capID string) DIDOption {
 	return func(c *DIDConfig) { c.CapID = capID }
+}
+
+// WithDIDConfig allows copying settings from an existing configuration object.
+func WithDIDConfig(config *DIDConfig) DIDOption {
+	return func(c *DIDConfig) {
+		// Copy base fields
+		if config.RPC != "" {
+			c.RPC = config.RPC
+		}
+		if config.ChainID != 0 {
+			c.ChainID = config.ChainID
+		}
+		if config.DIDSMCAddress != "" {
+			c.DIDSMCAddress = config.DIDSMCAddress
+		}
+		if config.Method != "" {
+			c.Method = config.Method
+		}
+
+		// Copy optional/runtime fields if they are set/relevant
+		if config.SignerProvider != nil {
+			c.SignerProvider = config.SignerProvider
+		}
+		if config.CapID != "" {
+			c.CapID = config.CapID
+		}
+
+		// Boolean flags and integers (0 is valid, so we copy directly)
+		c.Epoch = config.Epoch
+		c.Nonce = config.Nonce
+		c.SyncEpoch = config.SyncEpoch
+		c.SyncNonce = config.SyncNonce
+	}
 }
