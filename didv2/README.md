@@ -3,10 +3,12 @@
 **Official Go SDK for generating Decentralized Identifiers (DIDs) with capability-based authorization.**
 
 This SDK allows you to:
+
 - Generate **NDA-compliant DIDs** locally with capability-based authorization
-  - Create **DID Documents** with customizable metadata
-  - Use signer providers for flexible authentication
-  - Anchor DIDs on the **NDA Chain** via pre-signed transactions
+- Create **DID Documents** with customizable metadata
+- Use signer providers for flexible authentication
+- Anchor DIDs on the **NDA Chain** via pre-signed transactions
+
 - **Generate transactions** for existing key pairs or create new DIDs with auto-generated keys
 
 ---
@@ -29,6 +31,7 @@ Add the SDK to your Go project:
 
 ```bash
 go get github.com/pilacorp/go-credential-sdk/didv2
+
 ```
 
 ---
@@ -61,16 +64,18 @@ didGenerator, err := didv2.NewDIDGenerator(
     didv2.WithDIDChainID(704),
     didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"),
     didv2.WithMethod("did:nda"),
-    // didv2.WithSignerProvider(signerProvider), // this is optional, you can provide when you generate DID
+    // didv2.WithSignerProvider(signerProvider), // Optional: Set a global signer here
 )
 if err != nil {
     log.Fatalf("Failed to initialize DID generator: %v", err)
 }
+
 ```
 
 ### Default Configuration
 
 The SDK provides sensible defaults:
+
 - **RPC**: `https://rpc-testnet-new.pila.vn`
 - **ChainID**: `704`
 - **DID Contract Address**: `0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A`
@@ -78,9 +83,13 @@ The SDK provides sensible defaults:
 
 ---
 
-## Creating DID Transactions
+## 🆔 Creating DID Transactions
 
-GenerateDID - Create New DID with New Key Pair
+The SDK uses a **Generator** pattern. You can configure a **Global Issuer** (Signer Provider) when initializing the generator, or provide a **Custom Issuer** for specific transactions.
+
+### Pattern 1: Global Issuer (Recommended)
+
+_Use this when one account (e.g., an Admin or Organization) issues all DIDs. You inject the signer once during initialization._
 
 ```go
 package main
@@ -98,44 +107,76 @@ import (
 func main() {
     ctx := context.Background()
 
-    // 1. Create signer provider (issuer who authorizes DID creation)
-    issuerPrivateKey := "0x..." // Private key of the issuer
+    // 1. Create the Global Issuer (Signer Provider)
+    issuerPrivateKey := "0x..."
     signerProvider, err := signer.NewDefaultProvider(issuerPrivateKey)
     if err != nil {
         log.Fatalf("Failed to create signer provider: %v", err)
     }
 
-    // 2. Initialize DID Generator
+    // 2. Initialize Generator with the Global Signer
     didGenerator, err := didv2.NewDIDGenerator(
         didv2.WithRPC("https://rpc-testnet-new.pila.vn"),
         didv2.WithDIDChainID(704),
         didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"),
         didv2.WithMethod("did:nda"),
-        didv2.WithSignerProvider(signerProvider),
+        didv2.WithSignerProvider(signerProvider), // <--- Injected Globally
     )
     if err != nil {
         log.Fatalf("Failed to initialize DID generator: %v", err)
     }
 
-    // 3. Generate DID with auto-generated key pair
+    // 3. Generate DID (Signer is automatically used)
     generatedDID, err := didGenerator.GenerateDID(
         ctx,
-        blockchain.DIDTypePeople, // DID type (People, Item, Location, Activity)
-        "",                       // Hash (optional)
-        map[string]interface{}{  // Metadata
+        blockchain.DIDTypePeople,
+        "",
+        map[string]interface{}{
             "name": "User 1",
             "type": "people",
         },
+        // No need to pass signer provider here
+
     )
     if err != nil {
         log.Fatalf("Failed to generate DID: %v", err)
     }
 
     fmt.Printf("Generated DID: %s\n", generatedDID.DID)
-    fmt.Printf("Private Key: %s\n", generatedDID.Secret.PrivateKeyHex)
-    fmt.Printf("Transaction Hash: %s\n", generatedDID.Transaction.TxHash)
-    fmt.Printf("Transaction Hex: %s\n", generatedDID.Transaction.TxHex)
 }
+
+```
+
+### Pattern 2: Custom / Override Issuer
+
+_Use this when you need to switch issuers dynamically or didn't set a global one._
+
+```go
+func main() {
+    ctx := context.Background()
+
+    // 1. Initialize Generator (Without a global signer)
+    didGenerator, _ := didv2.NewDIDGenerator()
+
+    // 2. Create a Specific Issuer for this transaction
+    specificIssuerKey := "0x..."
+    customSigner, _ := signer.NewDefaultProvider(specificIssuerKey)
+
+    // 3. Generate DID with Custom Signer Option
+    generatedDID, err := didGenerator.GenerateDID(
+        ctx,
+        blockchain.DIDTypeItem,
+        "",
+        map[string]interface{}{ "name": "Item A" },
+        didv2.WithSignerProvider(customSigner), // <--- Injected Locally
+
+    )
+    if err != nil {
+        log.Fatalf("Failed to generate DID: %v", err)
+    }
+}
+
+```
 
 ---
 
@@ -171,6 +212,7 @@ didv2.WithDIDConfig(&didv2.DIDConfig{
     SyncEpoch:     true,
     SyncNonce:     true,
 })
+
 ```
 
 ### Using Configuration Object
@@ -186,6 +228,7 @@ config := &didv2.DIDConfig{
 didGenerator, err := didv2.NewDIDGenerator(
     didv2.WithDIDConfig(config),
 )
+
 ```
 
 ---
@@ -201,6 +244,7 @@ type SignerProvider interface {
     Sign(payload []byte) ([]byte, error)
     GetAddress() string
 }
+
 ```
 
 ### Default Provider
@@ -213,6 +257,7 @@ signerProvider, err := signer.NewDefaultProvider("0x...") // private key hex
 if err != nil {
     log.Fatalf("Failed to create signer: %v", err)
 }
+
 ```
 
 ### Custom Signer Implementation
@@ -235,6 +280,7 @@ func (cs *CustomSigner) GetAddress() string {
     // Return the Ethereum address of the signer
     return "0x..."
 }
+
 ```
 
 ---
@@ -255,9 +301,11 @@ The SDK supports the following DID types:
 ### Core Functions
 
 #### `NewDIDGenerator(options ...DIDOption) (*DIDGenerator, error)`
+
 Creates a new DID generator instance with the provided configuration options.
 
 #### `GenerateDID(ctx, didType, hash, metadata, options ...) (*DID, error)`
+
 Generates a new DID with an automatically generated key pair.
 
 ---
@@ -291,4 +339,5 @@ if err != nil {
     log.Printf("Error: %v", err)
     return err
 }
+
 ```
