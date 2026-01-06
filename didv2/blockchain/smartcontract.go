@@ -55,8 +55,8 @@ type DIDType uint8
 const (
 	DIDTypePeople   DIDType = 0
 	DIDTypeItem     DIDType = 1
-	DIDTypeActivity DIDType = 3
-	DIDTypeLocation DIDType = 4
+	DIDTypeActivity DIDType = 2
+	DIDTypeLocation DIDType = 3
 )
 
 func (d DIDType) String() string {
