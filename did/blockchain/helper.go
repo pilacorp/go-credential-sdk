@@ -16,14 +16,6 @@ const (
 	AttributeValiditySeconds = 86400
 )
 
-// SubmitTxResult represents a pre-built Ethereum transaction for DID operations.
-// It is intentionally decoupled from any broadcasting logic so that callers can
-// decide how and when to submit the transaction on-chain.
-type SubmitTxResult struct {
-	TxHex  string // Hex-encoded RLP transaction
-	TxHash string // Transaction hash
-}
-
 func ParsePrivateKey(key string) (*ecdsa.PrivateKey, error) {
 	key = strings.TrimPrefix(key, "0x")
 	if len(key) == 0 || len(key)%2 != 0 {

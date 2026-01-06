@@ -1,24 +1,26 @@
-# NDA DID SDK (`nda-did`)
+# NDA DID SDK V2 (`didv2`)
 
-**Official Go SDK for generating Decentralized Identifiers (DIDs) locally.**
+**Official Go SDK for generating Decentralized Identifiers (DIDs) with capability-based authorization.**
 
 This SDK allows you to:
 - Generate **NDA-compliant DIDs** locally with capability-based authorization
   - Create **DID Documents** with customizable metadata
-  - Use multiple signer types (Admin, Issuer, Local) for flexible authentication
+  - Use signer providers for flexible authentication
   - Anchor DIDs on the **NDA Chain** via pre-signed transactions
-- **Re-generate failed registration transactions** without losing the DID or keys
+- **Generate transactions** for existing key pairs or create new DIDs with auto-generated keys
 
 ---
 
 ## ✨ Key Features
 
 - **Capability-based DID Generation**: Create DIDs with capability-based authorization for enhanced security
-- **Multiple Signer Support**: Support for Admin Signer, Issuer Signer, and Local Signer
+- **Signer Provider Support**: Flexible signer interface for different authentication mechanisms
 - **Flexible Key Management**: Create new DIDs with auto-generated keys or use existing key pairs
 - **Customizable DID Documents**: Attach structured metadata (name, type, etc.) to your DID
 - **Pre-signed Transactions**: Generate blockchain-ready transactions for NDA Chain anchoring
 - **Transaction Regeneration**: Re-create failed transactions without regenerating keys or DID
+- **Epoch & Nonce Synchronization**: Automatic synchronization of capability epochs and transaction nonces
+
 ---
 
 ## 🚀 Installation
@@ -33,7 +35,7 @@ go get github.com/pilacorp/go-credential-sdk/didv2
 
 ## Getting Started
 
-The DID SDK uses a capability-based signing model where a signer (issuer) must sign a capability payload to authorize DID creation. This provides better security and control over DID issuance.
+The DID SDK V2 uses a capability-based signing model where a signer provider must sign a capability payload to authorize DID creation. This provides better security and control over DID issuance.
 
 ### Initialization
 
@@ -47,25 +49,40 @@ import (
 
 ctx := context.Background()
 
-// Initialize DID Generator
+// Initialize DID Generator with default values
+didGenerator, err := didv2.NewDIDGenerator()
+if err != nil {
+    log.Fatalf("Failed to initialize DID generator: %v", err)
+}
+
+// Or with custom configuration
 didGenerator, err := didv2.NewDIDGenerator(
-    didv2.WithConfig(&didv2.Config{
-        ChainID:    704,
-        DIDAddress: "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A",
-        Method:     "did:nda",
-        RPC:        "https://rpc-testnet-new.pila.vn",
-    }),
+    didv2.WithRPC("https://rpc-testnet-new.pila.vn"),
+    didv2.WithDIDChainID(704),
+    didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"),
+    didv2.WithMethod("did:nda"),
 )
 if err != nil {
     log.Fatalf("Failed to initialize DID generator: %v", err)
 }
 ```
 
-### Creating DID Transactions
+### Default Configuration
 
-There are 2 functions to create DID transactions:
-- `GenerateDID`: Creates a new DID with automatically generated key pair
-- `ReGenerateDID`: Creates a transaction for a DID that already has a key pair
+The SDK provides sensible defaults:
+- **RPC**: `https://rpc-testnet-new.pila.vn`
+- **ChainID**: `704`
+- **DID Contract Address**: `0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A`
+- **Method**: `did:nda`
+
+---
+
+## Creating DID Transactions
+
+There are 2 main functions to create DID transactions:
+
+1. **`GenerateDID`**: Creates a new DID with automatically generated key pair
+2. **`GenerateDIDTX`**: Creates a transaction for a DID that already has a key pair
 
 ### Example 1: GenerateDID - Create New DID with New Key Pair
 
@@ -85,51 +102,36 @@ import (
 func main() {
     ctx := context.Background()
 
-    // 1. Init did generator
+    // 1. Initialize DID Generator
     didGenerator, err := didv2.NewDIDGenerator(
-        didv2.WithConfig(&didv2.Config{
-            ChainID:    704,
-            DIDAddress: "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A",
-            Method:     "did:nda",
-            RPC:        "https://rpc-testnet-new.pila.vn",
-        }),
+        didv2.WithRPC("https://rpc-testnet-new.pila.vn"),
+        didv2.WithDIDChainID(704),
+        didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"),
+        didv2.WithMethod("did:nda"),
     )
     if err != nil {
         log.Fatalf("Failed to initialize DID generator: %v", err)
     }
 
-    // 2. Config signer (có 3 loại: Local Signer, L2 Admin Signer, L2 Issuer Signer)
-
-    // Option 1: L2 Remote Signer (sử dụng remote API để ký)
-    sigSigner, err := signer.NewRemoteSigner(
-        "https://api.example.com/sign", // Endpoint của remote signer
-        "your-api-key",                 // API key nếu cần
-    )
+    // 2. Create signer provider (issuer who authorizes DID creation)
+    issuerPrivateKey := "0x..." // Private key of the issuer
+    signerProvider, err := signer.NewDefaultProvider(issuerPrivateKey)
     if err != nil {
-        log.Fatalf("Failed to create remote signer: %v", err)
+        log.Fatalf("Failed to create signer provider: %v", err)
     }
 
-    // Option 2: Local Signer (sử dụng private key trực tiếp)
-    // issuerPrivateKey := "0x..." // Private key của issuer (signer)
-    // sigSigner, err := signer.NewDefaultSigner(issuerPrivateKey)
-    // if err != nil {
-    //     log.Fatalf("Failed to create signer: %v", err)
-    // }
-
-    // DID của issuer (người có quyền tạo DID mới)
-    issuerDID := "did:nda:0x3fa4902238e3416886a68bc006c1f352d723e37a"
-
-    // 3. Dùng generator để gọi hàm GenerateDID (tự động tạo key pair mới)
+    // 3. Generate DID with auto-generated key pair
     generatedDID, err := didGenerator.GenerateDID(
         ctx,
-        sigSigner,                      // Signer để ký capability payload
-        issuerDID,                      // DID của issuer
-        blockchain.DIDTypePeople,       // Loại DID (People, Item, Location, Activity)
-        "",                             // Hash (optional)
-        map[string]interface{}{        // Metadata
+        blockchain.DIDTypePeople, // DID type (People, Item, Location, Activity)
+        "",                       // Hash (optional)
+        map[string]interface{}{  // Metadata
             "name": "User 1",
             "type": "people",
         },
+        didv2.WithSignerProvider(signerProvider),
+        didv2.WithSyncEpoch(true),  // Automatically sync capability epoch
+        didv2.WithSyncNonce(true),  // Automatically sync transaction nonce
     )
     if err != nil {
         log.Fatalf("Failed to generate DID: %v", err)
@@ -140,11 +142,11 @@ func main() {
     fmt.Printf("Transaction Hash: %s\n", generatedDID.Transaction.TxHash)
     fmt.Printf("Transaction Hex: %s\n", generatedDID.Transaction.TxHex)
 
-    // 4. Call register DID trên L2 để đăng ký did
+    // 4. Submit transaction to blockchain to register DID
 }
 ```
 
-### Example 2: ReGenerateDID - Create Transaction for DID with Existing Key Pair
+### Example 2: GenerateDIDTX - Create Transaction for Existing Key Pair
 
 ```go
 package main
@@ -165,30 +167,26 @@ import (
 func main() {
     ctx := context.Background()
 
-    // 1. Init did generator
+    // 1. Initialize DID Generator
     didGenerator, err := didv2.NewDIDGenerator(
-        didv2.WithConfig(&didv2.Config{
-            ChainID:    704,
-            DIDAddress: "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A",
-            Method:     "did:nda",
-            RPC:        "https://rpc-testnet-new.pila.vn",
-        }),
+        didv2.WithRPC("https://rpc-testnet-new.pila.vn"),
+        didv2.WithDIDChainID(704),
+        didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"),
+        didv2.WithMethod("did:nda"),
     )
     if err != nil {
         log.Fatalf("Failed to initialize DID generator: %v", err)
     }
 
-    // 2. Config signer
-    issuerPrivateKey := "0x..." // Private key của issuer (signer)
-    sigSigner, err := signer.NewDefaultSigner(issuerPrivateKey)
+    // 2. Create signer provider (issuer)
+    issuerPrivateKey := "0x..." // Private key of the issuer
+    signerProvider, err := signer.NewDefaultProvider(issuerPrivateKey)
     if err != nil {
-        log.Fatalf("Failed to create signer: %v", err)
+        log.Fatalf("Failed to create signer provider: %v", err)
     }
 
-    issuerDID := "did:nda:0x3fa4902238e3416886a68bc006c1f352d723e37a"
-
-    // 3. Tạo KeyPair từ private key đã có sẵn
-    existingPrivateKeyHex := "0x..." // Private key của DID cần tạo transaction
+    // 3. Create KeyPair from existing private key
+    existingPrivateKeyHex := "0x..." // Private key of the DID to create transaction for
     
     privKey, err := crypto.HexToECDSA(strings.TrimPrefix(existingPrivateKeyHex, "0x"))
     if err != nil {
@@ -208,79 +206,187 @@ func main() {
         Identifier: identifier,
     }
 
-    // 4. Dùng generator để gọi hàm ReGenerateDID với KeyPair đã có
-    generatedDID, err := didGenerator.ReGenerateDID(
+    // 4. Generate transaction for existing key pair
+    generatedDID, err := didGenerator.GenerateDIDTX(
         ctx,
-        sigSigner,                      // Signer để ký capability payload
-        issuerDID,                      // DID của issuer
-        blockchain.DIDTypePeople,       // Loại DID
-        keyPair,                        // KeyPair đã có sẵn
-        "",                             // Hash (optional)
-        map[string]interface{}{        // Metadata
+        blockchain.DIDTypePeople, // DID type
+        keyPair,                  // Existing key pair
+        "",                       // Hash (optional)
+        map[string]interface{}{  // Metadata
             "name": "User 1",
             "type": "people",
         },
+        didv2.WithSignerProvider(signerProvider),
+        didv2.WithSyncEpoch(true),
+        didv2.WithSyncNonce(true),
     )
     if err != nil {
-        log.Fatalf("Failed to regenerate DID: %v", err)
+        log.Fatalf("Failed to generate DID transaction: %v", err)
     }
 
     fmt.Printf("DID: %s\n", generatedDID.DID)
     fmt.Printf("Transaction Hash: %s\n", generatedDID.Transaction.TxHash)
     fmt.Printf("Transaction Hex: %s\n", generatedDID.Transaction.TxHex)
 
-    // 5. Call register DID trên L2 để đăng ký did
+    // 5. Submit transaction to blockchain to register DID
 }
 ```
 
-## Using Signers
+---
 
-There are 3 types of signers available:
+## Configuration Options
 
-| Loại Signer | Cách tạo | Header được set | Khi nào sử dụng |
-|-------------|----------|-----------------|-----------------|
-| **L2 Admin Signer** | `signer.NewAdminSigner(endpoint, adminToken)` | `Authorization: Bearer {adminToken}` | Khi có admin token và cần quyền admin để tạo DID |
-| **L2 Issuer Signer** | `signer.NewIssuerSigner(endpoint, apiKey)` | `x-api-key: {apiKey}` | Khi có issuer API key để tạo DID |
-| **Local Signer** | `signer.NewDefaultSigner(privateKeyHex)` | Không có (ký local) | Khi có private key trực tiếp, dùng cho development hoặc local signing |
-
-### Example: Creating Signers
+### Option Functions
 
 ```go
-import "github.com/pilacorp/go-credential-sdk/didv2/signer"
+// Network configuration
+didv2.WithRPC("https://rpc-testnet-new.pila.vn")
+didv2.WithDIDChainID(704)
+didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A")
+didv2.WithMethod("did:nda")
 
-// L2 Admin Signer
-adminSigner, err := signer.NewAdminSigner(
-    "https://admin-api.example.com/sign",
-    "your-admin-token",
-)
+// Signer configuration
+didv2.WithSignerProvider(signerProvider)
 
-// L2 Issuer Signer
-issuerSigner, err := signer.NewIssuerSigner(
-    "https://issuer-api.example.com/sign",
-    "your-api-key",
-)
+// Capability configuration
+didv2.WithEpoch(0)                    // Set capability epoch manually
+didv2.WithSyncEpoch(true)             // Automatically sync epoch from blockchain
+didv2.WithCapID("0x...")              // Set capability ID manually
 
-// Local Signer
-localSigner, err := signer.NewDefaultSigner("0x...") // private key hex
+// Transaction configuration
+didv2.WithSyncNonce(true)             // Automatically sync nonce from blockchain
 
-// Remote Signer (generic remote API signer)
-remoteSigner, err := signer.NewRemoteSigner(
-    "https://api.example.com/sign",
-    "your-api-key",
+// Complete configuration object
+didv2.WithDIDConfig(&didv2.DIDConfig{
+    RPC:           "https://rpc-testnet-new.pila.vn",
+    ChainID:       704,
+    DIDSMCAddress: "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A",
+    Method:        "did:nda",
+    SignerProvider: signerProvider,
+    SyncEpoch:     true,
+    SyncNonce:     true,
+})
+```
+
+### Using Configuration Object
+
+```go
+config := &didv2.DIDConfig{
+    RPC:           "https://rpc-testnet-new.pila.vn",
+    ChainID:       704,
+    DIDSMCAddress: "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A",
+    Method:        "did:nda",
+}
+
+didGenerator, err := didv2.NewDIDGenerator(
+    didv2.WithDIDConfig(config),
 )
 ```
 
 ---
 
+## Signer Providers
+
+The SDK uses a `SignerProvider` interface for signing capability payloads. You can implement your own signer or use the provided default implementation.
+
+### SignerProvider Interface
+
+```go
+type SignerProvider interface {
+    Sign(payload []byte) ([]byte, error)
+    GetAddress() string
+}
+```
+
+### Default Provider
+
+```go
+import "github.com/pilacorp/go-credential-sdk/didv2/signer"
+
+// Create a default provider from a private key
+signerProvider, err := signer.NewDefaultProvider("0x...") // private key hex
+if err != nil {
+    log.Fatalf("Failed to create signer: %v", err)
+}
+```
+
+### Custom Signer Implementation
+
+You can implement your own signer provider for different authentication mechanisms (e.g., HSM, hardware wallet, remote signing service):
+
+```go
+type CustomSigner struct {
+    // Your signing mechanism
+}
+
+func (cs *CustomSigner) Sign(payload []byte) ([]byte, error) {
+    // Implement your signing logic
+    // Must return 65-byte signature: [v (1 byte)][r (32 bytes)][s (32 bytes)]
+    signature := yourSigningFunction(payload)
+    return signature, nil
+}
+
+func (cs *CustomSigner) GetAddress() string {
+    // Return the Ethereum address of the signer
+    return "0x..."
+}
+```
+
+---
+
+## DID Types
+
+The SDK supports the following DID types:
+
+- `blockchain.DIDTypePeople` - For people/individuals
+- `blockchain.DIDTypeItem` - For items/products
+- `blockchain.DIDTypeLocation` - For locations
+- `blockchain.DIDTypeActivity` - For activities
+
+---
+
 ## 📡 API Reference
 
-Endpoint - Method - Purpose
+### Core Functions
 
-`POST /api/v1/did/register` Register new DIDRequires x-api-key and authorized issuer_did
+#### `NewDIDGenerator(options ...DIDOption) (*DIDGenerator, error)`
+Creates a new DID generator instance with the provided configuration options.
+
+#### `GenerateDID(ctx, didType, hash, metadata, options ...) (*DID, error)`
+Generates a new DID with an automatically generated key pair.
+
+#### `GenerateDIDTX(ctx, didType, keyPair, hash, metadata, options ...) (*DID, error)`
+Generates a transaction for an existing key pair.
+
+---
 
 ## 🔐 Security Best Practices
 
-- Store PrivateKeyHex securely (e.g., encrypted vault, HSM).
-- Use environment variables for API keys.
-- Never commit keys to version control.
-- Validate all metadata before submission.
+- **Store Private Keys Securely**: Use encrypted vaults, HSMs, or secure key management systems
+- **Use Environment Variables**: Store sensitive configuration (RPC URLs, API keys) in environment variables
+- **Never Commit Keys**: Never commit private keys or sensitive credentials to version control
+- **Validate Metadata**: Always validate and sanitize metadata before submission
+- **Use SyncEpoch and SyncNonce**: Enable automatic synchronization to prevent transaction failures
+- **Implement Custom Signers**: For production, implement custom signer providers that use secure key storage
+
+---
+
+## Error Handling
+
+The SDK returns descriptive errors for common failure scenarios:
+
+- Missing required configuration (RPC, contract address)
+- Invalid key pair or signature format
+- Blockchain transaction failures
+- Network errors when syncing epoch/nonce
+
+Always check and handle errors appropriately:
+
+```go
+generatedDID, err := didGenerator.GenerateDID(ctx, ...)
+if err != nil {
+    // Handle error appropriately
+    log.Printf("Error: %v", err)
+    return err
+}
+```
