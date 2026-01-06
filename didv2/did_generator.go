@@ -250,7 +250,7 @@ func (d *DIDGenerator) ReGenerateDID(
 	txResult, err := d.registry.CreateDIDTx(
 		ctx,
 		signature,
-		keyPair.Address, // msg.sender (did)
+		signerAddress,
 		docHash,
 		config.CapID,
 		txProvider,

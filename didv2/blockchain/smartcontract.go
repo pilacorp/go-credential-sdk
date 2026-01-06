@@ -130,13 +130,13 @@ func NewDIDContract(address string, chainID int64, rpcURL string) (*DIDContract,
 func (e *DIDContract) CreateDIDTx(
 	ctx context.Context,
 	issuerSig *Signature,
-	didAddress, docHash, capId string, // capId NEW, deadline removed
+	issuerAddress, docHash, capId string,
 	txProvider signer.SignerProvider,
 	didType DIDType,
 	nonce uint64,
 ) (*SubmitTxResult, error) {
 	// 1. Auth for msg.sender = didAddress
-	fromAddress := common.HexToAddress(didAddress)
+	fromAddress := common.HexToAddress(txProvider.GetAddress())
 	auth, err := e.getAuthV2(ctx, fromAddress, signer.TxSignerFn(e.chainID, txProvider), int64(nonce))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth: %w", err)
@@ -181,7 +181,7 @@ func (e *DIDContract) CreateDIDTx(
 	tx, err := e.contract.Transact(
 		auth,
 		"createDID",
-		common.HexToAddress(txProvider.GetAddress()),
+		common.HexToAddress(issuerAddress),
 		didType,
 		docHashBytes32,
 		capIdBytes32,
