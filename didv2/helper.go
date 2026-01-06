@@ -3,10 +3,10 @@ package didv2
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -84,37 +84,36 @@ func RandomHex(length int) (string, error) {
 
 // computeDSOPayload mimics the Solidity packing:
 // keccak256(abi.encodePacked("CAP_CREATE", signer, did, type, epoch, capId))
-func computeDSOPayload(signerAddr, didAddr string, didType blockchain.DIDType, capID string, epoch uint64) ([]byte, error) {
-	const action = "CAP_CREATE"
-
-	signerAddress := common.HexToAddress(signerAddr)
-	didAddress := common.HexToAddress(didAddr)
-
-	capID = strings.TrimPrefix(capID, "0x")
-	capIDBytes, err := hex.DecodeString(capID)
-	if err != nil || len(capIDBytes) != 32 {
-		return nil, fmt.Errorf("invalid capID (must be 32 bytes hex): %v", err)
+func computeDSOPayload(contractAddr common.Address, signerAddr, didAddr string, didType blockchain.DIDType, capID string, epoch uint64) ([]byte, error) {
+	// Normalize bytes32 hex inputs
+	capID = strings.TrimSpace(capID)
+	if !strings.HasPrefix(capID, "0x") {
+		capID = "0x" + capID
+	}
+	// Basic sanity: bytes32 is 32 bytes = 64 hex chars + "0x" => len 66
+	if len(capID) != 66 {
+		return nil, fmt.Errorf("invalid capId length: expected bytes32 hex (66 chars with 0x), got %d", len(capID))
 	}
 
-	// Buffer estimation: Action(10) + Addr(20)*2 + Type(1) + Epoch(8) + CapID(32) = ~91 bytes
-	buf := make([]byte, 0, 100)
+	// IMPORTANT: this action string must match the contract verifier exactly.
+	const Action = "CAP_CREATE"
 
-	buf = append(buf, []byte(action)...)
-	buf = append(buf, signerAddress.Bytes()...)
-	buf = append(buf, didAddress.Bytes()...)
-	buf = append(buf, byte(didType))
+	payload, err := blockchain.SolidityPacked(
+		[]string{"string", "address", "address", "uint8", "uint64", "bytes32"},
+		[]string{Action, signerAddr, didAddr, strconv.Itoa(int(didType)), strconv.FormatUint(epoch, 10), capID},
+	)
 
-	// Epoch (Uint64 Big Endian)
-	epochBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(epochBytes, epoch)
-	buf = append(buf, epochBytes...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pack solidity values: %w", err)
+	}
 
-	buf = append(buf, capIDBytes...)
+	// Same EIP-191 wrapper you used previously
+	dataToSign, err := blockchain.CreateEIP191Payload(contractAddr, payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create EIP-191 payload: %w", err)
+	}
 
-	// Hash and apply EIP-191 prefix
-	packedHash := crypto.Keccak256(buf)
-	prefix := fmt.Sprintf("\x19Ethereum Signed Message:\n%d", len(packedHash))
-	return crypto.Keccak256(append([]byte(prefix), packedHash...)), nil
+	return crypto.Keccak256(dataToSign), nil
 }
 
 // signatureFromBytes splits a raw 65-byte signature into R, S, V components.

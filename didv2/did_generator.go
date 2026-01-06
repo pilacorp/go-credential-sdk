@@ -106,6 +106,7 @@ func (d *DIDGenerator) GenerateDIDTX(
 
 	// 3. Create & Sign Payload
 	payloadHash, err := computeDSOPayload(
+		common.HexToAddress(cfg.DIDSMCAddress),
 		cfg.SignerProvider.GetAddress(),
 		keyPair.Address,
 		didType,
