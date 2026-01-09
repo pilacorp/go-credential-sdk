@@ -117,7 +117,7 @@ func (d *DIDGenerator) GenerateDIDTX(
 		return nil, fmt.Errorf("failed to compute payload hash: %w", err)
 	}
 
-	sigBytes, err := cfg.SignerProvider.Sign(payloadHash)
+	sigBytes, err := cfg.SignerProvider.Sign(payloadHash, cfg.SignOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign payload: %w", err)
 	}
