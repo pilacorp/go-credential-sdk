@@ -19,7 +19,6 @@ type DIDGenerator struct {
 // NewDIDGenerator creates a new DIDGenerator.
 func NewDIDGenerator(options ...DIDOption) (*DIDGenerator, error) {
 	cfg := DIDConfig{
-		RPC:           DefaultRPC,
 		ChainID:       DefaultChainID,
 		DIDSMCAddress: DefaultDIDSMCAddress,
 		Method:        DefaultMethod,
@@ -29,15 +28,11 @@ func NewDIDGenerator(options ...DIDOption) (*DIDGenerator, error) {
 		opt(&cfg)
 	}
 
-	if cfg.RPC == "" {
-		return nil, fmt.Errorf("RPC URL is required")
-	}
 	if cfg.DIDSMCAddress == "" {
 		return nil, fmt.Errorf("DID contract address is required")
 	}
 
 	clientCfg := blockchain.ClientConfig{
-		RPCURL:          cfg.RPC,
 		ContractAddress: cfg.DIDSMCAddress,
 		ChainID:         cfg.ChainID,
 		GasLimit:        300000,
@@ -87,16 +82,7 @@ func (d *DIDGenerator) GenerateDIDTX(
 		return nil, fmt.Errorf("signer provider is required to authorize creation")
 	}
 
-	// 1. Sync State
-	if cfg.SyncEpoch {
-		epoch, err := d.registry.GetCapabilityEpoch(ctx, cfg.SignerProvider.GetAddress())
-		if err != nil {
-			return nil, fmt.Errorf("failed to sync epoch: %w", err)
-		}
-		cfg.Epoch = epoch
-	}
-
-	// 2. Prepare DID Document
+	// 1. Prepare DID Document
 	signerDID := fmt.Sprintf("%s:%s", cfg.Method, cfg.SignerProvider.GetAddress())
 	doc := GenerateDIDDocument(keyPair, didType, hash, metadata, signerDID)
 	docHash, err := doc.Hash()
@@ -104,7 +90,7 @@ func (d *DIDGenerator) GenerateDIDTX(
 		return nil, fmt.Errorf("failed to hash DID document: %w", err)
 	}
 
-	// 3. Create & Sign Payload
+	// 2. Create & Sign Payload
 	payloadHash, err := computeDSOPayload(
 		common.HexToAddress(cfg.DIDSMCAddress),
 		cfg.SignerProvider.GetAddress(),
@@ -127,18 +113,10 @@ func (d *DIDGenerator) GenerateDIDTX(
 		return nil, fmt.Errorf("invalid signature format: %w", err)
 	}
 
-	// 4. Submit Transaction
+	// 3. Submit Transaction
 	txProvider, err := signer.NewDefaultProvider(keyPair.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tx provider: %w", err)
-	}
-
-	if cfg.SyncNonce {
-		nonce, err := d.registry.GetNonce(ctx, common.HexToAddress(txProvider.GetAddress()))
-		if err != nil {
-			return nil, fmt.Errorf("failed to sync nonce: %w", err)
-		}
-		cfg.Nonce = nonce
 	}
 
 	req := blockchain.CreateDIDRequest{
@@ -162,14 +140,6 @@ func (d *DIDGenerator) GenerateDIDTX(
 		Document:    *doc,
 		Transaction: *txResult,
 	}, nil
-}
-
-func (d *DIDGenerator) GetCapabilityEpoch(ctx context.Context, address string) (uint64, error) {
-	return d.registry.GetCapabilityEpoch(ctx, address)
-}
-
-func (d *DIDGenerator) GetNonce(ctx context.Context, address string) (uint64, error) {
-	return d.registry.GetNonce(ctx, common.HexToAddress(address))
 }
 
 // resolveConfig merges run-time options with the base configuration.
