@@ -16,7 +16,6 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
@@ -98,7 +97,6 @@ type Signature struct {
 
 // ClientConfig holds configuration for the DIDContract client.
 type ClientConfig struct {
-	RPCURL          string
 	ContractAddress string
 	ChainID         int64
 	// Optional: defaults to 0 if not set, suitable for gas-free subnets.
@@ -109,7 +107,6 @@ type ClientConfig struct {
 
 type DIDContract struct {
 	contract     *bind.BoundContract
-	client       *ethclient.Client
 	chainID      *big.Int
 	contractAddr common.Address
 	gasPrice     *big.Int
@@ -120,16 +117,8 @@ type DIDContract struct {
 
 // NewDIDContract creates a new instance of the Ethereum DID Registry client.
 func NewDIDContract(cfg ClientConfig) (*DIDContract, error) {
-	if cfg.RPCURL == "" {
-		return nil, errors.New("RPC URL is required")
-	}
 	if cfg.ContractAddress == "" {
 		return nil, errors.New("contract address is required")
-	}
-
-	client, err := ethclient.Dial(cfg.RPCURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial RPC: %w", err)
 	}
 
 	contractABI, err := loadABI()
@@ -138,7 +127,7 @@ func NewDIDContract(cfg ClientConfig) (*DIDContract, error) {
 	}
 
 	addr := common.HexToAddress(cfg.ContractAddress)
-	contract := bind.NewBoundContract(addr, contractABI, client, client, nil)
+	contract := bind.NewBoundContract(addr, contractABI, nil, nil, nil)
 
 	// Set defaults if zero
 	gasLimit := cfg.GasLimit
@@ -152,7 +141,6 @@ func NewDIDContract(cfg ClientConfig) (*DIDContract, error) {
 
 	return &DIDContract{
 		contract:     contract,
-		client:       client,
 		chainID:      big.NewInt(cfg.ChainID),
 		contractAddr: addr,
 		gasPrice:     gasPrice,
@@ -228,39 +216,6 @@ func (e *DIDContract) AddIssuerTx(ctx context.Context, txProvider signer.SignerP
 	}
 
 	return serializeTx(tx)
-}
-
-// -- Read Methods --
-
-func (e *DIDContract) GetCapabilityEpoch(ctx context.Context, signerAddr string) (uint64, error) {
-	if signerAddr == "" {
-		return 0, errors.New("signer address is required")
-	}
-
-	var out []interface{}
-	err := e.contract.Call(&bind.CallOpts{Context: ctx}, &out, "getCapabilityEpoch", common.HexToAddress(signerAddr))
-	if err != nil {
-		return 0, fmt.Errorf("contract call failed: %w", err)
-	}
-
-	if len(out) == 0 {
-		return 0, errors.New("contract returned no data")
-	}
-
-	epoch, ok := out[0].(uint64)
-	if !ok {
-		return 0, fmt.Errorf("unexpected output type: %T", out[0])
-	}
-
-	return epoch, nil
-}
-
-func (e *DIDContract) GetNonce(ctx context.Context, address common.Address) (uint64, error) {
-	nonce, err := e.client.PendingNonceAt(ctx, address)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get nonce: %w", err)
-	}
-	return nonce, nil
 }
 
 // -- Helpers --

@@ -6,7 +6,6 @@ import (
 
 // Default configuration constants
 const (
-	DefaultRPC           = "https://rpc-testnet-new.pila.vn"
 	DefaultChainID       = int64(704)
 	DefaultDIDSMCAddress = "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"
 	DefaultMethod        = "did:nda"
@@ -14,7 +13,6 @@ const (
 
 // DIDConfig holds configuration for a specific operation.
 type DIDConfig struct {
-	RPC            string
 	ChainID        int64
 	DIDSMCAddress  string
 	Method         string
@@ -29,10 +27,6 @@ type DIDConfig struct {
 type DIDOption func(*DIDConfig)
 
 // -- Option Functions --
-
-func WithRPC(rpc string) DIDOption {
-	return func(c *DIDConfig) { c.RPC = rpc }
-}
 
 func WithDIDChainID(chainID int64) DIDOption {
 	return func(c *DIDConfig) { c.ChainID = chainID }
@@ -70,9 +64,6 @@ func WithCapID(capID string) DIDOption {
 func WithDIDConfig(config *DIDConfig) DIDOption {
 	return func(c *DIDConfig) {
 		// Copy base fields
-		if config.RPC != "" {
-			c.RPC = config.RPC
-		}
 		if config.ChainID != 0 {
 			c.ChainID = config.ChainID
 		}
