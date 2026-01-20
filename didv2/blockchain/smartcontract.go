@@ -123,13 +123,15 @@ func NewDIDContract(cfg ClientConfig) (*DIDContract, error) {
 	if cfg.RPCURL == "" {
 		return nil, errors.New("RPC URL is required")
 	}
+
 	if cfg.ContractAddress == "" {
 		return nil, errors.New("contract address is required")
 	}
 
+	// ignore error when connect RPC fail.
 	client, err := ethclient.Dial(cfg.RPCURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial RPC: %w", err)
+		fmt.Sprintf("failed to init RPC client, some features may not work: %v", err)
 	}
 
 	contractABI, err := loadABI()
@@ -237,6 +239,10 @@ func (e *DIDContract) GetCapabilityEpoch(ctx context.Context, signerAddr string)
 		return 0, errors.New("signer address is required")
 	}
 
+	if e.client == nil {
+		return 0, fmt.Errorf("RPC client is not initialized, please check RPC URL and try again")
+	}
+
 	var out []interface{}
 	err := e.contract.Call(&bind.CallOpts{Context: ctx}, &out, "getCapabilityEpoch", common.HexToAddress(signerAddr))
 	if err != nil {
@@ -256,10 +262,15 @@ func (e *DIDContract) GetCapabilityEpoch(ctx context.Context, signerAddr string)
 }
 
 func (e *DIDContract) GetNonce(ctx context.Context, address common.Address) (uint64, error) {
+	if e.client == nil {
+		return 0, fmt.Errorf("RPC client is not initialized, please check RPC URL and try again")
+	}
+
 	nonce, err := e.client.PendingNonceAt(ctx, address)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get nonce: %w", err)
 	}
+
 	return nonce, nil
 }
 

@@ -69,7 +69,7 @@ func (d *DIDGenerator) GenerateDID(
 		return nil, fmt.Errorf("failed to generate key pair: %w", err)
 	}
 
-	return d.GenerateDIDTX(ctx, didType, keyPair, hash, metadata, options...)
+	return d.GenerateDIDTX(ctx, didType, keyPair, hash, metadata, WithDIDConfig(&cfg))
 }
 
 // GenerateDIDTX creates a transaction to register an existing key pair.
@@ -83,11 +83,52 @@ func (d *DIDGenerator) GenerateDIDTX(
 ) (*DID, error) {
 	cfg := d.resolveConfig(options...)
 
+	// 1. Create Issuer Signature.
+	issuerSig, err := d.CreateIssuerSignature(ctx, didType, keyPair.Address, WithDIDConfig(&cfg))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create issuer signature: %w", err)
+	}
+
+	// 2. Generate DID Document.
+	issuerAddress := cfg.SignerProvider.GetAddress()
+	issuerDID := fmt.Sprintf("%s:%s", cfg.Method, issuerAddress)
+	didDoc := GenerateDIDDocument(keyPair, didType, hash, metadata, issuerDID)
+	docHash, err := didDoc.Hash()
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash DID document: %w", err)
+	}
+
+	// 3. Create DID Tx Transaction.
+	didTxSigner, err := signer.NewDefaultProvider(keyPair.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tx signer: %w", err)
+	}
+
+	txResult, err := d.GenerateDIDTXFromIssuerSig(ctx, didType, didTxSigner, docHash, issuerSig, issuerAddress, WithDIDConfig(&cfg))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate DID TX from issuer signature: %w", err)
+	}
+
+	// 4. To did result.
+	return &DID{
+		DID:         keyPair.Identifier,
+		Secret:      Secret{PrivateKeyHex: keyPair.PrivateKey},
+		Document:    *didDoc,
+		Transaction: *txResult,
+	}, nil
+}
+
+// CreateIssuerSignature creates an issuer signature for a DID.
+//
+// issuer signature present issuer access to create did.
+func (d *DIDGenerator) CreateIssuerSignature(ctx context.Context, didType blockchain.DIDType, didAddress string, options ...DIDOption) (*blockchain.Signature, error) {
+	cfg := d.resolveConfig(options...)
+
+	// issuer provider is required to sign the payload.
 	if cfg.SignerProvider == nil {
 		return nil, fmt.Errorf("signer provider is required to authorize creation")
 	}
 
-	// 1. Sync State
 	if cfg.SyncEpoch {
 		epoch, err := d.registry.GetCapabilityEpoch(ctx, cfg.SignerProvider.GetAddress())
 		if err != nil {
@@ -96,19 +137,14 @@ func (d *DIDGenerator) GenerateDIDTX(
 		cfg.Epoch = epoch
 	}
 
-	// 2. Prepare DID Document
-	signerDID := fmt.Sprintf("%s:%s", cfg.Method, cfg.SignerProvider.GetAddress())
-	doc := GenerateDIDDocument(keyPair, didType, hash, metadata, signerDID)
-	docHash, err := doc.Hash()
-	if err != nil {
-		return nil, fmt.Errorf("failed to hash DID document: %w", err)
-	}
+	issuerAddress := cfg.SignerProvider.GetAddress()
+	smcAddress := common.HexToAddress(cfg.DIDSMCAddress)
 
-	// 3. Create & Sign Payload
-	payloadHash, err := computeDSOPayload(
-		common.HexToAddress(cfg.DIDSMCAddress),
-		cfg.SignerProvider.GetAddress(),
-		keyPair.Address,
+	// create issuer signature payload to create did.
+	payloadHash, err := ComputeDSOPayload(
+		smcAddress,
+		issuerAddress,
+		didAddress,
 		didType,
 		cfg.CapID,
 		cfg.Epoch,
@@ -127,14 +163,27 @@ func (d *DIDGenerator) GenerateDIDTX(
 		return nil, fmt.Errorf("invalid signature format: %w", err)
 	}
 
-	// 4. Submit Transaction
-	txProvider, err := signer.NewDefaultProvider(keyPair.PrivateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create tx provider: %w", err)
+	return issuerSig, nil
+}
+
+// GenerateDIDTXFromIssuerSig generates a DID TX from an issuer signature.
+func (d *DIDGenerator) GenerateDIDTXFromIssuerSig(
+	ctx context.Context,
+	didType blockchain.DIDType,
+	didTxSigner signer.SignerProvider,
+	docHash string,
+	issuerSig *blockchain.Signature,
+	issuerAddress string,
+	options ...DIDOption,
+) (*blockchain.SubmitTxResult, error) {
+	cfg := d.resolveConfig(options...)
+
+	if issuerSig == nil {
+		return nil, fmt.Errorf("issuer signature is required")
 	}
 
 	if cfg.SyncNonce {
-		nonce, err := d.registry.GetNonce(ctx, common.HexToAddress(txProvider.GetAddress()))
+		nonce, err := d.registry.GetNonce(ctx, common.HexToAddress(didTxSigner.GetAddress()))
 		if err != nil {
 			return nil, fmt.Errorf("failed to sync nonce: %w", err)
 		}
@@ -143,10 +192,10 @@ func (d *DIDGenerator) GenerateDIDTX(
 
 	req := blockchain.CreateDIDRequest{
 		IssuerSig:     issuerSig,
-		IssuerAddress: cfg.SignerProvider.GetAddress(),
+		IssuerAddress: issuerAddress,
 		DocHash:       docHash,
 		CapID:         cfg.CapID,
-		TxProvider:    txProvider,
+		TxProvider:    didTxSigner,
 		DIDType:       didType,
 		Nonce:         cfg.Nonce,
 	}
@@ -156,12 +205,7 @@ func (d *DIDGenerator) GenerateDIDTX(
 		return nil, fmt.Errorf("blockchain tx failed: %w", err)
 	}
 
-	return &DID{
-		DID:         keyPair.Identifier,
-		Secret:      Secret{PrivateKeyHex: keyPair.PrivateKey},
-		Document:    *doc,
-		Transaction: *txResult,
-	}, nil
+	return txResult, nil
 }
 
 func (d *DIDGenerator) GetCapabilityEpoch(ctx context.Context, address string) (uint64, error) {

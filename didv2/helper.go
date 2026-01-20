@@ -84,7 +84,7 @@ func RandomHex(length int) (string, error) {
 
 // computeDSOPayload mimics the Solidity packing:
 // keccak256(abi.encodePacked("CAP_CREATE", signer, did, type, epoch, capId))
-func computeDSOPayload(contractAddr common.Address, signerAddr, didAddr string, didType blockchain.DIDType, capID string, epoch uint64) ([]byte, error) {
+func ComputeDSOPayload(contractAddr common.Address, signerAddr, didAddr string, didType blockchain.DIDType, capID string, epoch uint64) ([]byte, error) {
 	// Normalize bytes32 hex inputs
 	capID = strings.TrimSpace(capID)
 	if !strings.HasPrefix(capID, "0x") {
