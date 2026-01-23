@@ -196,10 +196,12 @@ didv2.WithSignerProvider(signerProvider)
 
 // Capability configuration
 didv2.WithEpoch(0)                    // Set capability epoch manually
+// Require RPC URL valid.
 didv2.WithSyncEpoch(true)             // Automatically sync epoch from blockchain
 didv2.WithCapID("0x...")              // Set capability ID manually
 
-// Transaction configuration
+// Transaction configuration.
+// Require RPC URL valid.
 didv2.WithSyncNonce(true)             // Automatically sync nonce from blockchain
 
 // Complete configuration object
