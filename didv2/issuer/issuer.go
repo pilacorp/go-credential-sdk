@@ -1,3 +1,12 @@
+// Package issuer provides functionality for creating issuer signatures that authorize DID issuance.
+//
+// This package is used exclusively by Backend Issuer services to:
+//   - Build EIP-191 compliant payloads for signing
+//   - Generate issuer signatures using the Issuer's private key
+//   - Create capability IDs for DID issuance
+//
+// The issuer signature proves that the Issuer authorizes the creation of a specific DID.
+// This is a core component of the Issuer-centric DID model.
 package issuer
 
 import (
@@ -14,7 +23,21 @@ import (
 	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
-// GenerateIssueDIDSignature generates an issue DID signature.
+// GenerateIssueDIDSignature generates an issuer signature for authorizing DID issuance.
+//
+// This is the core function for creating issuer signatures. It:
+//   - Validates the IssueDIDPayload
+//   - Builds an EIP-191 compliant payload
+//   - Hashes the payload using Keccak256
+//   - Signs the hash using the issuer signer
+//
+// The issuer signature proves that the Issuer authorizes the creation of a specific DID.
+// This signature is required for all DID creation transactions.
+//
+// The input parameter contains all the information needed to build the signature payload.
+// The issuerSigner parameter must be a valid SignerProvider with the Issuer's private key.
+//
+// Returns a Signature containing R, S, V components, or an error if signing fails.
 func GenerateIssueDIDSignature(input *IssueDIDPayload, issuerSigner signer.SignerProvider) (*Signature, error) {
 	if issuerSigner == nil {
 		return nil, fmt.Errorf("issuer signer is required")
@@ -33,7 +56,18 @@ func GenerateIssueDIDSignature(input *IssueDIDPayload, issuerSigner signer.Signe
 	return SignPayload(hashPayload.Bytes(), issuerSigner)
 }
 
-// BuildIssueDIDPayload builds the issue DID payload.
+// BuildIssueDIDPayload builds an EIP-191 compliant payload for issuer signature.
+//
+// The payload is constructed as:
+//   - EIP-191 prefix: 0x19 0x00
+//   - Contract address (20 bytes)
+//   - ABI-encoded packed data: action, issuerAddr, didAddr, didType, epoch, capID
+//
+// This format ensures the signature is bound to the specific contract and cannot
+// be reused across different contracts or contexts.
+//
+// The input parameter is validated before building the payload.
+// Returns the payload bytes ready for hashing and signing, or an error if validation fails.
 func BuildIssueDIDPayload(input *IssueDIDPayload) ([]byte, error) {
 	// 1. Validate input
 	if err := input.Validate(); err != nil {
@@ -58,7 +92,12 @@ func BuildIssueDIDPayload(input *IssueDIDPayload) ([]byte, error) {
 	return dataToSign, nil
 }
 
-// SignPayload signs the issue DID payload.
+// SignPayload signs the provided payload using the issuer signer.
+//
+// The payload should be the hash of the EIP-191 payload (from BuildIssueDIDPayload).
+// The signature is normalized to Ethereum format (V = 27 or 28).
+//
+// Returns a Signature with R, S, V components, or an error if signing fails.
 func SignPayload(
 	payload []byte,
 	issuerSigner signer.SignerProvider,
@@ -76,9 +115,14 @@ func SignPayload(
 	return issuerSig, nil
 }
 
-// GenerateCapID generates a random cap ID.
+// GenerateCapID generates a random capability ID for DID issuance.
 //
-// CapID is a 32 bytes hex string.
+// The CapID is a 32-byte random value used to uniquely identify a specific
+// DID issuance authorization. Issuers can revoke specific capabilities by
+// revoking the CapID on-chain.
+//
+// Returns the CapID as a hex string (66 characters: "0x" + 64 hex digits),
+// or an error if random generation fails.
 func GenerateCapID() (string, error) {
 	b := make([]byte, CapIDLength)
 	if _, err := rand.Read(b); err != nil {
@@ -88,11 +132,17 @@ func GenerateCapID() (string, error) {
 	return "0x" + hex.EncodeToString(b), nil
 }
 
-// abiEncodePacked encodes values according to their types using abi.encodePacked.
+// abiEncodePacked encodes values using Solidity's abi.encodePacked format (tight packing, no padding).
 //
-// types is a list of type strings.
-// values is a list of value strings.
-// Returns the encoded bytes or an error if the types and values length mismatch or the type is invalid.
+// This implements the same logic as Solidity's abi.encodePacked, which tightly packs
+// values without padding. This is used for building the issuer signature payload.
+//
+// Supported types: string, address, uint8, uint16, uint32, uint64, uint256, bytes32.
+//
+// The types parameter is a list of Solidity type strings.
+// The values parameter is a list of value strings (decimal for uint, hex for address/bytes32).
+//
+// Returns the tightly packed bytes, or an error if types/values mismatch or type is unsupported.
 func abiEncodePacked(types []string, values []string) ([]byte, error) {
 	if len(types) != len(values) {
 		return nil, fmt.Errorf("types and values length mismatch")

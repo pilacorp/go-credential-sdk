@@ -43,6 +43,29 @@ var binaryEscapes = []byte{'\\', '"', '\b', '\f', '\n', '\r', '\t'}
 // JSON literals
 var literals = []string{"true", "false", "null"}
 
+// Transform canonicalizes JSON data according to RFC 8785 (JSON Canonicalization Scheme).
+//
+// Canonicalization ensures that semantically equivalent JSON documents produce
+// identical byte sequences, enabling consistent hashing and digital signatures.
+// This is critical for DID Document hashing, where the same document must always
+// produce the same hash regardless of formatting differences.
+//
+// The transformation process:
+//   - Removes all whitespace
+//   - Sorts object members lexicographically by their UTF-16 code units
+//   - Normalizes number formatting (ES6 format)
+//   - Normalizes string escaping (UTF-16 surrogate pairs)
+//   - Ensures consistent representation of JSON literals
+//
+// The jsonData parameter must be valid UTF-8 encoded JSON.
+// The input is parsed and transformed into canonical form.
+//
+// Returns the canonicalized JSON as a byte slice, or an error if:
+//   - The input is not valid JSON
+//   - The input contains non-ASCII characters (must be UTF-8)
+//   - The JSON structure is malformed
+//
+// Example use case: Hashing DID Documents for blockchain transactions.
 func Transform(jsonData []byte) (result []byte, e error) {
 
 	// JSON data MUST be UTF-8 encoded

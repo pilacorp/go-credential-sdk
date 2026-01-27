@@ -1,3 +1,12 @@
+// Package didcontract provides functionality for interacting with the DID Registry smart contract.
+//
+// This package handles:
+//   - Building transaction data for creating DIDs on-chain
+//   - Signing transactions to create raw transactions
+//   - Querying contract state (epoch, nonce)
+//
+// The SDK does not submit transactions to the blockchain. It only creates raw
+// transactions that must be submitted separately.
 package didcontract
 
 import (
@@ -21,8 +30,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
-// -- Embeds & ABI Handling --
-
 //go:embed did_registry_smc_abi.json
 var smcABIJSON []byte
 
@@ -32,7 +39,10 @@ var (
 	errParseABI  error
 )
 
-// loadABI ensures the ABI is parsed exactly once.
+// loadABI loads and parses the DID Registry smart contract ABI exactly once.
+//
+// The ABI is embedded at compile time and parsed lazily on first use.
+// Returns the parsed ABI or an error if parsing fails.
 func loadABI() (abi.ABI, error) {
 	parseABIOnce.Do(func() {
 		type hardhatArtifact struct {
@@ -49,14 +59,27 @@ func loadABI() (abi.ABI, error) {
 	return parsedABI, errParseABI
 }
 
-// Contract is the client for the DID contract.
+// Contract is a client for interacting with the DID Registry smart contract.
+//
+// It provides methods for:
+//   - Creating signed transactions for DID creation
+//   - Querying contract state (capability epoch, nonce)
+//
+// The RPC client is optional. If not available, read operations will fail
+// but transaction creation can still work with manual nonce/epoch values.
 type Contract struct {
 	contract  *bind.BoundContract
 	rpcClient *ethclient.Client
 	cfg       *Config
 }
 
-// NewContract creates a new instance of the Ethereum DID Registry client.
+// NewContract creates a new Contract client for the DID Registry smart contract.
+//
+// The config parameter must contain a valid contract address and chain ID.
+// The RPC URL is optional but required for read operations (GetCapabilityEpoch, GetNonce).
+// If RPC connection fails, the client is still created but read operations will fail.
+//
+// Returns a Contract instance or an error if configuration is invalid or ABI loading fails.
 func NewContract(cfg *Config) (*Contract, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -84,7 +107,23 @@ func NewContract(cfg *Config) (*Contract, error) {
 	}, nil
 }
 
-// CreateDIDTx creates a new DID transaction.
+// CreateDIDTx creates a signed raw transaction for creating a DID on-chain.
+//
+// This method:
+//   - Validates the request parameters
+//   - Builds the transaction data according to the smart contract ABI
+//   - Signs the transaction using the provided txSigner
+//   - Serializes the transaction to raw hex format
+//
+// The SDK does not submit the transaction. The returned Transaction.TxHex
+// must be submitted to the blockchain separately.
+//
+// The ctx parameter is used for transaction signing context.
+// The req parameter contains all the data needed for DID creation.
+// The txSigner parameter must be a valid SignerProvider with the DID's private key.
+//
+// Returns a Transaction containing the raw transaction hex and transaction hash,
+// or an error if transaction creation fails.
 func (e *Contract) CreateDIDTx(ctx context.Context, req *CreateDIDRequest, txSigner signer.SignerProvider) (*Transaction, error) {
 	if txSigner == nil {
 		return nil, fmt.Errorf("tx signer is required")
@@ -131,8 +170,15 @@ func (e *Contract) CreateDIDTx(ctx context.Context, req *CreateDIDRequest, txSig
 	return serializeTx(tx)
 }
 
-// -- Read Methods --
-
+// GetCapabilityEpoch retrieves the current capability epoch for an issuer from the blockchain.
+//
+// The capability epoch is used to validate issuer signatures. Issuers can revoke
+// all previous signatures by incrementing the epoch on-chain.
+//
+// The ctx parameter is used for the blockchain query context.
+// The signerAddr parameter is the Ethereum address of the Issuer.
+//
+// Requires a valid RPC client. Returns the current epoch or an error if the query fails.
 func (e *Contract) GetCapabilityEpoch(ctx context.Context, signerAddr string) (uint64, error) {
 	if signerAddr == "" {
 		return 0, errors.New("signer address is required")
@@ -160,6 +206,15 @@ func (e *Contract) GetCapabilityEpoch(ctx context.Context, signerAddr string) (u
 	return epoch, nil
 }
 
+// GetNonce retrieves the current transaction nonce for an address from the blockchain.
+//
+// The nonce is a sequential number that ensures each transaction is unique.
+// It must be incremented for each new transaction from the same address.
+//
+// The ctx parameter is used for the blockchain query context.
+// The address parameter is the Ethereum address to query the nonce for.
+//
+// Requires a valid RPC client. Returns the current nonce or an error if the query fails.
 func (e *Contract) GetNonce(ctx context.Context, address common.Address) (uint64, error) {
 	if e.rpcClient == nil {
 		return 0, fmt.Errorf("RPC client is not initialized, please check RPC URL and try again")
@@ -173,7 +228,10 @@ func (e *Contract) GetNonce(ctx context.Context, address common.Address) (uint64
 	return nonce, nil
 }
 
-// getTransactOpts creates the auth options for a transaction.
+// getTransactOpts creates transaction authorization options for signing.
+//
+// This is an internal method that sets up the transaction signer function
+// using EIP-155 signing with the provided chain ID.
 func (e *Contract) getTransactOpts(ctx context.Context, provider signer.SignerProvider, nonce int64) (*bind.TransactOpts, error) {
 	fromAddress := common.HexToAddress(provider.GetAddress())
 	signerFn := func(addr common.Address, tx *types.Transaction) (*types.Transaction, error) {
@@ -198,9 +256,10 @@ func (e *Contract) getTransactOpts(ctx context.Context, provider signer.SignerPr
 	}, nil
 }
 
-// -- Helpers --
-
-// hexToBytes32 decodes a hex string (with or without 0x) into a 32-byte array.
+// hexToBytes32 decodes a hex string into a 32-byte array.
+//
+// The input can include or omit the "0x" prefix.
+// Returns an error if the hex string is invalid or not exactly 32 bytes.
 func hexToBytes32(s string) ([32]byte, error) {
 	s = strings.TrimPrefix(s, "0x")
 	b, err := hex.DecodeString(s)
@@ -215,8 +274,10 @@ func hexToBytes32(s string) ([32]byte, error) {
 	return out, nil
 }
 
-// bytesToBytes32 copies a slice into a 32-byte array, left-padding if necessary is handled by standard big.Int behavior usually,
-// but here we align strictly to the end for standard Ethereum signatures (r/s).
+// bytesToBytes32 converts a byte slice to a 32-byte array.
+//
+// For Ethereum signatures (R/S components), the bytes are right-aligned.
+// If the input is longer than 32 bytes, it is truncated from the left.
 func bytesToBytes32(in []byte) [32]byte {
 	var out [32]byte
 	if len(in) > 32 {
@@ -229,7 +290,11 @@ func bytesToBytes32(in []byte) [32]byte {
 	return out
 }
 
-// serializeTx serializes the transaction to a hex string and hash.
+// serializeTx serializes a transaction to RLP-encoded hex format and computes its hash.
+//
+// The transaction is encoded using RLP (Recursive Length Prefix) encoding,
+// which is the standard format for Ethereum transactions.
+// Returns a Transaction with the hex-encoded transaction and its hash.
 func serializeTx(tx *types.Transaction) (*Transaction, error) {
 	var buf bytes.Buffer
 
