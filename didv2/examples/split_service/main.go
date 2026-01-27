@@ -1,3 +1,26 @@
+// Package main demonstrates Model 2: Split Issuer / DID Owner Flow.
+//
+// This example shows how to use the DID V2 SDK when the Issuer and DID owner
+// are in separate environments. This model separates responsibilities clearly:
+//   - Backend Issuer Service: Holds Issuer's private key, creates Issuer Signature
+//   - Wallet/App: Holds DID's private key, generates key pair first, then signs transaction
+//
+// This model is suitable when:
+//   - DID belongs to end-user control
+//   - Need to separate trust boundary between Issuer and DID owner
+//   - User's private keys should never leave their device/wallet
+//
+// The example demonstrates the complete flow:
+//
+//	Part 1: Wallet/App generates key pair and sends public key to Backend
+//	Part 2: Backend creates Issuer Signature and DID Document, returns to Wallet/App
+//	Part 3: Wallet/App creates and signs transaction using the DID's private key
+//
+// This example simulates both Backend and Wallet/App in a single program for
+// demonstration purposes. In production, these would be separate services.
+//
+// For complete documentation, see:
+// https://github.com/pilacorp/go-credential-sdk/tree/main/didv2
 package main
 
 import (
@@ -13,17 +36,21 @@ import (
 	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
-// Model 2: Split Issuer / DID Owner Flow
+// main demonstrates the complete workflow for Model 2: Split Issuer / DID Owner Flow.
 //
-// In this model:
-// - Issuer and DID owner are in separate environments
-// - Responsibilities are clearly separated:
-//   + Backend Issuer: Holds Issuer Signer, only creates Issuer Signature
-//   + App/FE/Wallet: Holds DID Signer, signs transaction to create raw transaction
-// - This model is suitable when:
-//   + DID belongs to end-user control
-//   + Need to separate trust boundary between Issuer and DID owner
-
+// This example simulates a split architecture where:
+//   - Wallet/App (Part 1 & 3): Generates DID key pair, receives issuer signature,
+//     and creates the final transaction
+//   - Backend Issuer Service (Part 2): Receives DID public key, creates issuer
+//     signature and DID Document, returns to Wallet/App
+//
+// The flow ensures that:
+//   - DID private key never leaves the Wallet/App environment
+//   - Issuer private key never leaves the Backend environment
+//   - Trust boundaries are clearly separated
+//
+// In production, Part 1 & 3 would run in Wallet/App, and Part 2 would run
+// in a separate Backend service with API communication between them.
 func main() {
 	ctx := context.Background()
 
@@ -209,7 +236,7 @@ func main() {
 	fmt.Println("✓ Contract Client initialized")
 
 	// STEP 12: Create Transaction (Wallet/App)
-	fmt.Println("Step 13: Create Transaction (Wallet/App)...")
+	fmt.Println("Step 12: Create Transaction (Wallet/App)...")
 
 	// Create CreateDIDRequest from Issuer Signature and DID Document
 	createDIDReq := &didcontract.CreateDIDRequest{

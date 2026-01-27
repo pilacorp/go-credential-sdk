@@ -7,7 +7,7 @@ This SDK allows you to:
 - Generate **NDA-compliant DIDs** locally with capability-based authorization
 - Create **DID Documents** with customizable metadata
 - Use signer providers for flexible authentication
-- Anchor DIDs on the **NDA Chain** via pre-signed transactions
+- Generate **pre-signed transactions** for anchoring DIDs on the NDA Chain (SDK does not submit transactions)
 
 - **Generate transactions** for existing key pairs or create new DIDs with auto-generated keys
 
@@ -199,6 +199,8 @@ package main
 
 import (
     "context"
+    "fmt"
+    
     "github.com/pilacorp/go-credential-sdk/didv2"
     "github.com/pilacorp/go-credential-sdk/didv2/did"
     "github.com/pilacorp/go-credential-sdk/didv2/signer"
@@ -235,24 +237,6 @@ func main() {
 
 **Characteristics**:
 - Backend Issuer Service: Holds Issuer private key, creates Issuer Signature
-- App/FE/Wallet: Holds DID private key, signs transaction
-- Suitable when DID belongs to end-user control
-- Separates trust boundary between Issuer and DID owner
-
-**Example**: See `examples/single_service/main.go`
-
-**Flow**:
-1. Initialize Issuer Signer
-2. Initialize DID Generator with Issuer Signer
-3. Generate DID (automatically creates key pair and transaction)
-4. Submit transaction to blockchain
-
-### Model 2: Split Issuer / DID Owner Flow
-
-**Use Case**: Issuer and DID owner are in separate environments.
-
-**Characteristics**:
-- Backend Issuer Service: Holds Issuer private key, creates Issuer Signature
 - Wallet/App: Holds DID private key, generates key pair first, then signs transaction
 - Suitable when DID belongs to end-user control
 - Separates trust boundary between Issuer and DID owner
@@ -261,7 +245,7 @@ func main() {
 
 **Flow**:
 
-**Step 1-2: Wallet/App generates key pair and sends public key to Backend**
+**Step 1: Wallet/App generates key pair and sends public key to Backend**
 ```go
 // Wallet/App: Generate Key Pair
 keyPair, _ := did.GenerateECDSAKeyPair()
@@ -273,7 +257,7 @@ didPrivateKeyHex := keyPair.GetPrivateKeyHex() // Store securely
 // { "publicKey": didPublicKeyHex, "didType": did.DIDTypePeople }
 ```
 
-**Step 3-8: Backend creates Issuer Signature and DID Document**
+**Step 2: Backend creates Issuer Signature and DID Document**
 ```go
 // Backend: Receive DID public key from Wallet/App
 didPublicKeyHex := "0x..." // From Wallet/App request
@@ -298,16 +282,29 @@ docHash, _ := didDoc.Hash()
 // Return to Wallet/App: issuerSig, didDoc, docHash, capID
 ```
 
-**Step 9-13: Wallet/App creates and signs transaction**
+**Step 3: Wallet/App creates and signs transaction**
 ```go
+import (
+    "context"
+    "github.com/pilacorp/go-credential-sdk/didv2/did"
+    "github.com/pilacorp/go-credential-sdk/didv2/didcontract"
+    "github.com/pilacorp/go-credential-sdk/didv2/signer"
+)
+
 // Wallet/App: Receive response from Backend
 // issuerSig, didDoc, docHash, capID from Backend API
+
+ctx := context.Background()
 
 // Initialize DID Signer (using key pair from Step 1)
 didSigner, _ := signer.NewDefaultProvider(didPrivateKeyHex)
 
 // Initialize Contract Client
-contractClient, _ := didcontract.NewContract(...)
+contractClient, _ := didcontract.NewContract(&didcontract.Config{
+    RPCURL:          "https://rpc-new.pila.vn",
+    ContractAddress: "0x75e7b09a24bce5a921babe27b62ec7bfe2230d6a",
+    ChainID:         704,
+})
 
 // Create Transaction
 createDIDReq := &didcontract.CreateDIDRequest{
@@ -361,8 +358,8 @@ didv2.WithDIDConfig(&didv2.DIDConfig{
     Method:        "did:nda",
     IssuerSigner: issuerSigner,
     DIDSigner:    didSigner,
-    SyncEpoch:     true,  #require a valid, accessible RPC URL
-    SyncNonce:     true,  #require a valid, accessible RPC URL
+    SyncEpoch:     true,  // Requires a valid, accessible RPC URL
+    SyncNonce:     true,  // Requires a valid, accessible RPC URL
 })
 
 ```

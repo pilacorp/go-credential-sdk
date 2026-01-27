@@ -30,6 +30,23 @@ import (
 
 const invalidPattern uint64 = 0x7ff0000000000000
 
+// NumberToJSON converts an IEEE-754 double precision floating-point number
+// to its JSON string representation according to ECMAScript 6 specification.
+//
+// This function is used for JSON canonicalization, ensuring consistent number
+// formatting regardless of platform or implementation differences. The output
+// format follows the ES6-JSON/JCS (JSON Canonicalization Scheme) specification.
+//
+// Special handling:
+//   - NaN and Infinity are invalid in JSON and return an error
+//   - Negative zero (-0) is normalized to positive zero (0)
+//   - Numbers use 'f' format for values between 1e-6 and 1e+21, 'e' format otherwise
+//   - Exponent notation is normalized (e.g., "1e+09" becomes "1e+9")
+//
+// The ieeeF64 parameter is the IEEE-754 double precision number to convert.
+//
+// Returns the JSON-compliant string representation of the number, or an error
+// if the number is invalid (NaN or Infinity).
 func NumberToJSON(ieeeF64 float64) (res string, err error) {
 	ieeeU64 := math.Float64bits(ieeeF64)
 

@@ -1,3 +1,8 @@
+// Package did provides core DID domain logic including key pair generation,
+// DID Document creation, and address derivation.
+//
+// This package is the foundation module used by both Wallet/App and Backend
+// services in all deployment models.
 package did
 
 import (
@@ -10,7 +15,14 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// GenerateECDSAKeyPair generates a new ECDSA key pair and creates a KeyPair struct.
+// GenerateECDSAKeyPair generates a new ECDSA key pair for DID creation.
+//
+// This is the foundational function for key pair generation used across all
+// deployment models. In Model 2, Wallet/App calls this first before requesting
+// an issuer signature from Backend.
+//
+// Returns a KeyPair containing both public and private keys. The private key
+// should be stored securely as it proves ownership of the DID.
 func GenerateECDSAKeyPair() (*KeyPair, error) {
 	privateKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -23,7 +35,22 @@ func GenerateECDSAKeyPair() (*KeyPair, error) {
 	}, nil
 }
 
-// GenerateDIDDocument creates a DID document from a key pair and request metadata.
+// GenerateDIDDocument creates a W3C-compliant DID Document from the provided parameters.
+//
+// The DID Document is the core identity document that:
+//   - Declares the DID identifier
+//   - Publishes the public key for verification
+//   - Specifies the controller (Issuer)
+//   - Includes metadata and verification methods
+//
+// The didPublicKey parameter is the hex-encoded public key (compressed or uncompressed).
+// The did parameter is the full DID identifier (e.g., "did:nda:0x1234...").
+// The hash parameter is an optional hash value to include in document metadata.
+// The issuerDID parameter is the DID identifier of the Issuer (controller).
+// The didType parameter specifies the type of DID (People, Item, Location, Activity).
+// The metadata parameter contains additional key-value pairs for the document.
+//
+// Returns a DIDDocument that can be hashed and included in blockchain transactions.
 func GenerateDIDDocument(didPublicKey, did, hash, issuerDID string, didType DIDType, metadata map[string]any) *DIDDocument {
 	docMetadata := make(map[string]any)
 	maps.Copy(docMetadata, metadata)
@@ -55,7 +82,13 @@ func GenerateDIDDocument(didPublicKey, did, hash, issuerDID string, didType DIDT
 	}
 }
 
-// AddressFromPublicKeyHex converts a public key hex to an address.
+// AddressFromPublicKeyHex converts a hex-encoded public key to an Ethereum address.
+//
+// Supports both compressed (33 bytes) and uncompressed (65 bytes) public key formats.
+// The publicKeyHex parameter can include or omit the "0x" prefix.
+//
+// Returns the Ethereum address in lowercase hex format (with "0x" prefix).
+// This address is used to derive the DID identifier and for on-chain operations.
 func AddressFromPublicKeyHex(publicKeyHex string) (string, error) {
 	// Decode hex-encoded public key
 	publicKeyBytes, err := hex.DecodeString(strings.TrimPrefix(publicKeyHex, "0x"))

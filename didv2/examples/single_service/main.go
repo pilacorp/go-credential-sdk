@@ -1,3 +1,24 @@
+// Package main demonstrates Model 1: Single-Service Issuance Flow.
+//
+// This example shows how to use the DID V2 SDK when a single backend service
+// acts as both the Issuer and the DID owner. The backend holds both the Issuer's
+// private key and the DID's private key, allowing it to control the entire DID
+// lifecycle in one place.
+//
+// This model is suitable when:
+//   - The system needs full control over DID lifecycle
+//   - There is no need to separate DID ownership for end-users
+//   - All DID operations are managed centrally
+//
+// The example demonstrates:
+//  1. Initializing an Issuer Signer
+//  2. Creating a DID Generator with the Issuer Signer
+//  3. Generating a DID (automatically creates key pair and transaction)
+//  4. Displaying the results
+//  5. Instructions for submitting the transaction to the blockchain
+//
+// For complete documentation, see:
+// https://github.com/pilacorp/go-credential-sdk/tree/main/didv2
 package main
 
 import (
@@ -11,19 +32,17 @@ import (
 	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
-// Model 1: Single-Service Issuance Flow
+// main demonstrates the complete workflow for Model 1: Single-Service Issuance Flow.
 //
-// In this model:
-// - A single backend service simultaneously acts as:
-//   + Issuer (issues DID)
-//   + DID owner
-// - Backend holds:
-//   + Signer (private key) of Issuer
-//   + Signer (private key) of the issued DID
-// - This model is suitable when:
-//   + System needs full control over DID lifecycle
-//   + No need to separate DID ownership for end-users
-
+// This example shows a backend service that:
+//   - Holds the Issuer's private key
+//   - Automatically generates DID key pairs
+//   - Creates issuer signatures
+//   - Builds and signs transactions
+//   - Returns the complete DID issuance result including the private key
+//
+// In production, ensure private keys are stored securely (vault, HSM, etc.)
+// and never exposed in logs or error messages.
 func main() {
 	ctx := context.Background()
 
