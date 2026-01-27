@@ -64,7 +64,7 @@ didGenerator, err := didv2.NewDIDGenerator(
     didv2.WithDIDChainID(704),
     didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"),
     didv2.WithMethod("did:nda"),
-    // didv2.WithSignerProvider(signerProvider), // Optional: Set a global signer here
+    // didv2.WithIssuerSignerProvider(issuerSigner), // Optional: Set a global issuer signer here
 )
 if err != nil {
     log.Fatalf("Failed to initialize DID generator: %v", err)
@@ -76,9 +76,9 @@ if err != nil {
 
 The SDK provides sensible defaults:
 
-- **RPC**: `https://rpc-testnet-new.pila.vn`
+- **RPC**: `https://rpc-new.pila.vn`
 - **ChainID**: `704`
-- **DID Contract Address**: `0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A`
+- **DID Contract Address**: `0x75e7b09a24bce5a921babe27b62ec7bfe2230d6a`
 - **Method**: `did:nda`
 
 ---
@@ -100,7 +100,7 @@ import (
     "log"
 
     "github.com/pilacorp/go-credential-sdk/didv2"
-    "github.com/pilacorp/go-credential-sdk/didv2/blockchain"
+    "github.com/pilacorp/go-credential-sdk/didv2/did"
     "github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
@@ -120,23 +120,22 @@ func main() {
         didv2.WithDIDChainID(704),
         didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A"),
         didv2.WithMethod("did:nda"),
-        didv2.WithSignerProvider(signerProvider), // <--- Injected Globally
+        didv2.WithIssuerSignerProvider(signerProvider), // <--- Injected Globally
     )
     if err != nil {
         log.Fatalf("Failed to initialize DID generator: %v", err)
     }
 
-    // 3. Generate DID (Signer is automatically used)
+    // 3. Generate DID (Issuer Signer is automatically used)
     generatedDID, err := didGenerator.GenerateDID(
         ctx,
-        blockchain.DIDTypePeople,
+        did.DIDTypePeople,
         "",
         map[string]interface{}{
             "name": "User 1",
             "type": "people",
         },
-        // No need to pass signer provider here
-
+        // No need to pass issuer signer here (already set globally)
     )
     if err != nil {
         log.Fatalf("Failed to generate DID: %v", err)
@@ -162,14 +161,13 @@ func main() {
     specificIssuerKey := "0x..."
     customSigner, _ := signer.NewDefaultProvider(specificIssuerKey)
 
-    // 3. Generate DID with Custom Signer Option
+    // 3. Generate DID with Custom Issuer Signer Option
     generatedDID, err := didGenerator.GenerateDID(
         ctx,
-        blockchain.DIDTypeItem,
+        did.DIDTypeItem,
         "",
         map[string]interface{}{ "name": "Item A" },
-        didv2.WithSignerProvider(customSigner), // <--- Injected Locally
-
+        didv2.WithIssuerSignerProvider(customSigner), // <--- Injected Locally
     )
     if err != nil {
         log.Fatalf("Failed to generate DID: %v", err)
@@ -177,6 +175,158 @@ func main() {
 }
 
 ```
+
+---
+
+## 📚 Usage Examples
+
+The SDK supports two deployment models based on your architecture requirements:
+
+### Model 1: Single-Service Issuance Flow
+
+**Use Case**: One backend service holds both Issuer and DID keys.
+
+**Characteristics**:
+- Backend service acts as both Issuer and DID owner
+- Backend holds Issuer private key and DID private key
+- Suitable when system needs full control over DID lifecycle
+- No need to separate DID ownership for end-users
+
+**Example**: See `examples/single_service/main.go`
+
+```go
+package main
+
+import (
+    "context"
+    "github.com/pilacorp/go-credential-sdk/didv2"
+    "github.com/pilacorp/go-credential-sdk/didv2/did"
+    "github.com/pilacorp/go-credential-sdk/didv2/signer"
+)
+
+func main() {
+    ctx := context.Background()
+    
+    // 1. Initialize Issuer Signer
+    issuerSigner, _ := signer.NewDefaultProvider("0x...") // Issuer private key
+    
+    // 2. Initialize DID Generator with Issuer Signer
+    didGenerator, _ := didv2.NewDIDGenerator(
+        didv2.WithIssuerSignerProvider(issuerSigner),
+    )
+    
+    // 3. Generate DID (automatically creates key pair and transaction)
+    result, _ := didGenerator.GenerateDID(
+        ctx,
+        did.DIDTypePeople,
+        "",
+        map[string]any{"name": "User 1"},
+    )
+    
+    // 4. Use result.Transaction.TxHex to submit to blockchain
+    fmt.Printf("DID: %s\n", result.DID)
+    fmt.Printf("Transaction: %s\n", result.Transaction.TxHex)
+}
+```
+
+### Model 2: Split Issuer / DID Owner Flow
+
+**Use Case**: Issuer and DID owner are in separate environments.
+
+**Characteristics**:
+- Backend Issuer Service: Holds Issuer private key, creates Issuer Signature
+- App/FE/Wallet: Holds DID private key, signs transaction
+- Suitable when DID belongs to end-user control
+- Separates trust boundary between Issuer and DID owner
+
+**Example**: See `examples/single_service/main.go`
+
+**Flow**:
+1. Initialize Issuer Signer
+2. Initialize DID Generator with Issuer Signer
+3. Generate DID (automatically creates key pair and transaction)
+4. Submit transaction to blockchain
+
+### Model 2: Split Issuer / DID Owner Flow
+
+**Use Case**: Issuer and DID owner are in separate environments.
+
+**Characteristics**:
+- Backend Issuer Service: Holds Issuer private key, creates Issuer Signature
+- Wallet/App: Holds DID private key, generates key pair first, then signs transaction
+- Suitable when DID belongs to end-user control
+- Separates trust boundary between Issuer and DID owner
+
+**Example**: See `examples/split_service/main.go`
+
+**Flow**:
+
+**Step 1-2: Wallet/App generates key pair and sends public key to Backend**
+```go
+// Wallet/App: Generate Key Pair
+keyPair, _ := did.GenerateECDSAKeyPair()
+didPublicKeyHex := keyPair.GetPublicKeyHex()
+didPrivateKeyHex := keyPair.GetPrivateKeyHex() // Store securely
+
+// Send public key to Backend API
+// POST /api/v1/did/issue
+// { "publicKey": didPublicKeyHex, "didType": did.DIDTypePeople }
+```
+
+**Step 3-8: Backend creates Issuer Signature and DID Document**
+```go
+// Backend: Receive DID public key from Wallet/App
+didPublicKeyHex := "0x..." // From Wallet/App request
+
+// Initialize DID Generator
+didGenerator, _ := didv2.NewDIDGenerator(
+    didv2.WithIssuerSignerProvider(issuerSigner),
+)
+
+// Generate Issuer Signature
+issuerSig, _ := didGenerator.GenerateIssuerSignature(
+    ctx,
+    did.DIDTypePeople,
+    didAddr,
+    issuerAddr,
+)
+
+// Generate DID Document
+didDoc := did.GenerateDIDDocument(didPublicKeyHex, didIdentifier, "", issuerDID, did.DIDTypePeople, metadata)
+docHash, _ := didDoc.Hash()
+
+// Return to Wallet/App: issuerSig, didDoc, docHash, capID
+```
+
+**Step 9-13: Wallet/App creates and signs transaction**
+```go
+// Wallet/App: Receive response from Backend
+// issuerSig, didDoc, docHash, capID from Backend API
+
+// Initialize DID Signer (using key pair from Step 1)
+didSigner, _ := signer.NewDefaultProvider(didPrivateKeyHex)
+
+// Initialize Contract Client
+contractClient, _ := didcontract.NewContract(...)
+
+// Create Transaction
+createDIDReq := &didcontract.CreateDIDRequest{
+    IssuerAddress: issuerAddr,
+    IssuerSig:     issuerSig,
+    DocHash:       docHash,
+    DIDType:       did.DIDTypePeople,
+    CapID:         capID,
+    Nonce:         0, // Set manually or sync from blockchain
+}
+
+txResult, _ := contractClient.CreateDIDTx(ctx, createDIDReq, didSigner)
+
+// Submit txResult.TxHex to blockchain
+```
+
+For complete working examples, see:
+- `examples/single_service/main.go` - Single-service flow
+- `examples/split_service/main.go` - Split issuer/DID owner flow
 
 ---
 
@@ -192,15 +342,16 @@ didv2.WithDIDAddressSMC("0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A")
 didv2.WithMethod("did:nda")
 
 // Signer configuration
-didv2.WithSignerProvider(signerProvider)
+didv2.WithIssuerSignerProvider(issuerSigner)  // Issuer signer (for creating issuer signature)
+didv2.WithDIDSignerProvider(didSigner)        // DID signer (for signing transaction)
 
 // Capability configuration
 didv2.WithEpoch(0)                    // Set capability epoch manually
-didv2.WithSyncEpoch(true)             // Automatically sync epoch from blockchain
+didv2.WithSyncEpoch(true)             // Automatically sync epoch from blockchain (requires valid RPC URL)
 didv2.WithCapID("0x...")              // Set capability ID manually
 
 // Transaction configuration
-didv2.WithSyncNonce(true)             // Automatically sync nonce from blockchain
+didv2.WithSyncNonce(true)             // Automatically sync nonce from blockchain (requires valid RPC URL)
 
 // Complete configuration object
 didv2.WithDIDConfig(&didv2.DIDConfig{
@@ -208,9 +359,10 @@ didv2.WithDIDConfig(&didv2.DIDConfig{
     ChainID:       704,
     DIDSMCAddress: "0x75e7b09a24bCE5a921bABE27b62ec7bfE2230d6A",
     Method:        "did:nda",
-    SignerProvider: signerProvider,
-    SyncEpoch:     true,
-    SyncNonce:     true,
+    IssuerSigner: issuerSigner,
+    DIDSigner:    didSigner,
+    SyncEpoch:     true,  #require a valid, accessible RPC URL
+    SyncNonce:     true,  #require a valid, accessible RPC URL
 })
 
 ```
@@ -229,6 +381,36 @@ didGenerator, err := didv2.NewDIDGenerator(
     didv2.WithDIDConfig(config),
 )
 
+```
+
+### ⚠️ Important Notes on SyncEpoch and SyncNonce
+
+**When using `WithSyncEpoch(true)` or `WithSyncNonce(true)`:**
+
+- **RPC URL must be valid and accessible**: These options require a working RPC connection to query the blockchain
+- **If RPC is invalid or unavailable**: The SDK will fail when trying to sync epoch/nonce
+- **Recommendation**: 
+  - If you have a valid RPC URL: Use `WithSyncEpoch(true)` and `WithSyncNonce(true)` for automatic synchronization
+  - If RPC is not available: Set `SyncEpoch: false` and `SyncNonce: false`, then manually set `Epoch` and `Nonce` values (default is 0)
+
+**Example with manual epoch/nonce:**
+```go
+didGenerator, err := didv2.NewDIDGenerator(
+    didv2.WithRPC("https://rpc-new.pila.vn"), // Valid RPC
+    didv2.WithSyncEpoch(true),                 // Auto-sync epoch
+    didv2.WithSyncNonce(true),                 // Auto-sync nonce
+)
+```
+
+**Example without RPC (manual values):**
+```go
+didGenerator, err := didv2.NewDIDGenerator(
+    // No RPC or invalid RPC
+    didv2.WithEpoch(0),    // Set epoch manually (default: 0)
+    didv2.WithSyncEpoch(false), // Disable auto-sync
+    didv2.WithSyncNonce(false), // Disable auto-sync
+    // Nonce will default to 0 if not set
+)
 ```
 
 ---
@@ -289,10 +471,10 @@ func (cs *CustomSigner) GetAddress() string {
 
 The SDK supports the following DID types:
 
-- `blockchain.DIDTypePeople` - For people/individuals
-- `blockchain.DIDTypeItem` - For items/products
-- `blockchain.DIDTypeLocation` - For locations
-- `blockchain.DIDTypeActivity` - For activities
+- `did.DIDTypePeople` - For people/individuals
+- `did.DIDTypeItem` - For items/products
+- `did.DIDTypeLocation` - For locations
+- `did.DIDTypeActivity` - For activities
 
 ---
 
@@ -304,9 +486,21 @@ The SDK supports the following DID types:
 
 Creates a new DID generator instance with the provided configuration options.
 
-#### `GenerateDID(ctx, didType, hash, metadata, options ...) (*DID, error)`
+#### `GenerateDID(ctx, didType, hash, metadata, options ...) (*DIDTxResult, error)`
 
-Generates a new DID with an automatically generated key pair.
+Generates a new DID with an automatically generated key pair. Returns DID identifier, document, transaction, and secret (private key).
+
+#### `GenerateDIDTX(ctx, didType, didPublicKeyHex, hash, metadata, options ...) (*DIDTxResult, error)`
+
+Creates a transaction to register a DID from an existing public key. Use this when you already have a key pair.
+
+#### `GenerateIssuerSignature(ctx, didType, didAddr, issuerAddr, options ...) (*issuer.Signature, error)`
+
+Generates an issuer signature for a DID. Used in split issuer/DID owner flow.
+
+#### `GenerateDIDCreateTransaction(ctx, didType, docHash, didAddr, issuerAddr, issuerSig, options ...) (*didcontract.Transaction, error)`
+
+Generates a DID create transaction from issuer signature and document hash.
 
 ---
 
@@ -316,8 +510,9 @@ Generates a new DID with an automatically generated key pair.
 - **Use Environment Variables**: Store sensitive configuration (RPC URLs, API keys) in environment variables
 - **Never Commit Keys**: Never commit private keys or sensitive credentials to version control
 - **Validate Metadata**: Always validate and sanitize metadata before submission
-- **Use SyncEpoch and SyncNonce**: Enable automatic synchronization to prevent transaction failures
+- **Use SyncEpoch and SyncNonce carefully**: Enable automatic synchronization only when you have a valid and accessible RPC URL. If RPC is invalid or unavailable, set these to `false` and use manual epoch/nonce values (default is 0)
 - **Implement Custom Signers**: For production, implement custom signer providers that use secure key storage
+- **Separate Issuer and DID Keys**: In split flow, ensure issuer keys and DID keys are stored in separate secure environments
 
 ---
 
@@ -325,10 +520,11 @@ Generates a new DID with an automatically generated key pair.
 
 The SDK returns descriptive errors for common failure scenarios:
 
-- Missing required configuration (RPC, contract address)
+- Missing required configuration (RPC, contract address, issuer signer)
 - Invalid key pair or signature format
 - Blockchain transaction failures
 - Network errors when syncing epoch/nonce
+- Invalid public key format (compressed/uncompressed)
 
 Always check and handle errors appropriately:
 
@@ -339,5 +535,20 @@ if err != nil {
     log.Printf("Error: %v", err)
     return err
 }
-
 ```
+
+## 📝 Notes
+
+- **SDK does not submit transactions**: The SDK only creates raw transactions (`TxHex`). You must submit them to the blockchain using:
+  - Web3 client (`eth_sendRawTransaction`)
+  - Custom API Backend
+  - Blockchain explorer API
+
+- **Transaction lifecycle**: The SDK does not manage transaction status (success/failure) on the blockchain. You need to track this separately.
+
+- **Key pair generation**: In Model 2 (split flow), Wallet/App must generate the key pair first before calling Backend to get issuer signature.
+
+- **SyncEpoch and SyncNonce require valid RPC**: 
+  - `WithSyncEpoch(true)` and `WithSyncNonce(true)` require a valid, accessible RPC URL
+  - If RPC is invalid or unavailable, these operations will fail
+  - **Solution**: Set `SyncEpoch: false` and `SyncNonce: false`, then manually set `Epoch` and `Nonce` values (default is 0)

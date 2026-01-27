@@ -1,112 +1,19 @@
 package didv2
 
 import (
-	"encoding/json"
-	"fmt"
-	"strings"
-
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/pilacorp/go-credential-sdk/didv2/blockchain"
-	"github.com/pilacorp/go-credential-sdk/didv2/jsoncanonicalizer"
+	"github.com/pilacorp/go-credential-sdk/didv2/did"
+	"github.com/pilacorp/go-credential-sdk/didv2/didcontract"
 )
 
-// -- Types --
-
-type DIDType string
-
-const (
-	TypeItem     DIDType = "item"
-	TypePeople   DIDType = "people"
-	TypeLocation DIDType = "location"
-	TypeActivity DIDType = "activity"
-)
-
-// KeyPair represents the generated wallet and DID identifier.
-type KeyPair struct {
-	Address    string `json:"address"`
-	PublicKey  string `json:"publicKey"`
-	PrivateKey string `json:"privateKey"`
-	Identifier string `json:"identifier"`
+// DIDTxResult represents a DIDTxResult and its associated data.
+type DIDTxResult struct {
+	DID         string                   `json:"did"`
+	Secret      *Secret                  `json:"secret"`
+	Document    *did.DIDDocument         `json:"document"`
+	Transaction *didcontract.Transaction `json:"transaction"`
 }
 
-type CreateDID struct {
-	Type     DIDType                `json:"type"`
-	Metadata map[string]interface{} `json:"metadata"`
-	Hash     string                 `json:"hash"`
-}
-
-type DIDDocument struct {
-	Context            []string               `json:"@context"`
-	Id                 string                 `json:"id"`
-	Controller         string                 `json:"controller"`
-	VerificationMethod []VerificationMethod   `json:"verificationMethod"`
-	Authentication     []string               `json:"authentication"`
-	AssertionMethod    []string               `json:"assertionMethod"`
-	DocumentMetadata   map[string]interface{} `json:"didDocumentMetadata"`
-}
-
-type VerificationMethod struct {
-	Id           string `json:"id"`
-	Type         string `json:"type"`
-	Controller   string `json:"controller"`
-	PublicKeyHex string `json:"publicKeyHex,omitempty"`
-}
-
-type DID struct {
-	DID         string                    `json:"did"`
-	Secret      Secret                    `json:"secret"`
-	Document    DIDDocument               `json:"document"`
-	Transaction blockchain.SubmitTxResult `json:"transaction"`
-}
-
+// Secret represents the secret of a DID.
 type Secret struct {
 	PrivateKeyHex string `json:"privateKeyHex"`
-}
-
-// -- Methods --
-
-// Hash calculates the Keccak256 hash of a DID document.
-func (doc *DIDDocument) Hash() (string, error) {
-	docJSON, err := json.Marshal(doc)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal DID document: %w", err)
-	}
-
-	docToHash, err := jsoncanonicalizer.Transform(docJSON)
-	if err != nil {
-		return "", fmt.Errorf("failed to transform DID document: %w", err)
-	}
-
-	hash := crypto.Keccak256Hash(docToHash)
-	return strings.ToLower(hash.Hex()), nil
-}
-
-func (didType DIDType) ToBlockchainType() blockchain.DIDType {
-	switch didType {
-	case TypePeople:
-		return blockchain.DIDTypePeople
-	case TypeItem:
-		return blockchain.DIDTypeItem
-	case TypeActivity:
-		return blockchain.DIDTypeActivity
-	case TypeLocation:
-		return blockchain.DIDTypeLocation
-	default:
-		return blockchain.DIDTypeItem
-	}
-}
-
-func ToBlockchainType(didType string) blockchain.DIDType {
-	switch didType {
-	case "people":
-		return blockchain.DIDTypePeople
-	case "item":
-		return blockchain.DIDTypeItem
-	case "activity":
-		return blockchain.DIDTypeActivity
-	case "location":
-		return blockchain.DIDTypeLocation
-	default:
-		return blockchain.DIDTypeItem
-	}
 }
