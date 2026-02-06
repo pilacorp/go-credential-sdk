@@ -1,7 +1,6 @@
 package vc
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -109,9 +108,9 @@ func (e *JSONCredential) GetType() string {
 func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
-	// Run validateCredential and checkExpiration in parallel if both are enabled
-	if options.isValidateSchema && options.isCheckExpiration {
-		g, _ := errgroup.WithContext(context.Background())
+	// Run validateCredential and checkRevocation in parallel if both are enabled
+	if options.isValidateSchema && options.isCheckRevocation {
+		g := &errgroup.Group{}
 
 		g.Go(func() error {
 			if err := validateCredential(e.credentialData); err != nil {
@@ -121,8 +120,8 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		})
 
 		g.Go(func() error {
-			if err := checkExpiration(e.credentialData); err != nil {
-				return fmt.Errorf("failed to check expiration: %w", err)
+			if err := checkRevocation(e.credentialData); err != nil {
+				return fmt.Errorf("failed to check revocation: %w", err)
 			}
 			return nil
 		})
@@ -138,16 +137,16 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 			}
 		}
 
-		if options.isCheckExpiration {
-			if err := checkExpiration(e.credentialData); err != nil {
-				return fmt.Errorf("failed to check expiration: %w", err)
+		if options.isCheckRevocation {
+			if err := checkRevocation(e.credentialData); err != nil {
+				return fmt.Errorf("failed to check revocation: %w", err)
 			}
 		}
 	}
 
-	if options.isCheckRevocation {
-		if err := checkRevocation(e.credentialData); err != nil {
-			return fmt.Errorf("failed to check revocation: %w", err)
+	if options.isCheckExpiration {
+		if err := checkExpiration(e.credentialData); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 

@@ -1,7 +1,6 @@
 package vc
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -216,9 +215,9 @@ func (j *JWTCredential) GetType() string {
 func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
-	// Run validateCredential and checkExpiration in parallel if both are enabled
-	if options.isValidateSchema && options.isCheckExpiration {
-		g, _ := errgroup.WithContext(context.Background())
+	// Run validateCredential and checkRevocation in parallel if both are enabled
+	if options.isValidateSchema && options.isCheckRevocation {
+		g := &errgroup.Group{}
 
 		g.Go(func() error {
 			if err := validateCredential(j.payloadData); err != nil {
@@ -228,8 +227,8 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 		})
 
 		g.Go(func() error {
-			if err := checkExpiration(j.payloadData); err != nil {
-				return fmt.Errorf("failed to check expiration: %w", err)
+			if err := checkRevocation(j.payloadData); err != nil {
+				return fmt.Errorf("failed to check revocation: %w", err)
 			}
 			return nil
 		})
@@ -245,16 +244,16 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 			}
 		}
 
-		if options.isCheckExpiration {
-			if err := checkExpiration(j.payloadData); err != nil {
-				return fmt.Errorf("failed to check expiration: %w", err)
+		if options.isCheckRevocation {
+			if err := checkRevocation(j.payloadData); err != nil {
+				return fmt.Errorf("failed to check revocation: %w", err)
 			}
 		}
 	}
 
-	if options.isCheckRevocation {
-		if err := checkRevocation(j.payloadData); err != nil {
-			return fmt.Errorf("failed to check revocation: %w", err)
+	if options.isCheckExpiration {
+		if err := checkExpiration(j.payloadData); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 
