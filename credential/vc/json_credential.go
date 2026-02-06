@@ -108,55 +108,51 @@ func (e *JSONCredential) GetType() string {
 func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
-	// Run validateCredential and checkRevocation in parallel if both are enabled
-	if options.isValidateSchema && options.isCheckRevocation {
-		g := &errgroup.Group{}
+	g := &errgroup.Group{}
 
+	if options.isValidateSchema {
 		g.Go(func() error {
 			if err := validateCredential(e.credentialData); err != nil {
-				return fmt.Errorf("failed to validate credential: %w", err)
+				return fmt.Errorf("validate credential: %w", err)
 			}
+
 			return nil
 		})
-
-		g.Go(func() error {
-			if err := checkRevocation(e.credentialData); err != nil {
-				return fmt.Errorf("failed to check revocation: %w", err)
-			}
-			return nil
-		})
-
-		if err := g.Wait(); err != nil {
-			return err
-		}
-	} else {
-		// Run sequentially if only one or neither is enabled
-		if options.isValidateSchema {
-			if err := validateCredential(e.credentialData); err != nil {
-				return fmt.Errorf("failed to validate credential: %w", err)
-			}
-		}
-
-		if options.isCheckRevocation {
-			if err := checkRevocation(e.credentialData); err != nil {
-				return fmt.Errorf("failed to check revocation: %w", err)
-			}
-		}
 	}
 
-	if options.isCheckExpiration {
-		if err := checkExpiration(e.credentialData); err != nil {
-			return fmt.Errorf("failed to check expiration: %w", err)
-		}
+	if options.isCheckRevocation {
+		g.Go(func() error {
+			if err := checkRevocation(e.credentialData); err != nil {
+				return fmt.Errorf("check revocation: %w", err)
+			}
+
+			return nil
+		})
 	}
 
 	if options.isVerifyProof {
-		isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(options.didBaseURL)
-		if err != nil {
-			return fmt.Errorf("failed to verify credential: %w", err)
-		}
-		if !isValid {
-			return fmt.Errorf("invalid proof")
+		g.Go(func() error {
+			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(options.didBaseURL)
+			if err != nil {
+				return fmt.Errorf("verify proof: %w", err)
+			}
+
+			if !isValid {
+				return fmt.Errorf("invalid proof")
+			}
+
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("credential verification failed: %w", err)
+	}
+
+	// checkExpiration always runs sequentially after parallel validations
+	if options.isCheckExpiration {
+		if err := checkExpiration(e.credentialData); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 
