@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	"golang.org/x/sync/errgroup"
 )
 
 type JWTHeaders map[string]interface{}
@@ -214,15 +216,39 @@ func (j *JWTCredential) GetType() string {
 func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
-	if options.isValidateSchema {
-		if err := validateCredential(j.payloadData); err != nil {
-			return fmt.Errorf("failed to validate credential: %w", err)
-		}
-	}
+	// Run validateCredential and checkExpiration in parallel if both are enabled
+	if options.isValidateSchema && options.isCheckExpiration {
+		g, _ := errgroup.WithContext(context.Background())
 
-	if options.isCheckExpiration {
-		if err := checkExpiration(j.payloadData); err != nil {
-			return fmt.Errorf("failed to check expiration: %w", err)
+		g.Go(func() error {
+			if err := validateCredential(j.payloadData); err != nil {
+				return fmt.Errorf("failed to validate credential: %w", err)
+			}
+			return nil
+		})
+
+		g.Go(func() error {
+			if err := checkExpiration(j.payloadData); err != nil {
+				return fmt.Errorf("failed to check expiration: %w", err)
+			}
+			return nil
+		})
+
+		if err := g.Wait(); err != nil {
+			return err
+		}
+	} else {
+		// Run sequentially if only one or neither is enabled
+		if options.isValidateSchema {
+			if err := validateCredential(j.payloadData); err != nil {
+				return fmt.Errorf("failed to validate credential: %w", err)
+			}
+		}
+
+		if options.isCheckExpiration {
+			if err := checkExpiration(j.payloadData); err != nil {
+				return fmt.Errorf("failed to check expiration: %w", err)
+			}
 		}
 	}
 
