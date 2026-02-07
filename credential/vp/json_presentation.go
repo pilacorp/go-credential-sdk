@@ -94,8 +94,12 @@ func (e *JSONPresentation) Serialize() (interface{}, error) {
 	return map[string]interface{}(e.presentationData), nil
 }
 
-func (e *JSONPresentation) GetContents() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.presentationData).ToJSON()
+func (e *JSONPresentation) GetContents() (*PresentationContents, error) {
+	contents, err := parsePresentationContents(e.presentationData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse presentation contents: %w", err)
+	}
+	return &contents, nil
 }
 
 func (e *JSONPresentation) GetType() string {

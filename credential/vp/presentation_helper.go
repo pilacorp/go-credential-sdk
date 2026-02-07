@@ -131,7 +131,11 @@ func serializePresentationContents(vpc *PresentationContents) (PresentationData,
 				return nil, fmt.Errorf("failed to verify credential %d: %w", i, err)
 			}
 		}
-		vpJSON["verifiableCredential"] = credentialList
+		if len(credentialList) == 1 {
+			vpJSON["verifiableCredential"] = credentialList[0]
+		} else {
+			vpJSON["verifiableCredential"] = credentialList
+		}
 	}
 
 	return vpJSON, nil
@@ -139,15 +143,27 @@ func serializePresentationContents(vpc *PresentationContents) (PresentationData,
 
 // parseContext extracts the @context field from a Presentation.
 func parseContext(vp PresentationData, contents *PresentationContents) error {
-	if context, ok := vp["@context"].([]interface{}); ok {
-		for _, ctx := range context {
-			switch v := ctx.(type) {
+	raw := vp["@context"]
+	if raw == nil {
+		return nil
+	}
+
+	switch v := raw.(type) {
+	case string:
+		contents.Context = append(contents.Context, v)
+	case map[string]interface{}:
+		contents.Context = append(contents.Context, v)
+	case []interface{}:
+		for _, ctx := range v {
+			switch c := ctx.(type) {
 			case string, map[string]interface{}:
-				contents.Context = append(contents.Context, v)
+				contents.Context = append(contents.Context, c)
 			default:
-				return fmt.Errorf("unsupported context type: %T", v)
+				return fmt.Errorf("unsupported context type: %T", c)
 			}
 		}
+	default:
+		return fmt.Errorf("unsupported context container: %T", v)
 	}
 	return nil
 }
@@ -208,12 +224,21 @@ func parseDates(vp PresentationData, contents *PresentationContents) error {
 
 // parseVerifiableCredentials extracts the verifiableCredential field from a Presentation.
 func parseVerifiableCredentials(vp PresentationData, contents *PresentationContents) error {
-	vcs, ok := vp["verifiableCredential"].([]interface{})
-	if !ok {
-		return nil // No verifiable credentials field
+	raw := vp["verifiableCredential"]
+	if raw == nil {
+		return nil
 	}
 
-	for i, vcItem := range vcs {
+	// Normalize to slice
+	var items []interface{}
+	switch t := raw.(type) {
+	case []interface{}:
+		items = t
+	default:
+		items = []interface{}{t}
+	}
+
+	for i, vcItem := range items {
 		if vcItem == nil {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"strings"
+
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -39,7 +41,8 @@ type Presentation interface {
 	// - For embedded presentations: returns the JSON object with proof
 	Serialize() (interface{}, error)
 
-	GetContents() ([]byte, error)
+	// GetContents returns the structured presentation contents
+	GetContents() (*PresentationContents, error)
 
 	GetType() string
 
@@ -58,6 +61,43 @@ type PresentationContents struct {
 	ValidFrom             time.Time // Issuance date
 	ValidUntil            time.Time // Expiration date
 	VerifiableCredentials []vc.Credential
+}
+
+// UnmarshalJSON supports single-or-array inputs for @context, type and
+// verifiableCredential by reusing existing parse helpers.
+func (p *PresentationContents) UnmarshalJSON(data []byte) error {
+	var m PresentationData
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	// Use existing parsers for consistent behavior
+	if err := parseContext(m, p); err != nil {
+		return err
+	}
+	if err := parseID(m, p); err != nil {
+		return err
+	}
+	if err := parseTypes(m, p); err != nil {
+		return err
+	}
+	if err := parseHolder(m, p); err != nil {
+		return err
+	}
+	if err := parseVerifiableCredentials(m, p); err != nil {
+		return err
+	}
+	_ = parseProofs(m, p)
+	return nil
+}
+
+// MarshalJSON reuses serializePresentationContents to emit canonical VP shape
+// including '@context' and singleton forms when length is 1.
+func (p PresentationContents) MarshalJSON() ([]byte, error) {
+	m, err := serializePresentationContents(&p)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(m)
 }
 
 // PresentationOpt configures presentation processing options.
