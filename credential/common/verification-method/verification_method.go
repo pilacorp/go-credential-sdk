@@ -75,6 +75,7 @@ func (r *Resolver) GetPublicKey(verificationMethodURL string) (string, error) {
 
 	// Find matching verification method
 	for _, vm := range doc.VerificationMethod {
+
 		if vm.ID == verificationMethodURL {
 			// format publicKeyHex
 			if vm.PublicKeyHex != "" {
