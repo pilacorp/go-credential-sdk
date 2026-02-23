@@ -324,7 +324,9 @@ func (d *DIDGenerator) GenerateDIDCreateTransaction(
 // It applies all provided options to the base config and automatically generates
 // a CapID if one is not provided. This is an internal method used by public APIs.
 func (d *DIDGenerator) resolveConfig(options ...DIDOption) (*DIDConfig, error) {
-	cfg := d.baseConfig
+	// copy base config to avoid modifying the original.
+	cfgCopy := *d.baseConfig
+	cfg := &cfgCopy
 	for _, opt := range options {
 		opt(cfg)
 	}
