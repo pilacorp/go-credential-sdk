@@ -42,8 +42,8 @@ type Config struct {
 // DocHashHexLength is the required hex length for DocHash (32 bytes = 64 hex chars, optional "0x" prefix).
 const DocHashHexLength = 64
 
-// CapIDHexLength is the required total length for CapID ("0x" + 64 hex chars = 66).
-const CapIDHexLength = 66
+// CapIDHexLength is the required hex length for CapID (32 bytes = 64 hex chars, optional "0x" prefix).
+const CapIDHexLength = 64
 
 // CreateDIDRequest contains all the data needed to create a DID creation transaction.
 //
@@ -71,7 +71,7 @@ type CreateDIDRequest struct {
 //   - IssuerAddress is a valid hex address
 //   - IssuerSig is non-nil and has non-nil V, R, S
 //   - DocHash is valid hex with length 32 bytes (64 hex chars, optional "0x")
-//   - CapID is valid hex with length 32 bytes ("0x" + 64 hex chars = 66 total)
+//   - CapID is valid hex with length 32 bytes (64 hex chars, optional "0x" prefix)
 //
 // Returns an error if any validation fails.
 func (r *CreateDIDRequest) Validate() error {
@@ -101,12 +101,12 @@ func (r *CreateDIDRequest) Validate() error {
 		return fmt.Errorf("invalid docHash length: expected %d hex chars (32 bytes), got %d", DocHashHexLength, docHashLen)
 	}
 
-	if len(r.CapID) != CapIDHexLength {
-		return fmt.Errorf("invalid capID length: expected %d (0x + 64 hex chars), got %d", CapIDHexLength, len(r.CapID))
+	capIDLen := len(r.CapID)
+	if strings.HasPrefix(r.CapID, "0x") {
+		capIDLen -= 2
 	}
-
-	if !strings.HasPrefix(r.CapID, "0x") {
-		return errors.New("capID must be hex with 0x prefix")
+	if capIDLen != CapIDHexLength {
+		return fmt.Errorf("invalid capID length: expected %d hex chars (32 bytes), got %d", CapIDHexLength, capIDLen)
 	}
 
 	return nil
