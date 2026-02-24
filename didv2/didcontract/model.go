@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pilacorp/go-credential-sdk/didv2/did"
@@ -38,6 +39,12 @@ type Config struct {
 	GasLimit uint64
 }
 
+// DocHashHexLength is the required hex length for DocHash (32 bytes = 64 hex chars, optional "0x" prefix).
+const DocHashHexLength = 64
+
+// CapIDHexLength is the required hex length for CapID (32 bytes = 64 hex chars, optional "0x" prefix).
+const CapIDHexLength = 64
+
 // CreateDIDRequest contains all the data needed to create a DID creation transaction.
 //
 // This request is used by CreateDIDTx to build and sign a transaction for on-chain DID creation.
@@ -56,6 +63,53 @@ type CreateDIDRequest struct {
 	// Nonce is the transaction nonce for the DID signer account.
 	// Must be the current nonce from the blockchain or manually set.
 	Nonce uint64
+}
+
+// Validate validates the CreateDIDRequest before building a transaction.
+//
+// Checks:
+//   - IssuerAddress is a valid hex address
+//   - IssuerSig is non-nil and has non-nil V, R, S
+//   - DocHash is valid hex with length 32 bytes (64 hex chars, optional "0x")
+//   - CapID is valid hex with length 32 bytes (64 hex chars, optional "0x" prefix)
+//
+// Returns an error if any validation fails.
+func (r *CreateDIDRequest) Validate() error {
+	if r == nil {
+		return errors.New("CreateDIDRequest is required")
+	}
+
+	if !common.IsHexAddress(r.IssuerAddress) {
+		return fmt.Errorf("invalid issuer address: %s", r.IssuerAddress)
+	}
+
+	if r.IssuerSig == nil {
+		return errors.New("issuer signature is required")
+	}
+
+	if r.IssuerSig.V == nil || r.IssuerSig.R == nil || r.IssuerSig.S == nil {
+		return errors.New("issuer signature V, R, S are required")
+	}
+
+	docHashLen := len(r.DocHash)
+
+	if strings.HasPrefix(r.DocHash, "0x") {
+		docHashLen -= 2
+	}
+
+	if docHashLen != DocHashHexLength {
+		return fmt.Errorf("invalid docHash length: expected %d hex chars (32 bytes), got %d", DocHashHexLength, docHashLen)
+	}
+
+	capIDLen := len(r.CapID)
+	if strings.HasPrefix(r.CapID, "0x") {
+		capIDLen -= 2
+	}
+	if capIDLen != CapIDHexLength {
+		return fmt.Errorf("invalid capID length: expected %d hex chars (32 bytes), got %d", CapIDHexLength, capIDLen)
+	}
+
+	return nil
 }
 
 // Transaction represents a signed raw transaction ready for blockchain submission.
