@@ -9,6 +9,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	"golang.org/x/sync/errgroup"
 )
 
 type JWTHeaders map[string]interface{}
@@ -214,34 +215,52 @@ func (j *JWTCredential) GetType() string {
 func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
-	if options.isValidateSchema {
-		if err := validateCredential(j.payloadData); err != nil {
-			return fmt.Errorf("failed to validate credential: %w", err)
-		}
-	}
+	g := &errgroup.Group{}
 
-	if options.isCheckExpiration {
-		if err := checkExpiration(j.payloadData); err != nil {
-			return fmt.Errorf("failed to check expiration: %w", err)
-		}
+	if options.isValidateSchema {
+		g.Go(func() error {
+			if err := validateCredential(j.payloadData); err != nil {
+				return fmt.Errorf("validate credential: %w", err)
+			}
+
+			return nil
+		})
 	}
 
 	if options.isCheckRevocation {
-		if err := checkRevocation(j.payloadData); err != nil {
-			return fmt.Errorf("failed to check revocation: %w", err)
-		}
+		g.Go(func() error {
+			if err := checkRevocation(j.payloadData); err != nil {
+				return fmt.Errorf("check revocation: %w", err)
+			}
+
+			return nil
+		})
 	}
 
 	if options.isVerifyProof {
-		serialized, err := j.Serialize()
-		if err != nil {
-			return fmt.Errorf("failed to serialize credential: %w", err)
-		}
+		g.Go(func() error {
+			serialized, err := j.Serialize()
+			if err != nil {
+				return fmt.Errorf("serialize credential: %w", err)
+			}
 
-		verifier := jwt.NewJWTVerifier(options.didBaseURL)
-		err = verifier.VerifyJWT(serialized.(string))
-		if err != nil {
-			return fmt.Errorf("failed to verify credential: %w", err)
+			verifier := jwt.NewJWTVerifier(options.didBaseURL)
+			if err := verifier.VerifyJWT(serialized.(string)); err != nil {
+				return fmt.Errorf("verify proof: %w", err)
+			}
+
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("credential verification failed: %w", err)
+	}
+
+	// checkExpiration always runs sequentially after parallel validations
+	if options.isCheckExpiration {
+		if err := checkExpiration(j.payloadData); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 

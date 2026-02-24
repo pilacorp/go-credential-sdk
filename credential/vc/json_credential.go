@@ -6,6 +6,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"golang.org/x/sync/errgroup"
 )
 
 type JSONCredential struct {
@@ -107,31 +108,51 @@ func (e *JSONCredential) GetType() string {
 func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
-	if options.isValidateSchema {
-		if err := validateCredential(e.credentialData); err != nil {
-			return fmt.Errorf("failed to validate credential: %w", err)
-		}
-	}
+	g := &errgroup.Group{}
 
-	if options.isCheckExpiration {
-		if err := checkExpiration(e.credentialData); err != nil {
-			return fmt.Errorf("failed to check expiration: %w", err)
-		}
+	if options.isValidateSchema {
+		g.Go(func() error {
+			if err := validateCredential(e.credentialData); err != nil {
+				return fmt.Errorf("validate credential: %w", err)
+			}
+
+			return nil
+		})
 	}
 
 	if options.isCheckRevocation {
-		if err := checkRevocation(e.credentialData); err != nil {
-			return fmt.Errorf("failed to check revocation: %w", err)
-		}
+		g.Go(func() error {
+			if err := checkRevocation(e.credentialData); err != nil {
+				return fmt.Errorf("check revocation: %w", err)
+			}
+
+			return nil
+		})
 	}
 
 	if options.isVerifyProof {
-		isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(options.didBaseURL)
-		if err != nil {
-			return fmt.Errorf("failed to verify credential: %w", err)
-		}
-		if !isValid {
-			return fmt.Errorf("invalid proof")
+		g.Go(func() error {
+			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(options.didBaseURL)
+			if err != nil {
+				return fmt.Errorf("verify proof: %w", err)
+			}
+
+			if !isValid {
+				return fmt.Errorf("invalid proof")
+			}
+
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("credential verification failed: %w", err)
+	}
+
+	// checkExpiration always runs sequentially after parallel validations
+	if options.isCheckExpiration {
+		if err := checkExpiration(e.credentialData); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 
