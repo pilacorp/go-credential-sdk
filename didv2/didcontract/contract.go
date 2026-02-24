@@ -129,6 +129,13 @@ func (e *Contract) CreateDIDTx(ctx context.Context, req *CreateDIDRequest, txSig
 		return nil, fmt.Errorf("tx signer is required")
 	}
 
+	if req == nil {
+		return nil, fmt.Errorf("CreateDIDRequest is required")
+	}
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
 	// 1. Prepare Auth
 	auth, err := e.getTransactOpts(ctx, txSigner, int64(req.Nonce))
 	if err != nil {

@@ -13,7 +13,7 @@ This SDK allows you to:
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 - **Capability-based DID Generation**: Create DIDs with capability-based authorization for enhanced security
 - **Signer Provider Support**: Flexible signer interface for different authentication mechanisms
@@ -25,7 +25,7 @@ This SDK allows you to:
 
 ---
 
-## 🚀 Installation
+## Installation
 
 Add the SDK to your Go project:
 
@@ -83,7 +83,7 @@ The SDK provides sensible defaults:
 
 ---
 
-## 🆔 Creating DID Transactions
+## Creating DID Transactions
 
 The SDK uses a **Generator** pattern. You can configure a **Global Issuer** (Signer Provider) when initializing the generator, or provide a **Custom Issuer** for specific transactions.
 
@@ -178,7 +178,7 @@ func main() {
 
 ---
 
-## 📚 Usage Examples
+## Usage Examples
 
 The SDK supports two deployment models based on your architecture requirements:
 
@@ -380,7 +380,7 @@ didGenerator, err := didv2.NewDIDGenerator(
 
 ```
 
-### ⚠️ Important Notes on SyncEpoch and SyncNonce
+### Important Notes on SyncEpoch and SyncNonce
 
 **When using `WithSyncEpoch(true)` or `WithSyncNonce(true)`:**
 
@@ -475,7 +475,7 @@ The SDK supports the following DID types:
 
 ---
 
-## 📡 API Reference
+## API Reference
 
 ### Core Functions
 
@@ -501,7 +501,7 @@ Generates a DID create transaction from issuer signature and document hash.
 
 ---
 
-## 🔐 Security Best Practices
+## Security Best Practices
 
 - **Store Private Keys Securely**: Use encrypted vaults, HSMs, or secure key management systems
 - **Use Environment Variables**: Store sensitive configuration (RPC URLs, API keys) in environment variables
@@ -534,7 +534,7 @@ if err != nil {
 }
 ```
 
-## 📝 Notes
+## Notes
 
 - **SDK does not submit transactions**: The SDK only creates raw transactions (`TxHex`). You must submit them to the blockchain using:
   - Web3 client (`eth_sendRawTransaction`)
