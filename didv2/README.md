@@ -40,6 +40,32 @@ go get github.com/pilacorp/go-credential-sdk/didv2
 
 The DID SDK V2 uses a capability-based signing model where a signer provider must sign a capability payload to authorize DID creation. This provides better security and control over DID issuance.
 
+### Quick Start
+
+Minimal flow: create generator with issuer signer, then generate DID. Use the returned `TxHex` to submit to the blockchain.
+
+```go
+import (
+    "context"
+    "fmt"
+    "github.com/pilacorp/go-credential-sdk/didv2"
+    "github.com/pilacorp/go-credential-sdk/didv2/did"
+    "github.com/pilacorp/go-credential-sdk/didv2/signer"
+)
+
+ctx := context.Background()
+issuerSigner, _ := signer.NewDefaultProvider("0x...") // Issuer private key
+
+generator, _ := didv2.NewDIDGenerator(
+    didv2.WithIssuerSignerProvider(issuerSigner),
+)
+
+res, _ := generator.GenerateDID(ctx, did.DIDTypePeople, "", nil)
+
+fmt.Println(res.DID)                    // e.g. did:nda:0x...
+fmt.Println(res.Transaction.TxHex)      // Submit this to the chain
+```
+
 ### Initialization
 
 ```go
@@ -176,6 +202,17 @@ func main() {
 
 ```
 
+### Which function to use?
+
+| Scenario | Use |
+|----------|-----|
+| SDK generates key and you want a full DID + signed tx in one call | `GenerateDID` |
+| You already have a key pair (public key hex) | `GenerateDIDTX` |
+| Split flow: Backend issues, Wallet signs | `GenerateIssuerSignature` (Backend) + `GenerateDIDCreateTransaction` or `didcontract.CreateDIDTx` (Wallet) |
+
+- **Single-service (one backend holds both issuer and DID keys):** use `GenerateDID` or `GenerateDIDTX`.
+- **Split (Issuer in Backend, DID key in Wallet):** Backend calls `GenerateIssuerSignature` and returns the payload; Wallet builds the request and calls `didcontract.CreateDIDTx` with the DID signer.
+
 ---
 
 ## Usage Examples
@@ -279,7 +316,7 @@ issuerSig, _ := didGenerator.GenerateIssuerSignature(
 didDoc := did.GenerateDIDDocument(didPublicKeyHex, didIdentifier, "", issuerDID, did.DIDTypePeople, metadata)
 docHash, _ := didDoc.Hash()
 
-// Return to Wallet/App: issuerSig, didDoc, docHash, capID
+// Return to Wallet/App: issuerSig, didDoc, docHash, capID (see "Backend ↔ Wallet contract" below for exact JSON format)
 ```
 
 **Step 3: Wallet/App creates and signs transaction**
@@ -320,6 +357,48 @@ txResult, _ := contractClient.CreateDIDTx(ctx, createDIDReq, didSigner)
 
 // Submit txResult.TxHex to blockchain
 ```
+
+#### Backend ↔ Wallet contract (Split Flow)
+
+To integrate without ambiguity, agree on the following.
+
+**Who derives what**
+
+| Value | Meaning | Who derives | How |
+|-------|--------|--------------|-----|
+| `didAddr` | Ethereum address of the DID (from DID public key) | Wallet: from key pair. Backend: from request. | Wallet: `keyPair.GetAddress()`. Backend: `did.AddressFromPublicKeyHex(didPublicKeyHex)` |
+| `issuerAddr` | Ethereum address of the Issuer | Backend | `issuerSigner.GetAddress()` |
+| `didIdentifier` | Full DID string | Backend | `did.ToDID("did:nda", didAddr)` → e.g. `did:nda:0x...` |
+
+**Backend response to Wallet (API contract)**
+
+Backend returns a JSON body with the following shape. Wallet uses these fields to build `CreateDIDRequest` and call `CreateDIDTx`.
+
+| Field | Format | Description |
+|-------|--------|-------------|
+| `issuerSignature` | Object with `r`, `s`, `v` | ECDSA signature from Issuer. `r`, `s`: 32-byte hex strings (64 hex chars, optional `0x`). `v`: number 27 or 28. |
+| `docHash` | Hex string | Keccak256 hash of canonicalized DID Document. 32 bytes = 64 hex chars, optional `0x`. |
+| `capID` | Hex string | Capability ID for this issuance. 32 bytes = 64 hex chars, optional `0x` (e.g. 66 chars with `0x`). |
+| `issuerAddress` | Hex string | Issuer Ethereum address (20 bytes, e.g. `0x...`). |
+| `didIdentifier` | String | Full DID (e.g. `did:nda:0x...`). Optional; Wallet can derive from its `didAddr`. |
+
+**Example API response (Backend → Wallet)**
+
+```json
+{
+  "issuerSignature": {
+    "r": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    "s": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+    "v": 27
+  },
+  "docHash": "0xa1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+  "capID": "0x0000000000000000000000000000000000000000000000000000000000000001",
+  "issuerAddress": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+  "didIdentifier": "did:nda:0x1234567890123456789012345678901234567890"
+}
+```
+
+Wallet maps this to `CreateDIDRequest`: set `IssuerSig` from `issuerSignature` (R, S as `*big.Int` from hex, V as `*big.Int`), `DocHash`, `CapID`, `IssuerAddress`, `DIDType`, and `Nonce` (from chain or your logic).
 
 For complete working examples, see:
 - `examples/single_service/main.go` - Single-service flow
@@ -409,6 +488,17 @@ didGenerator, err := didv2.NewDIDGenerator(
     // Nonce will default to 0 if not set
 )
 ```
+
+### Nonce handling with multiple backend instances
+
+If more than one backend instance can create transactions for the **same DID signer** (same address), nonce must be unique per transaction to avoid conflicts and replacement.
+
+- **Recommendation:** Use a **single writer** for each DID signer address: only one process or instance is allowed to create and submit transactions for that address. That process can use `WithSyncNonce(true)` so the SDK fetches the current nonce from the chain before each tx.
+- **If you must run multiple instances** that share the same DID signer:
+  - Use a **shared nonce store** (e.g. Redis/DB) with atomic increment per signer address, and pass the nonce explicitly (do not use `WithSyncNonce(true)` from multiple writers).
+  - Or ensure only one instance submits txs for that address and others only generate issuer signatures (split flow: Backend issues, Wallet holds the key and is the single writer).
+
+**Epoch** is per Issuer address and is read from the chain; multiple instances can all use `WithSyncEpoch(true)` as long as they use the same Issuer, since they only read the current epoch.
 
 ---
 
