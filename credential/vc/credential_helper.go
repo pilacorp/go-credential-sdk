@@ -407,7 +407,7 @@ func parseStringField(obj CredentialData, fieldName string) (string, error) {
 }
 
 // validateCredential validates the Credential against its schema.
-func validateCredential(m CredentialData) error {
+func validateCredential(m CredentialData, opts *credentialOptions) error {
 	copyMap := util.ShallowCopyObj(m)
 
 	requiredKeys := []string{"type", "credentialSchema", "credentialSubject"}
@@ -442,7 +442,12 @@ func validateCredential(m CredentialData) error {
 			return fmt.Errorf("credentialSchema.id must be a non-empty string")
 		}
 
-		schemaLoader := gojsonschema.NewReferenceLoader(schemaID)
+		var schemaLoader gojsonschema.JSONLoader
+		if opts != nil && len(opts.loadedSchemaJSON) > 0 {
+			schemaLoader = gojsonschema.NewStringLoader(string(opts.loadedSchemaJSON))
+		} else {
+			schemaLoader = gojsonschema.NewReferenceLoader(schemaID)
+		}
 		credentialLoader := gojsonschema.NewGoLoader(copyMap)
 
 		result, err := gojsonschema.Validate(schemaLoader, credentialLoader)

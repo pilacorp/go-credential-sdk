@@ -94,6 +94,8 @@ type credentialOptions struct {
 	isCheckRevocation     bool
 	didBaseURL            string
 	verificationMethodKey string
+	loadedSchemaJSON      []byte
+	publicKeyHex          string
 }
 
 // WithBaseURL sets the DID base URL for credential processing.
@@ -135,6 +137,28 @@ func WithCheckExpiration() CredentialOpt {
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckRevocation = true
+	}
+}
+
+// When set, the SDK will validate credentials against the provided schema JSON instead of
+// fetching the schema from a remote URL.
+func WithLoadedSchemaValidation(schemaJSON []byte) CredentialOpt {
+	return func(c *credentialOptions) {
+		if len(schemaJSON) == 0 {
+			return
+		}
+		c.isValidateSchema = true
+		c.loadedSchemaJSON = schemaJSON
+	}
+}
+
+// When set, the SDK will verify proofs using this key instead of resolving it via DID.
+func WithPublicKeyHex(publicKeyHex string) CredentialOpt {
+	return func(c *credentialOptions) {
+		if publicKeyHex == "" {
+			return
+		}
+		c.publicKeyHex = publicKeyHex
 	}
 }
 
