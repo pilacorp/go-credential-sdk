@@ -15,6 +15,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 	commoncrypto "github.com/pilacorp/go-credential-sdk/credential/common/crypto"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // JWK represents a JSON Web Key structure
@@ -51,11 +52,16 @@ type Resolver struct {
 	client  *http.Client
 }
 
+var defaultHTTPClient = &http.Client{
+	Timeout:   10 * time.Second,
+	Transport: otelhttp.NewTransport(http.DefaultTransport),
+}
+
 // NewResolver creates a new DID resolver with a given base URL.
 func NewResolver(baseURL string) *Resolver {
 	return &Resolver{
 		baseURL: baseURL,
-		client:  &http.Client{Timeout: 10 * time.Second},
+		client:  defaultHTTPClient,
 	}
 }
 
