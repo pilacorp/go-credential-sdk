@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -49,13 +50,19 @@ func NewJWTVerifier(didResolverURL string) *JWTVerifier {
 	}
 }
 
-// NewJWTVerifierWithOptions creates a new JWT verifier with optional configuration
-func NewJWTVerifierWithOptions(opts ...Option) *JWTVerifier {
+// NewJWTVerifierWithOptions creates a new JWT verifier with optional configuration.
+// Returns an error if no resolver or public key is configured.
+func NewJWTVerifierWithOptions(opts ...Option) (*JWTVerifier, error) {
 	v := &JWTVerifier{}
 	for _, opt := range opts {
 		opt(v)
 	}
-	return v
+
+	if v.resolver == nil && v.publicKeyHex == "" {
+		return nil, errors.New("JWTVerifier requires either WithDIDResolverURL/WithResolver or WithPublicKeyHex")
+	}
+
+	return v, nil
 }
 
 // VerifyJWT verifies a JWT token

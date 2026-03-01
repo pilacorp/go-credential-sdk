@@ -246,7 +246,7 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 
 			var verifier *jwt.JWTVerifier
 			if options.publicKeyHex != "" {
-				verifier = jwt.NewJWTVerifierWithOptions(jwt.WithPublicKeyHex(options.publicKeyHex))
+				verifier, _ = jwt.NewJWTVerifierWithOptions(jwt.WithPublicKeyHex(options.publicKeyHex))
 			} else {
 				verifier = jwt.NewJWTVerifier(options.didBaseURL)
 			}
