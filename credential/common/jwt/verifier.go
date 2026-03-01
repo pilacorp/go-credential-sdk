@@ -14,14 +14,48 @@ import (
 
 // JWTVerifier handles JWT verification operations
 type JWTVerifier struct {
-	resolver *verificationmethod.Resolver
+	resolver     *verificationmethod.Resolver
+	publicKeyHex string
 }
 
-// NewJWTVerifier creates a new JWT verifier with DID resolver
+// Option configures JWTVerifier
+type Option func(*JWTVerifier)
+
+// WithDIDResolverURL sets the DID resolver from URL
+func WithDIDResolverURL(url string) Option {
+	return func(v *JWTVerifier) {
+		v.resolver = verificationmethod.NewResolver(url)
+	}
+}
+
+// WithResolver sets the verification method resolver
+func WithResolver(r *verificationmethod.Resolver) Option {
+	return func(v *JWTVerifier) {
+		v.resolver = r
+	}
+}
+
+// WithPublicKeyHex sets the public key hex (for verification without DID resolution)
+func WithPublicKeyHex(hex string) Option {
+	return func(v *JWTVerifier) {
+		v.publicKeyHex = hex
+	}
+}
+
+// NewJWTVerifier creates a new JWT verifier with DID resolver (kept for backward compatibility)
 func NewJWTVerifier(didResolverURL string) *JWTVerifier {
 	return &JWTVerifier{
 		resolver: verificationmethod.NewResolver(didResolverURL),
 	}
+}
+
+// NewJWTVerifierWithOptions creates a new JWT verifier with optional configuration
+func NewJWTVerifierWithOptions(opts ...Option) *JWTVerifier {
+	v := &JWTVerifier{}
+	for _, opt := range opts {
+		opt(v)
+	}
+	return v
 }
 
 // VerifyJWT verifies a JWT token
@@ -48,15 +82,24 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("unsupported algorithm: %v", header["alg"])
 	}
 
-	kid, ok := header["kid"].(string)
-	if !ok {
-		return fmt.Errorf("kid not found in header")
-	}
-
-	// Get public key from resolver
-	publicKeyHex, err := v.resolver.GetPublicKey(kid)
-	if err != nil {
-		return fmt.Errorf("failed to get public key: %w", err)
+	var publicKeyHex string
+	if v.publicKeyHex != "" {
+		// Use configured public key directly, no need to resolve
+		publicKeyHex = v.publicKeyHex
+	} else {
+		// Get public key from resolver
+		kid, ok := header["kid"].(string)
+		if !ok {
+			return fmt.Errorf("kid not found in header")
+		}
+		if v.resolver == nil {
+			return fmt.Errorf("no resolver or public key configured")
+		}
+		var err error
+		publicKeyHex, err = v.resolver.GetPublicKey(kid)
+		if err != nil {
+			return fmt.Errorf("failed to get public key: %w", err)
+		}
 	}
 
 	publicKey, err := hexToECDSAPublicKey(publicKeyHex)
