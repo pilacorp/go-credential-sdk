@@ -9,6 +9,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 // Config holds package configuration.
@@ -83,6 +84,10 @@ type Schema struct {
 	Type string // Schema type
 }
 
+// SchemaLoaderFunc defines a function that loads a credential schema JSON by ID.
+// It should return the raw JSON bytes for the schema corresponding to the given ID.
+type SchemaLoaderFunc func(schemaID string) ([]byte, error)
+
 // CredentialOpt configures credential processing options.
 type CredentialOpt func(*credentialOptions)
 
@@ -94,6 +99,8 @@ type credentialOptions struct {
 	isCheckRevocation     bool
 	didBaseURL            string
 	verificationMethodKey string
+	loadedSchemaLoader    SchemaLoaderFunc
+	resolver              verificationmethod.ResolverProvider
 }
 
 // WithBaseURL sets the DID base URL for credential processing.
@@ -138,6 +145,25 @@ func WithCheckRevocation() CredentialOpt {
 	}
 }
 
+// WithSchemaLoader allows callers to provide a custom schema loader function.
+// This enables loading schemas from different sources (e.g., files, caches, or remote services).
+// If no custom loader is provided, the SDK will fall back to its default behavior.
+func WithSchemaLoader(loader SchemaLoaderFunc) CredentialOpt {
+	return func(c *credentialOptions) {
+		if loader == nil {
+			return
+		}
+		c.loadedSchemaLoader = loader
+	}
+}
+
+// WithResolver sets the resolver for credential verification.
+func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.resolver = resolver
+	}
+}
+
 // getOptions returns the credential options.
 func getOptions(opts ...CredentialOpt) *credentialOptions {
 	options := &credentialOptions{
@@ -146,11 +172,17 @@ func getOptions(opts ...CredentialOpt) *credentialOptions {
 		isCheckExpiration:     false,
 		isCheckRevocation:     false,
 		didBaseURL:            config.BaseURL,
+		loadedSchemaLoader:    nil,
 		verificationMethodKey: "key-1",
+		resolver:              nil,
 	}
 
 	for _, opt := range opts {
 		opt(options)
+	}
+
+	if options.resolver == nil {
+		options.resolver = verificationmethod.NewResolver(options.didBaseURL)
 	}
 
 	return options

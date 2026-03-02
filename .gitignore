@@ -96,7 +96,6 @@ $RECYCLE.BIN/
 *.keystore
 *private*
 *secret*
-*credential*
 config.local.*
 secrets.yaml
 secrets.yml

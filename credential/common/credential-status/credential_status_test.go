@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	"github.com/stretchr/testify/assert"
@@ -81,3 +82,21 @@ func TestFetchAndCheckRevocation(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, revoked, "credential at position 0 should be revoked")
 }
+
+func TestNewClient_UsesDefaultHTTPClient(t *testing.T) {
+	client := NewClient()
+	assert.Equal(t, defaultHTTPClient, client.client)
+}
+
+func TestWithHTTPClient_OverridesClient(t *testing.T) {
+	custom := &http.Client{Timeout: 5 * time.Second}
+
+	client := NewClient(WithHTTPClient(custom))
+	assert.Equal(t, custom, client.client)
+}
+
+func TestWithHTTPClient_NilDoesNotOverride(t *testing.T) {
+	client := NewClient(WithHTTPClient(nil))
+	assert.Equal(t, defaultHTTPClient, client.client)
+}
+

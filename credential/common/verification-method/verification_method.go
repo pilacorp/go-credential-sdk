@@ -51,12 +51,34 @@ type Resolver struct {
 	client  *http.Client
 }
 
-// NewResolver creates a new DID resolver with a given base URL.
-func NewResolver(baseURL string) *Resolver {
-	return &Resolver{
-		baseURL: baseURL,
-		client:  &http.Client{Timeout: 10 * time.Second},
+var defaultHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+}
+
+type Option func(*Resolver)
+
+func WithHTTPClient(client *http.Client) Option {
+	return func(r *Resolver) {
+		if client == nil {
+			return
+		}
+
+		r.client = client
 	}
+}
+
+// NewResolver creates a new DID resolver with a given base URL.
+func NewResolver(baseURL string, opts ...Option) *Resolver {
+	resolver := &Resolver{
+		baseURL: baseURL,
+		client:  defaultHTTPClient,
+	}
+
+	for _, opt := range opts {
+		opt(resolver)
+	}
+
+	return resolver
 }
 
 // GetPublicKey retrieves the public key in hex format for a given verification method URL.

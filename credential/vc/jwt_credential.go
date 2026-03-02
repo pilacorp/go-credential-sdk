@@ -219,7 +219,7 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 
 	if options.isValidateSchema {
 		g.Go(func() error {
-			if err := validateCredential(j.payloadData); err != nil {
+			if err := validateCredential(j.payloadData, options); err != nil {
 				return fmt.Errorf("validate credential: %w", err)
 			}
 
@@ -244,11 +244,10 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 				return fmt.Errorf("serialize credential: %w", err)
 			}
 
-			verifier := jwt.NewJWTVerifier(options.didBaseURL)
+			verifier := jwt.NewJWTVerifierWithResolver(options.resolver)
 			if err := verifier.VerifyJWT(serialized.(string)); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
-
 			return nil
 		})
 	}
