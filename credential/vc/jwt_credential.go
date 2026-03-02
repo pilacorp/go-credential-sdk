@@ -9,6 +9,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -244,22 +245,20 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 				return fmt.Errorf("serialize credential: %w", err)
 			}
 
-			optsVerifier := []jwt.Option{}
+			var resolver verificationmethod.ResolverProvider
 			if options.publicKeyHex != "" {
-				optsVerifier = append(optsVerifier, jwt.WithPublicKeyHex(options.publicKeyHex))
+				resolver, err = verificationmethod.NewStaticResolver(options.publicKeyHex)
+				if err != nil {
+					return fmt.Errorf("create resolver: %w", err)
+				}
 			} else {
-				optsVerifier = append(optsVerifier, jwt.WithResolver(options.didBaseURL))
+				resolver = verificationmethod.NewResolver(options.didBaseURL)
 			}
 
-			verifier, err := jwt.NewJWTVerifierWithOptions(optsVerifier...)
-			if err != nil {
-				return fmt.Errorf("create verifier: %w", err)
-			}
-
+			verifier := jwt.NewJWTVerifierWithResolver(resolver)
 			if err := verifier.VerifyJWT(serialized.(string)); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
-
 			return nil
 		})
 	}

@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -25,41 +24,10 @@ func NewJWTVerifier(didResolverURL string) *JWTVerifier {
 	}
 }
 
-// Option configures JWTVerifier
-type Option func(*JWTVerifier)
-
-// WithResolver sets the verification method resolver.
-func WithResolver(didResolverURL string) Option {
-	return func(v *JWTVerifier) {
-		v.resolver = verificationmethod.NewResolver(didResolverURL)
+func NewJWTVerifierWithResolver(resolver verificationmethod.ResolverProvider) *JWTVerifier {
+	return &JWTVerifier{
+		resolver: resolver,
 	}
-}
-
-// WithPublicKeyHex sets a static public key (for verification without DID resolution).
-func WithPublicKeyHex(hexKey string) Option {
-	return func(v *JWTVerifier) {
-		resolver, err := verificationmethod.NewStaticResolver(hexKey)
-		if err != nil {
-			return
-		}
-
-		v.resolver = resolver
-	}
-}
-
-// NewJWTVerifierWithOptions creates a new JWT verifier with optional configuration.
-// Returns error if no provider is configured.
-func NewJWTVerifierWithOptions(opts ...Option) (*JWTVerifier, error) {
-	v := &JWTVerifier{}
-	for _, opt := range opts {
-		opt(v)
-	}
-
-	if v.resolver == nil {
-		return nil, errors.New("no resolver configured")
-	}
-
-	return v, nil
 }
 
 // VerifyJWT verifies a JWT token

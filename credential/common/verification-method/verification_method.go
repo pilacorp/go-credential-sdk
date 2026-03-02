@@ -81,29 +81,6 @@ func NewResolver(baseURL string, opts ...Option) *Resolver {
 	return resolver
 }
 
-// StaticResolver is a Resolver that always returns a
-// preconfigured public key, without performing DID resolution.
-type StaticResolver struct {
-	publicKey string
-}
-
-// NewStaticResolver creates a Resolver that serves a fixed public key.
-func NewStaticResolver(publicKey string) (*StaticResolver, error) {
-	if publicKey == "" {
-		return nil, fmt.Errorf("public key is empty")
-	}
-
-	return &StaticResolver{
-		publicKey: publicKey,
-	}, nil
-}
-
-// GetPublicKey implements ResolverProvider by returning the configured key.
-// The input verificationMethodURL is ignored.
-func (p *StaticResolver) GetPublicKey(_ string) (string, error) {
-	return p.publicKey, nil
-}
-
 // GetPublicKey retrieves the public key in hex format for a given verification method URL.
 func (r *Resolver) GetPublicKey(verificationMethodURL string) (string, error) {
 	// Extract DID from verification method URL
