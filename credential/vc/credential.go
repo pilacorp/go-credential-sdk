@@ -9,6 +9,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 // Config holds package configuration.
@@ -99,7 +100,7 @@ type credentialOptions struct {
 	didBaseURL            string
 	verificationMethodKey string
 	loadedSchemaLoader    SchemaLoaderFunc
-	publicKeyHex          string
+	resolver              verificationmethod.ResolverProvider
 }
 
 // WithBaseURL sets the DID base URL for credential processing.
@@ -156,10 +157,10 @@ func WithSchemaLoader(loader SchemaLoaderFunc) CredentialOpt {
 	}
 }
 
-// WithPublicKey sets the public key for credential verification.
-func WithPublicKey(publicKeyHex string) CredentialOpt {
+// WithResolver sets the resolver for credential verification.
+func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 	return func(c *credentialOptions) {
-		c.publicKeyHex = publicKeyHex
+		c.resolver = resolver
 	}
 }
 
@@ -173,11 +174,15 @@ func getOptions(opts ...CredentialOpt) *credentialOptions {
 		didBaseURL:            config.BaseURL,
 		loadedSchemaLoader:    nil,
 		verificationMethodKey: "key-1",
-		publicKeyHex:          "",
+		resolver:              nil,
 	}
 
 	for _, opt := range opts {
 		opt(options)
+	}
+
+	if options.resolver == nil {
+		options.resolver = verificationmethod.NewResolver(options.didBaseURL)
 	}
 
 	return options
