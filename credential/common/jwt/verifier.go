@@ -15,51 +15,48 @@ import (
 
 // JWTVerifier handles JWT verification operations
 type JWTVerifier struct {
-	resolver     *verificationmethod.Resolver
-	publicKeyHex string
+	resolver verificationmethod.ResolverProvider
 }
 
-// Option configures JWTVerifier
-type Option func(*JWTVerifier)
-
-// WithDIDResolverURL sets the DID resolver from URL
-func WithDIDResolverURL(url string) Option {
-	return func(v *JWTVerifier) {
-		v.resolver = verificationmethod.NewResolver(url)
-	}
-}
-
-// WithResolver sets the verification method resolver
-func WithResolver(r *verificationmethod.Resolver) Option {
-	return func(v *JWTVerifier) {
-		v.resolver = r
-	}
-}
-
-// WithPublicKeyHex sets the public key hex (for verification without DID resolution)
-func WithPublicKeyHex(hex string) Option {
-	return func(v *JWTVerifier) {
-		v.publicKeyHex = hex
-	}
-}
-
-// NewJWTVerifier creates a new JWT verifier with DID resolver (kept for backward compatibility)
+// NewJWTVerifier creates a new JWT verifier with DID resolver (kept for backward compatibility).
 func NewJWTVerifier(didResolverURL string) *JWTVerifier {
 	return &JWTVerifier{
 		resolver: verificationmethod.NewResolver(didResolverURL),
 	}
 }
 
+// Option configures JWTVerifier
+type Option func(*JWTVerifier)
+
+// WithResolver sets the verification method resolver.
+func WithResolver(didResolverURL string) Option {
+	return func(v *JWTVerifier) {
+		v.resolver = verificationmethod.NewResolver(didResolverURL)
+	}
+}
+
+// WithPublicKeyHex sets a static public key (for verification without DID resolution).
+func WithPublicKeyHex(hexKey string) Option {
+	return func(v *JWTVerifier) {
+		resolver, err := verificationmethod.NewStaticResolver(hexKey)
+		if err != nil {
+			return
+		}
+
+		v.resolver = resolver
+	}
+}
+
 // NewJWTVerifierWithOptions creates a new JWT verifier with optional configuration.
-// Returns an error if no resolver or public key is configured.
+// Returns error if no provider is configured.
 func NewJWTVerifierWithOptions(opts ...Option) (*JWTVerifier, error) {
 	v := &JWTVerifier{}
 	for _, opt := range opts {
 		opt(v)
 	}
 
-	if v.resolver == nil && v.publicKeyHex == "" {
-		return nil, errors.New("JWTVerifier requires either WithDIDResolverURL/WithResolver or WithPublicKeyHex")
+	if v.resolver == nil {
+		return nil, errors.New("no resolver configured")
 	}
 
 	return v, nil
@@ -89,24 +86,14 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("unsupported algorithm: %v", header["alg"])
 	}
 
-	var publicKeyHex string
-	if v.publicKeyHex != "" {
-		// Use configured public key directly, no need to resolve
-		publicKeyHex = v.publicKeyHex
-	} else {
-		// Get public key from resolver
-		kid, ok := header["kid"].(string)
-		if !ok {
-			return fmt.Errorf("kid not found in header")
-		}
-		if v.resolver == nil {
-			return fmt.Errorf("no resolver or public key configured")
-		}
-		var err error
-		publicKeyHex, err = v.resolver.GetPublicKey(kid)
-		if err != nil {
-			return fmt.Errorf("failed to get public key: %w", err)
-		}
+	kid, ok := header["kid"].(string)
+	if !ok {
+		return fmt.Errorf("kid not found in header")
+	}
+
+	publicKeyHex, err := v.resolver.GetPublicKey(kid)
+	if err != nil {
+		return fmt.Errorf("failed to get public key: %w", err)
 	}
 
 	publicKey, err := hexToECDSAPublicKey(publicKeyHex)

@@ -8,19 +8,46 @@ import (
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 var defaultHTTPClient = &http.Client{
-	Timeout:   10 * time.Second,
-	Transport: otelhttp.NewTransport(http.DefaultTransport),
+	Timeout: 10 * time.Second,
+}
+
+type Client struct {
+	client *http.Client
+}
+
+type Option func(*Client)
+
+func WithHTTPClient(client *http.Client) Option {
+	return func(c *Client) {
+		if client == nil {
+			return
+		}
+
+		c.client = client
+	}
+}
+
+func NewClient(options ...Option) *Client {
+	client := &Client{
+		client: defaultHTTPClient,
+	}
+
+	for _, option := range options {
+		option(client)
+	}
+
+	return client
 }
 
 // FetchAndCheckRevocation fetches the status list credential from the given
 // statusListCredential URL and checks whether the credential at the given
 // position is revoked.
 func FetchAndCheckRevocation(statusListCredentialURL string, position int) (bool, error) {
-	resp, err := FetchStatusListCredential(statusListCredentialURL)
+	client := NewClient()
+	resp, err := client.FetchStatusListCredential(statusListCredentialURL)
 	if err != nil {
 		return false, err
 	}
@@ -30,12 +57,12 @@ func FetchAndCheckRevocation(statusListCredentialURL string, position int) (bool
 
 // FetchStatusListCredential fetches and parses the status list credential
 // located at the given statusListCredential URL.
-func FetchStatusListCredential(statusListCredentialURL string) (*StatusListCredentialResponse, error) {
+func (c *Client) FetchStatusListCredential(statusListCredentialURL string) (*StatusListCredentialResponse, error) {
 	if statusListCredentialURL == "" {
 		return nil, fmt.Errorf("statusListCredential URL is empty")
 	}
 
-	resp, err := defaultHTTPClient.Get(statusListCredentialURL)
+	resp, err := c.client.Get(statusListCredentialURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call status list credential endpoint: %w", err)
 	}

@@ -15,7 +15,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 	commoncrypto "github.com/pilacorp/go-credential-sdk/credential/common/crypto"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // JWK represents a JSON Web Key structure
@@ -53,16 +52,56 @@ type Resolver struct {
 }
 
 var defaultHTTPClient = &http.Client{
-	Timeout:   10 * time.Second,
-	Transport: otelhttp.NewTransport(http.DefaultTransport),
+	Timeout: 10 * time.Second,
+}
+
+type Option func(*Resolver)
+
+func WithHTTPClient(client *http.Client) Option {
+	return func(r *Resolver) {
+		if client == nil {
+			return
+		}
+
+		r.client = client
+	}
 }
 
 // NewResolver creates a new DID resolver with a given base URL.
-func NewResolver(baseURL string) *Resolver {
-	return &Resolver{
+func NewResolver(baseURL string, opts ...Option) *Resolver {
+	resolver := &Resolver{
 		baseURL: baseURL,
 		client:  defaultHTTPClient,
 	}
+
+	for _, opt := range opts {
+		opt(resolver)
+	}
+
+	return resolver
+}
+
+// StaticResolver is a Resolver that always returns a
+// preconfigured public key, without performing DID resolution.
+type StaticResolver struct {
+	publicKey string
+}
+
+// NewStaticResolver creates a Resolver that serves a fixed public key.
+func NewStaticResolver(publicKey string) (*StaticResolver, error) {
+	if publicKey == "" {
+		return nil, fmt.Errorf("public key is empty")
+	}
+
+	return &StaticResolver{
+		publicKey: publicKey,
+	}, nil
+}
+
+// GetPublicKey implements ResolverProvider by returning the configured key.
+// The input verificationMethodURL is ignored.
+func (p *StaticResolver) GetPublicKey(_ string) (string, error) {
+	return p.publicKey, nil
 }
 
 // GetPublicKey retrieves the public key in hex format for a given verification method URL.

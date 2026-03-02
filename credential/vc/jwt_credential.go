@@ -244,12 +244,18 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 				return fmt.Errorf("serialize credential: %w", err)
 			}
 
-			var verifier *jwt.JWTVerifier
+			optsVerifier := []jwt.Option{}
 			if options.publicKeyHex != "" {
-				verifier, _ = jwt.NewJWTVerifierWithOptions(jwt.WithPublicKeyHex(options.publicKeyHex))
+				optsVerifier = append(optsVerifier, jwt.WithPublicKeyHex(options.publicKeyHex))
 			} else {
-				verifier = jwt.NewJWTVerifier(options.didBaseURL)
+				optsVerifier = append(optsVerifier, jwt.WithResolver(options.didBaseURL))
 			}
+
+			verifier, err := jwt.NewJWTVerifierWithOptions(optsVerifier...)
+			if err != nil {
+				return fmt.Errorf("create verifier: %w", err)
+			}
+
 			if err := verifier.VerifyJWT(serialized.(string)); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}

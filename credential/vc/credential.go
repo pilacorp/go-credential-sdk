@@ -83,6 +83,10 @@ type Schema struct {
 	Type string // Schema type
 }
 
+// SchemaLoaderFunc defines a function that loads a credential schema JSON by ID.
+// It should return the raw JSON bytes for the schema corresponding to the given ID.
+type SchemaLoaderFunc func(schemaID string) ([]byte, error)
+
 // CredentialOpt configures credential processing options.
 type CredentialOpt func(*credentialOptions)
 
@@ -94,7 +98,7 @@ type credentialOptions struct {
 	isCheckRevocation     bool
 	didBaseURL            string
 	verificationMethodKey string
-	loadedSchemaJSON      []byte
+	loadedSchemaLoader    SchemaLoaderFunc
 	publicKeyHex          string
 }
 
@@ -140,24 +144,21 @@ func WithCheckRevocation() CredentialOpt {
 	}
 }
 
-// When set, the SDK will validate credentials against the provided schema JSON instead of
-// fetching the schema from a remote URL.
-func WithLoadedSchemaValidation(schemaJSON []byte) CredentialOpt {
+// WithSchemaLoader allows callers to provide a custom schema loader function.
+// This enables loading schemas from different sources (e.g., files, caches, or remote services).
+// If no custom loader is provided, the SDK will fall back to its default behavior.
+func WithSchemaLoader(loader SchemaLoaderFunc) CredentialOpt {
 	return func(c *credentialOptions) {
-		if len(schemaJSON) == 0 {
+		if loader == nil {
 			return
 		}
-		c.isValidateSchema = true
-		c.loadedSchemaJSON = schemaJSON
+		c.loadedSchemaLoader = loader
 	}
 }
 
-// When set, the SDK will verify proofs using this key instead of resolving it via DID.
-func WithPublicKeyHex(publicKeyHex string) CredentialOpt {
+// WithPublicKey sets the public key for credential verification.
+func WithPublicKey(publicKeyHex string) CredentialOpt {
 	return func(c *credentialOptions) {
-		if publicKeyHex == "" {
-			return
-		}
 		c.publicKeyHex = publicKeyHex
 	}
 }
@@ -170,7 +171,9 @@ func getOptions(opts ...CredentialOpt) *credentialOptions {
 		isCheckExpiration:     false,
 		isCheckRevocation:     false,
 		didBaseURL:            config.BaseURL,
+		loadedSchemaLoader:    nil,
 		verificationMethodKey: "key-1",
+		publicKeyHex:          "",
 	}
 
 	for _, opt := range opts {

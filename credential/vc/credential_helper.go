@@ -443,9 +443,17 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 		}
 
 		var schemaLoader gojsonschema.JSONLoader
-		if opts != nil && len(opts.loadedSchemaJSON) > 0 {
-			schemaLoader = gojsonschema.NewStringLoader(string(opts.loadedSchemaJSON))
+		if opts != nil && opts.loadedSchemaLoader != nil {
+			schemaBytes, err := opts.loadedSchemaLoader(schemaID)
+			if err != nil {
+				return fmt.Errorf("failed to load schema via custom loader: %w", err)
+			}
+			if len(schemaBytes) == 0 {
+				return fmt.Errorf("failed to load schema via custom loader: schema is empty")
+			}
+			schemaLoader = gojsonschema.NewStringLoader(string(schemaBytes))
 		} else {
+			// Fallback to default behavior: load schema by reference (remote URL or file).
 			schemaLoader = gojsonschema.NewReferenceLoader(schemaID)
 		}
 		credentialLoader := gojsonschema.NewGoLoader(copyMap)
