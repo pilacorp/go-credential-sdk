@@ -1209,3 +1209,86 @@ func TestSerializeJSONCredential(t *testing.T) {
 	}
 	assert.True(t, json.Valid(bytes), "Serialized credential must be a json object")
 }
+
+func TestGetOptions_Defaults(t *testing.T) {
+	opts := getOptions()
+
+	assert.False(t, opts.isValidateSchema)
+	assert.False(t, opts.isVerifyProof)
+	assert.False(t, opts.isCheckExpiration)
+	assert.False(t, opts.isCheckRevocation)
+	assert.Equal(t, config.BaseURL, opts.didBaseURL)
+	assert.Equal(t, "key-1", opts.verificationMethodKey)
+	assert.Nil(t, opts.loadedSchemaLoader)
+	assert.NotNil(t, opts.resolver, "default resolver should not be nil")
+}
+
+func TestGetOptions_WithBaseURLAndVerificationMethodKey(t *testing.T) {
+	opts := getOptions(
+		WithBaseURL("https://custom.example/did"),
+		WithVerificationMethodKey("key-custom"),
+	)
+
+	assert.Equal(t, "https://custom.example/did", opts.didBaseURL)
+	assert.Equal(t, "key-custom", opts.verificationMethodKey)
+}
+
+func TestGetOptions_WithResolverOverridesDefault(t *testing.T) {
+	// Simple sanity check that WithResolver compiles and does not panic
+	// when provided a nil resolver. Behaviour is implementation-defined.
+	opts := getOptions(WithResolver(nil))
+	assert.NotNil(t, opts.resolver)
+	assert.Equal(t, config.BaseURL, opts.didBaseURL)
+}
+
+func TestValidateCredential_WithCustomSchemaLoader_Succeeds(t *testing.T) {
+	// Minimal credential that satisfies validateCredential's required keys.
+	cred := CredentialData{
+		"type": []interface{}{"VerifiableCredential"},
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:123",
+		},
+		"credentialSchema": map[string]interface{}{
+			"id":   "https://example.org/schema/1",
+			"type": "JsonSchema",
+		},
+	}
+
+	// Schema that accepts any object.
+	schemaJSON := []byte(`{"type":"object"}`)
+
+	opts := getOptions(
+		WithSchemaValidation(),
+		WithSchemaLoader(func(schemaID string) ([]byte, error) {
+			assert.Equal(t, "https://example.org/schema/1", schemaID)
+			return schemaJSON, nil
+		}),
+	)
+
+	err := validateCredential(cred, opts)
+	assert.NoError(t, err)
+}
+
+func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T) {
+	cred := CredentialData{
+		"type": []interface{}{"VerifiableCredential"},
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:123",
+		},
+		"credentialSchema": map[string]interface{}{
+			"id":   "https://example.org/schema/1",
+			"type": "JsonSchema",
+		},
+	}
+
+	opts := getOptions(
+		WithSchemaValidation(),
+		WithSchemaLoader(func(schemaID string) ([]byte, error) {
+			return []byte{}, nil
+		}),
+	)
+
+	err := validateCredential(cred, opts)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "schema is empty")
+}
