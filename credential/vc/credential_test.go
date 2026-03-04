@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 )
 
 func TestParseCredential(t *testing.T) {
@@ -71,34 +73,14 @@ func TestParseCredential(t *testing.T) {
 			inputJSON:   []byte(validJWTtoken),
 			opts:        []CredentialOpt{},
 			expectError: false,
-			expected: CredentialData{
-				"@context": []interface{}{
-					"https://www.w3.org/ns/credentials/v2",
-					"https://www.w3.org/ns/credentials/examples/v2",
-				},
-				"id":         "urn:uuid:signature-test-credential-12345678",
-				"type":       []interface{}{"VerifiableCredential", "EducationalCredential"},
-				"issuer":     "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce",
-				"validFrom":  "2024-01-01T00:00:00Z",
-				"validUntil": "2025-01-01T00:00:00Z",
-				"credentialSubject": map[string]interface{}{
-					"degree":         "Bachelor of Science",
-					"graduationYear": float64(2023),
-					"id":             "did:key:z2dmzD81cgPx8Vki7JbuuMmFYrWPgYoytykUZ3eyqht1j9KbsEYvdrjxMjQ4tpnje9BDBTzuNDP3knn6qLZErzd4bJ5go2CChoPjd5GAH3zpFJP5fuwSk66U5Pq6EhF4nKnHzDnznEP8fX99nZGgwbAh1o7Gj1X52Tdhf7U4KTk66xsA5r",
-					"name":           "John Doe",
-					"university":     "Test University",
-				},
-				"credentialSchema": map[string]interface{}{
-					"id":   "https://example.org/schemas/educational-credential.json",
-					"type": "JsonSchema",
-				},
-				"credentialStatus": map[string]interface{}{
-					"id":              "https://example.org/credentials/status/123",
-					"statusListIndex": "123",
-					"statusPurpose":   "revocation",
-					"type":            "BitstringStatusListEntry",
-				},
-			},
+			expected:    buildExpectedEducationalCredential(),
+		},
+		{
+			name:        "Valid Educational Credential SD-JWT (wrapper)",
+			inputJSON:   []byte(buildDummySDJWT(validJWTtoken)),
+			opts:        []CredentialOpt{},
+			expectError: false,
+			expected:    buildExpectedEducationalCredential(),
 		},
 	}
 
@@ -131,6 +113,55 @@ func TestParseCredential(t *testing.T) {
 				assert.Equal(t, tt.expected, CredentialData(payloadMap), "Credential mismatch")
 			}
 		})
+	}
+}
+
+// buildDummySDJWT wraps a plain JWT into an SD-JWT by appending a
+// syntactically valid disclosure that does not affect the payload.
+func buildDummySDJWT(jwtStr string) string {
+	// Simple disclosure array [salt, name, value]
+	arr := []interface{}{"salt", "x", "y"}
+	b, _ := json.Marshal(arr)
+	D := base64.RawURLEncoding.EncodeToString(b)
+
+	sd := jwtStr + "~" + D + "~"
+
+	if !sdjwt.IsSDJWT(sd) {
+		// In case of unexpected format change, we still return the original JWT.
+		return jwtStr
+	}
+
+	return sd
+}
+
+func buildExpectedEducationalCredential() CredentialData {
+	return CredentialData{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		"id":         "urn:uuid:signature-test-credential-12345678",
+		"type":       []interface{}{"VerifiableCredential", "EducationalCredential"},
+		"issuer":     "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce",
+		"validFrom":  "2024-01-01T00:00:00Z",
+		"validUntil": "2025-01-01T00:00:00Z",
+		"credentialSubject": map[string]interface{}{
+			"degree":         "Bachelor of Science",
+			"graduationYear": float64(2023),
+			"id":             "did:key:z2dmzD81cgPx8Vki7JbuuMmFYrWPgYoytykUZ3eyqht1j9KbsEYvdrjxMjQ4tpnje9BDBTzuNDP3knn6qLZErzd4bJ5go2CChoPjd5GAH3zpFJP5fuwSk66U5Pq6EhF4nKnHzDnznEP8fX99nZGgwbAh1o7Gj1X52Tdhf7U4KTk66xsA5r",
+			"name":           "John Doe",
+			"university":     "Test University",
+		},
+		"credentialSchema": map[string]interface{}{
+			"id":   "https://example.org/schemas/educational-credential.json",
+			"type": "JsonSchema",
+		},
+		"credentialStatus": map[string]interface{}{
+			"id":              "https://example.org/credentials/status/123",
+			"statusListIndex": "123",
+			"statusPurpose":   "revocation",
+			"type":            "BitstringStatusListEntry",
+		},
 	}
 }
 
@@ -1208,4 +1239,287 @@ func TestSerializeJSONCredential(t *testing.T) {
 		t.Fatalf("Failed to marshal JSON credential: %v", err)
 	}
 	assert.True(t, json.Valid(bytes), "Serialized credential must be a json object")
+}
+
+func TestNewJWTCredential_WithSDDisclosures_SerializesSDJWT(t *testing.T) {
+	vcc := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:      "urn:uuid:1234",
+		Issuer:  "did:example:issuer",
+		Types:   []string{"VerifiableCredential"},
+		Subject: []Subject{
+			{
+				ID: "did:example:subject1",
+				CustomFields: map[string]interface{}{
+					"name": "Alice",
+				},
+			},
+		},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	// Use simple, syntactically valid disclosures to avoid depending on BuildDisclosures behavior here.
+	arr := []interface{}{"salt", "x", "y"}
+	b, _ := json.Marshal(arr)
+	D := base64.RawURLEncoding.EncodeToString(b)
+	disclosures := []string{D}
+
+	// selective paths for name
+	selectivePaths := []string{"credentialSubject.name"}
+
+	cred, err := NewJWTCredential(vcc, WithSDDisclosures(disclosures), WithSDSelectivePaths(selectivePaths))
+	assert.NoError(t, err)
+	assert.NotNil(t, cred)
+
+	serialized, err := cred.Serialize()
+	assert.NoError(t, err)
+
+	s, ok := serialized.(string)
+	if !ok {
+		t.Fatalf("expected serialized credential to be string, got %T", serialized)
+	}
+
+	// Inspect issuer-signed JWT payload to ensure "name" is hidden.
+	parts := strings.SplitN(s, "~", 2)
+	if len(parts) < 2 {
+		t.Fatalf("expected SD-JWT with disclosures, got %q", s)
+	}
+	jwtPart := parts[0]
+
+	segs := strings.Split(jwtPart, ".")
+	if len(segs) != 3 {
+		t.Fatalf("expected 3 JWT segments, got %d", len(segs))
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(segs[1])
+	assert.NoError(t, err)
+
+	var payload map[string]interface{}
+	err = json.Unmarshal(payloadBytes, &payload)
+	assert.NoError(t, err)
+
+	vcAny, ok := payload["vc"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected vc map in JWT payload")
+	}
+	csAny, ok := vcAny["credentialSubject"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected credentialSubject map in vc")
+	}
+
+	if _, has := csAny["name"]; has {
+		t.Fatalf("expected name to be hidden in issuer-signed JWT payload")
+	}
+
+	// Ensure SD-JWT format
+	assert.True(t, sdjwt.IsSDJWT(s), "expected SD-JWT format")
+
+	// Parse back and ensure we still get a JWTCredential
+	parsed, err := ParseCredential([]byte(s))
+	assert.NoError(t, err)
+	_, ok = parsed.(*JWTCredential)
+	assert.True(t, ok, "expected parsed credential to be JWTCredential")
+}
+
+func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
+	vcc := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:      "urn:uuid:array",
+		Issuer:  "did:example:issuer",
+		Types:   []string{"VerifiableCredential"},
+		Subject: []Subject{
+			{
+				ID: "did:example:subject1",
+				CustomFields: map[string]interface{}{
+					"emails": []interface{}{"a@example.com", "b@example.com", "c@example.com"},
+				},
+			},
+		},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	selectivePaths := []string{"credentialSubject.emails[1]"}
+
+	cred, err := NewJWTCredential(vcc, WithSDSelectivePaths(selectivePaths))
+	assert.NoError(t, err)
+	assert.NotNil(t, cred)
+
+	serialized, err := cred.Serialize()
+	assert.NoError(t, err)
+
+	s, ok := serialized.(string)
+	if !ok {
+		t.Fatalf("expected serialized credential to be string, got %T", serialized)
+	}
+
+	// Inspect issuer-signed JWT payload to ensure emails[1] is hidden via placeholder.
+	parts := strings.SplitN(s, "~", 2)
+	if len(parts) < 2 {
+		t.Fatalf("expected SD-JWT with disclosures, got %q", s)
+	}
+	jwtPart := parts[0]
+
+	segs := strings.Split(jwtPart, ".")
+	if len(segs) != 3 {
+		t.Fatalf("expected 3 JWT segments, got %d", len(segs))
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(segs[1])
+	assert.NoError(t, err)
+
+	var payload map[string]interface{}
+	err = json.Unmarshal(payloadBytes, &payload)
+	assert.NoError(t, err)
+
+	vcAny, ok := payload["vc"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected vc map in JWT payload")
+	}
+	csAny, ok := vcAny["credentialSubject"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected credentialSubject map in vc")
+	}
+
+	rawEmails, ok := csAny["emails"]
+	if !ok {
+		t.Fatalf("expected emails in credentialSubject")
+	}
+	emailsArr, ok := rawEmails.([]interface{})
+	if !ok {
+		t.Fatalf("expected emails to be array, got %T", rawEmails)
+	}
+	if len(emailsArr) != 3 {
+		t.Fatalf("expected 3 emails elements, got %d", len(emailsArr))
+	}
+	if _, isPlaceholder := emailsArr[1].(map[string]interface{}); !isPlaceholder {
+		t.Fatalf("expected emails[1] to be SD-JWT placeholder, got %T", emailsArr[1])
+	}
+
+	assert.True(t, sdjwt.IsSDJWT(s), "expected SD-JWT format")
+
+	parsed, err := ParseCredential([]byte(s))
+	assert.NoError(t, err)
+
+	jwtCred, ok := parsed.(*JWTCredential)
+	assert.True(t, ok, "expected parsed credential to be JWTCredential")
+
+	payloadBytes2, err := jwtCred.GetContents()
+	assert.NoError(t, err)
+
+	var m2 map[string]interface{}
+	err = json.Unmarshal(payloadBytes2, &m2)
+	assert.NoError(t, err)
+
+	cs2, ok := m2["credentialSubject"].(map[string]interface{})
+	assert.True(t, ok)
+
+	emails2, ok := cs2["emails"].([]interface{})
+	assert.True(t, ok)
+	assert.Equal(t, []interface{}{"a@example.com", "b@example.com", "c@example.com"}, emails2)
+}
+
+func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
+	vcc := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:      "urn:uuid:recursive",
+		Issuer:  "did:example:issuer",
+		Types:   []string{"VerifiableCredential"},
+		Subject: []Subject{
+			{
+				ID: "did:example:subject1",
+				CustomFields: map[string]interface{}{
+					"profile": map[string]interface{}{
+						"name": "Alice",
+						"age":  float64(30),
+					},
+				},
+			},
+		},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	selectivePaths := []string{"credentialSubject.profile.name"}
+
+	cred, err := NewJWTCredential(vcc, WithSDSelectivePaths(selectivePaths))
+	assert.NoError(t, err)
+	assert.NotNil(t, cred)
+
+	serialized, err := cred.Serialize()
+	assert.NoError(t, err)
+
+	s, ok := serialized.(string)
+	if !ok {
+		t.Fatalf("expected serialized credential to be string, got %T", serialized)
+	}
+
+	// Inspect issuer-signed JWT payload to ensure profile.name is hidden.
+	parts := strings.SplitN(s, "~", 2)
+	if len(parts) < 2 {
+		t.Fatalf("expected SD-JWT with disclosures, got %q", s)
+	}
+	jwtPart := parts[0]
+
+	segs := strings.Split(jwtPart, ".")
+	if len(segs) != 3 {
+		t.Fatalf("expected 3 JWT segments, got %d", len(segs))
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(segs[1])
+	assert.NoError(t, err)
+
+	var payload map[string]interface{}
+	err = json.Unmarshal(payloadBytes, &payload)
+	assert.NoError(t, err)
+
+	vcAny, ok := payload["vc"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected vc map in JWT payload")
+	}
+	csAny, ok := vcAny["credentialSubject"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected credentialSubject map in vc")
+	}
+
+	rawProfile, ok := csAny["profile"]
+	if !ok {
+		t.Fatalf("expected profile in credentialSubject")
+	}
+	profile, ok := rawProfile.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected profile to be object, got %T", rawProfile)
+	}
+
+	if _, has := profile["name"]; has {
+		t.Fatalf("expected profile.name to be hidden in issuer-signed JWT payload")
+	}
+	if _, has := profile["_sd"]; !has {
+		t.Fatalf("expected profile to contain _sd digests")
+	}
+
+	assert.True(t, sdjwt.IsSDJWT(s), "expected SD-JWT format")
+
+	parsed, err := ParseCredential([]byte(s))
+	assert.NoError(t, err)
+
+	jwtCred, ok := parsed.(*JWTCredential)
+	assert.True(t, ok, "expected parsed credential to be JWTCredential")
+
+	payloadBytes2, err := jwtCred.GetContents()
+	assert.NoError(t, err)
+
+	var m2 map[string]interface{}
+	err = json.Unmarshal(payloadBytes2, &m2)
+	assert.NoError(t, err)
+
+	cs2, ok := m2["credentialSubject"].(map[string]interface{})
+	assert.True(t, ok)
+
+	profile2, ok := cs2["profile"].(map[string]interface{})
+	assert.True(t, ok)
+
+	assert.Equal(t, "Alice", profile2["name"])
+	assert.Equal(t, float64(30), profile2["age"])
 }

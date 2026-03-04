@@ -9,6 +9,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -18,16 +19,36 @@ type JWTCredential struct {
 	signingInput string         // JWT header.payload (base64 encoded)
 	payloadData  CredentialData // Parsed payload as CredentialData
 	signature    string         // JWT signature (if signed)
+	disclosures  []string       // Optional SD-JWT disclosures (when issuing/holding SD-JWT)
 }
 
 func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
-	// Convert CredentialContents to CredentialData
+	// Convert CredentialContents to a generic map representation
 	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}
 
-	payloadData := CredentialData(m)
+	// Normalize any nested CredentialData/JSONMap into plain map[string]interface{}
+	vcMap := normalizeCredentialData(m)
+	options := getOptions(opts...)
+
+	var disclosures []string
+
+	// If selective SD-JWT paths are provided, build SD-JWT disclosures and processed VC payload.
+	if len(options.sdSelectivePaths) > 0 {
+		processedVC, ds, err := sdjwt.BuildDisclosures(vcMap, options.sdSelectivePaths)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", err)
+		}
+		vcMap = processedVC
+		disclosures = ds
+	}
+
+	// add more disclosures from opt
+	disclosures = append(disclosures, options.sdDisclosures...)
+
+	payloadData := CredentialData(vcMap)
 
 	// Extract other claims from credentialContents
 	otherClaims := map[string]interface{}{}
@@ -57,7 +78,6 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 		payload[key] = value
 	}
 
-	options := getOptions(opts...)
 	header := map[string]interface{}{
 		"typ": "JWT",
 		"alg": "ES256K",
@@ -84,6 +104,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 		signingInput: signingInput,
 		payloadData:  payloadData,
 		signature:    "",
+		disclosures:  disclosures,
 	}
 
 	// Return JWTCredential
@@ -91,15 +112,30 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 }
 
 func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error) {
-	if !isJWTCredential(rawJWT) {
-		return nil, fmt.Errorf("invalid JWT format")
+	// prevent " from marshalling to json
+	rawJWT = strings.TrimSpace(strings.Trim(rawJWT, "\""))
+
+	var (
+		issuerJWT   string
+		disclosures []string
+	)
+
+	if sdjwt.IsSDJWT(rawJWT) {
+		parsed, err := sdjwt.Parse(rawJWT)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse SD-JWT: %w", err)
+		}
+		issuerJWT = parsed.IssuerSignedJWT
+		disclosures = parsed.Disclosures
+	} else {
+		if !isJWTCredential(rawJWT) {
+			return nil, fmt.Errorf("invalid JWT or SD-JWT format")
+		}
+		issuerJWT = rawJWT
 	}
 
-	// prevent " from marshalling to json
-	rawJWT = strings.Trim(rawJWT, "\"")
-
-	// Split JWT into parts
-	parts := strings.Split(rawJWT, ".")
+	// Split issuer-signed JWT into parts
+	parts := strings.Split(issuerJWT, ".")
 
 	// Extract the payload and header
 	headerEncoded := parts[0]
@@ -132,6 +168,15 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 		return nil, fmt.Errorf("vc claim is not a valid JSON object")
 	}
 
+	// If this was an SD-JWT, reconstruct processed payload using disclosures.
+	if len(disclosures) > 0 {
+		processed, err := sdjwt.Reconstruct(vcMap, disclosures)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", err)
+		}
+		vcMap = processed
+	}
+
 	// Create signing input (header.payload)
 	signingInput := headerEncoded + "." + payloadEncoded
 
@@ -139,6 +184,7 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 		signingInput: signingInput,
 		payloadData:  CredentialData(vcMap),
 		signature:    signature,
+		disclosures:  disclosures,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -195,13 +241,32 @@ func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 }
 
 func (j *JWTCredential) Serialize() (interface{}, error) {
-	if j.signature != "" {
-		// Signed JWT
-		return j.signingInput + "." + j.signature, nil
-	} else {
-		// Unsigned JWT
-		return j.signingInput, nil
+	base := j.signingInput
+	// For SD-JWT, spec expects an issuer-signed JWT (JWS) as the first component.
+	// To keep the compact form consistent, we always add the third segment (even
+	// when the signature is empty) whenever disclosures are present.
+	if j.signature != "" || len(j.disclosures) > 0 {
+		base = base + "." + j.signature
 	}
+
+	// No disclosures => plain JWT
+	if len(j.disclosures) == 0 {
+		return base, nil
+	}
+
+	// With disclosures => SD-JWT: <JWT>~D1~...~Dn~
+	var sb strings.Builder
+	sb.WriteString(base)
+	for _, d := range j.disclosures {
+		if d == "" {
+			continue
+		}
+		sb.WriteString("~")
+		sb.WriteString(d)
+	}
+	sb.WriteString("~")
+
+	return sb.String(), nil
 }
 
 func (j *JWTCredential) GetContents() ([]byte, error) {

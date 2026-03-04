@@ -9,6 +9,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 )
 
 // Config holds package configuration.
@@ -94,6 +95,8 @@ type credentialOptions struct {
 	isCheckRevocation     bool
 	didBaseURL            string
 	verificationMethodKey string
+	sdDisclosures         []string
+	sdSelectivePaths      []string
 }
 
 // WithBaseURL sets the DID base URL for credential processing.
@@ -138,6 +141,23 @@ func WithCheckRevocation() CredentialOpt {
 	}
 }
 
+// WithSDDisclosures sets pre-built SD-JWT disclosures to be used when issuing credentials.
+// If provided, JWTCredential.Serialize will output an SD-JWT instead of a plain JWT.
+func WithSDDisclosures(disclosures []string) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.sdDisclosures = disclosures
+	}
+}
+
+// WithSDSelectivePaths declares which top-level claims should be selectively disclosable.
+// When provided, the SDK will use sdjwt.BuildDisclosures to construct SD-JWT structures
+// during credential issuance.
+func WithSDSelectivePaths(paths []string) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.sdSelectivePaths = paths
+	}
+}
+
 // getOptions returns the credential options.
 func getOptions(opts ...CredentialOpt) *credentialOptions {
 	options := &credentialOptions{
@@ -169,12 +189,12 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 	}
 
 	valStr := string(rawCredential)
-	if isJWTCredential(valStr) {
+	if sdjwt.IsSDJWT(valStr) || isJWTCredential(valStr) {
 
 		return ParseJWTCredential(valStr, opts...)
 	}
 
-	return nil, fmt.Errorf("failed to parse credential: not a valid JWT or embedded credential")
+	return nil, fmt.Errorf("failed to parse credential: not a valid JSON, SD-JWT, or JWT credential")
 }
 
 // ParseCredentialWithValidation parses a credential from various formats into a Credential with validation.
