@@ -21,11 +21,3 @@ type disclosureInfo struct {
 	value       interface{}
 	isArrayElem bool
 }
-
-// SDJWTHolder is the interface for SD-JWT Holder operations.
-type SDJWTHolder interface {
-	GetDisclosures() ([]string, bool)
-	GetIssuerSignedJWT() (string, bool)
-	SerializeWithDisclosures(selectedDisclosures []string) (string, error)
-	AddDisclosures(disclosures []string)
-}

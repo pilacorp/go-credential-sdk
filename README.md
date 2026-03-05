@@ -233,7 +233,6 @@ paths := []string{
 }
 cred, err := vc.NewJWTCredential(contents,
     vc.WithSDSelectivePaths(paths),
-    vc.WithSchemaValidation(), // optional
 )
 if err != nil {
     log.Fatal(err)
@@ -253,18 +252,17 @@ if err != nil {
 
 #### Holder: Presenting an SD-JWT
 
-The Holder receives the full SD-JWT string from the Issuer. Use the **sdjwt** package to open it as a Presentation, then get disclosures, optionally add more (e.g. from storage), and build a presentation with selected disclosures:
+The Holder receives the full SD-JWT string from the Issuer. Use the **sdjwt** package to parse it, inspect disclosures, and build a new SD-JWT presentation with only selected disclosures:
 
 ```go
 import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 
-pres, err := sdjwt.NewHolderSDJWT(sdJWTString)
+parsed, err := sdjwt.Parse(sdJWTString)
 if err != nil { ... }
 
-disclosures, _ := pres.GetDisclosures()           // store or decode for UI
-issuerJWT, _ := pres.GetIssuerSignedJWT()          // store separately if needed
-pres.AddDisclosures(moreFromStorage)               // optional: add disclosures from elsewhere
-presentation, _ := pres.SerializeWithDisclosures([]string{disclosures[0]}) // send to Verifier
+disclosures := parsed.Disclosures                 // store or decode for UI
+issuerJWT := parsed.IssuerSignedJWT               // store separately if needed
+presentation := sdjwt.CreatePresentation(issuerJWT, []string{disclosures[0]}) // send to Verifier
 ```
 
 - **Present the full SD-JWT** — pass the original string to the Verifier (all disclosures).
@@ -297,7 +295,7 @@ contents, _ := cred.GetContents()
 | Role | Action |
 |------|--------|
 | **Issuer** | `vc.NewJWTCredential(contents, vc.WithSDSelectivePaths(paths))` → `AddProof` → `Serialize()` → SD-JWT string |
-| **Holder** | `sdjwt.NewHolderSDJWT(sdJWT)` → `GetDisclosures()` / `AddDisclosures()` / `SerializeWithDisclosures(selected)` |
+| **Holder** | `sdjwt.Parse(sdJWT)` → use `parsed.Disclosures` / `parsed.IssuerSignedJWT` → `sdjwt.CreatePresentation(issuerJWT, selectedDisclosures)` |
 | **Verifier** | `vc.ParseCredential(raw, vc.WithVerifyProof(), ...)` → use returned `Credential` (disclosed claims only) |
 
 For more detail on the algorithm (digests, disclosure format, reconstruction), see the internal docs `sd_jwt.md` and `sd_jwt_integration.md` in the repository.

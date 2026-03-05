@@ -49,27 +49,14 @@ func TestCreatePresentation(t *testing.T) {
 
 func TestPresentation(t *testing.T) {
 	sd := "aaa.bbb.ccc~D1~D2~"
-	pres, err := NewHolderSDJWT(sd)
+	parsed, err := Parse(sd)
 	require.NoError(t, err)
 
-	disclosures, ok := pres.GetDisclosures()
-	assert.True(t, ok)
-	assert.Equal(t, []string{"D1", "D2"}, disclosures)
+	assert.Equal(t, "aaa.bbb.ccc", parsed.IssuerSignedJWT)
+	assert.Equal(t, []string{"D1", "D2"}, parsed.Disclosures)
 
-	issuerJWT, ok := pres.GetIssuerSignedJWT()
-	assert.True(t, ok)
-	assert.Equal(t, "aaa.bbb.ccc", issuerJWT)
-
-	out, err := pres.SerializeWithDisclosures([]string{"D1"})
-	require.NoError(t, err)
+	out := CreatePresentation(parsed.IssuerSignedJWT, []string{"D1"})
 	assert.Equal(t, "aaa.bbb.ccc~D1~", out)
-
-	// AddDisclosures appends and they can be used in SerializeWithDisclosures
-	pres.AddDisclosures([]string{"D3"})
-	disclosures2, _ := pres.GetDisclosures()
-	assert.Equal(t, []string{"D1", "D2", "D3"}, disclosures2)
-	out2, _ := pres.SerializeWithDisclosures([]string{"D2", "D3"})
-	assert.Equal(t, "aaa.bbb.ccc~D2~D3~", out2)
 }
 
 func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {

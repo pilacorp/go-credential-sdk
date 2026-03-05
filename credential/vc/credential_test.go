@@ -1524,7 +1524,7 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 	assert.Equal(t, float64(30), profile2["age"])
 }
 
-func TestSDJWTHolder_Interface(t *testing.T) {
+func TestSDJWT_HolderFlow(t *testing.T) {
 	vcc := CredentialContents{
 		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
 		ID:      "urn:uuid:holder-test",
@@ -1552,20 +1552,17 @@ func TestSDJWTHolder_Interface(t *testing.T) {
 	assert.True(t, ok)
 	assert.True(t, sdjwt.IsSDJWT(s), "expected SD-JWT format")
 
-	pres, err := sdjwt.NewHolderSDJWT(s)
+	parsed, err := sdjwt.Parse(s)
 	assert.NoError(t, err)
 
-	disclosures, has := pres.GetDisclosures()
-	assert.True(t, has)
+	disclosures := parsed.Disclosures
 	assert.Len(t, disclosures, 2, "expected two disclosures (firstname, email)")
 
-	issuerJWT, has := pres.GetIssuerSignedJWT()
-	assert.True(t, has)
+	issuerJWT := parsed.IssuerSignedJWT
 	assert.NotEmpty(t, issuerJWT)
 	assert.True(t, sdjwt.IsSDJWT(issuerJWT+"~"+disclosures[0]+"~"), "issuer JWT should form valid SD-JWT with disclosures")
 
-	presentation, err := pres.SerializeWithDisclosures([]string{disclosures[0]})
-	assert.NoError(t, err)
+	presentation := sdjwt.CreatePresentation(issuerJWT, []string{disclosures[0]})
 	assert.True(t, sdjwt.IsSDJWT(presentation))
 
 	parsedPres, err := ParseCredential([]byte(presentation))
@@ -1581,8 +1578,6 @@ func TestSDJWTHolder_Interface(t *testing.T) {
 	_, hasEmail := cs["email"]
 	assert.False(t, hasEmail, "Holder chose not to disclose email; verifier should not see it")
 
-	_, err = pres.SerializeWithDisclosures(nil)
-	assert.NoError(t, err)
-	emptyPres, _ := pres.SerializeWithDisclosures(nil)
+	emptyPres := sdjwt.CreatePresentation(issuerJWT, nil)
 	assert.True(t, strings.HasSuffix(emptyPres, "~"), "presentation with no disclosures still ends with ~")
 }
