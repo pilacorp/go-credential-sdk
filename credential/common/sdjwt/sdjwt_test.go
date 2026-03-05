@@ -30,6 +30,48 @@ func TestParseSDJWT(t *testing.T) {
 	assert.Equal(t, []string{"disc1", "disc2"}, parsed.Disclosures)
 }
 
+func TestCreatePresentation(t *testing.T) {
+	issuerJWT := "header.payload.sig"
+	all := []string{"D1", "D2", "D3"}
+
+	full := CreatePresentation(issuerJWT, all)
+	assert.Equal(t, "header.payload.sig~D1~D2~D3~", full)
+
+	subset := CreatePresentation(issuerJWT, []string{all[0], all[2]})
+	assert.Equal(t, "header.payload.sig~D1~D3~", subset)
+
+	none := CreatePresentation(issuerJWT, nil)
+	assert.Equal(t, "header.payload.sig~", none)
+
+	empty := CreatePresentation(issuerJWT, []string{"", "D1", ""})
+	assert.Equal(t, "header.payload.sig~D1~", empty)
+}
+
+func TestPresentation(t *testing.T) {
+	sd := "aaa.bbb.ccc~D1~D2~"
+	pres, err := NewHolderSDJWT(sd)
+	require.NoError(t, err)
+
+	disclosures, ok := pres.GetDisclosures()
+	assert.True(t, ok)
+	assert.Equal(t, []string{"D1", "D2"}, disclosures)
+
+	issuerJWT, ok := pres.GetIssuerSignedJWT()
+	assert.True(t, ok)
+	assert.Equal(t, "aaa.bbb.ccc", issuerJWT)
+
+	out, err := pres.SerializeWithDisclosures([]string{"D1"})
+	require.NoError(t, err)
+	assert.Equal(t, "aaa.bbb.ccc~D1~", out)
+
+	// AddDisclosures appends and they can be used in SerializeWithDisclosures
+	pres.AddDisclosures([]string{"D3"})
+	disclosures2, _ := pres.GetDisclosures()
+	assert.Equal(t, []string{"D1", "D2", "D3"}, disclosures2)
+	out2, _ := pres.SerializeWithDisclosures([]string{"D2", "D3"})
+	assert.Equal(t, "aaa.bbb.ccc~D2~D3~", out2)
+}
+
 func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
 	original := map[string]interface{}{
 		"name": "Alice",
@@ -82,10 +124,10 @@ func TestBuildDisclosuresAndReconstruct_ArrayElementPath(t *testing.T) {
 	processed, discs, err := BuildDisclosures(original, []string{"tags[1]"})
 	require.NoError(t, err)
 
-	// root vẫn giữ metadata alg
+	// root still keeps sd algorithm metadata
 	assert.Equal(t, "sha-256", processed["_sd_alg"])
 
-	// tags[1] đã được thay bằng placeholder { "...": h }
+	// tags[1] has been replaced by placeholder { "...": h }
 	rawTags, ok := processed["tags"]
 	require.True(t, ok)
 
@@ -101,7 +143,7 @@ func TestBuildDisclosuresAndReconstruct_ArrayElementPath(t *testing.T) {
 
 	require.Len(t, discs, 1)
 
-	// Reconstruct → trả lại "email" ở index 1, bỏ metadata
+	// Reconstruct should restore "email" at index 1 and drop SD-JWT metadata
 	out, err := Reconstruct(processed, discs)
 	require.NoError(t, err)
 
@@ -132,24 +174,24 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 	processed, discs, err := BuildDisclosures(original, []string{"person.profile.name"})
 	require.NoError(t, err)
 
-	// root chỉ có _sd_alg, không có _sd
+	// root only has _sd_alg, no _sd
 	assert.Equal(t, "sha-256", processed["_sd_alg"])
 	_, hasRootSd := processed["_sd"]
 	assert.False(t, hasRootSd)
 
-	// Đi xuống person.profile
+	// Drill down into person.profile
 	rawPerson, ok := processed["person"].(map[string]interface{})
 	require.True(t, ok)
 
 	rawProfile, ok := rawPerson["profile"].(map[string]interface{})
 	require.True(t, ok)
 
-	// name đã bị ẩn, age vẫn còn
+	// name is hidden, age is still present
 	_, hasName := rawProfile["name"]
 	assert.False(t, hasName)
 	assert.Equal(t, float64(30), rawProfile["age"])
 
-	// profile có _sd chứa đúng 1 digest
+	// profile._sd contains exactly one digest
 	rawSd, ok := rawProfile["_sd"]
 	require.True(t, ok)
 	switch v := rawSd.(type) {
@@ -163,7 +205,7 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 
 	require.Len(t, discs, 1)
 
-	// Reconstruct → khôi phục name, giữ age, bỏ metadata ở mọi cấp
+	// Reconstruct should restore name, keep age, and remove sd metadata at all levels
 	out, err := Reconstruct(processed, discs)
 	require.NoError(t, err)
 

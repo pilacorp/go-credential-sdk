@@ -1523,3 +1523,66 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 	assert.Equal(t, "Alice", profile2["name"])
 	assert.Equal(t, float64(30), profile2["age"])
 }
+
+func TestSDJWTHolder_Interface(t *testing.T) {
+	vcc := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:      "urn:uuid:holder-test",
+		Issuer:  "did:example:issuer",
+		Types:   []string{"VerifiableCredential"},
+		Subject: []Subject{
+			{
+				ID: "did:example:subject1",
+				CustomFields: map[string]interface{}{
+					"firstname": "Alice",
+					"email":     "alice@example.com",
+				},
+			},
+		},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	}
+	selectivePaths := []string{"credentialSubject.firstname", "credentialSubject.email"}
+
+	cred, err := NewJWTCredential(vcc, WithSDSelectivePaths(selectivePaths))
+	assert.NoError(t, err)
+	serialized, err := cred.Serialize()
+	assert.NoError(t, err)
+	s, ok := serialized.(string)
+	assert.True(t, ok)
+	assert.True(t, sdjwt.IsSDJWT(s), "expected SD-JWT format")
+
+	pres, err := sdjwt.NewHolderSDJWT(s)
+	assert.NoError(t, err)
+
+	disclosures, has := pres.GetDisclosures()
+	assert.True(t, has)
+	assert.Len(t, disclosures, 2, "expected two disclosures (firstname, email)")
+
+	issuerJWT, has := pres.GetIssuerSignedJWT()
+	assert.True(t, has)
+	assert.NotEmpty(t, issuerJWT)
+	assert.True(t, sdjwt.IsSDJWT(issuerJWT+"~"+disclosures[0]+"~"), "issuer JWT should form valid SD-JWT with disclosures")
+
+	presentation, err := pres.SerializeWithDisclosures([]string{disclosures[0]})
+	assert.NoError(t, err)
+	assert.True(t, sdjwt.IsSDJWT(presentation))
+
+	parsedPres, err := ParseCredential([]byte(presentation))
+	assert.NoError(t, err)
+	contents, err := parsedPres.GetContents()
+	assert.NoError(t, err)
+	var m map[string]interface{}
+	err = json.Unmarshal(contents, &m)
+	assert.NoError(t, err)
+	cs, ok := m["credentialSubject"].(map[string]interface{})
+	assert.True(t, ok)
+	assert.Equal(t, "Alice", cs["firstname"])
+	_, hasEmail := cs["email"]
+	assert.False(t, hasEmail, "Holder chose not to disclose email; verifier should not see it")
+
+	_, err = pres.SerializeWithDisclosures(nil)
+	assert.NoError(t, err)
+	emptyPres, _ := pres.SerializeWithDisclosures(nil)
+	assert.True(t, strings.HasSuffix(emptyPres, "~"), "presentation with no disclosures still ends with ~")
+}
