@@ -1562,7 +1562,7 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	assert.NotEmpty(t, issuerJWT)
 	assert.True(t, sdjwt.IsSDJWT(issuerJWT+"~"+disclosures[0]+"~"), "issuer JWT should form valid SD-JWT with disclosures")
 
-	presentation := sdjwt.CreatePresentation(issuerJWT, []string{disclosures[0]})
+	presentation := sdjwt.BuildSDJWTPresentation(issuerJWT, []string{disclosures[0]})
 	assert.True(t, sdjwt.IsSDJWT(presentation))
 
 	parsedPres, err := ParseCredential([]byte(presentation))
@@ -1578,6 +1578,6 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	_, hasEmail := cs["email"]
 	assert.False(t, hasEmail, "Holder chose not to disclose email; verifier should not see it")
 
-	emptyPres := sdjwt.CreatePresentation(issuerJWT, nil)
+	emptyPres := sdjwt.BuildSDJWTPresentation(issuerJWT, nil)
 	assert.True(t, strings.HasSuffix(emptyPres, "~"), "presentation with no disclosures still ends with ~")
 }

@@ -34,16 +34,16 @@ func TestCreatePresentation(t *testing.T) {
 	issuerJWT := "header.payload.sig"
 	all := []string{"D1", "D2", "D3"}
 
-	full := CreatePresentation(issuerJWT, all)
+	full := BuildSDJWTPresentation(issuerJWT, all)
 	assert.Equal(t, "header.payload.sig~D1~D2~D3~", full)
 
-	subset := CreatePresentation(issuerJWT, []string{all[0], all[2]})
+	subset := BuildSDJWTPresentation(issuerJWT, []string{all[0], all[2]})
 	assert.Equal(t, "header.payload.sig~D1~D3~", subset)
 
-	none := CreatePresentation(issuerJWT, nil)
+	none := BuildSDJWTPresentation(issuerJWT, nil)
 	assert.Equal(t, "header.payload.sig~", none)
 
-	empty := CreatePresentation(issuerJWT, []string{"", "D1", ""})
+	empty := BuildSDJWTPresentation(issuerJWT, []string{"", "D1", ""})
 	assert.Equal(t, "header.payload.sig~D1~", empty)
 }
 
@@ -55,7 +55,7 @@ func TestPresentation(t *testing.T) {
 	assert.Equal(t, "aaa.bbb.ccc", parsed.BaseJWT)
 	assert.Equal(t, []string{"D1", "D2"}, parsed.Disclosures)
 
-	out := CreatePresentation(parsed.BaseJWT, []string{"D1"})
+	out := BuildSDJWTPresentation(parsed.BaseJWT, []string{"D1"})
 	assert.Equal(t, "aaa.bbb.ccc~D1~", out)
 }
 
@@ -207,6 +207,94 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 
 	_, hasSdProfile := outProfile["_sd"]
 	assert.False(t, hasSdProfile)
+	_, hasAlg := out["_sd_alg"]
+	assert.False(t, hasAlg)
+}
+
+func TestBuildDisclosures_RecursiveParentAndChildPaths(t *testing.T) {
+	// Selecting parent first and then child should fail because the child path
+	// no longer exists after the parent has been replaced by SD-JWT metadata.
+	original1 := map[string]interface{}{
+		"id": "1234",
+		"person": map[string]interface{}{
+			"profile": map[string]interface{}{
+				"name": "Alice",
+				"age":  float64(30),
+			},
+		},
+	}
+	_, _, err := BuildDisclosures(original1, []string{"person.profile", "person.profile.name"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `path "person.profile.name" not found`)
+
+	// Selecting child first and then parent should succeed and be reconstructable.
+	original2 := map[string]interface{}{
+		"id": "1234",
+		"person": map[string]interface{}{
+			"profile": map[string]interface{}{
+				"name": "Alice",
+				"age":  float64(30),
+			},
+		},
+	}
+	processed, discs, err := BuildDisclosures(original2, []string{"person.profile.name", "person.profile"})
+	require.NoError(t, err)
+	require.Len(t, discs, 2)
+
+	out, err := Reconstruct(processed, discs)
+	require.NoError(t, err)
+
+	assert.Equal(t, "1234", out["id"])
+
+	outPerson, ok := out["person"].(map[string]interface{})
+	require.True(t, ok)
+
+	outProfile, ok := outPerson["profile"].(map[string]interface{})
+	require.True(t, ok)
+
+	assert.Equal(t, "Alice", outProfile["name"])
+	assert.Equal(t, float64(30), outProfile["age"])
+
+	_, hasSdProfile := outProfile["_sd"]
+	assert.False(t, hasSdProfile)
+	_, hasAlg := out["_sd_alg"]
+	assert.False(t, hasAlg)
+}
+
+func TestBuildDisclosures_ArrayParentAndChildPaths(t *testing.T) {
+	// Selecting parent array first and then a child element should fail because
+	// the array has been removed from the root after the first selection.
+	original1 := map[string]interface{}{
+		"tags": []interface{}{"public", "email", "phone"},
+		"note": "test",
+	}
+	_, _, err := BuildDisclosures(original1, []string{"tags", "tags[1]"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `path "tags[1]" not found`)
+
+	// Selecting a child element first and then the parent array should succeed.
+	original2 := map[string]interface{}{
+		"tags": []interface{}{"public", "email", "phone"},
+		"note": "test",
+	}
+	processed, discs, err := BuildDisclosures(original2, []string{"tags[1]", "tags"})
+	require.NoError(t, err)
+	require.Len(t, discs, 2)
+
+	out, err := Reconstruct(processed, discs)
+	require.NoError(t, err)
+
+	outTags, ok := out["tags"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, outTags, 3)
+	assert.Equal(t, "public", outTags[0])
+	assert.Equal(t, "email", outTags[1])
+	assert.Equal(t, "phone", outTags[2])
+
+	assert.Equal(t, "test", out["note"])
+
+	_, hasSd := out["_sd"]
+	assert.False(t, hasSd)
 	_, hasAlg := out["_sd_alg"]
 	assert.False(t, hasAlg)
 }

@@ -59,10 +59,29 @@ func Parse(raw string) (*ParsedSDJWT, error) {
 	}
 
 	return &ParsedSDJWT{
-		Raw:             s,
-		BaseJWT: issuer,
-		Disclosures:     disclosures,
+		Raw:         s,
+		BaseJWT:     issuer,
+		Disclosures: disclosures,
 	}, nil
+}
+
+// BuildSDJWTPresentation builds an SD-JWT presentation string from the issuer-signed JWT
+// and a subset of disclosure strings. The Holder uses this to present only selected
+// disclosures to a Verifier. selectedDisclosures must be a subset of the original
+// disclosures (typically from Parsed.Disclosures). Empty segments in selectedDisclosures
+// are skipped. The output format is: <IssuerSignedJWT>~D1~D2~...~
+func BuildSDJWTPresentation(issuerSignedJWT string, selectedDisclosures []string) string {
+	var sb strings.Builder
+	sb.WriteString(issuerSignedJWT)
+	for _, d := range selectedDisclosures {
+		if d == "" {
+			continue
+		}
+		sb.WriteString("~")
+		sb.WriteString(d)
+	}
+	sb.WriteString("~")
+	return sb.String()
 }
 
 // isJWT performs a simple regex check for JWT format: header.payload[.signature].
