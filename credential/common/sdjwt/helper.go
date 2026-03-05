@@ -60,7 +60,7 @@ func Parse(raw string) (*ParsedSDJWT, error) {
 
 	return &ParsedSDJWT{
 		Raw:             s,
-		IssuerSignedJWT: issuer,
+		BaseJWT: issuer,
 		Disclosures:     disclosures,
 	}, nil
 }

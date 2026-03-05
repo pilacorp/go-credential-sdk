@@ -125,7 +125,7 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse SD-JWT: %w", err)
 		}
-		issuerJWT = parsed.IssuerSignedJWT
+		issuerJWT = parsed.BaseJWT
 		disclosures = parsed.Disclosures
 	} else {
 		if !isJWTCredential(rawJWT) {

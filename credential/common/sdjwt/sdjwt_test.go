@@ -26,7 +26,7 @@ func TestParseSDJWT(t *testing.T) {
 
 	parsed, err := Parse(sd)
 	require.NoError(t, err)
-	assert.Equal(t, jwt, parsed.IssuerSignedJWT)
+	assert.Equal(t, jwt, parsed.BaseJWT)
 	assert.Equal(t, []string{"disc1", "disc2"}, parsed.Disclosures)
 }
 
@@ -52,10 +52,10 @@ func TestPresentation(t *testing.T) {
 	parsed, err := Parse(sd)
 	require.NoError(t, err)
 
-	assert.Equal(t, "aaa.bbb.ccc", parsed.IssuerSignedJWT)
+	assert.Equal(t, "aaa.bbb.ccc", parsed.BaseJWT)
 	assert.Equal(t, []string{"D1", "D2"}, parsed.Disclosures)
 
-	out := CreatePresentation(parsed.IssuerSignedJWT, []string{"D1"})
+	out := CreatePresentation(parsed.BaseJWT, []string{"D1"})
 	assert.Equal(t, "aaa.bbb.ccc~D1~", out)
 }
 
@@ -246,7 +246,7 @@ func TestReconstruct_RealExampleFromCompact(t *testing.T) {
 	require.NoError(t, err)
 
 	// Decode issuer-signed JWT payload
-	parts := strings.Split(parsed.IssuerSignedJWT, ".")
+	parts := strings.Split(parsed.BaseJWT, ".")
 	require.Len(t, parts, 3)
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])

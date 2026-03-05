@@ -261,8 +261,8 @@ parsed, err := sdjwt.Parse(sdJWTString)
 if err != nil { ... }
 
 disclosures := parsed.Disclosures                 // store or decode for UI
-issuerJWT := parsed.IssuerSignedJWT               // store separately if needed
-presentation := sdjwt.CreatePresentation(issuerJWT, []string{disclosures[0]}) // send to Verifier
+baseJWT := parsed.BaseJWT                 // issuer-signed JWT without disclosures
+presentation := sdjwt.CreatePresentation(baseJWT, []string{disclosures[0]}) // send to Verifier
 ```
 
 - **Present the full SD-JWT** — pass the original string to the Verifier (all disclosures).
@@ -295,7 +295,7 @@ contents, _ := cred.GetContents()
 | Role | Action |
 |------|--------|
 | **Issuer** | `vc.NewJWTCredential(contents, vc.WithSDSelectivePaths(paths))` → `AddProof` → `Serialize()` → SD-JWT string |
-| **Holder** | `sdjwt.Parse(sdJWT)` → use `parsed.Disclosures` / `parsed.IssuerSignedJWT` → `sdjwt.CreatePresentation(issuerJWT, selectedDisclosures)` |
+| **Holder** | `sdjwt.Parse(sdJWT)` → use `parsed.Disclosures` / `parsed.BaseJWT` → `sdjwt.CreatePresentation(baseJWT, selectedDisclosures)` |
 | **Verifier** | `vc.ParseCredential(raw, vc.WithVerifyProof(), ...)` → use returned `Credential` (disclosed claims only) |
 
 For more detail on the algorithm (digests, disclosure format, reconstruction), see the internal docs `sd_jwt.md` and `sd_jwt_integration.md` in the repository.

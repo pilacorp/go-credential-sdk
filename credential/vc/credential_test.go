@@ -1558,7 +1558,7 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	disclosures := parsed.Disclosures
 	assert.Len(t, disclosures, 2, "expected two disclosures (firstname, email)")
 
-	issuerJWT := parsed.IssuerSignedJWT
+	issuerJWT := parsed.BaseJWT
 	assert.NotEmpty(t, issuerJWT)
 	assert.True(t, sdjwt.IsSDJWT(issuerJWT+"~"+disclosures[0]+"~"), "issuer JWT should form valid SD-JWT with disclosures")
 
