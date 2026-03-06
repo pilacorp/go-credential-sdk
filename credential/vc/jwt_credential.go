@@ -37,12 +37,12 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 
 	// If selective SD-JWT paths are provided, build SD-JWT disclosures and processed VC payload.
 	if len(options.sdSelectivePaths) > 0 {
-		processedVC, ds, err := sdjwt.BuildDisclosures(vcMap, options.sdSelectivePaths)
+		result, err := sdjwt.BuildDisclosures(vcMap, options.sdSelectivePaths)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", err)
 		}
-		vcMap = processedVC
-		disclosures = ds
+		vcMap = result.ProcessedVC
+		disclosures = result.Disclosures
 	}
 
 	// add more disclosures from opt
@@ -169,8 +169,12 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 	}
 
 	// If this was an SD-JWT, reconstruct processed payload using disclosures.
+	// Allow unreferenced disclosures since holder may present only a subset of disclosures.
 	if len(disclosures) > 0 {
-		processed, err := sdjwt.Reconstruct(vcMap, disclosures)
+		config := &sdjwt.ValidationConfig{
+			AllowUnreferencedDisclosures: true,
+		}
+		processed, err := sdjwt.Reconstruct(vcMap, disclosures, config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", err)
 		}

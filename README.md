@@ -216,7 +216,7 @@ The SDK supports **SD-JWT** (Selective Disclosure for JWT) as per [RFC 9901](htt
 **Selective paths** are dot-notation and array-index paths into the VC payload (e.g. into `credentialSubject` and nested objects). Examples:
 
 | Path | Meaning |
-|------|--------|
+|------|---------|
 | `credentialSubject.firstname` | Top-level subject field `firstname` |
 | `credentialSubject.person.address.city` | Nested field `person.address.city` |
 | `credentialSubject.tags[0]` | First element of array `tags` |
@@ -248,6 +248,23 @@ if err != nil {
 // sdJWT is a string: "<issuer-signed-JWT>~<D1>~<D2>~..."
 ```
 
+**Advanced Options:** The SDK supports additional security features for SD-JWT:
+
+```go
+import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
+
+// Issue with custom hash algorithm, shuffle, and decoy digests
+cred, err := vc.NewJWTCredential(contents,
+    vc.WithSDSelectivePaths(paths),
+    // Use sha-384 instead of default sha-256
+    vc.WithSDHashAlgorithm("sha-384"),
+    // Shuffle _sd array to prevent disclosure order leakage
+    vc.WithSDShuffle(true),
+    // Add 2 decoy digests to obscure number of disclosed claims
+    vc.WithSDDecoyDigests(2),
+)
+```
+
 **Alternative (advanced):** If you build disclosures yourself, use `vc.WithSDDisclosures(disclosures)` when creating the credential. The SDK will attach them when serializing to SD-JWT.
 
 #### Holder: Presenting an SD-JWT
@@ -257,16 +274,21 @@ The Holder receives the full SD-JWT string from the Issuer. Use the **sdjwt** pa
 ```go
 import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 
+// Parse the SD-JWT
 parsed, err := sdjwt.Parse(sdJWTString)
 if err != nil { ... }
 
-disclosures := parsed.Disclosures                 // store or decode for UI
-baseJWT := parsed.BaseJWT                 // issuer-signed JWT without disclosures
-presentation := sdjwt.CreatePresentation(baseJWT, []string{disclosures[0]}) // send to Verifier
+// Access decoded disclosures (includes salt, field name, value)
+for _, dec := range parsed.DecodedDisclosures {
+    fmt.Printf("Field: %s, Value: %v\n", dec.FieldName, dec.Value)
+}
+
+// Build presentation with selected disclosures
+presentation := sdjwt.BuildSDJWTPresentation(parsed.BaseJWT, selectedDisclosures)
 ```
 
 - **Present the full SD-JWT** — pass the original string to the Verifier (all disclosures).
-- **Present a subset** — use `pres.SerializeWithDisclosures(selectedDisclosures)` to build a new SD-JWT string with only the chosen disclosures, then send that to the Verifier.
+- **Present a subset** — use `sdjwt.BuildSDJWTPresentation(baseJWT, selectedDisclosures)` to build a new SD-JWT string with only the chosen disclosures, then send that to the Verifier.
 
 #### Verifier: Parsing and verifying an SD-JWT
 
@@ -288,15 +310,48 @@ contents, _ := cred.GetContents()
 
 - **Detection:** `vc.ParseCredential` accepts JSON credentials, plain JWTs, or SD-JWTs. SD-JWT is detected automatically (format: `...~...` with a valid JWT before the first `~`).
 - **Verification:** Signature and standard claims (`exp`, `nbf`, etc.) are verified on the issuer-signed JWT. Schema validation, if enabled, runs on the **reconstructed** payload (disclosed claims only).
+- **Validation:** The SDK validates:
+  - Duplicate digest detection
+  - Unreferenced disclosure detection
+  - Disclosure context validation (object vs array)
+  - Hash algorithm support
 - **No Key Binding:** This implementation does not support Key Binding (KB-JWT). The SD-JWT string does not include a Key Binding JWT.
+
+#### Advanced: Manual SD-JWT Processing
+
+For more control, use the **sdjwt** package directly:
+
+```go
+import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
+
+// Build disclosures manually (Issuer)
+result, err := sdjwt.BuildDisclosures(vcMap, selectivePaths,
+    sdjwt.WithSDHashAlgorithm("sha-384"),
+    sdjwt.WithSDShuffle(true),
+    sdjwt.WithSDDecoyDigests(2),
+)
+// result.ProcessedVC - VC with fields replaced by digests
+// result.Disclosures - Disclosure strings
+// result.DisclosureInfos - Metadata for issuer reference
+
+// Reconstruct with validation (Verifier)
+config := &sdjwt.ValidationConfig{
+    RequireHashAlgorithmMatch:    true,
+    RejectDecoyDigests:         false,
+    AllowUnreferencedDisclosures: false,
+}
+reconstructed, err := sdjwt.Reconstruct(vcMap, disclosures, config)
+```
 
 #### Summary
 
 | Role | Action |
 |------|--------|
 | **Issuer** | `vc.NewJWTCredential(contents, vc.WithSDSelectivePaths(paths))` → `AddProof` → `Serialize()` → SD-JWT string |
-| **Holder** | `sdjwt.Parse(sdJWT)` → use `parsed.Disclosures` / `parsed.BaseJWT` → `sdjwt.CreatePresentation(baseJWT, selectedDisclosures)` |
+| **Holder** | `sdjwt.Parse(sdJWT)` → use `parsed.Disclosures` / `parsed.DecodedDisclosures` → `sdjwt.BuildSDJWTPresentation(baseJWT, selectedDisclosures)` |
 | **Verifier** | `vc.ParseCredential(raw, vc.WithVerifyProof(), ...)` → use returned `Credential` (disclosed claims only) |
+
+
 
 For more detail on the algorithm (digests, disclosure format, reconstruction), see the internal docs `sd_jwt.md` and `sd_jwt_integration.md` in the repository.
 

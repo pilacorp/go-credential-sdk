@@ -22,12 +22,21 @@ func TestIsSDJWT(t *testing.T) {
 
 func TestParseSDJWT(t *testing.T) {
 	jwt := "aaa.bbb.ccc"
-	sd := jwt + "~disc1~disc2~"
+	// Create valid base64url disclosures: [salt, fieldName, value]
+	arr1 := []interface{}{"salt1", "name", "Alice"}
+	arr2 := []interface{}{"salt2", "age", float64(30)}
+	b1, _ := json.Marshal(arr1)
+	b2, _ := json.Marshal(arr2)
+	d1 := base64.RawURLEncoding.EncodeToString(b1)
+	d2 := base64.RawURLEncoding.EncodeToString(b2)
+
+	sd := jwt + "~" + d1 + "~" + d2 + "~"
 
 	parsed, err := Parse(sd)
 	require.NoError(t, err)
 	assert.Equal(t, jwt, parsed.BaseJWT)
-	assert.Equal(t, []string{"disc1", "disc2"}, parsed.Disclosures)
+	assert.Equal(t, []string{d1, d2}, parsed.Disclosures)
+	assert.Len(t, parsed.DecodedDisclosures, 2)
 }
 
 func TestCreatePresentation(t *testing.T) {
@@ -48,15 +57,23 @@ func TestCreatePresentation(t *testing.T) {
 }
 
 func TestPresentation(t *testing.T) {
-	sd := "aaa.bbb.ccc~D1~D2~"
+	// Create valid base64url disclosures
+	arr1 := []interface{}{"salt1", "firstname", "John"}
+	arr2 := []interface{}{"salt2", "lastname", "Doe"}
+	b1, _ := json.Marshal(arr1)
+	b2, _ := json.Marshal(arr2)
+	d1 := base64.RawURLEncoding.EncodeToString(b1)
+	d2 := base64.RawURLEncoding.EncodeToString(b2)
+
+	sd := "aaa.bbb.ccc~" + d1 + "~" + d2 + "~"
 	parsed, err := Parse(sd)
 	require.NoError(t, err)
 
 	assert.Equal(t, "aaa.bbb.ccc", parsed.BaseJWT)
-	assert.Equal(t, []string{"D1", "D2"}, parsed.Disclosures)
+	assert.Equal(t, []string{d1, d2}, parsed.Disclosures)
 
-	out := BuildSDJWTPresentation(parsed.BaseJWT, []string{"D1"})
-	assert.Equal(t, "aaa.bbb.ccc~D1~", out)
+	out := BuildSDJWTPresentation(parsed.BaseJWT, []string{d1})
+	assert.Equal(t, "aaa.bbb.ccc~"+d1+"~", out)
 }
 
 func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
@@ -65,8 +82,10 @@ func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
 		"age":  float64(30),
 	}
 
-	processed, discs, err := BuildDisclosures(original, []string{"name"})
+	result, err := BuildDisclosures(original, []string{"name"})
 	require.NoError(t, err)
+
+	processed := result.ProcessedVC
 
 	// Processed should hide "name" and keep "age"
 	_, hasName := processed["name"]
@@ -88,10 +107,10 @@ func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
 		t.Fatalf("unexpected type for _sd: %T", rawSD)
 	}
 
-	require.Len(t, discs, 1)
+	require.Len(t, result.Disclosures, 1)
 
 	// Reconstruct should restore the original payload and remove SD-JWT internals
-	reconstructed, err := Reconstruct(processed, discs)
+	reconstructed, err := Reconstruct(processed, result.Disclosures, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Alice", reconstructed["name"])
@@ -108,8 +127,10 @@ func TestBuildDisclosuresAndReconstruct_ArrayElementPath(t *testing.T) {
 		"note": "test",
 	}
 
-	processed, discs, err := BuildDisclosures(original, []string{"tags[1]"})
+	result, err := BuildDisclosures(original, []string{"tags[1]"})
 	require.NoError(t, err)
+
+	processed := result.ProcessedVC
 
 	// root still keeps sd algorithm metadata
 	assert.Equal(t, "sha-256", processed["_sd_alg"])
@@ -128,10 +149,10 @@ func TestBuildDisclosuresAndReconstruct_ArrayElementPath(t *testing.T) {
 	_, hasDots := placeholder["..."]
 	assert.True(t, hasDots, "expected placeholder {...: h} at tags[1]")
 
-	require.Len(t, discs, 1)
+	require.Len(t, result.Disclosures, 1)
 
 	// Reconstruct should restore "email" at index 1 and drop SD-JWT metadata
-	out, err := Reconstruct(processed, discs)
+	out, err := Reconstruct(processed, result.Disclosures, nil)
 	require.NoError(t, err)
 
 	outTags, ok := out["tags"].([]interface{})
@@ -158,8 +179,10 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 		},
 	}
 
-	processed, discs, err := BuildDisclosures(original, []string{"person.profile.name"})
+	result, err := BuildDisclosures(original, []string{"person.profile.name"})
 	require.NoError(t, err)
+
+	processed := result.ProcessedVC
 
 	// root only has _sd_alg, no _sd
 	assert.Equal(t, "sha-256", processed["_sd_alg"])
@@ -190,10 +213,10 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 		t.Fatalf("unexpected type for profile._sd: %T", rawSd)
 	}
 
-	require.Len(t, discs, 1)
+	require.Len(t, result.Disclosures, 1)
 
 	// Reconstruct should restore name, keep age, and remove sd metadata at all levels
-	out, err := Reconstruct(processed, discs)
+	out, err := Reconstruct(processed, result.Disclosures, nil)
 	require.NoError(t, err)
 
 	outPerson, ok := out["person"].(map[string]interface{})
@@ -223,7 +246,7 @@ func TestBuildDisclosures_RecursiveParentAndChildPaths(t *testing.T) {
 			},
 		},
 	}
-	_, _, err := BuildDisclosures(original1, []string{"person.profile", "person.profile.name"})
+	_, err := BuildDisclosures(original1, []string{"person.profile", "person.profile.name"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `path "person.profile.name" not found`)
 
@@ -237,11 +260,11 @@ func TestBuildDisclosures_RecursiveParentAndChildPaths(t *testing.T) {
 			},
 		},
 	}
-	processed, discs, err := BuildDisclosures(original2, []string{"person.profile.name", "person.profile"})
+	result, err := BuildDisclosures(original2, []string{"person.profile.name", "person.profile"})
 	require.NoError(t, err)
-	require.Len(t, discs, 2)
+	require.Len(t, result.Disclosures, 2)
 
-	out, err := Reconstruct(processed, discs)
+	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "1234", out["id"])
@@ -268,7 +291,7 @@ func TestBuildDisclosures_ArrayParentAndChildPaths(t *testing.T) {
 		"tags": []interface{}{"public", "email", "phone"},
 		"note": "test",
 	}
-	_, _, err := BuildDisclosures(original1, []string{"tags", "tags[1]"})
+	_, err := BuildDisclosures(original1, []string{"tags", "tags[1]"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `path "tags[1]" not found`)
 
@@ -277,11 +300,11 @@ func TestBuildDisclosures_ArrayParentAndChildPaths(t *testing.T) {
 		"tags": []interface{}{"public", "email", "phone"},
 		"note": "test",
 	}
-	processed, discs, err := BuildDisclosures(original2, []string{"tags[1]", "tags"})
+	result, err := BuildDisclosures(original2, []string{"tags[1]", "tags"})
 	require.NoError(t, err)
-	require.Len(t, discs, 2)
+	require.Len(t, result.Disclosures, 2)
 
-	out, err := Reconstruct(processed, discs)
+	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, nil)
 	require.NoError(t, err)
 
 	outTags, ok := out["tags"].([]interface{})
@@ -315,7 +338,7 @@ func TestReconstruct_ArrayPlaceholder(t *testing.T) {
 		},
 	}
 
-	out, err := Reconstruct(vc, []string{D})
+	out, err := Reconstruct(vc, []string{D}, nil)
 	require.NoError(t, err)
 
 	itemsRaw, ok := out["items"]
@@ -345,7 +368,7 @@ func TestReconstruct_RealExampleFromCompact(t *testing.T) {
 	require.NoError(t, err)
 
 	// Reconstruct processed payload from payload + disclosures
-	out, err := Reconstruct(payload, parsed.Disclosures)
+	out, err := Reconstruct(payload, parsed.Disclosures, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "1234", out["id"])
@@ -357,4 +380,126 @@ func TestReconstruct_RealExampleFromCompact(t *testing.T) {
 	assert.False(t, hasSd)
 	_, hasAlg := out["_sd_alg"]
 	assert.False(t, hasAlg)
+}
+
+func TestBuildDisclosures_WithOptions(t *testing.T) {
+	original := map[string]interface{}{
+		"name": "Alice",
+		"age":  float64(30),
+		"city": "NYC",
+	}
+
+	// Test with SHA-384 algorithm
+	result, err := BuildDisclosures(original, []string{"name", "age"},
+		WithSDHashAlgorithm("sha-384"))
+	require.NoError(t, err)
+	assert.Equal(t, "sha-384", result.ProcessedVC["_sd_alg"])
+
+	// Verify reconstruction works with sha-384
+	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "Alice", out["name"])
+	assert.Equal(t, float64(30), out["age"])
+
+	// Test with shuffle
+	_, err = BuildDisclosures(original, []string{"name", "age"},
+		WithSDShuffle(true))
+	require.NoError(t, err)
+	// With shuffle enabled, _sd array should be shuffled
+
+	// Test with decoy digests
+	result3, err := BuildDisclosures(original, []string{"name"},
+		WithSDDecoyDigests(2))
+	require.NoError(t, err)
+	// Should have 1 real digest + 2 decoys = 3 total
+	sd := result3.ProcessedVC["_sd"]
+	switch v := sd.(type) {
+	case []interface{}:
+		assert.Len(t, v, 3) // 1 real + 2 decoys
+	case []string:
+		assert.Len(t, v, 3)
+	}
+
+	// Reconstruction should still work with decoys (they're just ignored)
+	config := &ValidationConfig{
+		AllowUnreferencedDisclosures: true,
+	}
+	out3, err := Reconstruct(result3.ProcessedVC, result3.Disclosures, config)
+	require.NoError(t, err)
+	assert.Equal(t, "Alice", out3["name"])
+}
+
+func TestBuildDisclosures_DisclosureInfo(t *testing.T) {
+	original := map[string]interface{}{
+		"name":     "Alice",
+		"age":      float64(30),
+		"tags":     []interface{}{"a", "b", "c"},
+	}
+
+	result, err := BuildDisclosures(original, []string{"name", "tags[1]"})
+	require.NoError(t, err)
+
+	// Check DisclosureInfos
+	require.Len(t, result.DisclosureInfos, 2)
+
+	// First disclosure should be for "name"
+	info0 := result.DisclosureInfos[0]
+	assert.Equal(t, "name", info0.FieldName)
+	assert.Equal(t, "name", info0.Path)
+	assert.Equal(t, "Alice", info0.Value)
+	assert.False(t, info0.IsDecoy)
+
+	// Second disclosure should be for "tags[1]"
+	info1 := result.DisclosureInfos[1]
+	assert.Equal(t, "tags[1]", info1.Path)
+	assert.Equal(t, "b", info1.Value)
+	assert.False(t, info1.IsDecoy)
+}
+
+func TestValidation_DuplicateDigest(t *testing.T) {
+	original := map[string]interface{}{
+		"name": "Alice",
+	}
+
+	result, err := BuildDisclosures(original, []string{"name"})
+	require.NoError(t, err)
+
+	// Duplicate the disclosure by adding the same string again
+	discs := append(result.Disclosures, result.Disclosures[0])
+
+	_, err = Reconstruct(result.ProcessedVC, discs, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate digest")
+}
+
+func TestValidation_UnreferencedDisclosure(t *testing.T) {
+	original := map[string]interface{}{
+		"name": "Alice",
+		"age":  float64(30),
+	}
+
+	result, err := BuildDisclosures(original, []string{"name"})
+	require.NoError(t, err)
+
+	// Create a valid disclosure for a field that doesn't exist in _sd
+	// This simulates an extra disclosure that isn't referenced
+	extraArr := []interface{}{"extrarandomsalt", "nonexistent", "value"}
+	extraJSON, _ := json.Marshal(extraArr)
+	extraDisc := base64.RawURLEncoding.EncodeToString(extraJSON)
+
+	// Add the extra disclosure
+	discs := append(result.Disclosures, extraDisc)
+
+	// Should fail with default config (AllowUnreferencedDisclosures = false)
+	_, err = Reconstruct(result.ProcessedVC, discs, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unreferenced disclosure")
+
+	// Should pass with AllowUnreferencedDisclosures = true
+	config := &ValidationConfig{
+		AllowUnreferencedDisclosures: true,
+	}
+	out, err := Reconstruct(result.ProcessedVC, discs, config)
+	require.NoError(t, err)
+	assert.Equal(t, "Alice", out["name"])
 }
