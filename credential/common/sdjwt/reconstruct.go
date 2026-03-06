@@ -19,9 +19,9 @@ type ValidationConfig struct {
 // DefaultValidationConfig returns the default validation configuration.
 func DefaultValidationConfig() *ValidationConfig {
 	return &ValidationConfig{
-		RequireHashAlgorithmMatch:      true,
-		RejectDecoyDigests:             false,
-		AllowUnreferencedDisclosures:   false,
+		RequireHashAlgorithmMatch:    true,
+		RejectDecoyDigests:           false,
+		AllowUnreferencedDisclosures: false,
 	}
 }
 

@@ -24,68 +24,32 @@ const DefaultHashAlgorithm = "sha-256"
 // to understand which disclosure corresponds to which field.
 type DisclosureInfo struct {
 	Disclosure string      // The disclosure string (base64url)
-	Path       string     // The path to the field (e.g., "person.name", "tags[0]")
-	FieldName  string     // The field name (for object fields)
-	Index      *int       // The array index (for array elements)
+	Path       string      // The path to the field (e.g., "person.name", "tags[0]")
+	FieldName  string      // The field name (for object fields)
+	Index      *int        // The array index (for array elements)
 	Value      interface{} // The original value (for reference)
-	IsDecoy    bool       // Whether this is a decoy digest
-	ArrayPath  string     // Full array path if in array context
-	Digest     string     // The digest of this disclosure (for internal use)
+	IsDecoy    bool        // Whether this is a decoy digest
+	ArrayPath  string      // Full array path if in array context
+	Digest     string      // The digest of this disclosure
 }
 
 // SDJWTResult contains the result of BuildDisclosures, including metadata for Holders.
 type SDJWTResult struct {
 	ProcessedVC     map[string]interface{} // VC with fields replaced by digests
-	Disclosures     []string              // Disclosure strings
+	Disclosures     []string               // Disclosure strings
 	DisclosureInfos []DisclosureInfo       // Metadata about each disclosure (in order)
-	SDAlg          string                 // Hash algorithm used
-}
-
-// BuildDisclosuresOption configures the BuildDisclosures function.
-type BuildDisclosuresOption func(*buildDisclosuresOptions)
-
-type buildDisclosuresOptions struct {
-	sdAlg      string
-	shuffle    bool
-	decoyCount int
-}
-
-// WithSDHashAlgorithm sets the hash algorithm for SD-JWT.
-// Supported: sha-256, sha-384, sha-512.
-func WithSDHashAlgorithm(alg string) BuildDisclosuresOption {
-	return func(o *buildDisclosuresOptions) {
-		if _, ok := SupportedHashAlgorithms[alg]; ok {
-			o.sdAlg = alg
-		}
-	}
-}
-
-// WithSDShuffle enables shuffling of the _sd array to prevent disclosure order leakage.
-func WithSDShuffle(enabled bool) BuildDisclosuresOption {
-	return func(o *buildDisclosuresOptions) {
-		o.shuffle = enabled
-	}
-}
-
-// WithSDDecoyDigests adds random decoy digests to obscure the number of disclosed claims.
-func WithSDDecoyDigests(count int) BuildDisclosuresOption {
-	return func(o *buildDisclosuresOptions) {
-		if count > 0 {
-			o.decoyCount = count
-		}
-	}
+	SDAlg           string                 // Hash algorithm used
 }
 
 // BuildDisclosures is used at issuing time to construct SD-JWT structures.
 // It takes a plain VC payload (vcMap) and a list of field paths (dot + [index]
-// notation) that should be selectively disclosable, and returns:
-//   - processedVC: vcMap with those fields replaced by SD-JWT digests
-//   - disclosures: disclosure strings D1..Dn (base64url(JSON array))
+// notation) that should be selectively disclosable.
 //
-// Options can be provided to configure:
-//   - WithSDHashAlgorithm: set hash algorithm (sha-256, sha-384, sha-512)
-//   - WithSDShuffle: shuffle _sd array to prevent disclosure order leakage
-//   - WithSDDecoyDigests: add random decoy digests
+// Parameters:
+//   - sdAlg: hash algorithm (sha-256, sha-384, sha-512). Empty string defaults to sha-256.
+//   - shuffle: if true, shuffle _sd arrays to prevent disclosure order leakage.
+//   - decoyPaths: parent paths where decoy digests should be added (e.g. "", "credentialSubject").
+//   - decoyCounts: number of decoy digests per corresponding path (len must match decoyPaths).
 //
 // Supported path format examples:
 //   - "firstname"
@@ -93,30 +57,32 @@ func WithSDDecoyDigests(count int) BuildDisclosuresOption {
 //   - "person.address.city"
 //   - "tags[0]"
 //   - "person.children[0].name"
-func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, opts ...BuildDisclosuresOption) (*SDJWTResult, error) {
-	// Apply options
-	options := &buildDisclosuresOptions{
-		sdAlg:   DefaultHashAlgorithm,
-		shuffle: false,
+func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdAlg string, shuffle bool, decoyPaths []string, decoyCounts []int) (*SDJWTResult, error) {
+	if sdAlg == "" {
+		sdAlg = DefaultHashAlgorithm
 	}
-	for _, opt := range opts {
-		opt(options)
+	if !SupportedHashAlgorithms[sdAlg] {
+		return nil, fmt.Errorf("unsupported hash algorithm %q", sdAlg)
 	}
 
-	// Shallow copy the root map to avoid mutating caller's data.
-	processedVC := make(map[string]interface{}, len(vcMap)+2)
-	for k, v := range vcMap {
-		processedVC[k] = v
+	// Deep copy to avoid mutating caller's data.
+	raw, err := json.Marshal(vcMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deep copy vcMap: %w", err)
+	}
+	var processedVC map[string]interface{}
+	if err := json.Unmarshal(raw, &processedVC); err != nil {
+		return nil, fmt.Errorf("failed to deep copy vcMap: %w", err)
 	}
 
 	if len(selectivePaths) == 0 {
 		return &SDJWTResult{
 			ProcessedVC: processedVC,
-			SDAlg:      options.sdAlg,
+			SDAlg:       sdAlg,
 		}, nil
 	}
 
-	processedVC["_sd_alg"] = options.sdAlg
+	processedVC["_sd_alg"] = sdAlg
 
 	// Track disclosure info for holder
 	var disclosureInfos []DisclosureInfo
@@ -161,7 +127,7 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, opt
 		D := base64.RawURLEncoding.EncodeToString(disclosureJSON)
 
 		// Compute digest
-		h, err := hashDisclosure(options.sdAlg, D)
+		h, err := hashDisclosure(sdAlg, D)
 		if err != nil {
 			return nil, fmt.Errorf("failed to hash disclosure for path %q: %w", path, err)
 		}
@@ -169,13 +135,13 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, opt
 		// Track disclosure info
 		disclosureInfos = append(disclosureInfos, DisclosureInfo{
 			Disclosure: D,
-			Path:      path,
-			FieldName: fieldName,
-			Index:     &index,
-			Value:     value,
-			ArrayPath: arrayPath,
-			IsDecoy:  false,
-			Digest:    h,
+			Path:       path,
+			FieldName:  fieldName,
+			Index:      &index,
+			Value:      value,
+			ArrayPath:  arrayPath,
+			IsDecoy:    false,
+			Digest:     h,
 		})
 
 		// Attach digest to parent
@@ -215,19 +181,35 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, opt
 	}
 
 	// Shuffle _sd arrays if enabled
-	if options.shuffle {
+	if shuffle {
 		shuffleSDArrays(processedVC)
 	}
 
-	// Add decoy digests if requested
-	if options.decoyCount > 0 {
-		decoyInfos, err := generateDecoyDigests(options.sdAlg, options.decoyCount)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate decoy digests: %w", err)
+	// Add decoy digests at specified paths (each path gets its own count)
+	if len(decoyPaths) > 0 && len(decoyCounts) == len(decoyPaths) {
+		for i, path := range decoyPaths {
+			count := decoyCounts[i]
+			if count <= 0 {
+				continue
+			}
+			decoyInfos, err := generateDecoyDigests(sdAlg, count)
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate decoy digests for path %q: %w", path, err)
+			}
+			target := resolveObjectByPath(processedVC, path)
+			if target == nil {
+				continue
+			}
+			sd, ok := target["_sd"].([]interface{})
+			if !ok {
+				sd = []interface{}{}
+			}
+			for _, decoy := range decoyInfos {
+				sd = append(sd, decoy.Digest)
+			}
+			target["_sd"] = sd
+			disclosureInfos = append(disclosureInfos, decoyInfos...)
 		}
-		addDecoyDigests(processedVC, decoyInfos)
-		// Add decoy info to disclosure infos
-		disclosureInfos = append(disclosureInfos, decoyInfos...)
 	}
 
 	// Build disclosures array in same order as disclosureInfos
@@ -238,9 +220,9 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, opt
 
 	return &SDJWTResult{
 		ProcessedVC:     processedVC,
-		Disclosures:    disclosures,
+		Disclosures:     disclosures,
 		DisclosureInfos: disclosureInfos,
-		SDAlg:         options.sdAlg,
+		SDAlg:           sdAlg,
 	}, nil
 }
 
@@ -289,34 +271,42 @@ func generateDecoyDigests(sdAlg string, count int) ([]DisclosureInfo, error) {
 		}
 		decoys[i] = DisclosureInfo{
 			Disclosure: D,
-			Path:      "_decoy",
-			FieldName: "_decoy",
-			Value:     "decoy_value",
-			IsDecoy:  true,
-			Digest:    h,
+			Path:       "_decoy",
+			FieldName:  "_decoy",
+			Value:      "decoy_value",
+			IsDecoy:    true,
+			Digest:     h,
 		}
 	}
 	return decoys, nil
 }
 
-// addDecoyDigests adds decoy digests to _sd arrays in the VC map.
-func addDecoyDigests(node interface{}, decoys []DisclosureInfo) {
-	switch v := node.(type) {
-	case map[string]interface{}:
-		if sd, ok := v["_sd"].([]interface{}); ok {
-			for _, decoy := range decoys {
-				sd = append(sd, decoy.Digest)
-			}
-			v["_sd"] = sd
+// resolveObjectByPath walks a dot-separated path and returns the map at that location.
+// An empty path returns the root itself.
+func resolveObjectByPath(root map[string]interface{}, path string) map[string]interface{} {
+	if path == "" {
+		return root
+	}
+	parts := strings.Split(path, ".")
+	var current interface{} = root
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
 		}
-		for _, val := range v {
-			addDecoyDigests(val, decoys)
+		m, ok := current.(map[string]interface{})
+		if !ok {
+			return nil
 		}
-	case []interface{}:
-		for _, elem := range v {
-			addDecoyDigests(elem, decoys)
+		current, ok = m[part]
+		if !ok {
+			return nil
 		}
 	}
+	if m, ok := current.(map[string]interface{}); ok {
+		return m
+	}
+	return nil
 }
 
 // resolveDisclosureTarget walks the processedVC according to the given path
@@ -332,7 +322,7 @@ func resolveDisclosureTarget(root map[string]interface{}, path string) (parent i
 	var current interface{} = root
 
 	for i, seg := range segs {
-		last := i == len(segs) - 1
+		last := i == len(segs)-1
 
 		if seg.index == nil {
 			m, ok := current.(map[string]interface{})

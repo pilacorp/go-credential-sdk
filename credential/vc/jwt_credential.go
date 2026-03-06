@@ -33,19 +33,13 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 	vcMap := normalizeCredentialData(m)
 	options := getOptions(opts...)
 
-	var disclosures []string
-
-	// If selective SD-JWT paths are provided, build SD-JWT disclosures and processed VC payload.
-	if len(options.sdSelectivePaths) > 0 {
-		result, err := sdjwt.BuildDisclosures(vcMap, options.sdSelectivePaths)
-		if err != nil {
-			return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", err)
-		}
-		vcMap = result.ProcessedVC
-		disclosures = result.Disclosures
+	result, err := sdjwt.BuildDisclosures(vcMap, options.sdSelectivePaths, options.sdAlg, options.sdShuffle, options.sdDecoyPaths, options.sdDecoyCounts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", err)
 	}
+	vcMap = result.ProcessedVC
+	disclosures := result.Disclosures
 
-	// add more disclosures from opt
 	disclosures = append(disclosures, options.sdDisclosures...)
 
 	payloadData := CredentialData(vcMap)

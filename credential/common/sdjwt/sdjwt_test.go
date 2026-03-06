@@ -82,7 +82,7 @@ func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
 		"age":  float64(30),
 	}
 
-	result, err := BuildDisclosures(original, []string{"name"})
+	result, err := BuildDisclosures(original, []string{"name"}, "", false, nil, nil)
 	require.NoError(t, err)
 
 	processed := result.ProcessedVC
@@ -127,7 +127,7 @@ func TestBuildDisclosuresAndReconstruct_ArrayElementPath(t *testing.T) {
 		"note": "test",
 	}
 
-	result, err := BuildDisclosures(original, []string{"tags[1]"})
+	result, err := BuildDisclosures(original, []string{"tags[1]"}, "", false, nil, nil)
 	require.NoError(t, err)
 
 	processed := result.ProcessedVC
@@ -179,7 +179,7 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 		},
 	}
 
-	result, err := BuildDisclosures(original, []string{"person.profile.name"})
+	result, err := BuildDisclosures(original, []string{"person.profile.name"}, "", false, nil, nil)
 	require.NoError(t, err)
 
 	processed := result.ProcessedVC
@@ -246,7 +246,7 @@ func TestBuildDisclosures_RecursiveParentAndChildPaths(t *testing.T) {
 			},
 		},
 	}
-	_, err := BuildDisclosures(original1, []string{"person.profile", "person.profile.name"})
+	_, err := BuildDisclosures(original1, []string{"person.profile", "person.profile.name"}, "", false, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `path "person.profile.name" not found`)
 
@@ -260,7 +260,7 @@ func TestBuildDisclosures_RecursiveParentAndChildPaths(t *testing.T) {
 			},
 		},
 	}
-	result, err := BuildDisclosures(original2, []string{"person.profile.name", "person.profile"})
+	result, err := BuildDisclosures(original2, []string{"person.profile.name", "person.profile"}, "", false, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, result.Disclosures, 2)
 
@@ -291,7 +291,7 @@ func TestBuildDisclosures_ArrayParentAndChildPaths(t *testing.T) {
 		"tags": []interface{}{"public", "email", "phone"},
 		"note": "test",
 	}
-	_, err := BuildDisclosures(original1, []string{"tags", "tags[1]"})
+	_, err := BuildDisclosures(original1, []string{"tags", "tags[1]"}, "", false, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `path "tags[1]" not found`)
 
@@ -300,7 +300,7 @@ func TestBuildDisclosures_ArrayParentAndChildPaths(t *testing.T) {
 		"tags": []interface{}{"public", "email", "phone"},
 		"note": "test",
 	}
-	result, err := BuildDisclosures(original2, []string{"tags[1]", "tags"})
+	result, err := BuildDisclosures(original2, []string{"tags[1]", "tags"}, "", false, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, result.Disclosures, 2)
 
@@ -390,8 +390,7 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	}
 
 	// Test with SHA-384 algorithm
-	result, err := BuildDisclosures(original, []string{"name", "age"},
-		WithSDHashAlgorithm("sha-384"))
+	result, err := BuildDisclosures(original, []string{"name", "age"}, "sha-384", false, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "sha-384", result.ProcessedVC["_sd_alg"])
 
@@ -402,14 +401,11 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	assert.Equal(t, float64(30), out["age"])
 
 	// Test with shuffle
-	_, err = BuildDisclosures(original, []string{"name", "age"},
-		WithSDShuffle(true))
+	_, err = BuildDisclosures(original, []string{"name", "age"}, "", true, nil, nil)
 	require.NoError(t, err)
-	// With shuffle enabled, _sd array should be shuffled
 
-	// Test with decoy digests
-	result3, err := BuildDisclosures(original, []string{"name"},
-		WithSDDecoyDigests(2))
+	// Test with decoy digests at root path
+	result3, err := BuildDisclosures(original, []string{"name"}, "", false, []string{""}, []int{2})
 	require.NoError(t, err)
 	// Should have 1 real digest + 2 decoys = 3 total
 	sd := result3.ProcessedVC["_sd"]
@@ -431,12 +427,12 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 
 func TestBuildDisclosures_DisclosureInfo(t *testing.T) {
 	original := map[string]interface{}{
-		"name":     "Alice",
-		"age":      float64(30),
-		"tags":     []interface{}{"a", "b", "c"},
+		"name": "Alice",
+		"age":  float64(30),
+		"tags": []interface{}{"a", "b", "c"},
 	}
 
-	result, err := BuildDisclosures(original, []string{"name", "tags[1]"})
+	result, err := BuildDisclosures(original, []string{"name", "tags[1]"}, "", false, nil, nil)
 	require.NoError(t, err)
 
 	// Check DisclosureInfos
@@ -461,7 +457,7 @@ func TestValidation_DuplicateDigest(t *testing.T) {
 		"name": "Alice",
 	}
 
-	result, err := BuildDisclosures(original, []string{"name"})
+	result, err := BuildDisclosures(original, []string{"name"}, "", false, nil, nil)
 	require.NoError(t, err)
 
 	// Duplicate the disclosure by adding the same string again
@@ -478,7 +474,7 @@ func TestValidation_UnreferencedDisclosure(t *testing.T) {
 		"age":  float64(30),
 	}
 
-	result, err := BuildDisclosures(original, []string{"name"})
+	result, err := BuildDisclosures(original, []string{"name"}, "", false, nil, nil)
 	require.NoError(t, err)
 
 	// Create a valid disclosure for a field that doesn't exist in _sd

@@ -97,6 +97,10 @@ type credentialOptions struct {
 	verificationMethodKey string
 	sdDisclosures         []string
 	sdSelectivePaths      []string
+	sdAlg                 string
+	sdShuffle             bool
+	sdDecoyPaths          []string
+	sdDecoyCounts         []int
 }
 
 // WithBaseURL sets the DID base URL for credential processing.
@@ -149,12 +153,37 @@ func WithSDDisclosures(disclosures []string) CredentialOpt {
 	}
 }
 
-// WithSDSelectivePaths declares which top-level claims should be selectively disclosable.
+// WithSDSelectivePaths declares which claims should be selectively disclosable.
 // When provided, the SDK will use sdjwt.BuildDisclosures to construct SD-JWT structures
 // during credential issuance.
 func WithSDSelectivePaths(paths []string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.sdSelectivePaths = paths
+	}
+}
+
+// WithSDHashAlgorithm sets the hash algorithm for SD-JWT.
+// Supported: sha-256, sha-384, sha-512. Empty string defaults to sha-256.
+func WithSDHashAlgorithm(alg string) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.sdAlg = alg
+	}
+}
+
+// WithSDShuffle enables shuffling of the _sd array to prevent disclosure order leakage.
+func WithSDShuffle(enabled bool) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.sdShuffle = enabled
+	}
+}
+
+// WithSDDecoyDigests adds decoy digests at specified parent paths to obscure the number of disclosed claims.
+// paths and counts must have the same length: counts[i] decoy digests are added at paths[i].
+// Example: WithSDDecoyDigests([]string{"", "credentialSubject"}, []int{2, 3})
+func WithSDDecoyDigests(paths []string, counts []int) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.sdDecoyPaths = paths
+		c.sdDecoyCounts = counts
 	}
 }
 
