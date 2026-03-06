@@ -20,24 +20,12 @@ var SupportedHashAlgorithms = map[string]bool{
 // DefaultHashAlgorithm is the default hash algorithm used when not specified.
 const DefaultHashAlgorithm = "sha-256"
 
-// DisclosureInfo contains metadata about a disclosure, useful for Holders
-// to understand which disclosure corresponds to which field.
-type DisclosureInfo struct {
-	Disclosure string      // The disclosure string (base64url)
-	Path       string      // The path to the field (e.g., "person.name", "tags[0]")
-	FieldName  string      // The field name (for object fields)
-	Index      *int        // The array index (for array elements)
-	Value      interface{} // The original value (for reference)
-	ArrayPath  string      // Full array path if in array context
-	Digest     string      // The digest of this disclosure
-}
-
-// SDJWTResult contains the result of BuildDisclosures, including metadata for Holders.
+// SDJWTResult contains the result of BuildDisclosures.
+// Holder-facing metadata is available via Parse() -> ParsedSDJWT.DecodedDisclosures.
 type SDJWTResult struct {
-	ProcessedVC     map[string]interface{} // VC with fields replaced by digests
-	Disclosures     []string               // Disclosure strings
-	DisclosureInfos []DisclosureInfo       // Metadata about each disclosure (in order)
-	SDAlg           string                 // Hash algorithm used
+	ProcessedVC map[string]interface{} // VC with fields replaced by digests
+	Disclosures []string               // Disclosure strings (base64url)
+	SDAlg       string                 // Hash algorithm used
 }
 
 // BuildDisclosures is used at issuing time to construct SD-JWT structures.
@@ -83,8 +71,7 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 
 	processedVC["_sd_alg"] = sdAlg
 
-	// Track disclosure info for holder
-	var disclosureInfos []DisclosureInfo
+	var disclosures []string
 
 	for _, path := range selectivePaths {
 		path = strings.TrimSpace(path)
@@ -107,13 +94,11 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 		}
 
 		var disclosureArr []interface{}
-		var arrayPath string
 		switch kind {
 		case "objectField":
 			disclosureArr = []interface{}{salt, fieldName, value}
 		case "arrayElem":
 			disclosureArr = []interface{}{salt, value}
-			arrayPath = path
 		default:
 			return nil, fmt.Errorf("unexpected kind %q at path %q", kind, path)
 		}
@@ -131,16 +116,7 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 			return nil, fmt.Errorf("failed to hash disclosure for path %q: %w", path, err)
 		}
 
-		// Track disclosure info
-		disclosureInfos = append(disclosureInfos, DisclosureInfo{
-			Disclosure: D,
-			Path:       path,
-			FieldName:  fieldName,
-			Index:      &index,
-			Value:      value,
-			ArrayPath:  arrayPath,
-			Digest:     h,
-		})
+		disclosures = append(disclosures, D)
 
 		// Attach digest to parent
 		switch kind {
@@ -212,17 +188,10 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 		}
 	}
 
-	// Build disclosures array in same order as disclosureInfos
-	disclosures := make([]string, len(disclosureInfos))
-	for i, info := range disclosureInfos {
-		disclosures[i] = info.Disclosure
-	}
-
 	return &SDJWTResult{
-		ProcessedVC:     processedVC,
-		Disclosures:     disclosures,
-		DisclosureInfos: disclosureInfos,
-		SDAlg:           sdAlg,
+		ProcessedVC: processedVC,
+		Disclosures: disclosures,
+		SDAlg:       sdAlg,
 	}, nil
 }
 

@@ -13,11 +13,11 @@ import (
 
 // DecodedDisclosure represents a decoded disclosure that Holder can use to understand what it contains.
 type DecodedDisclosure struct {
-	Disclosure string      // Original disclosure string
-	Salt       string     // The salt value
-	FieldName  string     // The field name (for object field disclosures)
-	Value      interface{} // The value (for object field: claim value, for array: element value)
-	IsArrayElem bool      // True if this is an array element disclosure
+	Disclosure  string      // Original disclosure string
+	Salt        string      // The salt value
+	FieldName   string      // The field name (for object field disclosures)
+	Value       interface{} // The value (for object field: claim value, for array: element value)
+	IsArrayElem bool        // True if this is an array element disclosure
 }
 
 // IsSDJWT checks whether the input string looks like an SD-JWT.
@@ -72,9 +72,8 @@ func Parse(raw string) (*ParsedSDJWT, error) {
 	}
 
 	return &ParsedSDJWT{
-		Raw:               s,
-		BaseJWT:           issuer,
-		Disclosures:       disclosures,
+		BaseJWT:            issuer,
+		Disclosures:        disclosures,
 		DecodedDisclosures: decodedDisclosures,
 	}, nil
 }

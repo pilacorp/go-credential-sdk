@@ -2,9 +2,8 @@ package sdjwt
 
 // ParsedSDJWT represents a parsed SD-JWT at the string level.
 type ParsedSDJWT struct {
-	Raw             string              // original SD-JWT input (trimmed)
-	BaseJWT         string              // issuer-signed JWT (before first '~')
-	Disclosures     []string           // disclosure strings between '~' (base64url(JSON array))
+	BaseJWT            string              // issuer-signed JWT (before first '~')
+	Disclosures        []string            // disclosure strings between '~' (base64url(JSON array))
 	DecodedDisclosures []DecodedDisclosure // parsed disclosures with metadata (useful for Holders)
 }
 

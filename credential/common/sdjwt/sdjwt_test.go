@@ -419,37 +419,11 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 
 	// Disclosures should only contain the 1 real disclosure, no decoys
 	assert.Len(t, result3.Disclosures, 1)
-	assert.Len(t, result3.DisclosureInfos, 1)
 
 	// Reconstruction works: decoy hashes are just unmatched digests (ignored)
 	out3, err := Reconstruct(result3.ProcessedVC, result3.Disclosures, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Alice", out3["name"])
-}
-
-func TestBuildDisclosures_DisclosureInfo(t *testing.T) {
-	original := map[string]interface{}{
-		"name": "Alice",
-		"age":  float64(30),
-		"tags": []interface{}{"a", "b", "c"},
-	}
-
-	result, err := BuildDisclosures(original, []string{"name", "tags[1]"}, "", false, nil, nil)
-	require.NoError(t, err)
-
-	// Check DisclosureInfos
-	require.Len(t, result.DisclosureInfos, 2)
-
-	// First disclosure should be for "name"
-	info0 := result.DisclosureInfos[0]
-	assert.Equal(t, "name", info0.FieldName)
-	assert.Equal(t, "name", info0.Path)
-	assert.Equal(t, "Alice", info0.Value)
-
-	// Second disclosure should be for "tags[1]"
-	info1 := result.DisclosureInfos[1]
-	assert.Equal(t, "tags[1]", info1.Path)
-	assert.Equal(t, "b", info1.Value)
 }
 
 func TestValidation_DuplicateDigest(t *testing.T) {
