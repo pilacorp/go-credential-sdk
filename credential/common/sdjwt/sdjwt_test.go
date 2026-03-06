@@ -407,20 +407,22 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	// Test with decoy digests at root path
 	result3, err := BuildDisclosures(original, []string{"name"}, "", false, []string{""}, []int{2})
 	require.NoError(t, err)
-	// Should have 1 real digest + 2 decoys = 3 total
+
+	// _sd should have 1 real digest + 2 decoy hashes = 3 total
 	sd := result3.ProcessedVC["_sd"]
 	switch v := sd.(type) {
 	case []interface{}:
-		assert.Len(t, v, 3) // 1 real + 2 decoys
+		assert.Len(t, v, 3)
 	case []string:
 		assert.Len(t, v, 3)
 	}
 
-	// Reconstruction should still work with decoys (they're just ignored)
-	config := &ValidationConfig{
-		AllowUnreferencedDisclosures: true,
-	}
-	out3, err := Reconstruct(result3.ProcessedVC, result3.Disclosures, config)
+	// Disclosures should only contain the 1 real disclosure, no decoys
+	assert.Len(t, result3.Disclosures, 1)
+	assert.Len(t, result3.DisclosureInfos, 1)
+
+	// Reconstruction works: decoy hashes are just unmatched digests (ignored)
+	out3, err := Reconstruct(result3.ProcessedVC, result3.Disclosures, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Alice", out3["name"])
 }
@@ -443,13 +445,11 @@ func TestBuildDisclosures_DisclosureInfo(t *testing.T) {
 	assert.Equal(t, "name", info0.FieldName)
 	assert.Equal(t, "name", info0.Path)
 	assert.Equal(t, "Alice", info0.Value)
-	assert.False(t, info0.IsDecoy)
 
 	// Second disclosure should be for "tags[1]"
 	info1 := result.DisclosureInfos[1]
 	assert.Equal(t, "tags[1]", info1.Path)
 	assert.Equal(t, "b", info1.Value)
-	assert.False(t, info1.IsDecoy)
 }
 
 func TestValidation_DuplicateDigest(t *testing.T) {

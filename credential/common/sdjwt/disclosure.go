@@ -28,7 +28,6 @@ type DisclosureInfo struct {
 	FieldName  string      // The field name (for object fields)
 	Index      *int        // The array index (for array elements)
 	Value      interface{} // The original value (for reference)
-	IsDecoy    bool        // Whether this is a decoy digest
 	ArrayPath  string      // Full array path if in array context
 	Digest     string      // The digest of this disclosure
 }
@@ -140,7 +139,6 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 			Index:      &index,
 			Value:      value,
 			ArrayPath:  arrayPath,
-			IsDecoy:    false,
 			Digest:     h,
 		})
 
@@ -185,16 +183,19 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 		shuffleSDArrays(processedVC)
 	}
 
-	// Add decoy digests at specified paths (each path gets its own count)
+	// Add decoy digests at specified paths.
+	// Decoys are random hashes injected into _sd arrays with no corresponding
+	// disclosure, so holders never see them and verifiers cannot distinguish
+	// them from unrevealed real digests.
 	if len(decoyPaths) > 0 && len(decoyCounts) == len(decoyPaths) {
 		for i, path := range decoyPaths {
 			count := decoyCounts[i]
 			if count <= 0 {
 				continue
 			}
-			decoyInfos, err := generateDecoyDigests(sdAlg, count)
+			hashes, err := generateDecoyHashes(sdAlg, count)
 			if err != nil {
-				return nil, fmt.Errorf("failed to generate decoy digests for path %q: %w", path, err)
+				return nil, fmt.Errorf("failed to generate decoy hashes for path %q: %w", path, err)
 			}
 			target := resolveObjectByPath(processedVC, path)
 			if target == nil {
@@ -204,11 +205,10 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 			if !ok {
 				sd = []interface{}{}
 			}
-			for _, decoy := range decoyInfos {
-				sd = append(sd, decoy.Digest)
+			for _, h := range hashes {
+				sd = append(sd, h)
 			}
 			target["_sd"] = sd
-			disclosureInfos = append(disclosureInfos, decoyInfos...)
 		}
 	}
 
@@ -249,36 +249,22 @@ func shuffleSDArrays(node interface{}) {
 	}
 }
 
-// generateDecoyDigests generates random decoy digests using the specified algorithm.
-func generateDecoyDigests(sdAlg string, count int) ([]DisclosureInfo, error) {
-	decoys := make([]DisclosureInfo, count)
+// generateDecoyHashes generates random hash strings that look like real digests
+// but have no corresponding disclosure.
+func generateDecoyHashes(sdAlg string, count int) ([]string, error) {
+	hashes := make([]string, count)
 	for i := 0; i < count; i++ {
 		salt, err := randomSalt()
 		if err != nil {
 			return nil, err
 		}
-		// Create a decoy disclosure [salt, "_decoy", "value"]
-		decoyFieldName := fmt.Sprintf("_decoy_%d", i)
-		decoyArr := []interface{}{salt, decoyFieldName, "decoy_value"}
-		decoyJSON, err := json.Marshal(decoyArr)
+		h, err := hashDisclosure(sdAlg, salt)
 		if err != nil {
 			return nil, err
 		}
-		D := base64.RawURLEncoding.EncodeToString(decoyJSON)
-		h, err := hashDisclosure(sdAlg, D)
-		if err != nil {
-			return nil, err
-		}
-		decoys[i] = DisclosureInfo{
-			Disclosure: D,
-			Path:       "_decoy",
-			FieldName:  "_decoy",
-			Value:      "decoy_value",
-			IsDecoy:    true,
-			Digest:     h,
-		}
+		hashes[i] = h
 	}
-	return decoys, nil
+	return hashes, nil
 }
 
 // resolveObjectByPath walks a dot-separated path and returns the map at that location.
