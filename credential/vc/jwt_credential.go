@@ -33,7 +33,12 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 	vcMap := normalizeCredentialData(m)
 	options := getOptions(opts...)
 
-	result, err := sdjwt.BuildDisclosures(vcMap, options.sdSelectivePaths, options.sdAlg, options.sdShuffle, options.sdDecoyPaths, options.sdDecoyCounts)
+	result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+		VC:             vcMap,
+		SelectivePaths: options.sdSelectivePaths,
+		HashAlgorithm:  options.sdAlg,
+		Shuffle:        options.sdShuffle,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", err)
 	}

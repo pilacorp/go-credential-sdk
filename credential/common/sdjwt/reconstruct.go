@@ -237,17 +237,17 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 
 	case []interface{}:
 		var out []interface{}
+		// Track all digests in this array to check for duplicates
+		arrayDigests := make(map[string]bool)
 		for _, elem := range v {
 			// Check for placeholder { "...": h }
 			if m, ok := elem.(map[string]interface{}); ok && len(m) == 1 {
 				if rawHash, ok := m["..."]; ok {
 					if h, ok := rawHash.(string); ok {
-						// Track all digests in this array to check for duplicates
-						objectDigests := make(map[string]bool)
-						if objectDigests[h] {
+						if arrayDigests[h] {
 							return nil, fmt.Errorf("duplicate digest %q found in array", h)
 						}
-						objectDigests[h] = true
+						arrayDigests[h] = true
 
 						info, exists := disclosureMap[h]
 						if !exists {

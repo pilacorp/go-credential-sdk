@@ -30,6 +30,21 @@ var supportedHashAlgorithms = map[string]bool{
 	AlgSHA512: true,
 }
 
+// DecoyConfig specifies where and how many decoy digests to add.
+type DecoyConfig struct {
+	Path  string // parent path where decoy digests should be added (e.g. "", "credentialSubject").
+	Count int    // number of decoy digests to add at this path.
+}
+
+// BuildDisclosuresInput is the input struct for BuildDisclosures.
+type BuildDisclosuresInput struct {
+	VC             map[string]interface{} // VC payload to process
+	SelectivePaths []string               // field paths to make selectively disclosable
+	HashAlgorithm  string                 // hash algorithm (sha-256, sha-384, sha-512). Empty defaults to sha-256.
+	Shuffle        bool                   // if true, shuffle _sd arrays to prevent disclosure order leakage.
+	Decoys         []DecoyConfig         // decoy digests to add at specific paths.
+}
+
 // SDJWTResult contains the result of BuildDisclosures.
 // Holder-facing metadata is available via Parse() -> ParsedSDJWT.DecodedDisclosures.
 type SDJWTResult struct {
@@ -41,29 +56,29 @@ type SDJWTResult struct {
 // It takes a plain VC payload (vcMap) and a list of field paths (dot + [index]
 // notation) that should be selectively disclosable.
 //
-// Parameters:
-//   - sdAlg: hash algorithm (sha-256, sha-384, sha-512). Empty string defaults to sha-256.
-//   - shuffle: if true, shuffle _sd arrays to prevent disclosure order leakage.
-//   - decoyPaths: parent paths where decoy digests should be added (e.g. "", "credentialSubject").
-//   - decoyCounts: number of decoy digests per corresponding path (len must match decoyPaths).
-//
 // Supported path format examples:
 //   - "firstname"
 //   - "person.firstname"
 //   - "person.address.city"
 //   - "tags[0]"
 //   - "person.children[0].name"
-func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdAlg string, shuffle bool, decoyPaths []string, decoyCounts []int) (*SDJWTResult, error) {
-	if sdAlg == "" {
-		sdAlg = DefaultHashAlgorithm
+func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
+	// Apply defaults
+	sdAlg := DefaultHashAlgorithm
+	shuffle := input.Shuffle
+	decoys := input.Decoys
+
+	if input.HashAlgorithm != "" {
+		sdAlg = input.HashAlgorithm
 	}
+
 	if !supportedHashAlgorithms[sdAlg] {
 		return nil, fmt.Errorf("unsupported hash algorithm %q", sdAlg)
 	}
 
-	processedVC := util.DeepCopyMap(vcMap)
+	processedVC := util.DeepCopyMap(input.VC)
 
-	if len(selectivePaths) == 0 {
+	if len(input.SelectivePaths) == 0 {
 		return &SDJWTResult{
 			ProcessedVC: processedVC,
 		}, nil
@@ -73,7 +88,7 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 
 	var disclosures []string
 
-	for _, path := range selectivePaths {
+	for _, path := range input.SelectivePaths {
 		path = strings.TrimSpace(path)
 		if path == "" {
 			return nil, fmt.Errorf("empty path")
@@ -118,11 +133,17 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 
 		switch resolved.kind {
 		case kindObjectField:
-			m := resolved.parent.(map[string]interface{})
+			m, ok := resolved.parent.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("parent is not a map for path %q", path)
+			}
 			appendSD(m, h)
 			delete(m, resolved.fieldName)
 		case kindArrayElem:
-			arr := resolved.parent.([]interface{})
+			arr, ok := resolved.parent.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("parent is not an array for path %q", path)
+			}
 			arr[resolved.index] = map[string]interface{}{"...": h}
 		}
 	}
@@ -136,23 +157,20 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 	// Decoys are random hashes injected into _sd arrays with no corresponding
 	// disclosure, so holders never see them and verifiers cannot distinguish
 	// them from unrevealed real digests.
-	if len(decoyPaths) > 0 && len(decoyCounts) == len(decoyPaths) {
-		for i, path := range decoyPaths {
-			count := decoyCounts[i]
-			if count <= 0 {
-				continue
-			}
-			hashes, err := generateDecoyHashes(sdAlg, count)
-			if err != nil {
-				return nil, fmt.Errorf("failed to generate decoy hashes for path %q: %w", path, err)
-			}
-			target := resolveObjectByPath(processedVC, path)
-			if target == nil {
-				continue
-			}
-			for _, h := range hashes {
-				appendSD(target, h)
-			}
+	for _, decoy := range decoys {
+		if decoy.Count <= 0 {
+			continue
+		}
+		hashes, err := generateDecoyHashes(sdAlg, decoy.Count)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate decoy hashes for path %q: %w", decoy.Path, err)
+		}
+		target := resolveObjectByPath(processedVC, decoy.Path)
+		if target == nil {
+			continue
+		}
+		for _, h := range hashes {
+			appendSD(target, h)
 		}
 	}
 
