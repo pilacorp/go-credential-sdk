@@ -260,8 +260,9 @@ cred, err := vc.NewJWTCredential(contents,
     vc.WithSDShuffle(true),
     // Add decoy digests: 2 at root, 3 at credentialSubject
     vc.WithSDDecoyDigests([]vc.Decoy{
-        {Path: "", Count: 2},
-        {Path: "credentialSubject", Count: 3},
+        {Path: "", Count: 2},                      // 2 decoys at root level
+        {Path: "credentialSubject", Count: 3},      // 3 decoys in credentialSubject object
+        {Path: "credentialSubject.emails", Count: 1}, // 1 decoy in emails array (adds new elements)
     }),
 )
 ```
@@ -369,12 +370,16 @@ For more control, use the **sdjwt** package directly:
 import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 
 // Build disclosures manually (Issuer)
-result, err := sdjwt.BuildDisclosures(vcMap, selectivePaths,
-    "sha-384",                                  // sdAlg
-    true,                                       // shuffle
-    []string{"", "credentialSubject"},           // decoyPaths
-    []int{2, 3},                                // decoyCounts (per path)
-)
+result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+    VC:             vcMap,
+    SelectivePaths: selectivePaths,
+    HashAlgorithm:  "sha-384",
+    Shuffle:        true,
+    Decoys: []sdjwt.DecoyConfig{
+        {Path: "", Count: 2},
+        {Path: "credentialSubject", Count: 3},
+    },
+})
 // result.ProcessedVC - VC with fields replaced by digests
 // result.Disclosures - Disclosure strings
 // result.SDAlg       - Hash algorithm used

@@ -19,8 +19,9 @@ const (
 
 	DefaultHashAlgorithm = AlgSHA256
 
-	kindObjectField = "objectField"
-	kindArrayElem   = "arrayElem"
+	kindObjectField    = "objectField"
+	kindArrayElem      = "arrayElem"
+	kindArrayContainer = "arrayContainer"
 )
 
 // supportedHashAlgorithms defines the allowed hash algorithms for SD-JWT.
@@ -109,7 +110,8 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 
 		var disclosureArr []interface{}
 		switch resolved.kind {
-		case kindObjectField:
+		case kindObjectField, kindArrayContainer:
+			// Array container is treated same as object field
 			disclosureArr = []interface{}{salt, resolved.fieldName, resolved.value}
 		case kindArrayElem:
 			disclosureArr = []interface{}{salt, resolved.value}
@@ -132,7 +134,8 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 		disclosures = append(disclosures, encodedDisclosure)
 
 		switch resolved.kind {
-		case kindObjectField:
+		case kindObjectField, kindArrayContainer:
+			// Array container is treated same as object field
 			m, ok := resolved.parent.(map[string]interface{})
 			if !ok {
 				return nil, fmt.Errorf("parent is not a map for path %q", path)
@@ -146,11 +149,6 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 			}
 			arr[resolved.index] = map[string]interface{}{"...": h}
 		}
-	}
-
-	// Shuffle _sd arrays if enabled
-	if shuffle {
-		shuffleSDArrays(processedVC)
 	}
 
 	// Add decoy digests at specified paths.
@@ -194,7 +192,28 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 				appendSD(target, h)
 			}
 		}
-		// Handle array element decoys
+		// Skip empty path - handled in array container case
+		// Handle array container decoys: add new decoy elements to array
+		if resolved.kind == kindArrayContainer {
+			arr, ok := resolved.value.([]interface{})
+			if !ok {
+				continue
+			}
+			parentMap, ok := resolved.parent.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			// Add decoy elements to the array
+			for _, h := range hashes {
+				decoyElem := map[string]interface{}{"...": h}
+				arr = append(arr, decoyElem)
+			}
+			// Update the array in parent
+			parentMap[resolved.fieldName] = arr
+			continue
+		}
+
+		// Handle array element decoys (legacy - replaces element, may be deprecated)
 		if resolved.kind == kindArrayElem {
 			arr, ok := resolved.parent.([]interface{})
 			if !ok {
@@ -209,6 +228,11 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 				arr[idx] = map[string]interface{}{"...": h}
 			}
 		}
+	}
+
+	// Shuffle _sd arrays if enabled
+	if shuffle {
+		shuffleSDArrays(processedVC)
 	}
 
 	return &SDJWTResult{
@@ -307,6 +331,10 @@ func resolvePath(root map[string]interface{}, path string) (*resolvedTarget, err
 				return nil, nil
 			}
 			if last {
+				// Check if value is an array - if so, it's an array container
+				if arr, isArr := val.([]interface{}); isArr {
+					return &resolvedTarget{parent: m, kind: kindArrayContainer, fieldName: seg.key, value: arr}, nil
+				}
 				return &resolvedTarget{parent: m, kind: kindObjectField, fieldName: seg.key, value: val}, nil
 			}
 			current = val
