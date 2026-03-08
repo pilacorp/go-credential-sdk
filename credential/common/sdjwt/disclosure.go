@@ -42,7 +42,7 @@ type BuildDisclosuresInput struct {
 	SelectivePaths []string               // field paths to make selectively disclosable
 	HashAlgorithm  string                 // hash algorithm (sha-256, sha-384, sha-512). Empty defaults to sha-256.
 	Shuffle        bool                   // if true, shuffle _sd arrays to prevent disclosure order leakage.
-	Decoys         []DecoyConfig         // decoy digests to add at specific paths.
+	Decoys         []DecoyConfig          // decoy digests to add at specific paths.
 }
 
 // SDJWTResult contains the result of BuildDisclosures.
@@ -94,7 +94,7 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 			return nil, fmt.Errorf("empty path")
 		}
 
-		resolved, err := resolveDisclosureTarget(processedVC, path)
+		resolved, err := resolvePath(processedVC, path)
 		if err != nil {
 			return nil, fmt.Errorf("resolve path %q: %w", path, err)
 		}
@@ -165,8 +165,16 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate decoy hashes for path %q: %w", decoy.Path, err)
 		}
-		target := resolveObjectByPath(processedVC, decoy.Path)
-		if target == nil {
+		// Use resolvePath - for decoys we only need the parent map
+		resolved, err := resolvePath(processedVC, decoy.Path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve decoy path %q: %w", decoy.Path, err)
+		}
+		if resolved == nil || resolved.kind != kindObjectField {
+			continue // Decoys only support object fields
+		}
+		target, ok := resolved.parent.(map[string]interface{})
+		if !ok {
 			continue
 		}
 		for _, h := range hashes {
@@ -237,44 +245,22 @@ func generateDecoyHashes(sdAlg string, count int) ([]string, error) {
 	return hashes, nil
 }
 
-// resolveObjectByPath walks a dot-separated path and returns the map at that location.
+// resolvePath walks a dot + [index] path and returns the resolved target with metadata.
+// Used for both selective disclosures and decoy digests.
 // An empty path returns the root itself.
-func resolveObjectByPath(root map[string]interface{}, path string) map[string]interface{} {
-	if path == "" {
-		return root
-	}
-	parts := strings.Split(path, ".")
-	var current interface{} = root
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		m, ok := current.(map[string]interface{})
-		if !ok {
-			return nil
-		}
-		current, ok = m[part]
-		if !ok {
-			return nil
-		}
-	}
-	if m, ok := current.(map[string]interface{}); ok {
-		return m
-	}
-	return nil
-}
-
-// resolveDisclosureTarget walks the processedVC according to the given path
-// and returns the parent container, the kind of target, and its metadata.
 // Returns (nil, nil) when the path does not exist in root.
-func resolveDisclosureTarget(root map[string]interface{}, path string) (*resolvedTarget, error) {
+func resolvePath(root map[string]interface{}, path string) (*resolvedTarget, error) {
+	// Empty path returns root (for decoys at root level)
+	if path == "" {
+		return &resolvedTarget{parent: root, kind: kindObjectField}, nil
+	}
+
 	segs, err := parsePath(path)
 	if err != nil {
 		return nil, err
 	}
 	if len(segs) == 0 {
-		return nil, nil
+		return &resolvedTarget{parent: root, kind: kindObjectField}, nil
 	}
 
 	var current interface{} = root

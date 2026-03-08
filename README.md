@@ -251,8 +251,6 @@ if err != nil {
 **Advanced Options:** The SDK supports additional security features for SD-JWT:
 
 ```go
-import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
-
 // Issue with custom hash algorithm, shuffle, and decoy digests
 cred, err := vc.NewJWTCredential(contents,
     vc.WithSDSelectivePaths(paths),
@@ -260,8 +258,11 @@ cred, err := vc.NewJWTCredential(contents,
     vc.WithSDHashAlgorithm("sha-384"),
     // Shuffle _sd array to prevent disclosure order leakage
     vc.WithSDShuffle(true),
-    // Add 2 decoy digests to obscure number of disclosed claims
-    vc.WithSDDecoyDigests(2),
+    // Add decoy digests: 2 at root, 3 at credentialSubject
+    vc.WithSDDecoyDigests([]vc.Decoy{
+        {Path: "", Count: 2},
+        {Path: "credentialSubject", Count: 3},
+    }),
 )
 ```
 
@@ -289,6 +290,49 @@ presentation := sdjwt.BuildSDJWTPresentation(parsed.BaseJWT, selectedDisclosures
 
 - **Present the full SD-JWT** — pass the original string to the Verifier (all disclosures).
 - **Present a subset** — use `sdjwt.BuildSDJWTPresentation(baseJWT, selectedDisclosures)` to build a new SD-JWT string with only the chosen disclosures, then send that to the Verifier.
+
+#### Issuer: Adding selective disclosures to an existing SD-JWT
+
+An issuer may need to add more selective disclosures to an existing SD-JWT credential (e.g., adding new fields that were not originally disclosed). Since SD-JWT uses random salts, the signature must be recreated after adding disclosures.
+
+**Important:** When adding disclosures to an existing SD-JWT, you must rebuild ALL disclosures (existing + new) because salt values change each time disclosures are generated.
+
+```go
+// 1. Parse the existing SD-JWT
+cred, err := vc.ParseCredential([]byte(existingSDJWT))
+if err != nil {
+    log.Fatal(err)
+}
+
+// 2. Add new selective disclosure paths
+// Note: All existing disclosures will be rebuilt + new ones added
+newCred, err := cred.AddSelectiveDisclosures([]string{
+    "credentialSubject.phone",
+    "credentialSubject.address",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// 3. Re-sign the credential with issuer's private key
+err = newCred.AddProof(privateKeyHex)
+if err != nil {
+    log.Fatal(err)
+}
+
+// 4. Serialize to get the new SD-JWT with additional disclosures
+newSDJWT, err := newCred.Serialize()
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("New SD-JWT with additional disclosures:\n%s\n", newSDJWT)
+```
+
+**Key points:**
+- The new credential retains any previously disclosed fields
+- New paths are added to the disclosure set
+- The signature must be regenerated using `AddProof()` after adding disclosures
+- This operation only works with JWT credentials; JSON credentials do not support selective disclosures
 
 #### Verifier: Parsing and verifying an SD-JWT
 
@@ -326,13 +370,15 @@ import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 
 // Build disclosures manually (Issuer)
 result, err := sdjwt.BuildDisclosures(vcMap, selectivePaths,
-    sdjwt.WithSDHashAlgorithm("sha-384"),
-    sdjwt.WithSDShuffle(true),
-    sdjwt.WithSDDecoyDigests(2),
+    "sha-384",                                  // sdAlg
+    true,                                       // shuffle
+    []string{"", "credentialSubject"},           // decoyPaths
+    []int{2, 3},                                // decoyCounts (per path)
 )
 // result.ProcessedVC - VC with fields replaced by digests
 // result.Disclosures - Disclosure strings
-// result.DisclosureInfos - Metadata for issuer reference
+// result.SDAlg       - Hash algorithm used
+// Holder metadata: use sdjwt.Parse() -> ParsedSDJWT.DecodedDisclosures
 
 // Reconstruct with validation (Verifier)
 config := &sdjwt.ValidationConfig{
@@ -864,6 +910,10 @@ sdJwtCred, err := vc.NewJWTCredential(contents, vc.WithSDSelectivePaths([]string
 // Parse credentials (works for JSON, JWT, or SD-JWT)
 cred, err := vc.ParseCredential(data)
 cred, err := vc.ParseCredentialWithValidation(data)
+
+// Add selective disclosures to existing SD-JWT (JWT only)
+// Note: Signature must be recreated after adding disclosures
+newCred, err := cred.AddSelectiveDisclosures([]string{"credentialSubject.phone"})
 
 // Add proof and verify
 err = cred.AddProof(privateKeyHex)

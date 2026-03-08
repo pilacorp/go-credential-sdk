@@ -158,3 +158,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 
 	return nil
 }
+
+func (e *JSONCredential) AddSelectiveDisclosures(selectivePaths []string) (Credential, error) {
+	return nil, fmt.Errorf("JSON credential does not support selective disclosures")
+}

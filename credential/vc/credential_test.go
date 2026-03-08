@@ -660,7 +660,7 @@ func TestCreateCredentialJWT(t *testing.T) {
 	Init("https://auth-dev.pila.vn/api/v1/did")
 
 	// Test data
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	testIssuerPrivateKey := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 	subjectDID := "did:key:z2dmzD81cgPx8Vki7JbuuMmFYrWPgYoytykUZ3eyqht1j9KbsEYvdrjxMjQ4tpnje9BDBTzuNDP3knn6qLZErzd4bJ5go2CChoPjd5GAH3zpFJP5fuwSk66U5Pq6EhF4nKnHzDnznEP8fX99nZGgwbAh1o7Gj1X52Tdhf7U4KTk66xsA5r"
 
@@ -713,7 +713,7 @@ func TestCreateCredentialJWT(t *testing.T) {
 	assert.NoError(t, err, "Failed to create credential from contents")
 
 	// Add proof to the credential
-	err = credential.AddProof(privateKeyHex)
+	err = credential.AddProof(testIssuerPrivateKey)
 	assert.NoError(t, err, "Failed to add proof to credential")
 
 	// Serialize the credential to get JWT string
@@ -759,7 +759,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 	Init("https://auth-dev.pila.vn/api/v1/did")
 
 	// Test data
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	testIssuerPrivateKey := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 	subjectDID := "did:key:z2dmzD81cgPx8Vki7JbuuMmFYrWPgYoytykUZ3eyqht1j9KbsEYvdrjxMjQ4tpnje9BDBTzuNDP3knn6qLZErzd4bJ5go2CChoPjd5GAH3zpFJP5fuwSk66U5Pq6EhF4nKnHzDnznEP8fX99nZGgwbAh1o7Gj1X52Tdhf7U4KTk66xsA5r"
 
@@ -813,7 +813,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.NoError(t, err, "Failed to create JSON credential")
 
 		// Add proof using AddProof method
-		err = credential.AddProof(privateKeyHex)
+		err = credential.AddProof(testIssuerPrivateKey)
 		assert.NoError(t, err, "Failed to add proof to JSON credential")
 
 		// Verify the credential
@@ -869,7 +869,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.NoError(t, err, "Failed to create JWT credential")
 
 		// Add proof using AddProof method
-		err = credential.AddProof(privateKeyHex)
+		err = credential.AddProof(testIssuerPrivateKey)
 		assert.NoError(t, err, "Failed to add proof to JWT credential")
 
 		// Serialize to get JWT token
@@ -906,7 +906,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 
 		// Sign message with ES256K
 		signer := jwt.SigningMethodES256K{}
-		signatureBytes, err := signer.Sign(string(signingInput), privateKeyHex)
+		signatureBytes, err := signer.Sign(string(signingInput), testIssuerPrivateKey)
 		assert.NoError(t, err, "Failed to sign message")
 		assert.NotEmpty(t, signatureBytes, "Signature should not be empty")
 
@@ -1580,4 +1580,160 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 
 	emptyPres := sdjwt.BuildSDJWTPresentation(issuerJWT, nil)
 	assert.Equal(t, issuerJWT, emptyPres, "presentation with no disclosures returns bare JWT")
+}
+
+func TestAddSelectiveDisclosures(t *testing.T) {
+	vcc := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:      "urn:uuid:add-disclosure-test",
+		Issuer:  "did:example:issuer",
+		Types:   []string{"VerifiableCredential"},
+		Subject: []Subject{
+			{
+				ID: "did:example:subject1",
+				CustomFields: map[string]interface{}{
+					"firstname": "Alice",
+					"lastname":  "Smith",
+					"email":     "alice@example.com",
+					"phone":     "+1234567890",
+				},
+			},
+		},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	// Step 1: Issue SD-JWT with initial selective disclosure (firstname only)
+	initialPaths := []string{"credentialSubject.firstname"}
+	cred, err := NewJWTCredential(vcc, WithSDSelectivePaths(initialPaths))
+	assert.NoError(t, err)
+
+	// Sign the credential
+	err = cred.AddProof(testIssuerPrivateKey)
+	assert.NoError(t, err)
+
+	// Serialize to get SD-JWT string
+	initialSDJWT, err := cred.Serialize()
+	assert.NoError(t, err)
+	initialStr, ok := initialSDJWT.(string)
+	assert.True(t, ok)
+	assert.True(t, sdjwt.IsSDJWT(initialStr), "expected SD-JWT format")
+
+	// Step 2: Parse the SD-JWT
+	parsedCred, err := ParseCredential([]byte(initialStr))
+	assert.NoError(t, err)
+
+	// Step 3: Add more selective disclosures (email and phone)
+	// Note: Adding disclosures changes the payload, so we need to re-sign
+	additionalPaths := []string{"credentialSubject.email", "credentialSubject.phone"}
+	newCred, err := parsedCred.AddSelectiveDisclosures(additionalPaths)
+	assert.NoError(t, err)
+
+	// The new credential has more disclosures but is not yet signed
+	// Verify that disclosures are merged
+	newSerialized, err := newCred.Serialize()
+	assert.NoError(t, err)
+	newStr, ok := newSerialized.(string)
+	assert.True(t, ok)
+
+	// Parse the new SD-JWT to verify disclosures are present
+	parsedNew, err := sdjwt.Parse(newStr)
+	assert.NoError(t, err)
+	assert.Len(t, parsedNew.Disclosures, 3, "expected 3 disclosures: firstname + email + phone")
+
+	// Step 4: Re-sign the credential with new disclosures
+	err = newCred.AddProof(testIssuerPrivateKey)
+	assert.NoError(t, err)
+
+	// Step 5: Serialize and verify the final SD-JWT
+	finalSDJWT, err := newCred.Serialize()
+	assert.NoError(t, err)
+	finalStr, ok := finalSDJWT.(string)
+	assert.True(t, ok)
+	assert.True(t, sdjwt.IsSDJWT(finalStr), "expected SD-JWT format after re-sign")
+
+	// Verify the final SD-JWT can be parsed and reconstructed correctly
+	parsedFinal, err := sdjwt.Parse(finalStr)
+	assert.NoError(t, err)
+	assert.Len(t, parsedFinal.Disclosures, 3)
+
+	// Reconstruct the credential to verify all disclosures work
+	reconstructed, err := sdjwt.Reconstruct(
+		func() map[string]interface{} {
+			parts := strings.Split(parsedFinal.BaseJWT, ".")
+			payloadBytes, _ := base64.RawURLEncoding.DecodeString(parts[1])
+			var payload map[string]interface{}
+			json.Unmarshal(payloadBytes, &payload)
+			vcData := payload["vc"].(map[string]interface{})
+			return vcData
+		}(),
+		parsedFinal.Disclosures,
+		nil,
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, "Alice", reconstructed["credentialSubject"].(map[string]interface{})["firstname"])
+	assert.Equal(t, "alice@example.com", reconstructed["credentialSubject"].(map[string]interface{})["email"])
+	assert.Equal(t, "+1234567890", reconstructed["credentialSubject"].(map[string]interface{})["phone"])
+}
+
+func TestAddSelectiveDisclosures_EmptyPaths(t *testing.T) {
+	vcc := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:      "urn:uuid:add-disclosure-test-empty",
+		Issuer:  "did:example:issuer",
+		Types:   []string{"VerifiableCredential"},
+		Subject: []Subject{
+			{
+				ID: "did:example:subject1",
+				CustomFields: map[string]interface{}{
+					"firstname": "Bob",
+				},
+			},
+		},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	// Create credential without selective disclosures
+	cred, err := NewJWTCredential(vcc)
+	assert.NoError(t, err)
+
+	// Try to add empty selective paths - should error
+	_, err = cred.AddSelectiveDisclosures([]string{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "selective paths cannot be empty")
+}
+
+func TestAddSelectiveDisclosures_PlainJWT(t *testing.T) {
+	vcc := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:      "urn:uuid:add-disclosure-plain-jwt",
+		Issuer:  "did:example:issuer",
+		Types:   []string{"VerifiableCredential"},
+		Subject: []Subject{
+			{
+				ID: "did:example:subject1",
+				CustomFields: map[string]interface{}{
+					"firstname": "Charlie",
+				},
+			},
+		},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	// Create plain JWT (no selective disclosures)
+	cred, err := NewJWTCredential(vcc)
+	assert.NoError(t, err)
+
+	// Add selective disclosures to plain JWT - should work
+	newCred, err := cred.AddSelectiveDisclosures([]string{"credentialSubject.firstname"})
+	assert.NoError(t, err)
+
+	// Verify it returns SD-JWT format
+	serialized, err := newCred.Serialize()
+	assert.NoError(t, err)
+	str, ok := serialized.(string)
+	assert.True(t, ok)
+	assert.True(t, sdjwt.IsSDJWT(str), "expected SD-JWT format after adding disclosures")
 }

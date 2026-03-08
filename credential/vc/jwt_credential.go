@@ -38,6 +38,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 		SelectivePaths: options.sdSelectivePaths,
 		HashAlgorithm:  options.sdAlg,
 		Shuffle:        options.sdShuffle,
+		Decoys:         options.sdDecoys,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", err)
@@ -280,6 +281,122 @@ func (j *JWTCredential) GetType() string {
 	return "JWT"
 }
 
+func (j *JWTCredential) AddSelectiveDisclosures(selectivePaths []string) (Credential, error) {
+	if len(selectivePaths) == 0 {
+		return nil, fmt.Errorf("selective paths cannot be empty")
+	}
+
+	// Decode the payload from signingInput to get the vc claim with _sd metadata
+	parts := strings.Split(j.signingInput, ".")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid signing input format")
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode payload: %w", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
+	}
+
+	// Get the vc claim
+	vcData, ok := payload["vc"]
+	if !ok {
+		return nil, fmt.Errorf("vc claim not found in payload")
+	}
+
+	vcMap, ok := vcData.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("vc claim is not a valid JSON object")
+	}
+
+	var allDisclosures []string
+	var processedVC map[string]interface{}
+
+	if len(j.disclosures) > 0 {
+		// Existing SD-JWT: extract existing field names from disclosures
+		existingFields, err := extractExistingFieldNames(j.disclosures)
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract existing fields: %w", err)
+		}
+
+		// Collect ALL paths: existing + new
+		// Existing fields are direct field names like "firstname", need to add credentialSubject. prefix
+		var allPaths []string
+		for p := range existingFields {
+			allPaths = append(allPaths, "credentialSubject."+p)
+		}
+		for _, p := range selectivePaths {
+			fieldName := extractFieldName(p)
+			if !existingFields[fieldName] {
+				allPaths = append(allPaths, p)
+			}
+		}
+
+		if len(allPaths) == len(existingFields) {
+			// All new paths already disclosed
+			return j, nil
+		}
+
+		// Reconstruct to get original data (without _sd)
+		config := &sdjwt.ValidationConfig{
+			AllowUnreferencedDisclosures: true,
+		}
+		reconstructed, err := sdjwt.Reconstruct(vcMap, j.disclosures, config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", err)
+		}
+
+		// Build disclosures for ALL paths
+		result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+			VC:             reconstructed,
+			SelectivePaths: allPaths,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to build disclosures: %w", err)
+		}
+
+		processedVC = result.ProcessedVC
+		allDisclosures = result.Disclosures
+	} else {
+		// No existing disclosures - build disclosures for all new paths
+		result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+			VC:             vcMap,
+			SelectivePaths: selectivePaths,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to build disclosures: %w", err)
+		}
+		processedVC = result.ProcessedVC
+		allDisclosures = result.Disclosures
+	}
+
+	// Update the payload with the processed VC (contains _sd digests)
+	payload["vc"] = processedVC
+
+	// Re-encode the payload
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal updated payload: %w", err)
+	}
+	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
+
+	// Create new signing input
+	newSigningInput := parts[0] + "." + payloadEncoded
+
+	newCred := &JWTCredential{
+		signingInput: newSigningInput,
+		payloadData:  CredentialData(processedVC),
+		signature:    "", // Signature will be added by AddProof later
+		disclosures:  allDisclosures,
+	}
+
+	return newCred, nil
+}
+
 func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
@@ -333,4 +450,42 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	return nil
+}
+
+// extractExistingFieldNames extracts field names from existing disclosures
+func extractExistingFieldNames(disclosures []string) (map[string]bool, error) {
+	existingFields := make(map[string]bool)
+	for _, d := range disclosures {
+		if d == "" {
+			continue
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(d)
+		if err != nil {
+			continue
+		}
+		var arr []interface{}
+		if err := json.Unmarshal(decoded, &arr); err != nil {
+			continue
+		}
+		// Object field disclosure: [salt, fieldName, value]
+		// Array element disclosure: [salt, value]
+		if len(arr) >= 2 {
+			if fieldName, ok := arr[1].(string); ok {
+				existingFields[fieldName] = true
+			}
+		}
+	}
+	return existingFields, nil
+}
+
+// extractFieldName extracts the field name from a path like "credentialSubject.firstname" or "credentialSubject.emails[0]"
+func extractFieldName(path string) string {
+	// Get the last part of the path
+	parts := strings.Split(path, ".")
+	fieldName := parts[len(parts)-1]
+	// Remove array index if present
+	if idx := strings.Index(fieldName, "["); idx != -1 {
+		fieldName = fieldName[:idx]
+	}
+	return fieldName
 }

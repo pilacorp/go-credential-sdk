@@ -44,6 +44,11 @@ type Credential interface {
 
 	GetType() string
 
+	// AddSelectiveDisclosures adds selective disclosures to the credential.
+	// For JWT credentials: adds SD-JWT disclosures to the credential.
+	// For JSON credentials: returns an error (unsupported).
+	AddSelectiveDisclosures(selectivePaths []string) (Credential, error)
+
 	executeOptions(opts ...CredentialOpt) error
 }
 
@@ -84,6 +89,9 @@ type Schema struct {
 	Type string // Schema type
 }
 
+// Decoy specifies where and how many decoy digests to add for SD-JWT privacy.
+type Decoy = sdjwt.DecoyConfig
+
 // CredentialOpt configures credential processing options.
 type CredentialOpt func(*credentialOptions)
 
@@ -99,8 +107,7 @@ type credentialOptions struct {
 	sdSelectivePaths      []string
 	sdAlg                 string
 	sdShuffle             bool
-	sdDecoyPaths          []string
-	sdDecoyCounts         []int
+	sdDecoys              []sdjwt.DecoyConfig
 }
 
 // WithBaseURL sets the DID base URL for credential processing.
@@ -178,12 +185,11 @@ func WithSDShuffle(enabled bool) CredentialOpt {
 }
 
 // WithSDDecoyDigests adds decoy digests at specified parent paths to obscure the number of disclosed claims.
-// paths and counts must have the same length: counts[i] decoy digests are added at paths[i].
-// Example: WithSDDecoyDigests([]string{"", "credentialSubject"}, []int{2, 3})
-func WithSDDecoyDigests(paths []string, counts []int) CredentialOpt {
+// Each Decoy specifies the path where decoy digests should be added and the count of decoys.
+// Example: WithSDDecoyDigests([]vc.Decoy{{Path: "", Count: 2}, {Path: "credentialSubject", Count: 3}})
+func WithSDDecoyDigests(decoys []Decoy) CredentialOpt {
 	return func(c *credentialOptions) {
-		c.sdDecoyPaths = paths
-		c.sdDecoyCounts = counts
+		c.sdDecoys = decoys
 	}
 }
 
