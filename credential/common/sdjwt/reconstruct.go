@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 )
 
 // ValidationConfig holds configuration for SD-JWT validation.
@@ -108,11 +110,7 @@ func Reconstruct(vcMap map[string]interface{}, disclosures []string, config *Val
 		disclosureMap[h] = info
 	}
 
-	// Work on a shallow copy of root
-	rootCopy := make(map[string]interface{}, len(vcMap))
-	for k, v := range vcMap {
-		rootCopy[k] = v
-	}
+	rootCopy := util.DeepCopyMap(vcMap)
 
 	// Track which disclosures are used during reconstruction
 	usedDisclosures := make(map[string]bool)

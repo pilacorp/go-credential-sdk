@@ -9,8 +9,8 @@ type ParsedSDJWT struct {
 
 // pathSegment represents one step in a dot/[index] path.
 type pathSegment struct {
-	key   string
-	index *int
+	key   string // the key of the object field or the index of the array element
+	index *int   // the index of the array element if the path is an array element
 }
 
 // disclosureInfo holds parsed disclosure metadata used during reconstruction.
@@ -20,4 +20,13 @@ type disclosureInfo struct {
 	objectField string
 	value       interface{}
 	isArrayElem bool
+}
+
+// resolvedTarget holds the result of resolveDisclosureTarget.
+type resolvedTarget struct {
+	parent    interface{}
+	kind      string
+	fieldName string
+	index     int
+	value     interface{}
 }

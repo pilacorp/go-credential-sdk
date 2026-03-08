@@ -50,7 +50,7 @@ func TestCreatePresentation(t *testing.T) {
 	assert.Equal(t, "header.payload.sig~D1~D3~", subset)
 
 	none := BuildSDJWTPresentation(issuerJWT, nil)
-	assert.Equal(t, "header.payload.sig~", none)
+	assert.Equal(t, "header.payload.sig", none)
 
 	empty := BuildSDJWTPresentation(issuerJWT, []string{"", "D1", ""})
 	assert.Equal(t, "header.payload.sig~D1~", empty)
@@ -93,7 +93,7 @@ func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
 	assert.Equal(t, float64(30), processed["age"])
 
 	// SD-JWT metadata
-	assert.Equal(t, "sha-256", processed["_sd_alg"])
+	assert.Equal(t, AlgSHA256, processed["_sd_alg"])
 	rawSD, ok := processed["_sd"]
 	require.True(t, ok)
 
@@ -133,7 +133,7 @@ func TestBuildDisclosuresAndReconstruct_ArrayElementPath(t *testing.T) {
 	processed := result.ProcessedVC
 
 	// root still keeps sd algorithm metadata
-	assert.Equal(t, "sha-256", processed["_sd_alg"])
+	assert.Equal(t, AlgSHA256, processed["_sd_alg"])
 
 	// tags[1] has been replaced by placeholder { "...": h }
 	rawTags, ok := processed["tags"]
@@ -185,7 +185,7 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 	processed := result.ProcessedVC
 
 	// root only has _sd_alg, no _sd
-	assert.Equal(t, "sha-256", processed["_sd_alg"])
+	assert.Equal(t, AlgSHA256, processed["_sd_alg"])
 	_, hasRootSd := processed["_sd"]
 	assert.False(t, hasRootSd)
 
@@ -329,7 +329,7 @@ func TestReconstruct_ArrayPlaceholder(t *testing.T) {
 	require.NoError(t, err)
 	D := base64.RawURLEncoding.EncodeToString(b)
 
-	h, err := hashDisclosure("sha-256", D)
+	h, err := hashDisclosure(AlgSHA256, D)
 	require.NoError(t, err)
 
 	vc := map[string]interface{}{
@@ -390,9 +390,9 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	}
 
 	// Test with SHA-384 algorithm
-	result, err := BuildDisclosures(original, []string{"name", "age"}, "sha-384", false, nil, nil)
+	result, err := BuildDisclosures(original, []string{"name", "age"}, AlgSHA384, false, nil, nil)
 	require.NoError(t, err)
-	assert.Equal(t, "sha-384", result.ProcessedVC["_sd_alg"])
+	assert.Equal(t, AlgSHA384, result.ProcessedVC["_sd_alg"])
 
 	// Verify reconstruction works with sha-384
 	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, nil)

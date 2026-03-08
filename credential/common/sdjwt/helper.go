@@ -142,14 +142,18 @@ func decodeDisclosures(disclosures []string) ([]DecodedDisclosure, error) {
 func BuildSDJWTPresentation(issuerSignedJWT string, selectedDisclosures []string) string {
 	var sb strings.Builder
 	sb.WriteString(issuerSignedJWT)
+	hasDisclosure := false
 	for _, d := range selectedDisclosures {
 		if d == "" {
 			continue
 		}
 		sb.WriteString("~")
 		sb.WriteString(d)
+		hasDisclosure = true
 	}
-	sb.WriteString("~")
+	if hasDisclosure {
+		sb.WriteString("~")
+	}
 	return sb.String()
 }
 
@@ -164,14 +168,14 @@ func isJWT(s string) bool {
 
 // hashDisclosure computes digest_b64u(sdAlg, D) where D is a base64url disclosure string.
 func hashDisclosure(sdAlg, disclosure string) (string, error) {
-	switch strings.ToLower(sdAlg) {
-	case "sha-256", "sha256":
+	switch sdAlg {
+	case AlgSHA256:
 		sum := sha256.Sum256([]byte(disclosure))
 		return base64.RawURLEncoding.EncodeToString(sum[:]), nil
-	case "sha-384", "sha384":
+	case AlgSHA384:
 		sum := sha512.Sum384([]byte(disclosure))
 		return base64.RawURLEncoding.EncodeToString(sum[:]), nil
-	case "sha-512", "sha512":
+	case AlgSHA512:
 		sum := sha512.Sum512([]byte(disclosure))
 		return base64.RawURLEncoding.EncodeToString(sum[:]), nil
 	default:

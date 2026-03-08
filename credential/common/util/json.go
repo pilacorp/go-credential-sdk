@@ -116,6 +116,31 @@ func ShallowCopyObj(json map[string]interface{}) map[string]interface{} {
 	return flds
 }
 
+// DeepCopyMap recursively deep-copies a map[string]interface{}, preserving
+// the concrete type of every value (int stays int, float64 stays float64, etc.).
+func DeepCopyMap(src map[string]interface{}) map[string]interface{} {
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = deepCopyValue(v)
+	}
+	return dst
+}
+
+func deepCopyValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		return DeepCopyMap(val)
+	case []interface{}:
+		s := make([]interface{}, len(val))
+		for i, elem := range val {
+			s[i] = deepCopyValue(elem)
+		}
+		return s
+	default:
+		return val
+	}
+}
+
 // CopyExcept copies all fields except fields with given names.
 func CopyExcept(json map[string]interface{}, flds ...string) map[string]interface{} {
 	newJSON := ShallowCopyObj(json)

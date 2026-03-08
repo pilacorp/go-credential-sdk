@@ -1579,5 +1579,5 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	assert.False(t, hasEmail, "Holder chose not to disclose email; verifier should not see it")
 
 	emptyPres := sdjwt.BuildSDJWTPresentation(issuerJWT, nil)
-	assert.True(t, strings.HasSuffix(emptyPres, "~"), "presentation with no disclosures still ends with ~")
+	assert.Equal(t, issuerJWT, emptyPres, "presentation with no disclosures returns bare JWT")
 }

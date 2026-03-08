@@ -8,24 +8,33 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/util"
+)
+
+const (
+	AlgSHA256 = "sha-256"
+	AlgSHA384 = "sha-384"
+	AlgSHA512 = "sha-512"
+
+	DefaultHashAlgorithm = AlgSHA256
+
+	kindObjectField = "objectField"
+	kindArrayElem   = "arrayElem"
 )
 
 // SupportedHashAlgorithms defines the allowed hash algorithms for SD-JWT.
 var SupportedHashAlgorithms = map[string]bool{
-	"sha-256": true,
-	"sha-384": true,
-	"sha-512": true,
+	AlgSHA256: true,
+	AlgSHA384: true,
+	AlgSHA512: true,
 }
-
-// DefaultHashAlgorithm is the default hash algorithm used when not specified.
-const DefaultHashAlgorithm = "sha-256"
 
 // SDJWTResult contains the result of BuildDisclosures.
 // Holder-facing metadata is available via Parse() -> ParsedSDJWT.DecodedDisclosures.
 type SDJWTResult struct {
 	ProcessedVC map[string]interface{} // VC with fields replaced by digests
 	Disclosures []string               // Disclosure strings (base64url)
-	SDAlg       string                 // Hash algorithm used
 }
 
 // BuildDisclosures is used at issuing time to construct SD-JWT structures.
@@ -52,20 +61,11 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 		return nil, fmt.Errorf("unsupported hash algorithm %q", sdAlg)
 	}
 
-	// Deep copy to avoid mutating caller's data.
-	raw, err := json.Marshal(vcMap)
-	if err != nil {
-		return nil, fmt.Errorf("failed to deep copy vcMap: %w", err)
-	}
-	var processedVC map[string]interface{}
-	if err := json.Unmarshal(raw, &processedVC); err != nil {
-		return nil, fmt.Errorf("failed to deep copy vcMap: %w", err)
-	}
+	processedVC := util.DeepCopyMap(vcMap)
 
 	if len(selectivePaths) == 0 {
 		return &SDJWTResult{
 			ProcessedVC: processedVC,
-			SDAlg:       sdAlg,
 		}, nil
 	}
 
@@ -79,28 +79,27 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 			return nil, fmt.Errorf("empty path")
 		}
 
-		target, kind, fieldName, index, value, err := resolveDisclosureTarget(processedVC, path)
+		resolved, err := resolveDisclosureTarget(processedVC, path)
 		if err != nil {
 			return nil, fmt.Errorf("resolve path %q: %w", path, err)
 		}
-		if target == nil {
+		if resolved == nil {
 			return nil, fmt.Errorf("path %q not found", path)
 		}
 
-		// Create disclosure array
 		salt, err := randomSalt()
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate salt for path %q: %w", path, err)
 		}
 
 		var disclosureArr []interface{}
-		switch kind {
-		case "objectField":
-			disclosureArr = []interface{}{salt, fieldName, value}
-		case "arrayElem":
-			disclosureArr = []interface{}{salt, value}
+		switch resolved.kind {
+		case kindObjectField:
+			disclosureArr = []interface{}{salt, resolved.fieldName, resolved.value}
+		case kindArrayElem:
+			disclosureArr = []interface{}{salt, resolved.value}
 		default:
-			return nil, fmt.Errorf("unexpected kind %q at path %q", kind, path)
+			return nil, fmt.Errorf("unexpected kind %q at path %q", resolved.kind, path)
 		}
 
 		disclosureJSON, err := json.Marshal(disclosureArr)
@@ -108,49 +107,23 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 			return nil, fmt.Errorf("failed to marshal disclosure for path %q: %w", path, err)
 		}
 
-		D := base64.RawURLEncoding.EncodeToString(disclosureJSON)
+		encodedDisclosure := base64.RawURLEncoding.EncodeToString(disclosureJSON)
 
-		// Compute digest
-		h, err := hashDisclosure(sdAlg, D)
+		h, err := hashDisclosure(sdAlg, encodedDisclosure)
 		if err != nil {
 			return nil, fmt.Errorf("failed to hash disclosure for path %q: %w", path, err)
 		}
 
-		disclosures = append(disclosures, D)
+		disclosures = append(disclosures, encodedDisclosure)
 
-		// Attach digest to parent
-		switch kind {
-		case "objectField":
-			m, ok := target.(map[string]interface{})
-			if !ok {
-				return nil, fmt.Errorf("expected map for objectField at path %q", path)
-			}
-			switch existing := m["_sd"].(type) {
-			case nil:
-				m["_sd"] = []interface{}{h}
-			case []interface{}:
-				m["_sd"] = append(existing, h)
-			case []string:
-				var arr []interface{}
-				for _, s := range existing {
-					arr = append(arr, s)
-				}
-				arr = append(arr, h)
-				m["_sd"] = arr
-			default:
-				return nil, fmt.Errorf("unexpected _sd type %T at path %q", existing, path)
-			}
-			delete(m, fieldName)
-
-		case "arrayElem":
-			arr, ok := target.([]interface{})
-			if !ok {
-				return nil, fmt.Errorf("expected slice for arrayElem at path %q", path)
-			}
-			if index < 0 || index >= len(arr) {
-				return nil, fmt.Errorf("index out of range for path %q", path)
-			}
-			arr[index] = map[string]interface{}{"...": h}
+		switch resolved.kind {
+		case kindObjectField:
+			m := resolved.parent.(map[string]interface{})
+			appendSD(m, h)
+			delete(m, resolved.fieldName)
+		case kindArrayElem:
+			arr := resolved.parent.([]interface{})
+			arr[resolved.index] = map[string]interface{}{"...": h}
 		}
 	}
 
@@ -177,22 +150,32 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 			if target == nil {
 				continue
 			}
-			sd, ok := target["_sd"].([]interface{})
-			if !ok {
-				sd = []interface{}{}
-			}
 			for _, h := range hashes {
-				sd = append(sd, h)
+				appendSD(target, h)
 			}
-			target["_sd"] = sd
 		}
 	}
 
 	return &SDJWTResult{
 		ProcessedVC: processedVC,
 		Disclosures: disclosures,
-		SDAlg:       sdAlg,
 	}, nil
+}
+
+// appendSD appends a digest to the _sd array of an object node.
+func appendSD(m map[string]interface{}, digest string) {
+	switch existing := m["_sd"].(type) {
+	case nil:
+		m["_sd"] = []interface{}{digest}
+	case []interface{}:
+		m["_sd"] = append(existing, digest)
+	case []string:
+		arr := make([]interface{}, len(existing), len(existing)+1)
+		for i, s := range existing {
+			arr[i] = s
+		}
+		m["_sd"] = append(arr, digest)
+	}
 }
 
 // shuffleSDArrays recursively shuffles all _sd arrays in the VC map.
@@ -265,13 +248,15 @@ func resolveObjectByPath(root map[string]interface{}, path string) map[string]in
 }
 
 // resolveDisclosureTarget walks the processedVC according to the given path
-func resolveDisclosureTarget(root map[string]interface{}, path string) (parent interface{}, kind string, fieldName string, index int, value interface{}, err error) {
+// and returns the parent container, the kind of target, and its metadata.
+// Returns (nil, nil) when the path does not exist in root.
+func resolveDisclosureTarget(root map[string]interface{}, path string) (*resolvedTarget, error) {
 	segs, err := parsePath(path)
 	if err != nil {
-		return nil, "", "", 0, nil, err
+		return nil, err
 	}
 	if len(segs) == 0 {
-		return nil, "", "", 0, nil, nil
+		return nil, nil
 	}
 
 	var current interface{} = root
@@ -282,67 +267,64 @@ func resolveDisclosureTarget(root map[string]interface{}, path string) (parent i
 		if seg.index == nil {
 			m, ok := current.(map[string]interface{})
 			if !ok {
-				return nil, "", "", 0, nil, fmt.Errorf("segment %q expects object but got %T", seg.key, current)
+				return nil, fmt.Errorf("segment %q expects object but got %T", seg.key, current)
+			}
+			val, ok := m[seg.key]
+			if !ok {
+				return nil, nil
 			}
 			if last {
-				val, ok := m[seg.key]
-				if !ok {
-					return nil, "", "", 0, nil, nil
-				}
-				return m, "objectField", seg.key, 0, val, nil
+				return &resolvedTarget{parent: m, kind: kindObjectField, fieldName: seg.key, value: val}, nil
 			}
-
-			next, ok := m[seg.key]
-			if !ok {
-				return nil, "", "", 0, nil, nil
-			}
-			current = next
+			current = val
 			continue
+		}
+
+		arr, err := resolveArray(current, seg)
+		if err != nil {
+			return nil, err
+		}
+		if arr == nil {
+			return nil, nil
 		}
 
 		idx := *seg.index
-
-		if seg.key != "" {
-			m, ok := current.(map[string]interface{})
-			if !ok {
-				return nil, "", "", 0, nil, fmt.Errorf("segment %q expects object but got %T", seg.key, current)
-			}
-			rawArr, ok := m[seg.key]
-			if !ok {
-				return nil, "", "", 0, nil, nil
-			}
-			arr, ok := rawArr.([]interface{})
-			if !ok {
-				return nil, "", "", 0, nil, fmt.Errorf("segment %q expects array but got %T", seg.key, rawArr)
-			}
-			if idx < 0 || idx >= len(arr) {
-				return nil, "", "", 0, nil, nil
-			}
-
-			if last {
-				return arr, "arrayElem", "", idx, arr[idx], nil
-			}
-
-			current = arr[idx]
-			continue
-		}
-
-		arr, ok := current.([]interface{})
-		if !ok {
-			return nil, "", "", 0, nil, fmt.Errorf("segment [%d] expects array but got %T", idx, current)
-		}
 		if idx < 0 || idx >= len(arr) {
-			return nil, "", "", 0, nil, nil
+			return nil, fmt.Errorf("index %d out of range (len %d) for path %q", idx, len(arr), path)
 		}
-
 		if last {
-			return arr, "arrayElem", "", idx, arr[idx], nil
+			return &resolvedTarget{parent: arr, kind: kindArrayElem, index: idx, value: arr[idx]}, nil
 		}
-
 		current = arr[idx]
 	}
 
-	return nil, "", "", 0, nil, nil
+	return nil, nil
+}
+
+// resolveArray extracts []interface{} from the current node for an indexed segment.
+// If seg.key is set, it dereferences that key from the current object first.
+func resolveArray(current interface{}, seg pathSegment) ([]interface{}, error) {
+	if seg.key != "" {
+		m, ok := current.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("segment %q expects object but got %T", seg.key, current)
+		}
+		raw, ok := m[seg.key]
+		if !ok {
+			return nil, nil
+		}
+		arr, ok := raw.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("segment %q expects array but got %T", seg.key, raw)
+		}
+		return arr, nil
+	}
+
+	arr, ok := current.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("segment [%d] expects array but got %T", *seg.index, current)
+	}
+	return arr, nil
 }
 
 // parsePath parses a dot + [index] notation path into segments.
@@ -367,7 +349,7 @@ func parsePath(path string) ([]pathSegment, error) {
 
 		key := p[:bracketIdx]
 		rest := p[bracketIdx:]
-		if !strings.HasPrefix(rest, "[") || !strings.HasSuffix(rest, "]") {
+		if !strings.HasSuffix(rest, "]") {
 			return nil, fmt.Errorf("invalid array segment %q in path %q", p, path)
 		}
 
