@@ -45,7 +45,7 @@ func Reconstruct(vcMap map[string]interface{}, disclosures []string, config *Val
 	}
 
 	// Validate hash algorithm is supported
-	if !SupportedHashAlgorithms[sdAlg] {
+	if !supportedHashAlgorithms[sdAlg] {
 		return nil, fmt.Errorf("unsupported _sd_alg: %q", sdAlg)
 	}
 

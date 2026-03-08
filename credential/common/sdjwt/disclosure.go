@@ -23,8 +23,8 @@ const (
 	kindArrayElem   = "arrayElem"
 )
 
-// SupportedHashAlgorithms defines the allowed hash algorithms for SD-JWT.
-var SupportedHashAlgorithms = map[string]bool{
+// supportedHashAlgorithms defines the allowed hash algorithms for SD-JWT.
+var supportedHashAlgorithms = map[string]bool{
 	AlgSHA256: true,
 	AlgSHA384: true,
 	AlgSHA512: true,
@@ -57,7 +57,7 @@ func BuildDisclosures(vcMap map[string]interface{}, selectivePaths []string, sdA
 	if sdAlg == "" {
 		sdAlg = DefaultHashAlgorithm
 	}
-	if !SupportedHashAlgorithms[sdAlg] {
+	if !supportedHashAlgorithms[sdAlg] {
 		return nil, fmt.Errorf("unsupported hash algorithm %q", sdAlg)
 	}
 
