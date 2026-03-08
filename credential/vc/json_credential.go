@@ -56,7 +56,11 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 		return err
 	}
 
-	verificationMethod := fmt.Sprintf("%s#%s", e.credentialData["issuer"].(string), e.verificationMethod)
+	issuer, ok := e.credentialData["issuer"].(string)
+	if !ok || issuer == "" {
+		return fmt.Errorf("issuer is missing or invalid")
+	}
+	verificationMethod := fmt.Sprintf("%s#%s", issuer, e.verificationMethod)
 
 	options := getOptions(opts...)
 

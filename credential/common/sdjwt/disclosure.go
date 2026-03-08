@@ -224,8 +224,9 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 				continue
 			}
 			// Replace array element with decoy hash wrapped in "..." structure
-			for _, h := range hashes {
-				arr[idx] = map[string]interface{}{"...": h}
+			// Only use the first hash - the loop was incorrectly overwriting the same position
+			if len(hashes) > 0 {
+				arr[idx] = map[string]interface{}{"...": hashes[0]}
 			}
 		}
 	}

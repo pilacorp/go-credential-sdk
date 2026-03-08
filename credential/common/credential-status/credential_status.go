@@ -83,6 +83,12 @@ func IsRevoked(position int, subject StatusListCredentialSubject) (bool, error) 
 		return false, err
 	}
 
+	// Check bounds to prevent out-of-bounds access
+	maxPosition := len(byteString)*8 - 1
+	if position < 0 || position > maxPosition {
+		return false, fmt.Errorf("position %d is out of range for bitstring of length %d (max position: %d)", position, len(byteString), maxPosition)
+	}
+
 	byteIndex := position / 8
 	bitIndex := position % 8
 	isRevoked := (byteString[byteIndex]>>bitIndex)&1 == 1

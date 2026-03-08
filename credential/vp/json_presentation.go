@@ -52,7 +52,11 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 		return err
 	}
 
-	verificationMethod := fmt.Sprintf("%s#%s", e.presentationData["holder"].(string), e.verificationMethod)
+	holder, ok := e.presentationData["holder"].(string)
+	if !ok || holder == "" {
+		return fmt.Errorf("holder is missing or invalid")
+	}
+	verificationMethod := fmt.Sprintf("%s#%s", holder, e.verificationMethod)
 
 	options := getOptions(opts...)
 

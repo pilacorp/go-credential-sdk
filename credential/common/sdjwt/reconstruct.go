@@ -12,8 +12,6 @@ import (
 type ValidationConfig struct {
 	// RequireHashAlgorithmMatch if true, validates that _sd_alg matches the hash used
 	RequireHashAlgorithmMatch bool
-	// RejectDecoyDigests if true, rejects decoy digests (those starting with "_")
-	RejectDecoyDigests bool
 	// AllowUnreferencedDisclosures if false, rejects disclosures not referenced by any digest
 	AllowUnreferencedDisclosures bool
 }
@@ -22,7 +20,6 @@ type ValidationConfig struct {
 func DefaultValidationConfig() *ValidationConfig {
 	return &ValidationConfig{
 		RequireHashAlgorithmMatch:    true,
-		RejectDecoyDigests:           false,
 		AllowUnreferencedDisclosures: false,
 	}
 }
@@ -55,12 +52,12 @@ func Reconstruct(vcMap map[string]interface{}, disclosures []string, config *Val
 	// First pass: parse all disclosures and check for duplicate digests
 	seenDigests := make(map[string]bool)
 
-	for _, D := range disclosures {
-		if D == "" {
+	for _, disc := range disclosures {
+		if disc == "" {
 			continue
 		}
 
-		h, err := hashDisclosure(sdAlg, D)
+		h, err := hashDisclosure(sdAlg, disc)
 		if err != nil {
 			return nil, fmt.Errorf("failed to hash disclosure: %w", err)
 		}
@@ -71,9 +68,9 @@ func Reconstruct(vcMap map[string]interface{}, disclosures []string, config *Val
 		}
 		seenDigests[h] = true
 
-		decoded, err := base64.RawURLEncoding.DecodeString(D)
+		decoded, err := base64.RawURLEncoding.DecodeString(disc)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decode disclosure %q: %w", D, err)
+			return nil, fmt.Errorf("failed to decode disclosure %q: %w", disc, err)
 		}
 
 		var arr []interface{}
@@ -87,7 +84,7 @@ func Reconstruct(vcMap map[string]interface{}, disclosures []string, config *Val
 		}
 
 		info := disclosureInfo{
-			raw:   D,
+			raw:   disc,
 			array: arr,
 		}
 
@@ -132,16 +129,49 @@ func Reconstruct(vcMap map[string]interface{}, disclosures []string, config *Val
 	if !config.AllowUnreferencedDisclosures {
 		for h, info := range disclosureMap {
 			if !usedDisclosures[h] {
-				// Check if this is a decoy digest
-				if config.RejectDecoyDigests && info.objectField == "_decoy" {
-					continue // Allow decoys if configured
-				}
 				return nil, fmt.Errorf("unreferenced disclosure found: field %q", info.objectField)
 			}
 		}
 	}
 
 	return result, nil
+}
+
+
+// applySDHashes processes a slice of hash strings, applying their disclosures to the object.
+func applySDHashes(hashes []string, v map[string]interface{}, disclosureMap map[string]disclosureInfo, usedDisclosures map[string]bool, objectDigests map[string]bool, config *ValidationConfig) error {
+	for _, h := range hashes {
+		// Check for duplicate digest within this object
+		if objectDigests[h] {
+			return fmt.Errorf("duplicate digest %q found in _sd array", h)
+		}
+		objectDigests[h] = true
+
+		info, ok := disclosureMap[h]
+		if !ok {
+			// No disclosure for this digest - it's either unrevealed or a decoy
+			continue
+		}
+
+		// Validate disclosure type matches context
+		if info.isArrayElem || info.objectField == "" {
+			return fmt.Errorf("array element disclosure used in object context")
+		}
+
+		if _, exists := v[info.objectField]; exists {
+			return fmt.Errorf("duplicate field %q when reconstructing SD-JWT object", info.objectField)
+		}
+
+		// Track usage
+		usedDisclosures[h] = true
+
+		processedVal, err := processNode(info.value, disclosureMap, usedDisclosures, config)
+		if err != nil {
+			return err
+		}
+		v[info.objectField] = processedVal
+	}
+	return nil
 }
 
 // processNode recursively processes objects/arrays, applying disclosures.
@@ -155,71 +185,16 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 
 			switch sdList := rawSd.(type) {
 			case []interface{}:
+				// Convert to []string for uniform processing
+				hashes := make([]string, 0, len(sdList))
 				for _, item := range sdList {
-					h, ok := item.(string)
-					if !ok {
-						continue
+					if h, ok := item.(string); ok {
+						hashes = append(hashes, h)
 					}
-
-					// Check for duplicate digest within this object
-					if objectDigests[h] {
-						return nil, fmt.Errorf("duplicate digest %q found in _sd array", h)
-					}
-					objectDigests[h] = true
-
-					info, ok := disclosureMap[h]
-					if !ok {
-						// No disclosure for this digest - it's either unrevealed or a decoy
-						continue
-					}
-
-					// Validate disclosure type matches context
-					if info.isArrayElem || info.objectField == "" {
-						return nil, fmt.Errorf("array element disclosure used in object context")
-					}
-
-					if _, exists := v[info.objectField]; exists {
-						return nil, fmt.Errorf("duplicate field %q when reconstructing SD-JWT object", info.objectField)
-					}
-
-					// Track usage
-					usedDisclosures[h] = true
-
-					processedVal, err := processNode(info.value, disclosureMap, usedDisclosures, config)
-					if err != nil {
-						return nil, err
-					}
-					v[info.objectField] = processedVal
 				}
+				applySDHashes(hashes, v, disclosureMap, usedDisclosures, objectDigests, config)
 			case []string:
-				for _, h := range sdList {
-					// Check for duplicate digest within this object
-					if objectDigests[h] {
-						return nil, fmt.Errorf("duplicate digest %q found in _sd array", h)
-					}
-					objectDigests[h] = true
-
-					info, ok := disclosureMap[h]
-					if !ok {
-						continue
-					}
-
-					if info.isArrayElem || info.objectField == "" {
-						return nil, fmt.Errorf("array element disclosure used in object context")
-					}
-
-					if _, exists := v[info.objectField]; exists {
-						return nil, fmt.Errorf("duplicate field %q when reconstructing SD-JWT object", info.objectField)
-					}
-
-					usedDisclosures[h] = true
-
-					processedVal, err := processNode(info.value, disclosureMap, usedDisclosures, config)
-					if err != nil {
-						return nil, err
-					}
-					v[info.objectField] = processedVal
-				}
+				applySDHashes(sdList, v, disclosureMap, usedDisclosures, objectDigests, config)
 			}
 			// Remove _sd after expansion
 			delete(v, "_sd")

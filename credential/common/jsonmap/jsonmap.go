@@ -240,7 +240,7 @@ func (m *JSONMap) verifyEcdsaProofLegacy() (bool, error) {
 		return false, fmt.Errorf("proof value is missing or invalid in the request")
 	}
 	publicKeyHex, ok := (*m)["proof"].(map[string]interface{})["verificationMethod"].(string)
-	if !ok || proofValue == "" {
+	if !ok || publicKeyHex == "" {
 		return false, fmt.Errorf("proof verificationMethod is missing or invalid in the request")
 	}
 

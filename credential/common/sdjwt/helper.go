@@ -82,14 +82,14 @@ func Parse(raw string) (*ParsedSDJWT, error) {
 func decodeDisclosures(disclosures []string) ([]DecodedDisclosure, error) {
 	result := make([]DecodedDisclosure, 0, len(disclosures))
 
-	for _, D := range disclosures {
-		if D == "" {
+	for _, disc := range disclosures {
+		if disc == "" {
 			continue
 		}
 
-		decoded, err := base64.RawURLEncoding.DecodeString(D)
+		decoded, err := base64.RawURLEncoding.DecodeString(disc)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decode disclosure %q: %w", D, err)
+			return nil, fmt.Errorf("failed to decode disclosure %q: %w", disc, err)
 		}
 
 		var arr []interface{}
@@ -102,7 +102,7 @@ func decodeDisclosures(disclosures []string) ([]DecodedDisclosure, error) {
 		}
 
 		dec := DecodedDisclosure{
-			Disclosure: D,
+			Disclosure: disc,
 		}
 
 		switch len(arr) {
@@ -143,12 +143,12 @@ func BuildSDJWTPresentation(issuerSignedJWT string, selectedDisclosures []string
 	var sb strings.Builder
 	sb.WriteString(issuerSignedJWT)
 	hasDisclosure := false
-	for _, d := range selectedDisclosures {
-		if d == "" {
+	for _, sel := range selectedDisclosures {
+		if sel == "" {
 			continue
 		}
 		sb.WriteString("~")
-		sb.WriteString(d)
+		sb.WriteString(sel)
 		hasDisclosure = true
 	}
 	if hasDisclosure {
