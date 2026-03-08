@@ -1737,3 +1737,33 @@ func TestAddSelectiveDisclosures_PlainJWT(t *testing.T) {
 	assert.True(t, ok)
 	assert.True(t, sdjwt.IsSDJWT(str), "expected SD-JWT format after adding disclosures")
 }
+
+// TestWithSDDecoyDigests_Array tests decoy digests for array elements
+func TestWithSDDecoyDigests_Array(t *testing.T) {
+	vcc := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:      "urn:uuid:decoy-test-array",
+		Issuer:  "did:example:issuer",
+		Types:   []string{"VerifiableCredential"},
+		Subject: []Subject{
+			{
+				ID: "did:example:subject1",
+				CustomFields: map[string]interface{}{
+					"emails": []interface{}{"alice@example.com", "alice@work.com"},
+				},
+			},
+		},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	// Issue SD-JWT with selective disclosure on first email and decoy on second
+	cred, err := NewJWTCredential(vcc,
+		WithSDSelectivePaths([]string{"credentialSubject.emails[0]"}),
+		WithSDDecoyDigests([]Decoy{
+			{Path: "credentialSubject.emails[1]", Count: 1},
+		}),
+	)
+	assert.NoError(t, err)
+	assert.NotNil(t, cred)
+}

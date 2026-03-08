@@ -165,20 +165,49 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate decoy hashes for path %q: %w", decoy.Path, err)
 		}
-		// Use resolvePath - for decoys we only need the parent map
+		// Use resolvePath - for decoys we need the parent (map for object, array for array)
 		resolved, err := resolvePath(processedVC, decoy.Path)
 		if err != nil {
 			return nil, fmt.Errorf("resolve decoy path %q: %w", decoy.Path, err)
 		}
-		if resolved == nil || resolved.kind != kindObjectField {
-			continue // Decoys only support object fields
-		}
-		target, ok := resolved.parent.(map[string]interface{})
-		if !ok {
+		if resolved == nil {
 			continue
 		}
-		for _, h := range hashes {
-			appendSD(target, h)
+		// Handle object field decoys
+		if resolved.kind == kindObjectField {
+			// If value exists (path like "credentialSubject"), add to the value object
+			// If value is nil (empty path ""), add to parent (root)
+			var target map[string]interface{}
+			var ok bool
+			if resolved.value != nil {
+				target, ok = resolved.value.(map[string]interface{})
+				if !ok {
+					continue
+				}
+			} else {
+				target, ok = resolved.parent.(map[string]interface{})
+				if !ok {
+					continue
+				}
+			}
+			for _, h := range hashes {
+				appendSD(target, h)
+			}
+		}
+		// Handle array element decoys
+		if resolved.kind == kindArrayElem {
+			arr, ok := resolved.parent.([]interface{})
+			if !ok {
+				continue
+			}
+			idx := resolved.index
+			if idx < 0 || idx >= len(arr) {
+				continue
+			}
+			// Replace array element with decoy hash wrapped in "..." structure
+			for _, h := range hashes {
+				arr[idx] = map[string]interface{}{"...": h}
+			}
 		}
 	}
 
@@ -333,9 +362,6 @@ func resolveArray(current interface{}, seg pathSegment) ([]interface{}, error) {
 
 // parsePath parses a dot + [index] notation path into segments.
 func parsePath(path string) ([]pathSegment, error) {
-	if path == "" {
-		return nil, nil
-	}
 	parts := strings.Split(path, ".")
 	segs := make([]pathSegment, 0, len(parts))
 
