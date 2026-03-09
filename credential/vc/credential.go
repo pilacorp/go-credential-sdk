@@ -49,6 +49,11 @@ type Credential interface {
 	// For JSON credentials: returns an error (unsupported).
 	AddSelectiveDisclosures(selectivePaths []string) (Credential, error)
 
+	// ExtractField extracts a field value from the credential by dot-notation path.
+	// Returns nil if the field does not exist.
+	// Example paths: "name", "credentialSubject.name", "credentialSubject.address.city"
+	ExtractField(path string) interface{}
+
 	executeOptions(opts ...CredentialOpt) error
 }
 
@@ -57,15 +62,15 @@ type CredentialData jsonmap.JSONMap
 
 // CredentialContents represents the structured contents of a Credential.
 type CredentialContents struct {
-	Context          []interface{} // JSON-LD contexts
-	ID               string        // Credential identifier
-	Types            []string      // Credential types
-	Issuer           string        // Issuer identifier
-	ValidFrom        time.Time     // Issuance date
-	ValidUntil       time.Time     // Expiration date
-	CredentialStatus []Status      // Credential status entries
-	Subject          []Subject     // Credential subjects
-	Schemas          []Schema      // Credential schemas
+	Context          []interface{} `json:"context,omitempty"`          // JSON-LD contexts
+	ID               string        `json:"id,omitempty"`               // Credential identifier
+	Types            []string      `json:"type,omitempty"`             // Credential types
+	Issuer           string        `json:"issuer,omitempty"`           // Issuer identifier
+	ValidFrom        time.Time     `json:"validFrom,omitempty"`        // Issuance date
+	ValidUntil       time.Time     `json:"validUntil,omitempty"`       // Expiration date
+	CredentialStatus []Status      `json:"credentialStatus,omitempty"` // Credential status entries
+	Subject          []Subject     `json:"subject,omitempty"`          // Credential subjects
+	Schemas          []Schema      `json:"schemas,omitempty"`          // Credential schemas
 }
 
 // Status represents the credentialStatus field as per W3C Verifiable Credentials.
@@ -79,14 +84,14 @@ type Status struct {
 
 // Subject represents the credentialSubject field.
 type Subject struct {
-	ID           string                 // Subject identifier
-	CustomFields map[string]interface{} // Additional subject data
+	ID           string                 `json:"id,omitempty"`           // Subject identifier
+	CustomFields map[string]interface{} `json:"customFields,omitempty"` // Additional subject data
 }
 
 // Schema represents a credential schema with an ID and type.
 type Schema struct {
-	ID   string // Schema identifier
-	Type string // Schema type
+	ID   string `json:"id,omitempty"`   // Schema identifier
+	Type string `json:"type,omitempty"` // Schema type
 }
 
 // Decoy specifies where and how many decoy digests to add for SD-JWT privacy.

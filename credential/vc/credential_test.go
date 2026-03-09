@@ -1668,7 +1668,7 @@ func TestAddSelectiveDisclosures(t *testing.T) {
 			return vcData
 		}(),
 		parsedFinal.Disclosures,
-		nil,
+		true,
 	)
 	assert.NoError(t, err)
 	assert.Equal(t, "Alice", reconstructed["credentialSubject"].(map[string]interface{})["firstname"])
@@ -1766,4 +1766,114 @@ func TestWithSDDecoyDigests_Array(t *testing.T) {
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
+}
+
+// TestExtractField tests the ExtractField method for both JWT and JSON credentials
+func TestExtractField(t *testing.T) {
+	// Test with JSONCredential
+	jsonCred := `{
+		"@context": ["https://www.w3.org/2018/credentials/v1"],
+		"id": "urn:uuid:extract-test",
+		"type": ["VerifiableCredential"],
+		"issuer": "did:example:issuer",
+		"credentialSubject": {
+			"id": "did:example:subject",
+			"name": "John Doe",
+			"age": 30,
+			"address": {
+				"city": "Hanoi",
+				"country": "Vietnam"
+			},
+			"emails": ["john@example.com", "john@work.com"]
+		}
+	}`
+
+	cred, err := ParseCredential([]byte(jsonCred))
+	assert.NoError(t, err)
+
+	// Test extracting top-level field
+	name := cred.ExtractField("credentialSubject.name")
+	assert.Equal(t, "John Doe", name)
+
+	// Test extracting nested field
+	city := cred.ExtractField("credentialSubject.address.city")
+	assert.Equal(t, "Hanoi", city)
+
+	// Test extracting array element (not supported, should return nil for now)
+	email := cred.ExtractField("credentialSubject.emails[0]")
+	assert.Nil(t, email) // Current implementation doesn't support array index
+
+	// Test extracting non-existent field
+	notExist := cred.ExtractField("credentialSubject.nonexistent")
+	assert.Nil(t, notExist)
+
+	// Test with nested path that doesn't exist
+	notExistNested := cred.ExtractField("credentialSubject.address.zipcode")
+	assert.Nil(t, notExistNested)
+
+	// Test with JWT credential
+	vcc := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:      "urn:uuid:jwt-extract-test",
+		Issuer:  "did:example:issuer",
+		Types:   []string{"VerifiableCredential"},
+		Subject: []Subject{
+			{
+				ID: "did:example:subject1",
+				CustomFields: map[string]interface{}{
+					"name":    "Alice",
+					"age":     float64(25),
+					"address": map[string]interface{}{"city": "HoChiMinh"},
+				},
+			},
+		},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	jwtCred, err := NewJWTCredential(vcc)
+	assert.NoError(t, err)
+
+	// Test extracting from JWT credential
+	jwtName := jwtCred.ExtractField("credentialSubject.name")
+	assert.Equal(t, "Alice", jwtName)
+
+	jwtCity := jwtCred.ExtractField("credentialSubject.address.city")
+	assert.Equal(t, "HoChiMinh", jwtCity)
+
+	// Test non-existent field on JWT credential
+	jwtNotExist := jwtCred.ExtractField("credentialSubject.email")
+	assert.Nil(t, jwtNotExist)
+}
+
+// TestExtractField_EdgeCases tests edge cases for ExtractField
+func TestExtractField_EdgeCases(t *testing.T) {
+	jsonCred := `{
+		"@context": ["https://www.w3.org/2018/credentials/v1"],
+		"id": "urn:uuid:edge-test",
+		"type": ["VerifiableCredential"],
+		"issuer": "did:example:issuer",
+		"credentialSubject": {
+			"id": "did:example:subject"
+		}
+	}`
+
+	cred, err := ParseCredential([]byte(jsonCred))
+	assert.NoError(t, err)
+
+	// Test empty path
+	emptyPath := cred.ExtractField("")
+	assert.Nil(t, emptyPath)
+
+	// Test single-level path on root
+	id := cred.ExtractField("id")
+	assert.Equal(t, "urn:uuid:edge-test", id)
+
+	// Test with empty credential
+	emptyJsonCred := `{}`
+	emptyCred, err := ParseCredential([]byte(emptyJsonCred))
+	assert.NoError(t, err)
+
+	emptyResult := emptyCred.ExtractField("any.path")
+	assert.Nil(t, emptyResult)
 }

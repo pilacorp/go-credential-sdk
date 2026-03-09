@@ -19,9 +19,7 @@ const (
 
 	DefaultHashAlgorithm = AlgSHA256
 
-	kindObjectField    = "objectField"
-	kindArrayElem      = "arrayElem"
-	kindArrayContainer = "arrayContainer"
+
 )
 
 // supportedHashAlgorithms defines the allowed hash algorithms for SD-JWT.
@@ -64,174 +62,28 @@ type SDJWTResult struct {
 //   - "tags[0]"
 //   - "person.children[0].name"
 func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
-	// Apply defaults
-	sdAlg := DefaultHashAlgorithm
-	shuffle := input.Shuffle
-	decoys := input.Decoys
-
-	if input.HashAlgorithm != "" {
-		sdAlg = input.HashAlgorithm
-	}
-
-	if !supportedHashAlgorithms[sdAlg] {
-		return nil, fmt.Errorf("unsupported hash algorithm %q", sdAlg)
+	sdAlg, shuffle, err := validateAndGetDefaults(input)
+	if err != nil {
+		return nil, err
 	}
 
 	processedVC := util.DeepCopyMap(input.VC)
 
 	if len(input.SelectivePaths) == 0 {
-		return &SDJWTResult{
-			ProcessedVC: processedVC,
-		}, nil
+		return &SDJWTResult{ProcessedVC: processedVC}, nil
 	}
 
 	processedVC["_sd_alg"] = sdAlg
 
-	var disclosures []string
-
-	for _, path := range input.SelectivePaths {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			return nil, fmt.Errorf("empty path")
-		}
-
-		resolved, err := resolvePath(processedVC, path)
-		if err != nil {
-			return nil, fmt.Errorf("resolve path %q: %w", path, err)
-		}
-		if resolved == nil {
-			return nil, fmt.Errorf("path %q not found", path)
-		}
-
-		salt, err := randomSalt()
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate salt for path %q: %w", path, err)
-		}
-
-		var disclosureArr []interface{}
-		switch resolved.kind {
-		case kindObjectField, kindArrayContainer:
-			// Array container is treated same as object field
-			disclosureArr = []interface{}{salt, resolved.fieldName, resolved.value}
-		case kindArrayElem:
-			disclosureArr = []interface{}{salt, resolved.value}
-		default:
-			return nil, fmt.Errorf("unexpected kind %q at path %q", resolved.kind, path)
-		}
-
-		disclosureJSON, err := json.Marshal(disclosureArr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal disclosure for path %q: %w", path, err)
-		}
-
-		encodedDisclosure := base64.RawURLEncoding.EncodeToString(disclosureJSON)
-
-		h, err := hashDisclosure(sdAlg, encodedDisclosure)
-		if err != nil {
-			return nil, fmt.Errorf("failed to hash disclosure for path %q: %w", path, err)
-		}
-
-		disclosures = append(disclosures, encodedDisclosure)
-
-		switch resolved.kind {
-		case kindObjectField, kindArrayContainer:
-			// Array container is treated same as object field
-			m, ok := resolved.parent.(map[string]interface{})
-			if !ok {
-				return nil, fmt.Errorf("parent is not a map for path %q", path)
-			}
-			appendSD(m, h)
-			delete(m, resolved.fieldName)
-		case kindArrayElem:
-			arr, ok := resolved.parent.([]interface{})
-			if !ok {
-				return nil, fmt.Errorf("parent is not an array for path %q", path)
-			}
-			arr[resolved.index] = map[string]interface{}{"...": h}
-		}
+	disclosures, err := processSelectivePaths(processedVC, input.SelectivePaths, sdAlg)
+	if err != nil {
+		return nil, err
 	}
 
-	// Add decoy digests at specified paths.
-	// Decoys are random hashes injected into _sd arrays with no corresponding
-	// disclosure, so holders never see them and verifiers cannot distinguish
-	// them from unrevealed real digests.
-	for _, decoy := range decoys {
-		if decoy.Count <= 0 {
-			continue
-		}
-		hashes, err := generateDecoyHashes(sdAlg, decoy.Count)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate decoy hashes for path %q: %w", decoy.Path, err)
-		}
-		// Use resolvePath - for decoys we need the parent (map for object, array for array)
-		resolved, err := resolvePath(processedVC, decoy.Path)
-		if err != nil {
-			return nil, fmt.Errorf("resolve decoy path %q: %w", decoy.Path, err)
-		}
-		if resolved == nil {
-			continue
-		}
-		// Handle object field decoys
-		if resolved.kind == kindObjectField {
-			// If value exists (path like "credentialSubject"), add to the value object
-			// If value is nil (empty path ""), add to parent (root)
-			var target map[string]interface{}
-			var ok bool
-			if resolved.value != nil {
-				target, ok = resolved.value.(map[string]interface{})
-				if !ok {
-					continue
-				}
-			} else {
-				target, ok = resolved.parent.(map[string]interface{})
-				if !ok {
-					continue
-				}
-			}
-			for _, h := range hashes {
-				appendSD(target, h)
-			}
-		}
-		// Skip empty path - handled in array container case
-		// Handle array container decoys: add new decoy elements to array
-		if resolved.kind == kindArrayContainer {
-			arr, ok := resolved.value.([]interface{})
-			if !ok {
-				continue
-			}
-			parentMap, ok := resolved.parent.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			// Add decoy elements to the array
-			for _, h := range hashes {
-				decoyElem := map[string]interface{}{"...": h}
-				arr = append(arr, decoyElem)
-			}
-			// Update the array in parent
-			parentMap[resolved.fieldName] = arr
-			continue
-		}
-
-		// Handle array element decoys (legacy - replaces element, may be deprecated)
-		if resolved.kind == kindArrayElem {
-			arr, ok := resolved.parent.([]interface{})
-			if !ok {
-				continue
-			}
-			idx := resolved.index
-			if idx < 0 || idx >= len(arr) {
-				continue
-			}
-			// Replace array element with decoy hash wrapped in "..." structure
-			// Only use the first hash - the loop was incorrectly overwriting the same position
-			if len(hashes) > 0 {
-				arr[idx] = map[string]interface{}{"...": hashes[0]}
-			}
-		}
+	if err := processDecoys(processedVC, input.Decoys, sdAlg); err != nil {
+		return nil, err
 	}
 
-	// Shuffle _sd arrays if enabled
 	if shuffle {
 		shuffleSDArrays(processedVC)
 	}
@@ -240,6 +92,233 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 		ProcessedVC: processedVC,
 		Disclosures: disclosures,
 	}, nil
+}
+
+// validateAndGetDefaults validates input and returns configured hash algorithm and shuffle flag.
+func validateAndGetDefaults(input BuildDisclosuresInput) (string, bool, error) {
+	sdAlg := DefaultHashAlgorithm
+	if input.HashAlgorithm != "" {
+		sdAlg = input.HashAlgorithm
+	}
+
+	if !supportedHashAlgorithms[sdAlg] {
+		return "", false, fmt.Errorf("unsupported hash algorithm %q", sdAlg)
+	}
+
+	return sdAlg, input.Shuffle, nil
+}
+
+// processSelectivePaths processes all selective disclosure paths and returns disclosure strings.
+func processSelectivePaths(vc map[string]interface{}, paths []string, sdAlg string) ([]string, error) {
+	var disclosures []string
+
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return nil, fmt.Errorf("empty path")
+		}
+
+		encodedDisclosure, err := processSinglePath(vc, path, sdAlg)
+		if err != nil {
+			return nil, err
+		}
+
+		disclosures = append(disclosures, encodedDisclosure)
+	}
+
+	return disclosures, nil
+}
+
+// processSinglePath processes a single selective disclosure path.
+func processSinglePath(vc map[string]interface{}, path, sdAlg string) (string, error) {
+	resolved, err := resolvePath(vc, path)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %q: %w", path, err)
+	}
+	if resolved == nil {
+		return "", fmt.Errorf("path %q not found", path)
+	}
+
+	encodedDisclosure, err := buildAndApplyDisclosure(resolved, path, sdAlg)
+	if err != nil {
+		return "", err
+	}
+
+	return encodedDisclosure, nil
+}
+
+// buildAndApplyDisclosure builds disclosure array, encodes it, hashes it, and applies to VC.
+func buildAndApplyDisclosure(resolved *resolvedTarget, path, sdAlg string) (string, error) {
+	salt, err := randomSalt()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate salt for path %q: %w", path, err)
+	}
+
+	disclosureArr := buildDisclosureArray(resolved, salt)
+
+	disclosureJSON, err := json.Marshal(disclosureArr)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal disclosure for path %q: %w", path, err)
+	}
+
+	encodedDisclosure := base64.RawURLEncoding.EncodeToString(disclosureJSON)
+
+	h, err := hashDisclosure(sdAlg, encodedDisclosure)
+	if err != nil {
+		return "", fmt.Errorf("failed to hash disclosure for path %q: %w", path, err)
+	}
+
+	if err := applyDisclosureToVC(resolved, h); err != nil {
+		return "", err
+	}
+
+	return encodedDisclosure, nil
+}
+
+// buildDisclosureArray builds the disclosure array based on the resolved target kind.
+func buildDisclosureArray(resolved *resolvedTarget, salt string) []interface{} {
+	switch resolved.kind {
+	case TargetKindObjectField, TargetKindArrayContainer:
+		return []interface{}{salt, resolved.fieldName, resolved.value}
+	case TargetKindArrayElem:
+		return []interface{}{salt, resolved.value}
+	default:
+		return nil
+	}
+}
+
+// applyDisclosureToVC applies the disclosure digest to the VC structure.
+func applyDisclosureToVC(resolved *resolvedTarget, digest string) error {
+	switch resolved.kind {
+	case TargetKindObjectField, TargetKindArrayContainer:
+		m, ok := resolved.parent.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("parent is not a map")
+		}
+		appendSD(m, digest)
+		delete(m, resolved.fieldName)
+	case TargetKindArrayElem:
+		arr, ok := resolved.parent.([]interface{})
+		if !ok {
+			return fmt.Errorf("parent is not an array")
+		}
+		arr[resolved.index] = map[string]interface{}{"...": digest}
+	default:
+		return fmt.Errorf("unexpected kind %q", resolved.kind)
+	}
+	return nil
+}
+
+// processDecoys processes all decoy configurations and adds decoy digests to the VC.
+func processDecoys(vc map[string]interface{}, decoys []DecoyConfig, sdAlg string) error {
+	for _, decoy := range decoys {
+		if decoy.Count <= 0 {
+			continue
+		}
+
+		hashes, err := generateDecoyHashes(sdAlg, decoy.Count)
+		if err != nil {
+			return fmt.Errorf("failed to generate decoy hashes for path %q: %w", decoy.Path, err)
+		}
+
+		if err := applyDecoyToVC(vc, decoy.Path, hashes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyDecoyToVC applies decoy hashes to the VC at the specified path.
+func applyDecoyToVC(vc map[string]interface{}, path string, hashes []string) error {
+	resolved, err := resolvePath(vc, path)
+	if err != nil {
+		return fmt.Errorf("resolve decoy path %q: %w", path, err)
+	}
+	if resolved == nil {
+		return nil
+	}
+
+	switch resolved.kind {
+	case TargetKindObjectField:
+		return applyDecoyToObjectField(resolved, hashes)
+	case TargetKindArrayContainer:
+		return applyDecoyToArrayContainer(resolved, hashes)
+	case TargetKindArrayElem:
+		return applyDecoyToArrayElement(resolved, hashes)
+	}
+
+	return nil
+}
+
+// applyDecoyToObjectField adds decoy hashes to an object's _sd array.
+func applyDecoyToObjectField(resolved *resolvedTarget, hashes []string) error {
+	var target map[string]interface{}
+	var ok bool
+
+	if resolved.value != nil {
+		target, ok = resolved.value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("decoy target value is not an object, got %T", resolved.value)
+		}
+	} else {
+		target, ok = resolved.parent.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("decoy target parent is not an object, got %T", resolved.parent)
+		}
+	}
+
+	for _, h := range hashes {
+		appendSD(target, h)
+	}
+	return nil
+}
+
+// applyDecoyToArrayContainer adds new decoy elements to an array.
+func applyDecoyToArrayContainer(resolved *resolvedTarget, hashes []string) error {
+	arr, ok := resolved.value.([]interface{})
+	if !ok {
+		return fmt.Errorf("decoy target value is not an array, got %T", resolved.value)
+	}
+
+	parentMap, ok := resolved.parent.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("decoy target parent is not an object, got %T", resolved.parent)
+	}
+
+	// Create new array with decoys to avoid slice aliasing issues
+	newArr := make([]interface{}, len(arr), len(arr)+len(hashes))
+	copy(newArr, arr)
+	for _, h := range hashes {
+		decoyElem := map[string]interface{}{"...": h}
+		newArr = append(newArr, decoyElem)
+	}
+
+	parentMap[resolved.fieldName] = newArr
+
+	return nil
+}
+
+// applyDecoyToArrayElement appends decoy hashes at the end of the array.
+// Since arrays are shuffled after decoy insertion, position doesn't matter.
+func applyDecoyToArrayElement(resolved *resolvedTarget, hashes []string) error {
+	arr, ok := resolved.parent.([]interface{})
+	if !ok {
+		return fmt.Errorf("decoy target parent is not an array, got %T", resolved.parent)
+	}
+
+	if len(hashes) == 0 {
+		return nil
+	}
+
+	// Append decoy placeholders at the end
+	for _, h := range hashes {
+		arr = append(arr, map[string]interface{}{"...": h})
+	}
+
+	// Update parent reference
+	resolved.parent = arr
+
+	return nil
 }
 
 // appendSD appends a digest to the _sd array of an object node.
@@ -296,6 +375,7 @@ func generateDecoyHashes(sdAlg string, count int) ([]string, error) {
 		}
 		hashes[i] = h
 	}
+
 	return hashes, nil
 }
 
@@ -306,7 +386,7 @@ func generateDecoyHashes(sdAlg string, count int) ([]string, error) {
 func resolvePath(root map[string]interface{}, path string) (*resolvedTarget, error) {
 	// Empty path returns root (for decoys at root level)
 	if path == "" {
-		return &resolvedTarget{parent: root, kind: kindObjectField}, nil
+		return &resolvedTarget{parent: root, kind: TargetKindObjectField}, nil
 	}
 
 	segs, err := parsePath(path)
@@ -314,7 +394,7 @@ func resolvePath(root map[string]interface{}, path string) (*resolvedTarget, err
 		return nil, err
 	}
 	if len(segs) == 0 {
-		return &resolvedTarget{parent: root, kind: kindObjectField}, nil
+		return &resolvedTarget{parent: root, kind: TargetKindObjectField}, nil
 	}
 
 	var current interface{} = root
@@ -334,9 +414,9 @@ func resolvePath(root map[string]interface{}, path string) (*resolvedTarget, err
 			if last {
 				// Check if value is an array - if so, it's an array container
 				if arr, isArr := val.([]interface{}); isArr {
-					return &resolvedTarget{parent: m, kind: kindArrayContainer, fieldName: seg.key, value: arr}, nil
+					return &resolvedTarget{parent: m, kind: TargetKindArrayContainer, fieldName: seg.key, value: arr}, nil
 				}
-				return &resolvedTarget{parent: m, kind: kindObjectField, fieldName: seg.key, value: val}, nil
+				return &resolvedTarget{parent: m, kind: TargetKindObjectField, fieldName: seg.key, value: val}, nil
 			}
 			current = val
 			continue
@@ -355,7 +435,7 @@ func resolvePath(root map[string]interface{}, path string) (*resolvedTarget, err
 			return nil, fmt.Errorf("index %d out of range (len %d) for path %q", idx, len(arr), path)
 		}
 		if last {
-			return &resolvedTarget{parent: arr, kind: kindArrayElem, index: idx, value: arr[idx]}, nil
+			return &resolvedTarget{parent: arr, kind: TargetKindArrayElem, index: idx, value: arr[idx]}, nil
 		}
 		current = arr[idx]
 	}

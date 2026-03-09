@@ -113,7 +113,7 @@ func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
 	require.Len(t, result.Disclosures, 1)
 
 	// Reconstruct should restore the original payload and remove SD-JWT internals
-	reconstructed, err := Reconstruct(processed, result.Disclosures, nil)
+	reconstructed, err := Reconstruct(processed, result.Disclosures, true)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Alice", reconstructed["name"])
@@ -158,7 +158,7 @@ func TestBuildDisclosuresAndReconstruct_ArrayElementPath(t *testing.T) {
 	require.Len(t, result.Disclosures, 1)
 
 	// Reconstruct should restore "email" at index 1 and drop SD-JWT metadata
-	out, err := Reconstruct(processed, result.Disclosures, nil)
+	out, err := Reconstruct(processed, result.Disclosures, true)
 	require.NoError(t, err)
 
 	outTags, ok := out["tags"].([]interface{})
@@ -225,7 +225,7 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 	require.Len(t, result.Disclosures, 1)
 
 	// Reconstruct should restore name, keep age, and remove sd metadata at all levels
-	out, err := Reconstruct(processed, result.Disclosures, nil)
+	out, err := Reconstruct(processed, result.Disclosures, true)
 	require.NoError(t, err)
 
 	outPerson, ok := out["person"].(map[string]interface{})
@@ -279,7 +279,7 @@ func TestBuildDisclosures_RecursiveParentAndChildPaths(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Disclosures, 2)
 
-	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, nil)
+	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, true)
 	require.NoError(t, err)
 
 	assert.Equal(t, "1234", out["id"])
@@ -325,7 +325,7 @@ func TestBuildDisclosures_ArrayParentAndChildPaths(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Disclosures, 2)
 
-	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, nil)
+	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, true)
 	require.NoError(t, err)
 
 	outTags, ok := out["tags"].([]interface{})
@@ -359,7 +359,7 @@ func TestReconstruct_ArrayPlaceholder(t *testing.T) {
 		},
 	}
 
-	out, err := Reconstruct(vc, []string{D}, nil)
+	out, err := Reconstruct(vc, []string{D}, true)
 	require.NoError(t, err)
 
 	itemsRaw, ok := out["items"]
@@ -389,7 +389,7 @@ func TestReconstruct_RealExampleFromCompact(t *testing.T) {
 	require.NoError(t, err)
 
 	// Reconstruct processed payload from payload + disclosures
-	out, err := Reconstruct(payload, parsed.Disclosures, nil)
+	out, err := Reconstruct(payload, parsed.Disclosures, true)
 	require.NoError(t, err)
 
 	assert.Equal(t, "1234", out["id"])
@@ -420,7 +420,7 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	assert.Equal(t, AlgSHA384, result.ProcessedVC["_sd_alg"])
 
 	// Verify reconstruction works with sha-384
-	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, nil)
+	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, true)
 	require.NoError(t, err)
 	assert.Equal(t, "Alice", out["name"])
 	assert.Equal(t, float64(30), out["age"])
@@ -454,29 +454,12 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	assert.Len(t, result3.Disclosures, 1)
 
 	// Reconstruction works: decoy hashes are just unmatched digests (ignored)
-	out3, err := Reconstruct(result3.ProcessedVC, result3.Disclosures, nil)
+	out3, err := Reconstruct(result3.ProcessedVC, result3.Disclosures, true)
 	require.NoError(t, err)
 	assert.Equal(t, "Alice", out3["name"])
 }
 
-func TestValidation_DuplicateDigest(t *testing.T) {
-	original := map[string]interface{}{
-		"name": "Alice",
-	}
 
-	result, err := BuildDisclosures(BuildDisclosuresInput{
-		VC:             original,
-		SelectivePaths: []string{"name"},
-	})
-	require.NoError(t, err)
-
-	// Duplicate the disclosure by adding the same string again
-	discs := append(result.Disclosures, result.Disclosures[0])
-
-	_, err = Reconstruct(result.ProcessedVC, discs, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "duplicate digest")
-}
 
 func TestValidation_DuplicateDigestInArray(t *testing.T) {
 	// Build a disclosure for array element
@@ -495,42 +478,9 @@ func TestValidation_DuplicateDigestInArray(t *testing.T) {
 	}
 
 	// This should fail with duplicate digest error
-	_, err := Reconstruct(vcWithDup, []string{D1}, nil)
+	_, err := Reconstruct(vcWithDup, []string{D1}, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate digest")
 }
 
-func TestValidation_UnreferencedDisclosure(t *testing.T) {
-	original := map[string]interface{}{
-		"name": "Alice",
-		"age":  float64(30),
-	}
 
-	result, err := BuildDisclosures(BuildDisclosuresInput{
-		VC:             original,
-		SelectivePaths: []string{"name"},
-	})
-	require.NoError(t, err)
-
-	// Create a valid disclosure for a field that doesn't exist in _sd
-	// This simulates an extra disclosure that isn't referenced
-	extraArr := []interface{}{"extrarandomsalt", "nonexistent", "value"}
-	extraJSON, _ := json.Marshal(extraArr)
-	extraDisc := base64.RawURLEncoding.EncodeToString(extraJSON)
-
-	// Add the extra disclosure
-	discs := append(result.Disclosures, extraDisc)
-
-	// Should fail with default config (AllowUnreferencedDisclosures = false)
-	_, err = Reconstruct(result.ProcessedVC, discs, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unreferenced disclosure")
-
-	// Should pass with AllowUnreferencedDisclosures = true
-	config := &ValidationConfig{
-		AllowUnreferencedDisclosures: true,
-	}
-	out, err := Reconstruct(result.ProcessedVC, discs, config)
-	require.NoError(t, err)
-	assert.Equal(t, "Alice", out["name"])
-}

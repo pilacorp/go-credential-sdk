@@ -1,5 +1,10 @@
 # Go Credential SDK
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/pilacorp/go-credential-sdk.svg)](https://pkg.go.dev/github.com/pilacorp/go-credential-sdk)
+[![Go Report Card](https://goreportcard.com/badge/github.com/pilacorp/go-credential-sdk?style=flat-square)](https://goreportcard.com/report/github.com/pilacorp/go-credential-sdk)
+[![Release](https://img.shields.io/github/v/release/pilacorp/go-credential-sdk?include_prereleases&style=flat-square)](https://github.com/pilacorp/go-credential-sdk/releases)
+[![License](https://img.shields.io/github/license/pilacorp/go-credential-sdk.svg?style=flat-square)](https://github.com/pilacorp/go-credential-sdk/blob/main/LICENSE)
+
 This repository provides a Go SDK for working with W3C Verifiable Credentials (VCs), Verifiable Presentations (VPs), and DIDComm cryptographic utilities. It enables you to create, manage, and verify Verifiable Credentials and Presentations, as well as encrypt and decrypt messages using DIDComm standards.
 
 ## Table of Contents
@@ -95,6 +100,30 @@ To create a Verifiable Credential, you need:
 1. Use `vc.ParseCredential()` to parse both JSON and JWT credentials
 2. Use `vc.ParseCredentialWithValidation()` for automatic validation and verification
 3. Access credential data using the `Credential` interface methods
+
+### Extracting Fields from a Credential
+
+Use `ExtractField(path string)` to extract any field from a credential using dot-notation path:
+
+```go
+// Parse a credential (works for JSON, JWT, or SD-JWT)
+cred, err := vc.ParseCredential(credentialBytes)
+
+// Extract nested fields using dot notation
+name := cred.ExtractField("credentialSubject.name")
+city := cred.ExtractField("credentialSubject.address.city")
+
+// Returns nil if field doesn't exist
+email := cred.ExtractField("credentialSubject.email")
+if email != nil {
+    fmt.Println("Email:", email)
+}
+```
+
+**Supported paths:**
+- `"credentialSubject.name"` - nested object fields
+- `"credentialSubject.address.city"` - deeply nested fields
+- Returns `nil` for array indices (e.g., `"credentialSubject.emails[0]"` is not supported)
 
 ### Adding Proofs/Signatures
 
@@ -388,8 +417,6 @@ result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
 // Reconstruct with validation (Verifier)
 config := &sdjwt.ValidationConfig{
     RequireHashAlgorithmMatch:    true,
-    RejectDecoyDigests:         false,
-    AllowUnreferencedDisclosures: false,
 }
 reconstructed, err := sdjwt.Reconstruct(vcMap, disclosures, config)
 ```

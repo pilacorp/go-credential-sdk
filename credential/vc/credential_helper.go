@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/xeipuuv/gojsonschema"
@@ -12,6 +13,36 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 )
+
+// extractFieldFromMap extracts a field value from a map using dot-notation path.
+// Returns nil if the field does not exist.
+func extractFieldFromMap(m map[string]interface{}, path string) interface{} {
+	if m == nil {
+		return nil
+	}
+
+	parts := strings.Split(path, ".")
+	current := interface{}(m)
+
+	for _, part := range parts {
+		if current == nil {
+			return nil
+		}
+
+		// Try to convert to map
+		if m, ok := current.(map[string]interface{}); ok {
+			val, exists := m[part]
+			if !exists {
+				return nil
+			}
+			current = val
+		} else {
+			return nil
+		}
+	}
+
+	return current
+}
 
 // serializeCredentialContents serializes CredentialContents into a Credential.
 func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error) {

@@ -8,115 +8,33 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 )
 
-// ValidationConfig holds configuration for SD-JWT validation.
-type ValidationConfig struct {
-	// RequireHashAlgorithmMatch if true, validates that _sd_alg matches the hash used
-	RequireHashAlgorithmMatch bool
-	// AllowUnreferencedDisclosures if false, rejects disclosures not referenced by any digest
-	AllowUnreferencedDisclosures bool
-}
-
-// DefaultValidationConfig returns the default validation configuration.
-func DefaultValidationConfig() *ValidationConfig {
-	return &ValidationConfig{
-		RequireHashAlgorithmMatch:    true,
-		AllowUnreferencedDisclosures: false,
-	}
-}
-
 // Reconstruct rebuilds the processed SD-JWT payload from a vcMap containing
-// SD-JWT digests and the provided disclosures. It implements the "Processed
-// SD-JWT Payload" reconstruction from sd_jwt.md.
+// SD-JWT digests and the provided disclosures.
 //
-// Validation is performed according to the provided ValidationConfig.
-// If config is nil, DefaultValidationConfig() is used.
-func Reconstruct(vcMap map[string]interface{}, disclosures []string, config *ValidationConfig) (map[string]interface{}, error) {
-	if config == nil {
-		config = DefaultValidationConfig()
-	}
-
-	// Determine algorithm
-	sdAlg := DefaultHashAlgorithm
-	if v, ok := vcMap["_sd_alg"].(string); ok && v != "" {
-		sdAlg = v
-	}
-
-	// Validate hash algorithm is supported
-	if !supportedHashAlgorithms[sdAlg] {
-		return nil, fmt.Errorf("unsupported _sd_alg: %q", sdAlg)
-	}
-
-	// Build hash -> disclosure mapping
-	disclosureMap := make(map[string]disclosureInfo, len(disclosures))
-
-	// First pass: parse all disclosures and check for duplicate digests
-	seenDigests := make(map[string]bool)
-
-	for _, disc := range disclosures {
-		if disc == "" {
-			continue
-		}
-
-		h, err := hashDisclosure(sdAlg, disc)
-		if err != nil {
-			return nil, fmt.Errorf("failed to hash disclosure: %w", err)
-		}
-
-		// Check for duplicate digests
-		if seenDigests[h] {
-			return nil, fmt.Errorf("duplicate digest found in disclosures")
-		}
-		seenDigests[h] = true
-
-		decoded, err := base64.RawURLEncoding.DecodeString(disc)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode disclosure %q: %w", disc, err)
-		}
-
-		var arr []interface{}
-		if err := json.Unmarshal(decoded, &arr); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal disclosure: %w", err)
-		}
-
-		// Validate disclosure structure
-		if len(arr) != 2 && len(arr) != 3 {
-			return nil, fmt.Errorf("invalid disclosure structure: expected 2 or 3 elements, got %d", len(arr))
-		}
-
-		info := disclosureInfo{
-			raw:   disc,
-			array: arr,
-		}
-
-		switch len(arr) {
-		case 3:
-			// [salt, name, value]
-			if name, ok := arr[1].(string); ok {
-				info.objectField = name
-				info.value = arr[2]
-				info.isArrayElem = false
-			} else {
-				return nil, fmt.Errorf("disclosure field name must be a string")
-			}
-		case 2:
-			// [salt, value]
-			info.value = arr[1]
-			info.isArrayElem = true
-		}
-
-		disclosureMap[h] = info
-	}
-
-	rootCopy := util.DeepCopyMap(vcMap)
-
-	// Track which disclosures are used during reconstruction
-	usedDisclosures := make(map[string]bool)
-
-	processed, err := processNode(rootCopy, disclosureMap, usedDisclosures, config)
+// If validateAlg is true, validates that _sd_alg matches a supported hash algorithm.
+func Reconstruct(vcMap map[string]interface{}, disclosures []string, validateAlg bool) (map[string]interface{}, error) {
+	// Get and validate hash algorithm
+	sdAlg, err := validateAndGetAlgorithm(vcMap, validateAlg)
 	if err != nil {
 		return nil, err
 	}
 
+	// Parse all disclosures into a map keyed by their hash
+	disclosureMap, err := parseDisclosures(disclosures, sdAlg)
+	if err != nil {
+		return nil, err
+	}
+
+	// Deep copy vcMap to avoid modifying original
+	rootCopy := util.DeepCopyMap(vcMap)
+
+	// Process the SD-JWT structure, replacing digests with actual values
+	processed, err := processNode(rootCopy, disclosureMap)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure result is a map
 	result, ok := processed.(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("processed payload is not an object")
@@ -125,57 +43,93 @@ func Reconstruct(vcMap map[string]interface{}, disclosures []string, config *Val
 	// Remove top-level _sd_alg if present
 	delete(result, "_sd_alg")
 
-	// Validate: check for unreferenced disclosures if required
-	if !config.AllowUnreferencedDisclosures {
-		for h, info := range disclosureMap {
-			if !usedDisclosures[h] {
-				return nil, fmt.Errorf("unreferenced disclosure found: field %q", info.objectField)
-			}
-		}
-	}
-
 	return result, nil
 }
 
+// validateAndGetAlgorithm extracts and validates the hash algorithm from vcMap.
+func validateAndGetAlgorithm(vcMap map[string]interface{}, validateAlg bool) (string, error) {
+	sdAlg := DefaultHashAlgorithm
+	if v, ok := vcMap["_sd_alg"].(string); ok && v != "" {
+		sdAlg = v
+	}
 
-// applySDHashes processes a slice of hash strings, applying their disclosures to the object.
-func applySDHashes(hashes []string, v map[string]interface{}, disclosureMap map[string]disclosureInfo, usedDisclosures map[string]bool, objectDigests map[string]bool, config *ValidationConfig) error {
-	for _, h := range hashes {
-		// Check for duplicate digest within this object
-		if objectDigests[h] {
-			return fmt.Errorf("duplicate digest %q found in _sd array", h)
-		}
-		objectDigests[h] = true
+	if validateAlg && !supportedHashAlgorithms[sdAlg] {
+		return "", fmt.Errorf("unsupported _sd_alg: %q", sdAlg)
+	}
 
-		info, ok := disclosureMap[h]
-		if !ok {
-			// No disclosure for this digest - it's either unrevealed or a decoy
+	return sdAlg, nil
+}
+
+// parseDisclosures parses all disclosures and builds a hash -> disclosure mapping.
+func parseDisclosures(disclosures []string, sdAlg string) (map[string]disclosureInfo, error) {
+	disclosureMap := make(map[string]disclosureInfo, len(disclosures))
+
+	for _, disc := range disclosures {
+		if disc == "" {
 			continue
 		}
 
-		// Validate disclosure type matches context
-		if info.isArrayElem || info.objectField == "" {
-			return fmt.Errorf("array element disclosure used in object context")
-		}
-
-		if _, exists := v[info.objectField]; exists {
-			return fmt.Errorf("duplicate field %q when reconstructing SD-JWT object", info.objectField)
-		}
-
-		// Track usage
-		usedDisclosures[h] = true
-
-		processedVal, err := processNode(info.value, disclosureMap, usedDisclosures, config)
+		// Hash the disclosure
+		h, err := hashDisclosure(sdAlg, disc)
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("failed to hash disclosure: %w", err)
 		}
-		v[info.objectField] = processedVal
+
+		// Decode and parse disclosure
+		info, err := parseSingleDisclosure(disc)
+		if err != nil {
+			return nil, err
+		}
+
+		disclosureMap[h] = info
 	}
-	return nil
+
+	return disclosureMap, nil
+}
+
+// parseSingleDisclosure parses a single disclosure string into disclosureInfo.
+func parseSingleDisclosure(disc string) (disclosureInfo, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(disc)
+	if err != nil {
+		return disclosureInfo{}, fmt.Errorf("failed to decode disclosure %q: %w", disc, err)
+	}
+
+	var arr []interface{}
+	if err := json.Unmarshal(decoded, &arr); err != nil {
+		return disclosureInfo{}, fmt.Errorf("failed to unmarshal disclosure: %w", err)
+	}
+
+	// Validate disclosure structure: must have 2 or 3 elements
+	if len(arr) != 2 && len(arr) != 3 {
+		return disclosureInfo{}, fmt.Errorf("invalid disclosure structure: expected 2 or 3 elements, got %d", len(arr))
+	}
+
+	info := disclosureInfo{
+		raw:   disc,
+		array: arr,
+	}
+
+	switch len(arr) {
+	case 3:
+		// Format: [salt, name, value] - object field
+		if name, ok := arr[1].(string); ok {
+			info.objectField = name
+			info.value = arr[2]
+			info.isArrayElem = false
+		} else {
+			return disclosureInfo{}, fmt.Errorf("disclosure field name must be a string")
+		}
+	case 2:
+		// Format: [salt, value] - array element
+		info.value = arr[1]
+		info.isArrayElem = true
+	}
+
+	return info, nil
 }
 
 // processNode recursively processes objects/arrays, applying disclosures.
-func processNode(node interface{}, disclosureMap map[string]disclosureInfo, usedDisclosures map[string]bool, config *ValidationConfig) (interface{}, error) {
+func processNode(node interface{}, disclosureMap map[string]disclosureInfo) (interface{}, error) {
 	switch v := node.(type) {
 	case map[string]interface{}:
 		// Handle _sd on this object first
@@ -192,9 +146,13 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 						hashes = append(hashes, h)
 					}
 				}
-				applySDHashes(hashes, v, disclosureMap, usedDisclosures, objectDigests, config)
+				if err := applySDHashes(hashes, v, disclosureMap, objectDigests); err != nil {
+					return nil, err
+				}
 			case []string:
-				applySDHashes(sdList, v, disclosureMap, usedDisclosures, objectDigests, config)
+				if err := applySDHashes(sdList, v, disclosureMap, objectDigests); err != nil {
+					return nil, err
+				}
 			}
 			// Remove _sd after expansion
 			delete(v, "_sd")
@@ -202,7 +160,7 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 
 		// Recurse into other fields
 		for key, val := range v {
-			processedChild, err := processNode(val, disclosureMap, usedDisclosures, config)
+			processedChild, err := processNode(val, disclosureMap)
 			if err != nil {
 				return nil, err
 			}
@@ -226,7 +184,8 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 
 						info, exists := disclosureMap[h]
 						if !exists {
-							// Placeholder without disclosure is dropped (not revealed)
+							// Placeholder without disclosure - keep it to preserve array structure
+							out = append(out, map[string]interface{}{"...": h})
 							continue
 						}
 
@@ -235,10 +194,8 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 							return nil, fmt.Errorf("object field disclosure used in array context")
 						}
 
-						usedDisclosures[h] = true
-
 						// Array-element disclosure
-						processedVal, err := processNode(info.value, disclosureMap, usedDisclosures, config)
+						processedVal, err := processNode(info.value, disclosureMap)
 						if err != nil {
 							return nil, err
 						}
@@ -248,7 +205,7 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 				}
 			}
 
-			processedElem, err := processNode(elem, disclosureMap, usedDisclosures, config)
+			processedElem, err := processNode(elem, disclosureMap)
 			if err != nil {
 				return nil, err
 			}
@@ -259,4 +216,37 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 	default:
 		return node, nil
 	}
+}
+
+// applySDHashes processes a slice of hash strings, applying their disclosures to the object.
+func applySDHashes(hashes []string, v map[string]interface{}, disclosureMap map[string]disclosureInfo, objectDigests map[string]bool) error {
+	for _, h := range hashes {
+		// Check for duplicate digest within this object
+		if objectDigests[h] {
+			return fmt.Errorf("duplicate digest %q found in _sd array", h)
+		}
+		objectDigests[h] = true
+
+		info, ok := disclosureMap[h]
+		if !ok {
+			// No disclosure for this digest - it's either unrevealed or a decoy
+			continue
+		}
+
+		// Validate disclosure type matches context
+		if info.isArrayElem || info.objectField == "" {
+			return fmt.Errorf("array element disclosure used in object context")
+		}
+
+		if _, exists := v[info.objectField]; exists {
+			return fmt.Errorf("duplicate field %q when reconstructing SD-JWT object", info.objectField)
+		}
+
+		processedVal, err := processNode(info.value, disclosureMap)
+		if err != nil {
+			return err
+		}
+		v[info.objectField] = processedVal
+	}
+	return nil
 }

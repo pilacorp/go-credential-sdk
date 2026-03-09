@@ -109,6 +109,13 @@ func (e *JSONCredential) GetType() string {
 	return "JSON"
 }
 
+func (e *JSONCredential) ExtractField(path string) interface{} {
+	if e.credentialData == nil {
+		return nil
+	}
+	return extractFieldFromMap(e.credentialData, path)
+}
+
 func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
