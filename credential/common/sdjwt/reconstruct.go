@@ -1,8 +1,6 @@
 package sdjwt
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
@@ -20,7 +18,7 @@ func Reconstruct(vcMap map[string]interface{}, disclosures []string, validateAlg
 	}
 
 	// Parse all disclosures into a map keyed by their hash
-	disclosureMap, err := parseDisclosures(disclosures, sdAlg)
+	disclosureMap, err := buildDisclosureMap(disclosures, sdAlg)
 	if err != nil {
 		return nil, err
 	}
@@ -60,8 +58,9 @@ func validateAndGetAlgorithm(vcMap map[string]interface{}, validateAlg bool) (st
 	return sdAlg, nil
 }
 
-// parseDisclosures parses all disclosures and builds a hash -> disclosure mapping.
-func parseDisclosures(disclosures []string, sdAlg string) (map[string]disclosureInfo, error) {
+// buildDisclosureMap parses all disclosures and builds a hash -> disclosure mapping.
+// This wraps the core parseDisclosure function and hashes each disclosure.
+func buildDisclosureMap(disclosures []string, sdAlg string) (map[string]disclosureInfo, error) {
 	disclosureMap := make(map[string]disclosureInfo, len(disclosures))
 
 	for _, disc := range disclosures {
@@ -75,8 +74,8 @@ func parseDisclosures(disclosures []string, sdAlg string) (map[string]disclosure
 			return nil, fmt.Errorf("failed to hash disclosure: %w", err)
 		}
 
-		// Decode and parse disclosure
-		info, err := parseSingleDisclosure(disc)
+		// Decode and parse disclosure (using core parseDisclosure from helper.go)
+		info, err := parseDisclosure(disc)
 		if err != nil {
 			return nil, err
 		}
@@ -85,47 +84,6 @@ func parseDisclosures(disclosures []string, sdAlg string) (map[string]disclosure
 	}
 
 	return disclosureMap, nil
-}
-
-// parseSingleDisclosure parses a single disclosure string into disclosureInfo.
-func parseSingleDisclosure(disc string) (disclosureInfo, error) {
-	decoded, err := base64.RawURLEncoding.DecodeString(disc)
-	if err != nil {
-		return disclosureInfo{}, fmt.Errorf("failed to decode disclosure %q: %w", disc, err)
-	}
-
-	var arr []interface{}
-	if err := json.Unmarshal(decoded, &arr); err != nil {
-		return disclosureInfo{}, fmt.Errorf("failed to unmarshal disclosure: %w", err)
-	}
-
-	// Validate disclosure structure: must have 2 or 3 elements
-	if len(arr) != 2 && len(arr) != 3 {
-		return disclosureInfo{}, fmt.Errorf("invalid disclosure structure: expected 2 or 3 elements, got %d", len(arr))
-	}
-
-	info := disclosureInfo{
-		raw:   disc,
-		array: arr,
-	}
-
-	switch len(arr) {
-	case 3:
-		// Format: [salt, name, value] - object field
-		if name, ok := arr[1].(string); ok {
-			info.objectField = name
-			info.value = arr[2]
-			info.isArrayElem = false
-		} else {
-			return disclosureInfo{}, fmt.Errorf("disclosure field name must be a string")
-		}
-	case 2:
-		// Format: [salt, value] - array element
-		info.value = arr[1]
-		info.isArrayElem = true
-	}
-
-	return info, nil
 }
 
 // processNode recursively processes objects/arrays, applying disclosures.

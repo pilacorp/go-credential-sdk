@@ -18,8 +18,6 @@ const (
 	AlgSHA512 = "sha-512"
 
 	DefaultHashAlgorithm = AlgSHA256
-
-
 )
 
 // supportedHashAlgorithms defines the allowed hash algorithms for SD-JWT.
@@ -69,11 +67,19 @@ func BuildDisclosures(input BuildDisclosuresInput) (*SDJWTResult, error) {
 
 	processedVC := util.DeepCopyMap(input.VC)
 
-	if len(input.SelectivePaths) == 0 {
+	// Process decoys even when there are no selective paths
+	// Decoys require _sd_alg to be set
+	if len(input.Decoys) > 0 {
+		processedVC["_sd_alg"] = sdAlg
+	}
+
+	if len(input.SelectivePaths) == 0 && len(input.Decoys) == 0 {
 		return &SDJWTResult{ProcessedVC: processedVC}, nil
 	}
 
-	processedVC["_sd_alg"] = sdAlg
+	if len(input.SelectivePaths) > 0 {
+		processedVC["_sd_alg"] = sdAlg
+	}
 
 	disclosures, err := processSelectivePaths(processedVC, input.SelectivePaths, sdAlg)
 	if err != nil {
@@ -299,24 +305,31 @@ func applyDecoyToArrayContainer(resolved *resolvedTarget, hashes []string) error
 }
 
 // applyDecoyToArrayElement appends decoy hashes at the end of the array.
-// Since arrays are shuffled after decoy insertion, position doesn't matter.
+// This modifies the slice in place using index-based access to ensure changes persist.
 func applyDecoyToArrayElement(resolved *resolvedTarget, hashes []string) error {
+	if len(hashes) == 0 {
+		return nil
+	}
+
 	arr, ok := resolved.parent.([]interface{})
 	if !ok {
 		return fmt.Errorf("decoy target parent is not an array, got %T", resolved.parent)
 	}
 
-	if len(hashes) == 0 {
-		return nil
-	}
-
-	// Append decoy placeholders at the end
+	// Append decoy placeholders using direct slice access
+	// This modifies the underlying array in place
 	for _, h := range hashes {
 		arr = append(arr, map[string]interface{}{"...": h})
 	}
 
-	// Update parent reference
+	// Update resolved.parent to point to the modified slice
+	// The underlying array has been modified in place
 	resolved.parent = arr
+
+	// Write back to parent map if we have parentMap and parentKey
+	if resolved.parentMap != nil && resolved.parentKey != "" {
+		(*resolved.parentMap)[resolved.parentKey] = arr
+	}
 
 	return nil
 }
@@ -435,7 +448,23 @@ func resolvePath(root map[string]interface{}, path string) (*resolvedTarget, err
 			return nil, fmt.Errorf("index %d out of range (len %d) for path %q", idx, len(arr), path)
 		}
 		if last {
-			return &resolvedTarget{parent: arr, kind: TargetKindArrayElem, index: idx, value: arr[idx]}, nil
+			var parentMapPtr *map[string]interface{}
+			parentKey := ""
+			if seg.key != "" {
+				m, ok := current.(map[string]interface{})
+				if ok {
+					parentMapPtr = &m
+					parentKey = seg.key
+				}
+			}
+			return &resolvedTarget{
+				parent:    arr,
+				parentMap: parentMapPtr,
+				parentKey: parentKey,
+				kind:      TargetKindArrayElem,
+				index:     idx,
+				value:     arr[idx],
+			}, nil
 		}
 		current = arr[idx]
 	}

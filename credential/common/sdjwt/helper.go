@@ -53,20 +53,27 @@ func Parse(raw string) (*ParsedSDJWT, error) {
 	}
 
 	issuer := parts[0]
+
 	var disclosures []string
 	for i := 1; i < len(parts); i++ {
 		seg := strings.TrimSpace(parts[i])
 		if seg == "" {
 			continue
 		}
-		if i == len(parts)-1 && isJWT(seg) {
+		// Only treat as holder binding JWT if:
+		// 1. This is the last segment AND
+		// 2. It looks like a JWT AND
+		// 3. There is a ~ before this segment (i.e., not the first disclosure)
+		//    This ensures "issuer~jwt-like" (no ~ before last) is treated as disclosure
+		//    but "issuer~D~JWT" (has ~ before last) is treated as holder binding
+		if i == len(parts)-1 && isJWT(seg) && i > 1 {
 			break
 		}
 		disclosures = append(disclosures, seg)
 	}
 
 	// Decode disclosures for easy access
-	decodedDisclosures, err := decodeDisclosures(disclosures)
+	decodedDisclosures, err := parseDisclosures(disclosures)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode disclosures: %w", err)
 	}
@@ -76,65 +83,6 @@ func Parse(raw string) (*ParsedSDJWT, error) {
 		Disclosures:        disclosures,
 		DecodedDisclosures: decodedDisclosures,
 	}, nil
-}
-
-// decodeDisclosures decodes a slice of disclosure strings.
-func decodeDisclosures(disclosures []string) ([]DecodedDisclosure, error) {
-	result := make([]DecodedDisclosure, 0, len(disclosures))
-
-	for _, disc := range disclosures {
-		if disc == "" {
-			continue
-		}
-
-		decoded, err := base64.RawURLEncoding.DecodeString(disc)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode disclosure %q: %w", disc, err)
-		}
-
-		var arr []interface{}
-		if err := json.Unmarshal(decoded, &arr); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal disclosure: %w", err)
-		}
-
-		if len(arr) != 2 && len(arr) != 3 {
-			return nil, fmt.Errorf("invalid disclosure: expected 2 or 3 elements, got %d", len(arr))
-		}
-
-		dec := DecodedDisclosure{
-			Disclosure: disc,
-		}
-
-		switch len(arr) {
-		case 3:
-			salt, ok := arr[0].(string)
-			if !ok {
-				return nil, fmt.Errorf("disclosure salt must be string")
-			}
-			dec.Salt = salt
-
-			name, ok := arr[1].(string)
-			if !ok {
-				return nil, fmt.Errorf("disclosure field name must be string")
-			}
-			dec.FieldName = name
-			dec.Value = arr[2]
-			dec.IsArrayElem = false
-
-		case 2:
-			salt, ok := arr[0].(string)
-			if !ok {
-				return nil, fmt.Errorf("disclosure salt must be string")
-			}
-			dec.Salt = salt
-			dec.Value = arr[1]
-			dec.IsArrayElem = true
-		}
-
-		result = append(result, dec)
-	}
-
-	return result, nil
 }
 
 // BuildSDJWTPresentation builds an SD-JWT presentation string from the issuer-signed JWT
@@ -157,13 +105,94 @@ func BuildSDJWTPresentation(issuerSignedJWT string, selectedDisclosures []string
 	return sb.String()
 }
 
+// parseDisclosures parses a slice of disclosure strings into DecodedDisclosure.
+// Used by Holders to understand what each disclosure contains.
+func parseDisclosures(disclosures []string) ([]DecodedDisclosure, error) {
+	result := make([]DecodedDisclosure, 0, len(disclosures))
+
+	for _, disc := range disclosures {
+		if disc == "" {
+			continue
+		}
+
+		info, err := parseDisclosure(disc)
+		if err != nil {
+			return nil, err
+		}
+
+		// Map internal info to public DecodedDisclosure
+		dec := DecodedDisclosure{
+			Disclosure:  disc,
+			Salt:        info.salt,
+			FieldName:   info.objectField,
+			Value:       info.value,
+			IsArrayElem: info.isArrayElem,
+		}
+		result = append(result, dec)
+	}
+
+	return result, nil
+}
+
+// parseDisclosure parses a single disclosure string into internal disclosureInfo.
+// This is the core parsing function used by both Reconstruct and parseDisclosures.
+func parseDisclosure(disc string) (disclosureInfo, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(disc)
+	if err != nil {
+		return disclosureInfo{}, fmt.Errorf("failed to decode disclosure %q: %w", disc, err)
+	}
+
+	var arr []interface{}
+	if err := json.Unmarshal(decoded, &arr); err != nil {
+		return disclosureInfo{}, fmt.Errorf("failed to unmarshal disclosure: %w", err)
+	}
+
+	// Validate disclosure structure: must have 2 or 3 elements
+	if len(arr) != 2 && len(arr) != 3 {
+		return disclosureInfo{}, fmt.Errorf("invalid disclosure structure: expected 2 or 3 elements, got %d", len(arr))
+	}
+
+	info := disclosureInfo{
+		raw:   disc,
+		array: arr,
+	}
+
+	switch len(arr) {
+	case 3:
+		// Format: [salt, name, value] - object field
+		// Validate salt is string
+		if _, ok := arr[0].(string); !ok {
+			return disclosureInfo{}, fmt.Errorf("disclosure salt must be a string")
+		}
+		info.salt = arr[0].(string)
+		if name, ok := arr[1].(string); ok {
+			info.objectField = name
+			info.value = arr[2]
+			info.isArrayElem = false
+		} else {
+			return disclosureInfo{}, fmt.Errorf("disclosure field name must be a string")
+		}
+	case 2:
+		// Format: [salt, value] - array element
+		// Validate salt is string
+		if _, ok := arr[0].(string); !ok {
+			return disclosureInfo{}, fmt.Errorf("disclosure salt must be a string")
+		}
+		info.salt = arr[0].(string)
+		info.value = arr[1]
+		info.isArrayElem = true
+	}
+
+	return info, nil
+}
+
+var jwtRegex = regexp.MustCompile(`^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+(\.[A-Za-z0-9\-_]+)?$`)
+
 // isJWT performs a simple regex check for JWT format: header.payload[.signature].
 func isJWT(s string) bool {
 	s = strings.TrimSpace(s)
 	s = strings.TrimSuffix(s, ".")
-	const re = `^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+(\.[A-Za-z0-9\-_]+)?$`
-	match, _ := regexp.MatchString(re, s)
-	return match
+	return jwtRegex.MatchString(s)
 }
 
 // hashDisclosure computes digest_b64u(sdAlg, D) where D is a base64url disclosure string.

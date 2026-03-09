@@ -39,6 +39,7 @@ type pathSegment struct {
 // disclosureInfo holds parsed disclosure metadata used during reconstruction.
 type disclosureInfo struct {
 	raw         string
+	salt        string
 	array       []interface{}
 	objectField string
 	value       interface{}
@@ -48,6 +49,8 @@ type disclosureInfo struct {
 // resolvedTarget holds the result of resolvePath.
 type resolvedTarget struct {
 	parent    interface{}  // The parent container (map or array)
+	parentMap *map[string]interface{} // Reference to parent map for write-back
+	parentKey string      // Key name in parent map (for write-back)
 	kind      TargetKind  // Type of target
 	fieldName string      // Key name (for object fields)
 	index     int         // Array index (for array elements)

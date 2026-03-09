@@ -123,7 +123,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 
 	if options.isValidateSchema {
 		g.Go(func() error {
-			if err := validateCredential(e.credentialData); err != nil {
+			if err := validateCredential(e.credentialData, options); err != nil {
 				return fmt.Errorf("validate credential: %w", err)
 			}
 

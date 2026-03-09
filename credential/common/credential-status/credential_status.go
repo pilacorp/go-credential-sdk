@@ -10,19 +10,36 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 )
 
-// Client is a simple HTTP client for fetching credential status information
-// from a statusListCredential URL.
-type Client struct {
-	httpClient *http.Client
+var defaultHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
 }
 
-// NewClient creates a new credential status client with a sensible default timeout.
-func NewClient() *Client {
-	return &Client{
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+type Client struct {
+	client *http.Client
+}
+
+type Option func(*Client)
+
+func WithHTTPClient(client *http.Client) Option {
+	return func(c *Client) {
+		if client == nil {
+			return
+		}
+
+		c.client = client
 	}
+}
+
+func NewClient(options ...Option) *Client {
+	client := &Client{
+		client: defaultHTTPClient,
+	}
+
+	for _, option := range options {
+		option(client)
+	}
+
+	return client
 }
 
 // FetchAndCheckRevocation fetches the status list credential from the given
@@ -30,7 +47,6 @@ func NewClient() *Client {
 // position is revoked.
 func FetchAndCheckRevocation(statusListCredentialURL string, position int) (bool, error) {
 	client := NewClient()
-
 	resp, err := client.FetchStatusListCredential(statusListCredentialURL)
 	if err != nil {
 		return false, err
@@ -46,7 +62,7 @@ func (c *Client) FetchStatusListCredential(statusListCredentialURL string) (*Sta
 		return nil, fmt.Errorf("statusListCredential URL is empty")
 	}
 
-	resp, err := c.httpClient.Get(statusListCredentialURL)
+	resp, err := c.client.Get(statusListCredentialURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call status list credential endpoint: %w", err)
 	}

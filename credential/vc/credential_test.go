@@ -1877,3 +1877,143 @@ func TestExtractField_EdgeCases(t *testing.T) {
 	emptyResult := emptyCred.ExtractField("any.path")
 	assert.Nil(t, emptyResult)
 }
+
+func TestGetOptions_Defaults(t *testing.T) {
+	opts := getOptions()
+
+	assert.False(t, opts.isValidateSchema)
+	assert.False(t, opts.isVerifyProof)
+	assert.False(t, opts.isCheckExpiration)
+	assert.False(t, opts.isCheckRevocation)
+	assert.Equal(t, config.BaseURL, opts.didBaseURL)
+	assert.Equal(t, "key-1", opts.verificationMethodKey)
+	assert.Nil(t, opts.loadedSchemaLoader)
+	assert.NotNil(t, opts.resolver, "default resolver should not be nil")
+}
+
+func TestGetOptions_WithBaseURLAndVerificationMethodKey(t *testing.T) {
+	opts := getOptions(
+		WithBaseURL("https://custom.example/did"),
+		WithVerificationMethodKey("key-custom"),
+	)
+
+	assert.Equal(t, "https://custom.example/did", opts.didBaseURL)
+	assert.Equal(t, "key-custom", opts.verificationMethodKey)
+}
+
+func TestGetOptions_WithResolverOverridesDefault(t *testing.T) {
+	// Simple sanity check that WithResolver compiles and does not panic
+	// when provided a nil resolver. Behaviour is implementation-defined.
+	opts := getOptions(WithResolver(nil))
+	assert.NotNil(t, opts.resolver)
+	assert.Equal(t, config.BaseURL, opts.didBaseURL)
+}
+
+func TestValidateCredential_WithCustomSchemaLoader_Succeeds(t *testing.T) {
+	// Minimal credential that satisfies validateCredential's required keys.
+	cred := CredentialData{
+		"type": []interface{}{"VerifiableCredential"},
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:123",
+		},
+		"credentialSchema": map[string]interface{}{
+			"id":   "https://example.org/schema/1",
+			"type": "JsonSchema",
+		},
+	}
+
+	// Schema that accepts any object.
+	schemaJSON := []byte(`{"type":"object"}`)
+
+	opts := getOptions(
+		WithSchemaValidation(),
+		WithSchemaLoader(func(schemaID string) ([]byte, error) {
+			assert.Equal(t, "https://example.org/schema/1", schemaID)
+			return schemaJSON, nil
+		}),
+	)
+
+	err := validateCredential(cred, opts)
+	assert.NoError(t, err)
+}
+
+func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T) {
+	cred := CredentialData{
+		"type": []interface{}{"VerifiableCredential"},
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:123",
+		},
+		"credentialSchema": map[string]interface{}{
+			"id":   "https://example.org/schema/1",
+			"type": "JsonSchema",
+		},
+	}
+
+	opts := getOptions(
+		WithSchemaValidation(),
+		WithSchemaLoader(func(schemaID string) ([]byte, error) {
+			return []byte{}, nil
+		}),
+	)
+
+	err := validateCredential(cred, opts)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "schema is empty")
+}
+
+func TestAddSelectiveDisclosures_PreservesRegisteredClaims(t *testing.T) {
+	vcc := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:      "urn:uuid:test-claims",
+		Issuer:  "did:example:issuer",
+		Types:   []string{"VerifiableCredential"},
+		Subject: []Subject{
+			{
+				ID: "did:example:subject1",
+				CustomFields: map[string]interface{}{
+					"firstname": "Alice",
+					"lastname":  "Smith",
+				},
+			},
+		},
+		ValidFrom:  time.Now(),
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	// Issue SD-JWT with firstname disclosure
+	initialPaths := []string{"credentialSubject.firstname"}
+	cred, err := NewJWTCredential(vcc, WithSDSelectivePaths(initialPaths))
+	assert.NoError(t, err)
+
+	// Parse to get credential with disclosures
+	serialized, _ := cred.Serialize()
+	parsedCred, err := ParseCredential([]byte(serialized.(string)))
+	assert.NoError(t, err)
+
+	// Add more selective disclosures
+	newPaths := []string{"credentialSubject.lastname"}
+	newCred, err := parsedCred.AddSelectiveDisclosures(newPaths)
+	assert.NoError(t, err)
+
+	// Decode payload to verify registered claims are preserved
+	newSerialized, _ := newCred.Serialize()
+	newStr := newSerialized.(string)
+	parts := strings.Split(newStr, ".")
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	assert.NoError(t, err)
+	
+	var payload map[string]interface{}
+	err = json.Unmarshal(payloadBytes, &payload)
+	assert.NoError(t, err)
+
+	// Verify registered claims are preserved
+	assert.Equal(t, "did:example:issuer", payload["iss"], "issuer should be preserved")
+	assert.Equal(t, "did:example:subject1", payload["sub"], "subject should be preserved")
+	assert.Equal(t, "urn:uuid:test-claims", payload["jti"], "jti should be preserved")
+	assert.NotNil(t, payload["exp"], "exp should be preserved")
+	assert.NotNil(t, payload["iat"], "iat should be preserved")
+	
+	// Verify vc claim exists
+	_, hasVC := payload["vc"]
+	assert.True(t, hasVC, "vc claim should exist")
+}

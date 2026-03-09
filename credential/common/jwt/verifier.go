@@ -14,13 +14,19 @@ import (
 
 // JWTVerifier handles JWT verification operations
 type JWTVerifier struct {
-	resolver *verificationmethod.Resolver
+	resolver verificationmethod.ResolverProvider
 }
 
-// NewJWTVerifier creates a new JWT verifier with DID resolver
+// NewJWTVerifier creates a new JWT verifier with DID resolver (kept for backward compatibility).
 func NewJWTVerifier(didResolverURL string) *JWTVerifier {
 	return &JWTVerifier{
 		resolver: verificationmethod.NewResolver(didResolverURL),
+	}
+}
+
+func NewJWTVerifierWithResolver(resolver verificationmethod.ResolverProvider) *JWTVerifier {
+	return &JWTVerifier{
+		resolver: resolver,
 	}
 }
 
@@ -53,7 +59,6 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("kid not found in header")
 	}
 
-	// Get public key from resolver
 	publicKeyHex, err := v.resolver.GetPublicKey(kid)
 	if err != nil {
 		return fmt.Errorf("failed to get public key: %w", err)

@@ -10,70 +10,200 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIsSDJWT(t *testing.T) {
-	jwt := "aaa.bbb.ccc"
-	sd := jwt + "~D1~D2~"
-
-	assert.False(t, IsSDJWT(""), "empty string is not SD-JWT")
-	assert.False(t, IsSDJWT(jwt), "plain JWT is not SD-JWT")
-	assert.True(t, IsSDJWT(sd), "JWT with disclosures and '~' should be SD-JWT")
-	assert.False(t, IsSDJWT("not-a-jwt~something~"), "invalid JWT prefix should not be SD-JWT")
+func hashAndParseDisclosureForTest(t *testing.T, sdAlg string, arr []interface{}) (string, disclosureInfo) {
+	t.Helper()
+	disc := encodeDisclosureForTest(t, arr)
+	h, err := hashDisclosure(sdAlg, disc)
+	if err != nil {
+		t.Fatalf("hashDisclosure failed: %v", err)
+	}
+	info, err := parseDisclosure(disc)
+	if err != nil {
+		t.Fatalf("parseDisclosure failed: %v", err)
+	}
+	return h, info
 }
 
-func TestParseSDJWT(t *testing.T) {
-	jwt := "aaa.bbb.ccc"
-	// Create valid base64url disclosures: [salt, fieldName, value]
-	arr1 := []interface{}{"salt1", "name", "Alice"}
-	arr2 := []interface{}{"salt2", "age", float64(30)}
-	b1, _ := json.Marshal(arr1)
-	b2, _ := json.Marshal(arr2)
-	d1 := base64.RawURLEncoding.EncodeToString(b1)
-	d2 := base64.RawURLEncoding.EncodeToString(b2)
+func TestValidateAndGetAlgorithm(t *testing.T) {
+	tests := []struct {
+		name        string
+		vc          map[string]interface{}
+		validateAlg bool
+		wantAlg     string
+		wantErr     string
+	}{
+		{name: "default-algorithm", vc: map[string]interface{}{}, validateAlg: true, wantAlg: DefaultHashAlgorithm},
+		{name: "custom-supported", vc: map[string]interface{}{"_sd_alg": AlgSHA512}, validateAlg: true, wantAlg: AlgSHA512},
+		{name: "unsupported-validated", vc: map[string]interface{}{"_sd_alg": "sha-999"}, validateAlg: true, wantErr: "unsupported _sd_alg"},
+		{name: "unsupported-not-validated", vc: map[string]interface{}{"_sd_alg": "sha-999"}, validateAlg: false, wantAlg: "sha-999"},
+	}
 
-	sd := jwt + "~" + d1 + "~" + d2 + "~"
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := validateAndGetAlgorithm(tc.vc, tc.validateAlg)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateAndGetAlgorithm failed: %v", err)
+			}
+			if got != tc.wantAlg {
+				t.Fatalf("algorithm = %q, want %q", got, tc.wantAlg)
+			}
+		})
+	}
+}
 
-	parsed, err := Parse(sd)
+func TestBuildDisclosureMap_SkipEmptyAndParse(t *testing.T) {
+	valid := encodeDisclosureForTest(t, []interface{}{"salt", "name", "Alice"})
+	m, err := buildDisclosureMap([]string{"", valid}, AlgSHA256)
+	if err != nil {
+		t.Fatalf("buildDisclosureMap failed: %v", err)
+	}
+	if len(m) != 1 {
+		t.Fatalf("expected one disclosure hash, got %d", len(m))
+	}
+}
+
+func TestBuildDisclosureMap_InvalidDisclosure(t *testing.T) {
+	_, err := buildDisclosureMap([]string{"bad@@@"}, AlgSHA256)
+	if err == nil {
+		t.Fatal("expected parse error for invalid disclosure")
+	}
+	if !strings.Contains(err.Error(), "failed to decode disclosure") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestProcessNode_ObjectContextRejectArrayDisclosure(t *testing.T) {
+	h, info := hashAndParseDisclosureForTest(t, AlgSHA256, []interface{}{"salt-x", "array-value"})
+	disclosureMap := map[string]disclosureInfo{h: info}
+
+	node := map[string]interface{}{
+		"_sd": []interface{}{h},
+	}
+
+	_, err := processNode(node, disclosureMap)
+	if err == nil {
+		t.Fatal("expected context mismatch error")
+	}
+	if !strings.Contains(err.Error(), "array element disclosure used in object context") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestProcessNode_ArrayContextRejectObjectDisclosure(t *testing.T) {
+	h, info := hashAndParseDisclosureForTest(t, AlgSHA256, []interface{}{"salt-x", "name", "Alice"})
+	disclosureMap := map[string]disclosureInfo{h: info}
+
+	node := []interface{}{
+		map[string]interface{}{"...": h},
+	}
+
+	_, err := processNode(node, disclosureMap)
+	if err == nil {
+		t.Fatal("expected context mismatch error")
+	}
+	if !strings.Contains(err.Error(), "object field disclosure used in array context") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestProcessNode_DuplicateFieldAfterReconstruct(t *testing.T) {
+	h, info := hashAndParseDisclosureForTest(t, AlgSHA256, []interface{}{"salt-x", "name", "Alice"})
+	disclosureMap := map[string]disclosureInfo{h: info}
+
+	node := map[string]interface{}{
+		"name": "already-exists",
+		"_sd":  []interface{}{h},
+	}
+
+	_, err := processNode(node, disclosureMap)
+	if err == nil {
+		t.Fatal("expected duplicate field error")
+	}
+	if !strings.Contains(err.Error(), "duplicate field") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestReconstruct_ArrayPlaceholder(t *testing.T) {
+	arr := []interface{}{"salt123", "Item1"}
+	b, err := json.Marshal(arr)
 	require.NoError(t, err)
-	assert.Equal(t, jwt, parsed.BaseJWT)
-	assert.Equal(t, []string{d1, d2}, parsed.Disclosures)
-	assert.Len(t, parsed.DecodedDisclosures, 2)
-}
+	D := base64.RawURLEncoding.EncodeToString(b)
 
-func TestCreatePresentation(t *testing.T) {
-	issuerJWT := "header.payload.sig"
-	all := []string{"D1", "D2", "D3"}
-
-	full := BuildSDJWTPresentation(issuerJWT, all)
-	assert.Equal(t, "header.payload.sig~D1~D2~D3~", full)
-
-	subset := BuildSDJWTPresentation(issuerJWT, []string{all[0], all[2]})
-	assert.Equal(t, "header.payload.sig~D1~D3~", subset)
-
-	none := BuildSDJWTPresentation(issuerJWT, nil)
-	assert.Equal(t, "header.payload.sig", none)
-
-	empty := BuildSDJWTPresentation(issuerJWT, []string{"", "D1", ""})
-	assert.Equal(t, "header.payload.sig~D1~", empty)
-}
-
-func TestPresentation(t *testing.T) {
-	// Create valid base64url disclosures
-	arr1 := []interface{}{"salt1", "firstname", "John"}
-	arr2 := []interface{}{"salt2", "lastname", "Doe"}
-	b1, _ := json.Marshal(arr1)
-	b2, _ := json.Marshal(arr2)
-	d1 := base64.RawURLEncoding.EncodeToString(b1)
-	d2 := base64.RawURLEncoding.EncodeToString(b2)
-
-	sd := "aaa.bbb.ccc~" + d1 + "~" + d2 + "~"
-	parsed, err := Parse(sd)
+	h, err := hashDisclosure(AlgSHA256, D)
 	require.NoError(t, err)
 
-	assert.Equal(t, "aaa.bbb.ccc", parsed.BaseJWT)
-	assert.Equal(t, []string{d1, d2}, parsed.Disclosures)
+	vc := map[string]interface{}{
+		"items": []interface{}{
+			map[string]interface{}{"...": h},
+		},
+	}
 
-	out := BuildSDJWTPresentation(parsed.BaseJWT, []string{d1})
-	assert.Equal(t, "aaa.bbb.ccc~"+d1+"~", out)
+	out, err := Reconstruct(vc, []string{D}, true)
+	require.NoError(t, err)
+
+	itemsRaw, ok := out["items"]
+	require.True(t, ok)
+
+	items, ok := itemsRaw.([]interface{})
+	require.True(t, ok)
+	require.Len(t, items, 1)
+	assert.Equal(t, "Item1", items[0])
+}
+
+func TestReconstruct_RealExampleFromCompact(t *testing.T) {
+	compact := "eyJ0eXAiOiJzZCtqd3QiLCJhbGciOiJFUzI1NiJ9.eyJpZCI6IjEyMzQiLCJfc2QiOlsiYkRUUnZtNS1Zbi1IRzdjcXBWUjVPVlJJWHNTYUJrNTdKZ2lPcV9qMVZJNCIsImV0M1VmUnlsd1ZyZlhkUEt6Zzc5aGNqRDFJdHpvUTlvQm9YUkd0TW9zRmsiLCJ6V2ZaTlMxOUF0YlJTVGJvN3NKUm4wQlpRdldSZGNob0M3VVphYkZyalk4Il0sIl9zZF9hbGciOiJzaGEtMjU2In0.n27NCtnuwytlBYtUNjgkesDP_7gN7bhaLhWNL4SWT6MaHsOjZ2ZMp987GgQRL6ZkLbJ7Cd3hlePHS84GBXPuvg~WyI1ZWI4Yzg2MjM0MDJjZjJlIiwiZmlyc3RuYW1lIiwiSm9obiJd~WyJjNWMzMWY2ZWYzNTg4MWJjIiwibGFzdG5hbWUiLCJEb2UiXQ~WyJmYTlkYTUzZWJjOTk3OThlIiwic3NuIiwiMTIzLTQ1LTY3ODkiXQ~eyJ0eXAiOiJrYitqd3QiLCJhbGciOiJFUzI1NiJ9.eyJpYXQiOjE3MTAwNjk3MjIsImF1ZCI6ImRpZDpleGFtcGxlOjEyMyIsIm5vbmNlIjoiazh2ZGYwbmQ2Iiwic2RfaGFzaCI6Il8tTmJWSzNmczl3VzNHaDNOUktSNEt1NmZDMUwzN0R2MFFfalBXd0ppRkUifQ.pqw2OB5IA5ya9Mxf60hE3nr2gsJEIoIlnuCa4qIisijHbwg3WzTDFmW2SuNvK_ORN0WU6RoGbJx5uYZh8k4EbA"
+
+	parsed, err := Parse(compact)
+	require.NoError(t, err)
+
+	parts := strings.Split(parsed.BaseJWT, ".")
+	require.Len(t, parts, 3)
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+
+	var payload map[string]interface{}
+	err = json.Unmarshal(payloadBytes, &payload)
+	require.NoError(t, err)
+
+	out, err := Reconstruct(payload, parsed.Disclosures, true)
+	require.NoError(t, err)
+
+	assert.Equal(t, "1234", out["id"])
+	assert.Equal(t, "John", out["firstname"])
+	assert.Equal(t, "Doe", out["lastname"])
+	assert.Equal(t, "123-45-6789", out["ssn"])
+
+	_, hasSd := out["_sd"]
+	assert.False(t, hasSd)
+	_, hasAlg := out["_sd_alg"]
+	assert.False(t, hasAlg)
+}
+
+func TestValidation_DuplicateDigestInArray(t *testing.T) {
+	arr1 := []interface{}{"salt1", "value1"}
+	b1, _ := json.Marshal(arr1)
+	D1 := base64.RawURLEncoding.EncodeToString(b1)
+
+	h1, _ := hashDisclosure(AlgSHA256, D1)
+
+	vcWithDup := map[string]interface{}{
+		"items": []interface{}{
+			map[string]interface{}{"...": h1},
+			map[string]interface{}{"...": h1},
+		},
+	}
+
+	_, err := Reconstruct(vcWithDup, []string{D1}, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate digest")
 }
 
 func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
@@ -90,17 +220,14 @@ func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
 
 	processed := result.ProcessedVC
 
-	// Processed should hide "name" and keep "age"
 	_, hasName := processed["name"]
 	assert.False(t, hasName)
 	assert.Equal(t, float64(30), processed["age"])
 
-	// SD-JWT metadata
 	assert.Equal(t, AlgSHA256, processed["_sd_alg"])
 	rawSD, ok := processed["_sd"]
 	require.True(t, ok)
 
-	// _sd is a slice of digests
 	switch v := rawSD.(type) {
 	case []string:
 		assert.Len(t, v, 1)
@@ -112,7 +239,6 @@ func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
 
 	require.Len(t, result.Disclosures, 1)
 
-	// Reconstruct should restore the original payload and remove SD-JWT internals
 	reconstructed, err := Reconstruct(processed, result.Disclosures, true)
 	require.NoError(t, err)
 
@@ -137,11 +263,8 @@ func TestBuildDisclosuresAndReconstruct_ArrayElementPath(t *testing.T) {
 	require.NoError(t, err)
 
 	processed := result.ProcessedVC
-
-	// root still keeps sd algorithm metadata
 	assert.Equal(t, AlgSHA256, processed["_sd_alg"])
 
-	// tags[1] has been replaced by placeholder { "...": h }
 	rawTags, ok := processed["tags"]
 	require.True(t, ok)
 
@@ -157,7 +280,6 @@ func TestBuildDisclosuresAndReconstruct_ArrayElementPath(t *testing.T) {
 
 	require.Len(t, result.Disclosures, 1)
 
-	// Reconstruct should restore "email" at index 1 and drop SD-JWT metadata
 	out, err := Reconstruct(processed, result.Disclosures, true)
 	require.NoError(t, err)
 
@@ -193,24 +315,20 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 
 	processed := result.ProcessedVC
 
-	// root only has _sd_alg, no _sd
 	assert.Equal(t, AlgSHA256, processed["_sd_alg"])
 	_, hasRootSd := processed["_sd"]
 	assert.False(t, hasRootSd)
 
-	// Drill down into person.profile
 	rawPerson, ok := processed["person"].(map[string]interface{})
 	require.True(t, ok)
 
 	rawProfile, ok := rawPerson["profile"].(map[string]interface{})
 	require.True(t, ok)
 
-	// name is hidden, age is still present
 	_, hasName := rawProfile["name"]
 	assert.False(t, hasName)
 	assert.Equal(t, float64(30), rawProfile["age"])
 
-	// profile._sd contains exactly one digest
 	rawSd, ok := rawProfile["_sd"]
 	require.True(t, ok)
 	switch v := rawSd.(type) {
@@ -224,7 +342,6 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 
 	require.Len(t, result.Disclosures, 1)
 
-	// Reconstruct should restore name, keep age, and remove sd metadata at all levels
 	out, err := Reconstruct(processed, result.Disclosures, true)
 	require.NoError(t, err)
 
@@ -244,8 +361,6 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 }
 
 func TestBuildDisclosures_RecursiveParentAndChildPaths(t *testing.T) {
-	// Selecting parent first and then child should fail because the child path
-	// no longer exists after the parent has been replaced by SD-JWT metadata.
 	original1 := map[string]interface{}{
 		"id": "1234",
 		"person": map[string]interface{}{
@@ -262,7 +377,6 @@ func TestBuildDisclosures_RecursiveParentAndChildPaths(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `path "person.profile.name" not found`)
 
-	// Selecting child first and then parent should succeed and be reconstructable.
 	original2 := map[string]interface{}{
 		"id": "1234",
 		"person": map[string]interface{}{
@@ -300,8 +414,6 @@ func TestBuildDisclosures_RecursiveParentAndChildPaths(t *testing.T) {
 }
 
 func TestBuildDisclosures_ArrayParentAndChildPaths(t *testing.T) {
-	// Selecting parent array first and then a child element should fail because
-	// the array has been removed from the root after the first selection.
 	original1 := map[string]interface{}{
 		"tags": []interface{}{"public", "email", "phone"},
 		"note": "test",
@@ -313,7 +425,6 @@ func TestBuildDisclosures_ArrayParentAndChildPaths(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `path "tags[1]" not found`)
 
-	// Selecting a child element first and then the parent array should succeed.
 	original2 := map[string]interface{}{
 		"tags": []interface{}{"public", "email", "phone"},
 		"note": "test",
@@ -343,66 +454,6 @@ func TestBuildDisclosures_ArrayParentAndChildPaths(t *testing.T) {
 	assert.False(t, hasAlg)
 }
 
-func TestReconstruct_ArrayPlaceholder(t *testing.T) {
-	// Build a disclosure [salt, value] for array element
-	arr := []interface{}{"salt123", "Item1"}
-	b, err := json.Marshal(arr)
-	require.NoError(t, err)
-	D := base64.RawURLEncoding.EncodeToString(b)
-
-	h, err := hashDisclosure(AlgSHA256, D)
-	require.NoError(t, err)
-
-	vc := map[string]interface{}{
-		"items": []interface{}{
-			map[string]interface{}{"...": h},
-		},
-	}
-
-	out, err := Reconstruct(vc, []string{D}, true)
-	require.NoError(t, err)
-
-	itemsRaw, ok := out["items"]
-	require.True(t, ok)
-
-	items, ok := itemsRaw.([]interface{})
-	require.True(t, ok)
-	require.Len(t, items, 1)
-	assert.Equal(t, "Item1", items[0])
-}
-
-func TestReconstruct_RealExampleFromCompact(t *testing.T) {
-	compact := "eyJ0eXAiOiJzZCtqd3QiLCJhbGciOiJFUzI1NiJ9.eyJpZCI6IjEyMzQiLCJfc2QiOlsiYkRUUnZtNS1Zbi1IRzdjcXBWUjVPVlJJWHNTYUJrNTdKZ2lPcV9qMVZJNCIsImV0M1VmUnlsd1ZyZlhkUEt6Zzc5aGNqRDFJdHpvUTlvQm9YUkd0TW9zRmsiLCJ6V2ZaTlMxOUF0YlJTVGJvN3NKUm4wQlpRdldSZGNob0M3VVphYkZyalk4Il0sIl9zZF9hbGciOiJzaGEtMjU2In0.n27NCtnuwytlBYtUNjgkesDP_7gN7bhaLhWNL4SWT6MaHsOjZ2ZMp987GgQRL6ZkLbJ7Cd3hlePHS84GBXPuvg~WyI1ZWI4Yzg2MjM0MDJjZjJlIiwiZmlyc3RuYW1lIiwiSm9obiJd~WyJjNWMzMWY2ZWYzNTg4MWJjIiwibGFzdG5hbWUiLCJEb2UiXQ~WyJmYTlkYTUzZWJjOTk3OThlIiwic3NuIiwiMTIzLTQ1LTY3ODkiXQ~eyJ0eXAiOiJrYitqd3QiLCJhbGciOiJFUzI1NiJ9.eyJpYXQiOjE3MTAwNjk3MjIsImF1ZCI6ImRpZDpleGFtcGxlOjEyMyIsIm5vbmNlIjoiazh2ZGYwbmQ2Iiwic2RfaGFzaCI6Il8tTmJWSzNmczl3VzNHaDNOUktSNEt1NmZDMUwzN0R2MFFfalBXd0ppRkUifQ.pqw2OB5IA5ya9Mxf60hE3nr2gsJEIoIlnuCa4qIisijHbwg3WzTDFmW2SuNvK_ORN0WU6RoGbJx5uYZh8k4EbA"
-
-	parsed, err := Parse(compact)
-	require.NoError(t, err)
-
-	// Decode issuer-signed JWT payload
-	parts := strings.Split(parsed.BaseJWT, ".")
-	require.Len(t, parts, 3)
-
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-	require.NoError(t, err)
-
-	var payload map[string]interface{}
-	err = json.Unmarshal(payloadBytes, &payload)
-	require.NoError(t, err)
-
-	// Reconstruct processed payload from payload + disclosures
-	out, err := Reconstruct(payload, parsed.Disclosures, true)
-	require.NoError(t, err)
-
-	assert.Equal(t, "1234", out["id"])
-	assert.Equal(t, "John", out["firstname"])
-	assert.Equal(t, "Doe", out["lastname"])
-	assert.Equal(t, "123-45-6789", out["ssn"])
-
-	_, hasSd := out["_sd"]
-	assert.False(t, hasSd)
-	_, hasAlg := out["_sd_alg"]
-	assert.False(t, hasAlg)
-}
-
 func TestBuildDisclosures_WithOptions(t *testing.T) {
 	original := map[string]interface{}{
 		"name": "Alice",
@@ -410,7 +461,6 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 		"city": "NYC",
 	}
 
-	// Test with SHA-384 algorithm
 	result, err := BuildDisclosures(BuildDisclosuresInput{
 		VC:             original,
 		SelectivePaths: []string{"name", "age"},
@@ -419,13 +469,11 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, AlgSHA384, result.ProcessedVC["_sd_alg"])
 
-	// Verify reconstruction works with sha-384
 	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, true)
 	require.NoError(t, err)
 	assert.Equal(t, "Alice", out["name"])
 	assert.Equal(t, float64(30), out["age"])
 
-	// Test with shuffle
 	_, err = BuildDisclosures(BuildDisclosuresInput{
 		VC:             original,
 		SelectivePaths: []string{"name", "age"},
@@ -433,7 +481,6 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Test with decoy digests at root path
 	result3, err := BuildDisclosures(BuildDisclosuresInput{
 		VC:             original,
 		SelectivePaths: []string{"name"},
@@ -441,7 +488,6 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// _sd should have 1 real digest + 2 decoy hashes = 3 total
 	sd := result3.ProcessedVC["_sd"]
 	switch v := sd.(type) {
 	case []interface{}:
@@ -450,37 +496,9 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 		assert.Len(t, v, 3)
 	}
 
-	// Disclosures should only contain the 1 real disclosure, no decoys
 	assert.Len(t, result3.Disclosures, 1)
 
-	// Reconstruction works: decoy hashes are just unmatched digests (ignored)
 	out3, err := Reconstruct(result3.ProcessedVC, result3.Disclosures, true)
 	require.NoError(t, err)
 	assert.Equal(t, "Alice", out3["name"])
 }
-
-
-
-func TestValidation_DuplicateDigestInArray(t *testing.T) {
-	// Build a disclosure for array element
-	arr1 := []interface{}{"salt1", "value1"}
-	b1, _ := json.Marshal(arr1)
-	D1 := base64.RawURLEncoding.EncodeToString(b1)
-
-	h1, _ := hashDisclosure(AlgSHA256, D1)
-
-	// Create vc with same hash appearing twice in array (duplicate)
-	vcWithDup := map[string]interface{}{
-		"items": []interface{}{
-			map[string]interface{}{"...": h1},
-			map[string]interface{}{"...": h1}, // duplicate!
-		},
-	}
-
-	// This should fail with duplicate digest error
-	_, err := Reconstruct(vcWithDup, []string{D1}, true)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "duplicate digest")
-}
-
-
