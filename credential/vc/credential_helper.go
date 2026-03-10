@@ -4,13 +4,45 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/xeipuuv/gojsonschema"
 
 	credentialstatus "github.com/pilacorp/go-credential-sdk/credential/common/credential-status"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 )
+
+// extractFieldFromMap extracts a field value from a map using dot-notation path.
+// Returns nil if the field does not exist.
+func extractFieldFromMap(m map[string]interface{}, path string) interface{} {
+	if m == nil {
+		return nil
+	}
+
+	parts := strings.Split(path, ".")
+	current := interface{}(m)
+
+	for _, part := range parts {
+		if current == nil {
+			return nil
+		}
+
+		// Try to convert to map
+		if m, ok := current.(map[string]interface{}); ok {
+			val, exists := m[part]
+			if !exists {
+				return nil
+			}
+			current = val
+		} else {
+			return nil
+		}
+	}
+
+	return current
+}
 
 // serializeCredentialContents serializes CredentialContents into a Credential.
 func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error) {
@@ -65,6 +97,40 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 	}
 
 	return vcJSON, nil
+}
+
+// normalizeCredentialData converts a CredentialData (which is a named type around
+// jsonmap.JSONMap) into a plain map[string]interface{}, recursively normalizing
+// nested maps/slices so that generic processors (like sdjwt) can work with it.
+func normalizeCredentialData(cd CredentialData) map[string]interface{} {
+	return normalizeMap(map[string]interface{}(cd))
+}
+
+func normalizeMap(in map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = normalizeValue(v)
+	}
+	return out
+}
+
+func normalizeValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case CredentialData:
+		return normalizeMap(map[string]interface{}(val))
+	case jsonmap.JSONMap:
+		return normalizeMap(map[string]interface{}(val))
+	case map[string]interface{}:
+		return normalizeMap(val)
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, e := range val {
+			out[i] = normalizeValue(e)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // serializeSubjects converts a slice of Subject structs to a JSON-LD compatible format.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -44,6 +45,16 @@ type Credential interface {
 
 	GetType() string
 
+	// AddSelectiveDisclosures adds selective disclosures to the credential.
+	// For JWT credentials: adds SD-JWT disclosures to the credential.
+	// For JSON credentials: returns an error (unsupported).
+	AddSelectiveDisclosures(selectivePaths []string) (Credential, error)
+
+	// ExtractField extracts a field value from the credential by dot-notation path.
+	// Returns nil if the field does not exist.
+	// Example paths: "name", "credentialSubject.name", "credentialSubject.address.city"
+	ExtractField(path string) interface{}
+
 	executeOptions(opts ...CredentialOpt) error
 }
 
@@ -52,15 +63,15 @@ type CredentialData jsonmap.JSONMap
 
 // CredentialContents represents the structured contents of a Credential.
 type CredentialContents struct {
-	Context          []interface{} // JSON-LD contexts
-	ID               string        // Credential identifier
-	Types            []string      // Credential types
-	Issuer           string        // Issuer identifier
-	ValidFrom        time.Time     // Issuance date
-	ValidUntil       time.Time     // Expiration date
-	CredentialStatus []Status      // Credential status entries
-	Subject          []Subject     // Credential subjects
-	Schemas          []Schema      // Credential schemas
+	Context          []interface{} `json:"context,omitempty"`          // JSON-LD contexts
+	ID               string        `json:"id,omitempty"`               // Credential identifier
+	Types            []string      `json:"type,omitempty"`             // Credential types
+	Issuer           string        `json:"issuer,omitempty"`           // Issuer identifier
+	ValidFrom        time.Time     `json:"validFrom,omitempty"`        // Issuance date
+	ValidUntil       time.Time     `json:"validUntil,omitempty"`       // Expiration date
+	CredentialStatus []Status      `json:"credentialStatus,omitempty"` // Credential status entries
+	Subject          []Subject     `json:"subject,omitempty"`          // Credential subjects
+	Schemas          []Schema      `json:"schemas,omitempty"`          // Credential schemas
 }
 
 // Status represents the credentialStatus field as per W3C Verifiable Credentials.
@@ -74,15 +85,18 @@ type Status struct {
 
 // Subject represents the credentialSubject field.
 type Subject struct {
-	ID           string                 // Subject identifier
-	CustomFields map[string]interface{} // Additional subject data
+	ID           string                 `json:"id,omitempty"`           // Subject identifier
+	CustomFields map[string]interface{} `json:"customFields,omitempty"` // Additional subject data
 }
 
 // Schema represents a credential schema with an ID and type.
 type Schema struct {
-	ID   string // Schema identifier
-	Type string // Schema type
+	ID   string `json:"id,omitempty"`   // Schema identifier
+	Type string `json:"type,omitempty"` // Schema type
 }
+
+// Decoy specifies where and how many decoy digests to add for SD-JWT privacy.
+type Decoy = sdjwt.DecoyConfig
 
 // SchemaLoaderFunc defines a function that loads a credential schema JSON by ID.
 // It should return the raw JSON bytes for the schema corresponding to the given ID.
@@ -99,6 +113,11 @@ type credentialOptions struct {
 	isCheckRevocation     bool
 	didBaseURL            string
 	verificationMethodKey string
+	sdDisclosures         []string
+	sdSelectivePaths      []string
+	sdAlg                 string
+	sdShuffle             bool
+	sdDecoys              []sdjwt.DecoyConfig
 	loadedSchemaLoader    SchemaLoaderFunc
 	resolver              verificationmethod.ResolverProvider
 }
@@ -142,6 +161,47 @@ func WithCheckExpiration() CredentialOpt {
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckRevocation = true
+	}
+}
+
+// WithSDDisclosures sets pre-built SD-JWT disclosures to be used when issuing credentials.
+// If provided, JWTCredential.Serialize will output an SD-JWT instead of a plain JWT.
+func WithSDDisclosures(disclosures []string) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.sdDisclosures = disclosures
+	}
+}
+
+// WithSDSelectivePaths declares which claims should be selectively disclosable.
+// When provided, the SDK will use sdjwt.BuildDisclosures to construct SD-JWT structures
+// during credential issuance.
+func WithSDSelectivePaths(paths []string) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.sdSelectivePaths = paths
+	}
+}
+
+// WithSDHashAlgorithm sets the hash algorithm for SD-JWT.
+// Supported: sha-256, sha-384, sha-512. Empty string defaults to sha-256.
+func WithSDHashAlgorithm(alg string) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.sdAlg = alg
+	}
+}
+
+// WithSDShuffle enables shuffling of the _sd array to prevent disclosure order leakage.
+func WithSDShuffle(enabled bool) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.sdShuffle = enabled
+	}
+}
+
+// WithSDDecoyDigests adds decoy digests at specified parent paths to obscure the number of disclosed claims.
+// Each Decoy specifies the path where decoy digests should be added and the count of decoys.
+// Example: WithSDDecoyDigests([]vc.Decoy{{Path: "", Count: 2}, {Path: "credentialSubject", Count: 3}})
+func WithSDDecoyDigests(decoys []Decoy) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.sdDecoys = decoys
 	}
 }
 
@@ -201,12 +261,12 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 	}
 
 	valStr := string(rawCredential)
-	if isJWTCredential(valStr) {
+	if sdjwt.IsSDJWT(valStr) || isJWTCredential(valStr) {
 
 		return ParseJWTCredential(valStr, opts...)
 	}
 
-	return nil, fmt.Errorf("failed to parse credential: not a valid JWT or embedded credential")
+	return nil, fmt.Errorf("failed to parse credential: not a valid JSON, SD-JWT, or JWT credential")
 }
 
 // ParseCredentialWithValidation parses a credential from various formats into a Credential with validation.

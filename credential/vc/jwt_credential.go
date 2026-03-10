@@ -9,6 +9,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -18,18 +19,34 @@ type JWTCredential struct {
 	signingInput string         // JWT header.payload (base64 encoded)
 	payloadData  CredentialData // Parsed payload as CredentialData
 	signature    string         // JWT signature (if signed)
+	disclosures  []string       // Optional SD-JWT disclosures (when issuing/holding SD-JWT)
 }
 
 func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
-	// Convert CredentialContents to CredentialData
 	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}
 
-	payloadData := CredentialData(m)
+	vcMap := normalizeCredentialData(m)
+	options := getOptions(opts...)
 
-	// Extract other claims from credentialContents
+	result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+		VC:             vcMap,
+		SelectivePaths: options.sdSelectivePaths,
+		HashAlgorithm:  options.sdAlg,
+		Shuffle:        options.sdShuffle,
+		Decoys:         options.sdDecoys,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", err)
+	}
+	vcMap = result.ProcessedVC
+	disclosures := result.Disclosures
+	disclosures = append(disclosures, options.sdDisclosures...)
+
+	payloadData := CredentialData(vcMap)
+
 	otherClaims := map[string]interface{}{}
 	if vcc.Issuer != "" {
 		otherClaims["iss"] = vcc.Issuer
@@ -48,23 +65,17 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 		otherClaims["jti"] = vcc.ID
 	}
 
-	// Build payload with vc claim and other claims
-	payload := map[string]interface{}{
-		"vc": payloadData,
-	}
-	// Add other claims to payload
+	payload := map[string]interface{}{"vc": payloadData}
 	for key, value := range otherClaims {
 		payload[key] = value
 	}
 
-	options := getOptions(opts...)
 	header := map[string]interface{}{
 		"typ": "JWT",
 		"alg": "ES256K",
 		"kid": fmt.Sprintf("%s#%s", vcc.Issuer, options.verificationMethodKey),
 	}
 
-	// Encode header and payload
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal header: %w", err)
@@ -77,31 +88,39 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 	}
 	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
-	// Create signing input (header.payload)
 	signingInput := headerEncoded + "." + payloadEncoded
 
 	e := &JWTCredential{
 		signingInput: signingInput,
 		payloadData:  payloadData,
 		signature:    "",
+		disclosures:  disclosures,
 	}
 
-	// Return JWTCredential
 	return e, e.executeOptions(opts...)
 }
 
 func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error) {
-	if !isJWTCredential(rawJWT) {
-		return nil, fmt.Errorf("invalid JWT format")
+	rawJWT = strings.TrimSpace(strings.Trim(rawJWT, "\""))
+
+	var issuerJWT string
+	var disclosures []string
+
+	if sdjwt.IsSDJWT(rawJWT) {
+		parsed, err := sdjwt.Parse(rawJWT)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse SD-JWT: %w", err)
+		}
+		issuerJWT = parsed.BaseJWT
+		disclosures = parsed.Disclosures
+	} else {
+		if !isJWTCredential(rawJWT) {
+			return nil, fmt.Errorf("invalid JWT or SD-JWT format")
+		}
+		issuerJWT = rawJWT
 	}
 
-	// prevent " from marshalling to json
-	rawJWT = strings.Trim(rawJWT, "\"")
-
-	// Split JWT into parts
-	parts := strings.Split(rawJWT, ".")
-
-	// Extract the payload and header
+	parts := strings.Split(issuerJWT, ".")
 	headerEncoded := parts[0]
 	payloadEncoded := parts[1]
 	signature := ""
@@ -109,7 +128,6 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 		signature = parts[2]
 	}
 
-	// Decode the payload and header
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadEncoded)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode payload: %w", err)
@@ -121,7 +139,6 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 		return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
 	}
 
-	// Store the vc claim in payload as payloadData
 	vcData, ok := payloadMap["vc"]
 	if !ok {
 		return nil, fmt.Errorf("vc claim not found in JWT payload")
@@ -132,13 +149,21 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 		return nil, fmt.Errorf("vc claim is not a valid JSON object")
 	}
 
-	// Create signing input (header.payload)
+	if len(disclosures) > 0 {
+		processed, err := sdjwt.Reconstruct(vcMap, disclosures, true)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", err)
+		}
+		vcMap = processed
+	}
+
 	signingInput := headerEncoded + "." + payloadEncoded
 
 	e := &JWTCredential{
 		signingInput: signingInput,
 		payloadData:  CredentialData(vcMap),
 		signature:    signature,
+		disclosures:  disclosures,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -146,8 +171,6 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 
 func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	signer := jwt.NewJWTSigner(priv)
-
-	// Sign the existing signing input
 	signature, err := signer.SignString(j.signingInput)
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
@@ -158,9 +181,7 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 		return err
 	}
 
-	// Update signature
 	j.signature = signature
-
 	return nil
 }
 
@@ -172,7 +193,6 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) 
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
-
 	if len(proof.Signature) == 0 {
 		return fmt.Errorf("proof signature cannot be empty")
 	}
@@ -182,26 +202,37 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) 
 		return err
 	}
 
-	// Use the provided signature directly
 	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
-
 	return nil
 }
 
 func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 	opts = append(opts, WithVerifyProof())
-
 	return j.executeOptions(opts...)
 }
 
 func (j *JWTCredential) Serialize() (interface{}, error) {
-	if j.signature != "" {
-		// Signed JWT
-		return j.signingInput + "." + j.signature, nil
-	} else {
-		// Unsigned JWT
-		return j.signingInput, nil
+	base := j.signingInput
+	if j.signature != "" || len(j.disclosures) > 0 {
+		base = base + "." + j.signature
 	}
+
+	if len(j.disclosures) == 0 {
+		return base, nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(base)
+	for _, d := range j.disclosures {
+		if d == "" {
+			continue
+		}
+		sb.WriteString("~")
+		sb.WriteString(d)
+	}
+	sb.WriteString("~")
+
+	return sb.String(), nil
 }
 
 func (j *JWTCredential) GetContents() ([]byte, error) {
@@ -210,6 +241,181 @@ func (j *JWTCredential) GetContents() ([]byte, error) {
 
 func (j *JWTCredential) GetType() string {
 	return "JWT"
+}
+
+func (j *JWTCredential) ExtractField(path string) interface{} {
+	if j.payloadData == nil {
+		return nil
+	}
+	return extractFieldFromMap(j.payloadData, path)
+}
+
+func (j *JWTCredential) AddSelectiveDisclosures(selectivePaths []string) (Credential, error) {
+	if len(selectivePaths) == 0 {
+		return nil, fmt.Errorf("selective paths cannot be empty")
+	}
+
+	payload, header, err := j.extractPayload()
+	if err != nil {
+		return nil, err
+	}
+
+	vcMap, ok := payload["vc"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("vc claim not found in payload")
+	}
+
+	allPaths := selectivePaths
+	if len(j.disclosures) > 0 {
+		// Reconstruct to get original data with all fields
+		original, err := sdjwt.Reconstruct(vcMap, j.disclosures, true)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reconstruct: %w", err)
+		}
+		// Get existing paths from comparison
+		existing := findDisclosedPaths(original, vcMap)
+		allPaths = append(existing, selectivePaths...)
+		vcMap = original // Use original data for building disclosures
+	}
+
+	result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+		VC:             vcMap,
+		SelectivePaths: unique(allPaths),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to build disclosures: %w", err)
+	}
+	return j.buildCredential(payload, header, result.ProcessedVC, result.Disclosures)
+}
+
+func (j *JWTCredential) extractPayload() (map[string]interface{}, string, error) {
+	parts := strings.Split(j.signingInput, ".")
+	if len(parts) != 2 {
+		return nil, "", fmt.Errorf("invalid signing input format")
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to decode payload: %w", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return nil, "", fmt.Errorf("failed to unmarshal payload: %w", err)
+	}
+	return payload, parts[0], nil
+}
+
+func (j *JWTCredential) buildCredential(payload map[string]interface{}, header string, vc map[string]interface{}, disc []string) (*JWTCredential, error) {
+	// Replace vc claim while preserving all other payload claims (iss, sub, exp, iat, nbf, jti, etc.)
+	payload["vc"] = vc
+	
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	return &JWTCredential{
+		signingInput: header + "." + encoded,
+		payloadData:  CredentialData(vc),
+		disclosures:  disc,
+	}, nil
+}
+
+func unique(paths []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, p := range paths {
+		if !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func findDisclosedPaths(original, processed map[string]interface{}) []string {
+	var paths []string
+	for key := range original {
+		if key == "_sd" || key == "_sd_alg" {
+			continue
+		}
+		origVal := original[key]
+		procVal, exists := processed[key]
+		if !exists {
+			continue
+		}
+		origMap, origOk := origVal.(map[string]interface{})
+		procMap, procOk := procVal.(map[string]interface{})
+		if origOk && procOk {
+			nestedPaths := compareObjects(origMap, procMap, key)
+			paths = append(paths, nestedPaths...)
+		}
+	}
+	return paths
+}
+
+func compareObjects(orig, proc map[string]interface{}, prefix string) []string {
+	var paths []string
+	for key, origVal := range orig {
+		if key == "_sd" || key == "_sd_alg" {
+			continue
+		}
+		procVal, exists := proc[key]
+		if !exists {
+			paths = append(paths, prefix+"."+key)
+			continue
+		}
+		if nestedOrig, ok := origVal.(map[string]interface{}); ok {
+			if nestedProc, ok := procVal.(map[string]interface{}); ok {
+				nestedPaths := compareObjects(nestedOrig, nestedProc, prefix+"."+key)
+				paths = append(paths, nestedPaths...)
+			}
+		}
+		if arrOrig, ok := origVal.([]interface{}); ok {
+			if arrProc, ok := procVal.([]interface{}); ok {
+				arrPaths := compareArrays(arrOrig, arrProc, prefix+"."+key)
+				paths = append(paths, arrPaths...)
+			}
+		}
+	}
+	return paths
+}
+
+func compareArrays(orig, proc []interface{}, prefix string) []string {
+	var paths []string
+	// Use proc length to handle cases where proc is longer (due to decoy insertion)
+	// or shorter (due to selective disclosure removing elements)
+	maxLen := len(proc)
+	if len(orig) > maxLen {
+		maxLen = len(orig)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		if i >= len(proc) {
+			// proc is shorter - remaining orig elements were selectively disclosed
+			paths = append(paths, fmt.Sprintf("%s[%d]", prefix, i))
+			continue
+		}
+		if i >= len(orig) {
+			// proc is longer - extra elements in proc are disclosed (decoys or revealed values)
+			paths = append(paths, fmt.Sprintf("%s[%d]", prefix, i))
+			continue
+		}
+		origElem := orig[i]
+		procElem := proc[i]
+		if procMap, ok := procElem.(map[string]interface{}); ok {
+			if _, hasDots := procMap["..."]; hasDots {
+				paths = append(paths, fmt.Sprintf("%s[%d]", prefix, i))
+				continue
+			}
+		}
+		if nestedOrig, ok := origElem.(map[string]interface{}); ok {
+			if nestedProc, ok := procElem.(map[string]interface{}); ok {
+				nestedPaths := compareObjects(nestedOrig, nestedProc, fmt.Sprintf("%s[%d]", prefix, i))
+				paths = append(paths, nestedPaths...)
+			}
+		}
+	}
+	return paths
 }
 
 func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
@@ -222,7 +428,6 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 			if err := validateCredential(j.payloadData, options); err != nil {
 				return fmt.Errorf("validate credential: %w", err)
 			}
-
 			return nil
 		})
 	}
@@ -232,7 +437,6 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 			if err := checkRevocation(j.payloadData); err != nil {
 				return fmt.Errorf("check revocation: %w", err)
 			}
-
 			return nil
 		})
 	}
@@ -256,7 +460,6 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 		return fmt.Errorf("credential verification failed: %w", err)
 	}
 
-	// checkExpiration always runs sequentially after parallel validations
 	if options.isCheckExpiration {
 		if err := checkExpiration(j.payloadData); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)

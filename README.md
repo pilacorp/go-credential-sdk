@@ -1,5 +1,10 @@
 # Go Credential SDK
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/pilacorp/go-credential-sdk.svg)](https://pkg.go.dev/github.com/pilacorp/go-credential-sdk)
+[![Go Report Card](https://goreportcard.com/badge/github.com/pilacorp/go-credential-sdk?style=flat-square)](https://goreportcard.com/report/github.com/pilacorp/go-credential-sdk)
+[![Release](https://img.shields.io/github/v/release/pilacorp/go-credential-sdk?include_prereleases&style=flat-square)](https://github.com/pilacorp/go-credential-sdk/releases)
+[![License](https://img.shields.io/github/license/pilacorp/go-credential-sdk.svg?style=flat-square)](https://github.com/pilacorp/go-credential-sdk/blob/main/LICENSE)
+
 This repository provides a Go SDK for working with W3C Verifiable Credentials (VCs), Verifiable Presentations (VPs), and DIDComm cryptographic utilities. It enables you to create, manage, and verify Verifiable Credentials and Presentations, as well as encrypt and decrypt messages using DIDComm standards.
 
 ## Table of Contents
@@ -10,6 +15,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
 - [Verifiable Credential (VC) Package](#verifiable-credential-vc-package)
   - [Features](#vc-features)
   - [Usage](#vc-usage)
+  - [SD-JWT (Selective Disclosure)](#sd-jwt-selective-disclosure)
   - [Example](#vc-example)
 - [Verifiable Presentation (VP) Package](#verifiable-presentation-vp-package)
   - [Features](#vp-features)
@@ -61,6 +67,7 @@ go get github.com/piprate/json-gold/ld
 ## <a name="vc-features"></a>Features
 
 - Create W3C Verifiable Credentials in both JSON and JWT formats
+- **SD-JWT** (RFC 9901): issue and parse credentials with selective disclosure; Holder can reveal only chosen claims to Verifiers
 - Add ECDSA cryptographic proofs using private key hex strings
 - Support for credential status (revocation/suspension)
 - Serialize credentials to their native format (JSON object or JWT string)
@@ -93,6 +100,30 @@ To create a Verifiable Credential, you need:
 1. Use `vc.ParseCredential()` to parse both JSON and JWT credentials
 2. Use `vc.ParseCredentialWithValidation()` for automatic validation and verification
 3. Access credential data using the `Credential` interface methods
+
+### Extracting Fields from a Credential
+
+Use `ExtractField(path string)` to extract any field from a credential using dot-notation path:
+
+```go
+// Parse a credential (works for JSON, JWT, or SD-JWT)
+cred, err := vc.ParseCredential(credentialBytes)
+
+// Extract nested fields using dot notation
+name := cred.ExtractField("credentialSubject.name")
+city := cred.ExtractField("credentialSubject.address.city")
+
+// Returns nil if field doesn't exist
+email := cred.ExtractField("credentialSubject.email")
+if email != nil {
+    fmt.Println("Email:", email)
+}
+```
+
+**Supported paths:**
+- `"credentialSubject.name"` - nested object fields
+- `"credentialSubject.address.city"` - deeply nested fields
+- Returns `nil` for array indices (e.g., `"credentialSubject.emails[0]"` is not supported)
 
 ### Adding Proofs/Signatures
 
@@ -192,6 +223,210 @@ Supported Proof:
 
 - type: DataIntegrityProof
 - cryptosuite: ecdsa-rdfc-2019,
+
+### <a name="sd-jwt-selective-disclosure"></a>SD-JWT (Selective Disclosure)
+
+The SDK supports **SD-JWT** (Selective Disclosure for JWT) as per [RFC 9901](https://www.rfc-editor.org/rfc/rfc9901). SD-JWT lets the Issuer issue a single credential where some claims can be **selectively disclosed** by the Holder when presenting to a Verifier. The Verifier only sees the disclosed claims (and any always-visible claims).
+
+**Roles:**
+
+- **Issuer**: Creates a JWT credential and marks which claims are selectively disclosable; the SDK builds disclosures and outputs an SD-JWT string (`<JWT>~<D1>~<D2>~...~`).
+- **Holder**: Receives the SD-JWT, can present it as-is or omit some disclosures so the Verifier sees fewer claims.
+- **Verifier**: Parses and verifies the SD-JWT; after verification, credential data reflects only the disclosed claims.
+
+**Format:** An SD-JWT is a single string: the issuer-signed JWT, then `~`, then zero or more disclosure strings (base64url-encoded), optionally ending with `~`. Example: `eyJ...signed.eyJ...payload.sig~Wy...D1~Wy...D2~`
+
+#### Issuer: Creating an SD-JWT credential
+
+1. Build credential contents as usual with `vc.CredentialContents`.
+2. Create a JWT credential with **selective disclosure paths** using `vc.WithSDSelectivePaths(paths)`.
+3. Add proof and serialize; `Serialize()` returns the SD-JWT string.
+
+**Selective paths** are dot-notation and array-index paths into the VC payload (e.g. into `credentialSubject` and nested objects). Examples:
+
+| Path | Meaning |
+|------|---------|
+| `credentialSubject.firstname` | Top-level subject field `firstname` |
+| `credentialSubject.person.address.city` | Nested field `person.address.city` |
+| `credentialSubject.tags[0]` | First element of array `tags` |
+| `credentialSubject.person.children[0].name` | Nested array element |
+
+Only the claims at these paths are put into disclosures; all other claims remain in the JWT payload. The Issuer signs the payload that contains digests (e.g. `_sd`) for those claims; the actual values are in the disclosure strings.
+
+```go
+// Issuer: create SD-JWT with selective disclosure
+paths := []string{
+    "credentialSubject.firstname",
+    "credentialSubject.family_name",
+    "credentialSubject.email",
+}
+cred, err := vc.NewJWTCredential(contents,
+    vc.WithSDSelectivePaths(paths),
+)
+if err != nil {
+    log.Fatal(err)
+}
+err = cred.AddProof(privateKeyHex)
+if err != nil {
+    log.Fatal(err)
+}
+sdJWT, err := cred.Serialize()
+if err != nil {
+    log.Fatal(err)
+}
+// sdJWT is a string: "<issuer-signed-JWT>~<D1>~<D2>~..."
+```
+
+**Advanced Options:** The SDK supports additional security features for SD-JWT:
+
+```go
+// Issue with custom hash algorithm, shuffle, and decoy digests
+cred, err := vc.NewJWTCredential(contents,
+    vc.WithSDSelectivePaths(paths),
+    // Use sha-384 instead of default sha-256
+    vc.WithSDHashAlgorithm("sha-384"),
+    // Shuffle _sd array to prevent disclosure order leakage
+    vc.WithSDShuffle(true),
+    // Add decoy digests: 2 at root, 3 at credentialSubject
+    vc.WithSDDecoyDigests([]vc.Decoy{
+        {Path: "", Count: 2},                      // 2 decoys at root level
+        {Path: "credentialSubject", Count: 3},      // 3 decoys in credentialSubject object
+        {Path: "credentialSubject.emails", Count: 1}, // 1 decoy in emails array (adds new elements)
+    }),
+)
+```
+
+**Alternative (advanced):** If you build disclosures yourself, use `vc.WithSDDisclosures(disclosures)` when creating the credential. The SDK will attach them when serializing to SD-JWT.
+
+#### Holder: Presenting an SD-JWT
+
+The Holder receives the full SD-JWT string from the Issuer. Use the **sdjwt** package to parse it, inspect disclosures, and build a new SD-JWT presentation with only selected disclosures:
+
+```go
+import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
+
+// Parse the SD-JWT
+parsed, err := sdjwt.Parse(sdJWTString)
+if err != nil { ... }
+
+// Access decoded disclosures (includes salt, field name, value)
+for _, dec := range parsed.DecodedDisclosures {
+    fmt.Printf("Field: %s, Value: %v\n", dec.FieldName, dec.Value)
+}
+
+// Build presentation with selected disclosures
+presentation := sdjwt.BuildSDJWTPresentation(parsed.BaseJWT, selectedDisclosures)
+```
+
+- **Present the full SD-JWT** — pass the original string to the Verifier (all disclosures).
+- **Present a subset** — use `sdjwt.BuildSDJWTPresentation(baseJWT, selectedDisclosures)` to build a new SD-JWT string with only the chosen disclosures, then send that to the Verifier.
+
+#### Issuer: Adding selective disclosures to an existing SD-JWT
+
+An issuer may need to add more selective disclosures to an existing SD-JWT credential (e.g., adding new fields that were not originally disclosed). Since SD-JWT uses random salts, the signature must be recreated after adding disclosures.
+
+**Important:** When adding disclosures to an existing SD-JWT, you must rebuild ALL disclosures (existing + new) because salt values change each time disclosures are generated.
+
+```go
+// 1. Parse the existing SD-JWT
+cred, err := vc.ParseCredential([]byte(existingSDJWT))
+if err != nil {
+    log.Fatal(err)
+}
+
+// 2. Add new selective disclosure paths
+// Note: All existing disclosures will be rebuilt + new ones added
+newCred, err := cred.AddSelectiveDisclosures([]string{
+    "credentialSubject.phone",
+    "credentialSubject.address",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// 3. Re-sign the credential with issuer's private key
+err = newCred.AddProof(privateKeyHex)
+if err != nil {
+    log.Fatal(err)
+}
+
+// 4. Serialize to get the new SD-JWT with additional disclosures
+newSDJWT, err := newCred.Serialize()
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("New SD-JWT with additional disclosures:\n%s\n", newSDJWT)
+```
+
+**Key points:**
+- The new credential retains any previously disclosed fields
+- New paths are added to the disclosure set
+- The signature must be regenerated using `AddProof()` after adding disclosures
+- This operation only works with JWT credentials; JSON credentials do not support selective disclosures
+
+#### Verifier: Parsing and verifying an SD-JWT
+
+Use the same parsing API as for ordinary JWT credentials. The SDK detects SD-JWT by the presence of `~` and the JWT prefix, then parses and reconstructs the **processed payload** (only disclosed claims) before returning a `Credential`.
+
+```go
+// Verifier (or Holder): parse and verify SD-JWT
+raw := []byte(sdJWTString) // e.g. from HTTP body or QR
+cred, err := vc.ParseCredential(raw,
+    vc.WithSchemaValidation(),
+    vc.WithVerifyProof(),
+)
+if err != nil {
+    log.Fatal(err)
+}
+// cred.GetContents() / GetType() etc. reflect only disclosed claims
+contents, _ := cred.GetContents()
+```
+
+- **Detection:** `vc.ParseCredential` accepts JSON credentials, plain JWTs, or SD-JWTs. SD-JWT is detected automatically (format: `...~...` with a valid JWT before the first `~`).
+- **Verification:** Signature and standard claims (`exp`, `nbf`, etc.) are verified on the issuer-signed JWT. Schema validation, if enabled, runs on the **reconstructed** payload (disclosed claims only).
+- **Validation:** The SDK validates:
+  - Duplicate digest detection
+  - Disclosure context validation (object vs array)
+  - Hash algorithm support
+- **No Key Binding:** SDK does not expose/verify Key Binding JWT (KB-JWT). The parser may skip the final JWT-like segment (if preceded by `~`) as holder binding, but does not verify it.
+
+#### Advanced: Manual SD-JWT Processing
+
+For more control, use the **sdjwt** package directly:
+
+```go
+import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
+
+// Build disclosures manually (Issuer)
+result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+    VC:             vcMap,
+    SelectivePaths: selectivePaths,
+    HashAlgorithm:  "sha-384",
+    Shuffle:        true,
+    Decoys: []sdjwt.DecoyConfig{
+        {Path: "", Count: 2},
+        {Path: "credentialSubject", Count: 3},
+    },
+})
+// result.ProcessedVC - VC with fields replaced by digests
+// result.Disclosures - Disclosure strings
+// result.SDAlg       - Hash algorithm used
+// Holder metadata: use sdjwt.Parse() -> ParsedSDJWT.DecodedDisclosures
+
+// Reconstruct with validation (Verifier)
+config := &sdjwt.ValidationConfig{
+    RequireHashAlgorithmMatch:    true,
+}
+reconstructed, err := sdjwt.Reconstruct(vcMap, disclosures, config)
+```
+
+#### Summary
+
+| Role | Action |
+|------|--------|
+| **Issuer** | `vc.NewJWTCredential(contents, vc.WithSDSelectivePaths(paths))` → `AddProof` → `Serialize()` → SD-JWT string |
+| **Holder** | `sdjwt.Parse(sdJWT)` → use `parsed.Disclosures` / `parsed.DecodedDisclosures` → `sdjwt.BuildSDJWTPresentation(baseJWT, selectedDisclosures)` |
+| **Verifier** | `vc.ParseCredential(raw, vc.WithVerifyProof(), ...)` → use returned `Credential` (disclosed claims only) |
 
 ## <a name="vc-example"></a>Example
 
@@ -659,7 +894,7 @@ func main() {
 - **Unified Interface**: Single `Credential` interface for both JSON and JWT formats
 - **Constructor Pattern**: Use `vc.NewJSONCredential()` or `vc.NewJWTCredential()` to create credentials
 - **Simplified API**: `AddProof()`, `Serialize()`, `Verify()` methods work consistently across formats
-- **Flexible Parsing**: `vc.ParseCredential()` automatically detects and parses both JSON and JWT formats
+- **Flexible Parsing**: `vc.ParseCredential()` automatically detects and parses JSON, JWT, and SD-JWT (selective disclosure) formats
 - **Options Pattern**: Use `vc.WithSchemaValidation()`, `vc.WithVerifyProof()` for configuration
 - **Uses hex-encoded private keys** instead of `*ecdsa.PrivateKey` objects
 - **Requires initialization** with DID resolver endpoint via `vc.Init()`
@@ -697,10 +932,15 @@ func main() {
 // Create credentials
 jsonCred, err := vc.NewJSONCredential(contents)
 jwtCred, err := vc.NewJWTCredential(contents)
+sdJwtCred, err := vc.NewJWTCredential(contents, vc.WithSDSelectivePaths([]string{"credentialSubject.email"}))
 
-// Parse credentials
+// Parse credentials (works for JSON, JWT, or SD-JWT)
 cred, err := vc.ParseCredential(data)
 cred, err := vc.ParseCredentialWithValidation(data)
+
+// Add selective disclosures to existing SD-JWT (JWT only)
+// Note: Signature must be recreated after adding disclosures
+newCred, err := cred.AddSelectiveDisclosures([]string{"credentialSubject.phone"})
 
 // Add proof and verify
 err = cred.AddProof(privateKeyHex)
@@ -758,6 +998,23 @@ presentation, err := vp.ParsePresentationWithValidation(data)
 // Equivalent to: vp.ParsePresentation(data, vp.WithVCValidation(), vp.WithVerifyProof())
 ```
 
+#### **vc.WithSDSelectivePaths(paths)** / **vc.WithSDDisclosures(disclosures)**
+
+Used when **issuing** JWT credentials to produce an SD-JWT (selective disclosure).
+
+- **WithSDSelectivePaths(paths)**: SDK builds disclosures for the given claim paths (e.g. `"credentialSubject.email"`, `"credentialSubject.tags[0]"`). When you call `Serialize()`, the result is an SD-JWT string.
+- **WithSDDisclosures(disclosures)**: Attach pre-built disclosure strings (advanced; normally use `WithSDSelectivePaths`).
+
+```go
+// Issue SD-JWT with selective disclosure
+cred, err := vc.NewJWTCredential(contents,
+    vc.WithSDSelectivePaths([]string{"credentialSubject.firstname", "credentialSubject.email"}),
+)
+// ... AddProof(...); then Serialize() returns SD-JWT string
+```
+
+Parsing SD-JWT uses the same API as JWT: `vc.ParseCredential(sdJWTBytes, vc.WithVerifyProof(), ...)`.
+
 #### **Options Summary**
 
 ```go
@@ -766,6 +1023,8 @@ vc.WithSchemaValidation()                    // Enable schema validation
 vc.WithVerifyProof()                        // Enable proof verification
 vc.WithBaseURL(url)                         // Set custom DID resolver URL
 vc.WithVerificationMethodKey(key)           // Set custom verification method key
+vc.WithSDSelectivePaths(paths)              // Issue SD-JWT: claims at these paths are selectively disclosable
+vc.WithSDDisclosures(disclosures)           // Issue SD-JWT: use these pre-built disclosure strings
 
 // VP options
 vp.WithVCValidation()                       // Enable VC validation within presentation

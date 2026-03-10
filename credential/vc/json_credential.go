@@ -56,7 +56,11 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 		return err
 	}
 
-	verificationMethod := fmt.Sprintf("%s#%s", e.credentialData["issuer"].(string), e.verificationMethod)
+	issuer, ok := e.credentialData["issuer"].(string)
+	if !ok || issuer == "" {
+		return fmt.Errorf("issuer is missing or invalid")
+	}
+	verificationMethod := fmt.Sprintf("%s#%s", issuer, e.verificationMethod)
 
 	options := getOptions(opts...)
 
@@ -103,6 +107,13 @@ func (e *JSONCredential) GetContents() ([]byte, error) {
 
 func (e *JSONCredential) GetType() string {
 	return "JSON"
+}
+
+func (e *JSONCredential) ExtractField(path string) interface{} {
+	if e.credentialData == nil {
+		return nil
+	}
+	return extractFieldFromMap(e.credentialData, path)
 }
 
 func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
@@ -157,4 +168,8 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	return nil
+}
+
+func (e *JSONCredential) AddSelectiveDisclosures(selectivePaths []string) (Credential, error) {
+	return nil, fmt.Errorf("JSON credential does not support selective disclosures")
 }
