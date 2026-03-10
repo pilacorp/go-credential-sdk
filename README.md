@@ -386,10 +386,9 @@ contents, _ := cred.GetContents()
 - **Verification:** Signature and standard claims (`exp`, `nbf`, etc.) are verified on the issuer-signed JWT. Schema validation, if enabled, runs on the **reconstructed** payload (disclosed claims only).
 - **Validation:** The SDK validates:
   - Duplicate digest detection
-  - Unreferenced disclosure detection
   - Disclosure context validation (object vs array)
   - Hash algorithm support
-- **No Key Binding:** This implementation does not support Key Binding (KB-JWT). The SD-JWT string does not include a Key Binding JWT.
+- **No Key Binding:** SDK does not expose/verify Key Binding JWT (KB-JWT). The parser may skip the final JWT-like segment (if preceded by `~`) as holder binding, but does not verify it.
 
 #### Advanced: Manual SD-JWT Processing
 
@@ -428,10 +427,6 @@ reconstructed, err := sdjwt.Reconstruct(vcMap, disclosures, config)
 | **Issuer** | `vc.NewJWTCredential(contents, vc.WithSDSelectivePaths(paths))` → `AddProof` → `Serialize()` → SD-JWT string |
 | **Holder** | `sdjwt.Parse(sdJWT)` → use `parsed.Disclosures` / `parsed.DecodedDisclosures` → `sdjwt.BuildSDJWTPresentation(baseJWT, selectedDisclosures)` |
 | **Verifier** | `vc.ParseCredential(raw, vc.WithVerifyProof(), ...)` → use returned `Credential` (disclosed claims only) |
-
-
-
-For more detail on the algorithm (digests, disclosure format, reconstruction), see the internal docs `sd_jwt.md` and `sd_jwt_integration.md` in the repository.
 
 ## <a name="vc-example"></a>Example
 

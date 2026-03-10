@@ -65,7 +65,8 @@ func Parse(raw string) (*ParsedSDJWT, error) {
 		// 2. It looks like a JWT AND
 		// 3. There is a ~ before this segment (i.e., not the first disclosure)
 		//    This ensures "issuer~jwt-like" (no ~ before last) is treated as disclosure
-		//    but "issuer~D~JWT" (has ~ before last) is treated as holder binding
+		//    but "issuer~D~JWT" (has ~ before last) is treated as holder binding.
+		// Note: KB-JWT is not verified - just skipped if detected.
 		if i == len(parts)-1 && isJWT(seg) && i > 1 {
 			break
 		}
