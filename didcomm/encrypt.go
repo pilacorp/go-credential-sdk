@@ -6,9 +6,9 @@ import (
 )
 
 func Encrypt(key []byte, plaintext string) string {
-	nonce, ciphertext := crypto.EncryptAESGCM(key, []byte(plaintext))
+	nonce, ciphertext, tag := crypto.EncryptAESGCM(key, []byte(plaintext))
 
-	jweOutput := jwe.BuildJWE(key[:16], nonce, ciphertext)
+	jweOutput := jwe.BuildJWE(nonce, ciphertext, tag)
 
 	return jweOutput
 }

@@ -17,7 +17,7 @@ func base64url(input []byte) string {
 	return base64.RawURLEncoding.EncodeToString(input)
 }
 
-func BuildJWE(sharedKey, iv, ciphertext []byte) string {
+func BuildJWE(iv, ciphertext, tag []byte) string {
 	header := map[string]string{
 		"alg": "ECDH-ES",
 		"enc": "A256GCM",
@@ -29,7 +29,7 @@ func BuildJWE(sharedKey, iv, ciphertext []byte) string {
 		Protected:  base64url(headerBytes),
 		IV:         base64url(iv),
 		Ciphertext: base64url(ciphertext),
-		Tag:        base64url(sharedKey[:16]), // mock tag
+		Tag:        base64url(tag), // real AES-GCM authentication tag
 	}
 	result, err := json.MarshalIndent(jwe, "", "  ")
 	if err != nil {

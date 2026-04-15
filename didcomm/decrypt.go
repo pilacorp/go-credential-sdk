@@ -33,6 +33,7 @@ func DecryptJWE(jweStr string, sharedKey []byte) (string, error) {
 
 	iv := base64urlDecode(jwe.IV)
 	ciphertext := base64urlDecode(jwe.Ciphertext)
+	tag := base64urlDecode(jwe.Tag)
 
 	block, err := aes.NewCipher(sharedKey)
 	if err != nil {
@@ -44,9 +45,19 @@ func DecryptJWE(jweStr string, sharedKey []byte) (string, error) {
 		return "", fmt.Errorf("aes new gcm error: %v", err)
 	}
 
-	plaintext, err := gcm.Open(nil, iv, ciphertext, nil)
+	// Append tag to ciphertext for GCM.Open (it verifies the tag)
+	ciphertextWithTag := append(ciphertext, tag...)
+
+	plaintext, err := gcm.Open(nil, iv, ciphertextWithTag, nil)
 	if err != nil {
-		return "", fmt.Errorf("decryption failed: %v", err)
+		// Fallback to mock tag for backward compatibility (old implementation used sharedKey[:16] as tag)
+		mockTag := sharedKey[:16]
+		ciphertextWithMockTag := append(ciphertext, mockTag...)
+
+		plaintext, err = gcm.Open(nil, iv, ciphertextWithMockTag, nil)
+		if err != nil {
+			return "", fmt.Errorf("decryption failed: %v", err)
+		}
 	}
 
 	return string(plaintext), nil
