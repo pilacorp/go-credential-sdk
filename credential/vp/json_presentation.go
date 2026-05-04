@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
 
 type JSONPresentation struct {
 	presentationData   PresentationData
-	proof              *dto.Proof
 	verificationMethod string
 }
 
@@ -46,7 +45,7 @@ func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (Presentatio
 	return e, e.executeOptions(opts...)
 }
 
-func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error {
+func (e *JSONPresentation) AddProof(signer signer.SignerProvider, opts ...PresentationOpt) error {
 	err := e.executeOptions(opts...)
 	if err != nil {
 		return err
@@ -60,26 +59,7 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 
 	options := getOptions(opts...)
 
-	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(priv, verificationMethod, "authentication", options.didBaseURL)
-}
-
-func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
-}
-
-func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
-	if proof == nil {
-		return fmt.Errorf("proof cannot be nil")
-	}
-
-	err := e.executeOptions(opts...)
-	if err != nil {
-		return err
-	}
-
-	e.proof = proof
-
-	return (*jsonmap.JSONMap)(&e.presentationData).AddCustomProof(e.proof)
+	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(signer, verificationMethod, "authentication", options.didBaseURL)
 }
 
 func (e *JSONPresentation) Verify(opts ...PresentationOpt) error {

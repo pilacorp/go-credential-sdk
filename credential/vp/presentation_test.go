@@ -8,14 +8,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
-	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
 )
 
+func mustDefaultSigner(t *testing.T, privHex string) signer.SignerProvider {
+	t.Helper()
+	s, err := signer.NewDefaultProvider(privHex)
+	if err != nil {
+		t.Fatalf("NewDefaultProvider failed: %v", err)
+	}
+	return s
+}
+
 func TestParsePresentation(t *testing.T) {
-	vcList := GenerateVCTest()
+	vcList := GenerateVCTest(t)
 
 	vpc := vp.PresentationContents{
 		Context: []interface{}{
@@ -103,7 +111,7 @@ func TestCreatePresentationWithContent(t *testing.T) {
 				ID:                    "urn:uuid:abcd1234-5678-90ab-cdef-1234567890ab",
 				Types:                 []string{"VerifiablePresentation"},
 				Holder:                "did:nda:testnet:0x123",
-				VerifiableCredentials: GenerateVCTest(),
+				VerifiableCredentials: GenerateVCTest(t),
 			},
 			expectErr: false,
 			expectFields: map[string]interface{}{
@@ -128,7 +136,7 @@ func TestCreatePresentationWithContent(t *testing.T) {
 				ID:                    "urn:uuid:abcd1234-5678-90ab-cdef-1234567890ab",
 				Types:                 []string{"VerifiablePresentation", "CustomType"},
 				Holder:                "did:nda:testnet:0x123",
-				VerifiableCredentials: GenerateVCTest(),
+				VerifiableCredentials: GenerateVCTest(t),
 			},
 			expectErr: false,
 			expectFields: map[string]interface{}{
@@ -198,7 +206,7 @@ func TestCreatePresentationWithContent(t *testing.T) {
 }
 
 func TestParsePresentationContents(t *testing.T) {
-	vcList := GenerateVCTest()
+	vcList := GenerateVCTest(t)
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 
 	vpc := vp.PresentationContents{
@@ -284,7 +292,7 @@ func TestAddECDSAProof(t *testing.T) {
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
-	vcList := GenerateVCTest()
+	vcList := GenerateVCTest(t)
 	if vcList == nil {
 		t.Fatal("Failed to generate VCTest")
 	}
@@ -306,7 +314,7 @@ func TestAddECDSAProof(t *testing.T) {
 		t.Fatalf("Failed to create presentation: %v", err)
 	}
 
-	err = presentation.AddProof(privateKeyHex)
+	err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 	if err != nil {
 		t.Fatalf("Failed to add ECDSA proof: %v", err)
 	}
@@ -335,7 +343,7 @@ func TestVerifyECDSAPresentation(t *testing.T) {
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
-	vcList := GenerateVCTest()
+	vcList := GenerateVCTest(t)
 	if vcList == nil {
 		t.Fatal("Failed to generate VCTest")
 	}
@@ -357,7 +365,7 @@ func TestVerifyECDSAPresentation(t *testing.T) {
 		t.Fatalf("Failed to create presentation: %v", err)
 	}
 
-	err = presentation.AddProof(privateKeyHex)
+	err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 	if err != nil {
 		t.Fatalf("Failed to add ECDSA proof: %v", err)
 	}
@@ -371,7 +379,7 @@ func TestVerifyECDSAPresentation(t *testing.T) {
 }
 
 // GenerateVCTest replicates the function from main.go to create test credentials.
-func GenerateVCTest() []vc.Credential {
+func GenerateVCTest(t *testing.T) []vc.Credential {
 	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
@@ -435,7 +443,7 @@ func GenerateVCTest() []vc.Credential {
 		return nil
 	}
 	// Add a JSON ECDSA proof
-	err = credential.AddProof(privateKeyHex)
+	err = credential.AddProof(mustDefaultSigner(t, privateKeyHex))
 	if err != nil {
 		fmt.Printf("Failed to add JSON ECDSA proof: %v\n", err)
 		return nil
@@ -454,7 +462,7 @@ func TestCreatePresentationJWT(t *testing.T) {
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create a test credential first
-	vcList := GenerateVCTest()
+	vcList := GenerateVCTest(t)
 	if vcList == nil {
 		t.Fatal("Failed to generate test credentials")
 	}
@@ -478,7 +486,7 @@ func TestCreatePresentationJWT(t *testing.T) {
 	}
 
 	// Add proof to the presentation
-	err = presentation.AddProof(privateKeyHex)
+	err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 	if err != nil {
 		t.Fatalf("Failed to sign presentation as JWT: %v", err)
 	}
@@ -544,7 +552,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
-	vcList := GenerateVCTest()
+	vcList := GenerateVCTest(t)
 	if vcList == nil {
 		t.Fatal("Failed to generate test credentials")
 	}
@@ -566,7 +574,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 
 		// Add proof using AddProof method
-		err = presentation.AddProof(privateKeyHex)
+		err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 		if err != nil {
 			t.Fatalf("Failed to add proof to JSON presentation: %v", err)
 		}
@@ -593,59 +601,6 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 	})
 
-	t.Run("JSON Presentation - GetSigningInput + AddCustomProof Flow", func(t *testing.T) {
-		// Create JSON presentation
-		presentation, err := vp.NewJSONPresentation(presentationContents)
-		if err != nil {
-			t.Fatalf("Failed to create JSON presentation: %v", err)
-		}
-
-		// Get signing input
-		signingInput, err := presentation.GetSigningInput()
-		if err != nil {
-			t.Fatalf("Failed to get signing input: %v", err)
-		}
-		if len(signingInput) == 0 {
-			t.Fatal("Signing input should not be empty")
-		}
-
-		// Sign message with ES256K
-		signer := jwt.SigningMethodES256K{}
-		signature, err := signer.Sign(string(signingInput), privateKeyHex)
-		if err != nil {
-			t.Fatalf("Failed to sign message: %v", err)
-		}
-		if len(signature) == 0 {
-			t.Fatal("Signature should not be empty")
-		}
-
-		// Create a custom proof (simulating external signing)
-		customProof := &dto.Proof{
-			Signature: signature,
-		}
-
-		// Add custom proof
-		err = presentation.AddCustomProof(customProof)
-		if err != nil {
-			t.Fatalf("Failed to add custom proof to JSON presentation: %v", err)
-		}
-
-		// Serialize and verify it has proof
-		serialized, err := presentation.Serialize()
-		if err != nil {
-			t.Fatalf("Failed to serialize JSON presentation with custom proof: %v", err)
-		}
-
-		// Check that serialized presentation contains proof
-		presMap, ok := serialized.(map[string]interface{})
-		if !ok {
-			t.Fatal("Serialized presentation should be a map")
-		}
-		if _, exists := presMap["proof"]; !exists {
-			t.Fatal("Serialized presentation should contain proof")
-		}
-	})
-
 	t.Run("JWT Presentation - AddProof Flow", func(t *testing.T) {
 		// Create JWT presentation
 		presentation, err := vp.NewJWTPresentation(presentationContents)
@@ -654,7 +609,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 
 		// Add proof using AddProof method
-		err = presentation.AddProof(privateKeyHex)
+		err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 		if err != nil {
 			t.Fatalf("Failed to add proof to JWT presentation: %v", err)
 		}
@@ -683,88 +638,6 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 		if parsedPresentation == nil {
 			t.Fatal("Parsed presentation should not be nil")
-		}
-	})
-
-	t.Run("JWT Presentation - GetSigningInput + AddCustomProof Flow", func(t *testing.T) {
-		// Create JWT presentation
-		presentation, err := vp.NewJWTPresentation(presentationContents)
-		if err != nil {
-			t.Fatalf("Failed to create JWT presentation: %v", err)
-		}
-
-		// Get signing input
-		signingInput, err := presentation.GetSigningInput()
-		if err != nil {
-			t.Fatalf("Failed to get signing input: %v", err)
-		}
-		if len(signingInput) == 0 {
-			t.Fatal("Signing input should not be empty")
-		}
-
-		// Sign message with ES256K
-		signer := jwt.SigningMethodES256K{}
-		signature, err := signer.Sign(string(signingInput), privateKeyHex)
-		if err != nil {
-			t.Fatalf("Failed to sign message: %v", err)
-		}
-		if len(signature) == 0 {
-			t.Fatal("Signature should not be empty")
-		}
-
-		// Create a custom proof with JWT signature
-		customProof := &dto.Proof{
-			Signature: signature,
-		}
-
-		// Add custom proof (this will set the JWT signature)
-		err = presentation.AddCustomProof(customProof)
-		if err != nil {
-			t.Fatalf("Failed to add custom proof to JWT presentation: %v", err)
-		}
-
-		// Serialize to get JWT token
-		serialized, err := presentation.Serialize()
-		if err != nil {
-			t.Fatalf("Failed to serialize JWT presentation with custom proof: %v", err)
-		}
-
-		jwtToken, ok := serialized.(string)
-		if !ok {
-			t.Fatal("Serialized JWT presentation should be a string")
-		}
-		if jwtToken == "" {
-			t.Fatal("JWT token should not be empty")
-		}
-	})
-
-	t.Run("Error Cases", func(t *testing.T) {
-		// Test AddCustomProof with nil proof
-		presentation, err := vp.NewJSONPresentation(presentationContents)
-		if err != nil {
-			t.Fatalf("Failed to create JSON presentation: %v", err)
-		}
-
-		err = presentation.AddCustomProof(nil)
-		if err == nil {
-			t.Fatal("Should return error for nil proof")
-		}
-		if !strings.Contains(err.Error(), "proof cannot be nil") {
-			t.Fatalf("Error message should mention nil proof, got: %v", err)
-		}
-
-		// Test JWT presentation with nil proof
-		jwtPresentation, err := vp.NewJWTPresentation(presentationContents)
-		if err != nil {
-			t.Fatalf("Failed to create JWT presentation: %v", err)
-		}
-
-		err = jwtPresentation.AddCustomProof(nil)
-		if err == nil {
-			t.Fatal("Should return error for nil proof")
-		}
-		if !strings.Contains(err.Error(), "proof cannot be nil") {
-			t.Fatalf("Error message should mention nil proof, got: %v", err)
 		}
 	})
 }
@@ -800,7 +673,7 @@ func TestJSONPresentationFlow(t *testing.T) {
 	}
 
 	// 2. Use AddProof to add proof to VP with issuer private key
-	err = presentation.AddProof(privateKeyHex)
+	err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 	if err != nil {
 		t.Fatalf("Failed to add proof to JSON presentation: %v", err)
 	}
@@ -873,7 +746,7 @@ func TestCreateJSONPresentationOfTwoJSONCredentials(t *testing.T) {
 	}
 
 	// Add proof to the presentation
-	err = presentation.AddProof(privateKeyHex)
+	err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 	if err != nil {
 		t.Fatalf("Failed to add proof to JSON presentation: %v", err)
 	}
@@ -940,7 +813,7 @@ func TestJWTPresentationFlow(t *testing.T) {
 	}
 
 	// 2. Use AddProof to add proof to VP with issuer private key
-	err = presentation.AddProof(privateKeyHex)
+	err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 	if err != nil {
 		t.Fatalf("Failed to add proof to JWT presentation: %v", err)
 	}
@@ -1038,7 +911,8 @@ func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Cr
 	}
 
 	// Add proof to JSON credential
-	err = jsonVC.AddProof(privateKeyHex)
+	defaultSigner := mustDefaultSigner(t, privateKeyHex)
+	err = jsonVC.AddProof(defaultSigner)
 	if err != nil {
 		t.Fatalf("Failed to add proof to JSON credential: %v", err)
 	}
@@ -1050,7 +924,7 @@ func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Cr
 	}
 
 	// Add proof to JWT credential
-	err = jwtVC.AddProof(privateKeyHex)
+	err = jwtVC.AddProof(defaultSigner)
 	if err != nil {
 		t.Fatalf("Failed to add proof to JWT credential: %v", err)
 	}
@@ -1066,7 +940,7 @@ func TestJWTPresentationWithTimeFields(t *testing.T) {
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
-	vcList := GenerateVCTest()
+	vcList := GenerateVCTest(t)
 	if vcList == nil {
 		t.Fatal("Failed to generate test credentials")
 	}
@@ -1095,7 +969,7 @@ func TestJWTPresentationWithTimeFields(t *testing.T) {
 	}
 
 	// Add proof
-	err = presentation.AddProof(privateKeyHex)
+	err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1200,7 +1074,7 @@ func TestJWTPresentationWithoutTimeFields(t *testing.T) {
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
-	vcList := GenerateVCTest()
+	vcList := GenerateVCTest(t)
 	if vcList == nil {
 		t.Fatal("Failed to generate test credentials")
 	}
@@ -1224,7 +1098,7 @@ func TestJWTPresentationWithoutTimeFields(t *testing.T) {
 	}
 
 	// Add proof
-	err = presentation.AddProof(privateKeyHex)
+	err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1284,7 +1158,7 @@ func TestParsePresentationWithTimeFields(t *testing.T) {
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
-	vcList := GenerateVCTest()
+	vcList := GenerateVCTest(t)
 	if vcList == nil {
 		t.Fatal("Failed to generate test credentials")
 	}
@@ -1313,7 +1187,7 @@ func TestParsePresentationWithTimeFields(t *testing.T) {
 	}
 
 	// Add proof
-	err = presentation.AddProof(privateKeyHex)
+	err = presentation.AddProof(mustDefaultSigner(t, privateKeyHex))
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}

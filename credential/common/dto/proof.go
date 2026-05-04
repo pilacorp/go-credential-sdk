@@ -12,7 +12,4 @@ type Proof struct {
 	Cryptosuite        string   `json:"cryptosuite,omitempty"`
 	Challenge          string   `json:"challenge,omitempty"`
 	Domain             string   `json:"domain,omitempty"`
-
-	// For JWT proof
-	Signature []byte `json:"signature,omitempty"`
 }

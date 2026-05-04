@@ -9,9 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
-	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
 
 func TestParseCredential(t *testing.T) {
@@ -713,7 +712,10 @@ func TestCreateCredentialJWT(t *testing.T) {
 	assert.NoError(t, err, "Failed to create credential from contents")
 
 	// Add proof to the credential
-	err = credential.AddProof(testIssuerPrivateKey)
+	defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
+	assert.NoError(t, err, "NewDefaultProvider failed")
+
+	err = credential.AddProof(defaultSigner)
 	assert.NoError(t, err, "Failed to add proof to credential")
 
 	// Serialize the credential to get JWT string
@@ -813,7 +815,10 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.NoError(t, err, "Failed to create JSON credential")
 
 		// Add proof using AddProof method
-		err = credential.AddProof(testIssuerPrivateKey)
+		defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
+		assert.NoError(t, err, "NewDefaultProvider failed")
+
+		err = credential.AddProof(defaultSigner)
 		assert.NoError(t, err, "Failed to add proof to JSON credential")
 
 		// Verify the credential
@@ -830,46 +835,16 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.Contains(t, credMap, "proof", "Serialized credential should contain proof")
 	})
 
-	t.Run("JSON Credential - GetSigningInput + AddCustomProof Flow", func(t *testing.T) {
-		// Create JSON credential
-		credential, err := NewJSONCredential(credentialContents)
-		assert.NoError(t, err, "Failed to create JSON credential")
-
-		// Get signing input
-		signingInput, err := credential.GetSigningInput()
-		assert.NoError(t, err, "Failed to get signing input")
-		assert.NotEmpty(t, signingInput, "Signing input should not be empty")
-
-		// Create a custom proof (simulating external signing)
-		customProof := &dto.Proof{
-			Type:               "EcdsaSecp256k1Signature2019",
-			Created:            "2024-01-01T00:00:00Z",
-			VerificationMethod: issuerDID + "#key-1",
-			ProofPurpose:       "assertionMethod",
-			ProofValue:         "mock-signature-value",
-		}
-
-		// Add custom proof
-		err = credential.AddCustomProof(customProof)
-		assert.NoError(t, err, "Failed to add custom proof to JSON credential")
-
-		// Serialize and verify it has proof
-		serialized, err := credential.Serialize()
-		assert.NoError(t, err, "Failed to serialize JSON credential with custom proof")
-
-		// Check that serialized credential contains proof
-		credMap, ok := serialized.(map[string]interface{})
-		assert.True(t, ok, "Serialized credential should be a map")
-		assert.Contains(t, credMap, "proof", "Serialized credential should contain proof")
-	})
-
 	t.Run("JWT Credential - AddProof Flow", func(t *testing.T) {
 		// Create JWT credential
 		credential, err := NewJWTCredential(credentialContents)
 		assert.NoError(t, err, "Failed to create JWT credential")
 
 		// Add proof using AddProof method
-		err = credential.AddProof(testIssuerPrivateKey)
+		defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
+		assert.NoError(t, err, "NewDefaultProvider failed")
+
+		err = credential.AddProof(defaultSigner)
 		assert.NoError(t, err, "Failed to add proof to JWT credential")
 
 		// Serialize to get JWT token
@@ -894,57 +869,6 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.NoError(t, err, "Failed to verify JWT credential")
 	})
 
-	t.Run("JWT Credential - GetSigningInput + AddCustomProof Flow", func(t *testing.T) {
-		// Create JWT credential
-		credential, err := NewJWTCredential(credentialContents)
-		assert.NoError(t, err, "Failed to create JWT credential")
-
-		// Get signing input
-		signingInput, err := credential.GetSigningInput()
-		assert.NoError(t, err, "Failed to get signing input")
-		assert.NotEmpty(t, signingInput, "Signing input should not be empty")
-
-		// Sign message with ES256K
-		signer := jwt.SigningMethodES256K{}
-		signatureBytes, err := signer.Sign(string(signingInput), testIssuerPrivateKey)
-		assert.NoError(t, err, "Failed to sign message")
-		assert.NotEmpty(t, signatureBytes, "Signature should not be empty")
-
-		// Create a custom proof with JWT signature
-		customProof := &dto.Proof{
-			Signature: signatureBytes,
-		}
-
-		// Add custom proof (this will set the JWT signature)
-		err = credential.AddCustomProof(customProof)
-		assert.NoError(t, err, "Failed to add custom proof to JWT credential")
-
-		// Serialize to get JWT token
-		serialized, err := credential.Serialize()
-		assert.NoError(t, err, "Failed to serialize JWT credential with custom proof")
-
-		jwtToken, ok := serialized.(string)
-		assert.True(t, ok, "Serialized JWT credential should be a string")
-		assert.NotEmpty(t, jwtToken, "JWT token should not be empty")
-	})
-
-	t.Run("Error Cases", func(t *testing.T) {
-		// Test AddCustomProof with nil proof
-		credential, err := NewJSONCredential(credentialContents)
-		assert.NoError(t, err, "Failed to create JSON credential")
-
-		err = credential.AddCustomProof(nil)
-		assert.Error(t, err, "Should return error for nil proof")
-		assert.Contains(t, err.Error(), "proof cannot be nil", "Error message should mention nil proof")
-
-		// Test JWT credential with nil proof
-		jwtCredential, err := NewJWTCredential(credentialContents)
-		assert.NoError(t, err, "Failed to create JWT credential")
-
-		err = jwtCredential.AddCustomProof(nil)
-		assert.Error(t, err, "Should return error for nil proof")
-		assert.Contains(t, err.Error(), "proof cannot be nil", "Error message should mention nil proof")
-	})
 }
 
 func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
@@ -988,7 +912,12 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 	}
 
 	// add proof
-	err = embededCredential.AddProof(issuerPrivateKey)
+	defaultSigner, err := signer.NewDefaultProvider(issuerPrivateKey)
+	if err != nil {
+		t.Fatalf("NewDefaultProvider failed: %v", err)
+	}
+
+	err = embededCredential.AddProof(defaultSigner)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1056,7 +985,12 @@ func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 	}
 
 	// add proof
-	err = jwtCredential.AddProof(testIssuerPrivateKey)
+	defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
+	if err != nil {
+		t.Fatalf("NewDefaultProvider failed: %v", err)
+	}
+
+	err = jwtCredential.AddProof(defaultSigner)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1066,60 +1000,6 @@ func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to verify JWT credential: %v", err)
 	}
-}
-
-func TestJWTCredentialAddCustomProofMustEqualsToAddProof(t *testing.T) {
-	// Create credential with empty custom fields for this test
-	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
-	jwtCredential, err := NewJWTCredential(credentialContents, WithSchemaValidation())
-	if err != nil {
-		t.Fatalf("Failed to create JWT credential: %v", err)
-	}
-
-	// add proof
-	err = jwtCredential.AddProof(testIssuerPrivateKey)
-	if err != nil {
-		t.Fatalf("Failed to add proof: %v", err)
-	}
-
-	// another jwt with custom proof
-	anotherJwtCredential, err := NewJWTCredential(credentialContents, WithSchemaValidation())
-	if err != nil {
-		t.Fatalf("Failed to create another JWT credential: %v", err)
-	}
-
-	// calculate signature
-	getSigningInput, err := anotherJwtCredential.GetSigningInput()
-	if err != nil {
-		t.Fatalf("Failed to get signing input: %v", err)
-	}
-	signer := jwt.SigningMethodES256K{}
-	signatureBytes, err := signer.Sign(string(getSigningInput), testIssuerPrivateKey)
-	if err != nil {
-		t.Fatalf("Failed to sign: %v", err)
-	}
-
-	// add custom proof
-	err = anotherJwtCredential.AddCustomProof(&dto.Proof{
-		Signature: signatureBytes,
-	})
-	if err != nil {
-		t.Fatalf("Failed to add custom proof: %v", err)
-	}
-
-	// verify
-	err = anotherJwtCredential.Verify(WithSchemaValidation())
-	if err != nil {
-		t.Fatalf("Failed to verify JWT credential: %v", err)
-	}
-
-	// compare jwt
-	jwtToken, err := jwtCredential.Serialize()
-	if err != nil {
-		t.Fatalf("Failed to serialize JWT credential: %v", err)
-	}
-	anotherJwtToken, err := anotherJwtCredential.Serialize()
-	assert.Equal(t, jwtToken, anotherJwtToken, "JWT token should be the same")
 }
 
 func TestCreateJWTCredentialWithValidateSchemaFailInvalidFieldValue(t *testing.T) {
@@ -1224,7 +1104,12 @@ func TestSerializeJSONCredential(t *testing.T) {
 		t.Fatalf("Failed to create JSON credential: %v", err)
 	}
 	// add proof
-	err = jsonCredential.AddProof(testIssuerPrivateKey)
+	defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
+	if err != nil {
+		t.Fatalf("NewDefaultProvider failed: %v", err)
+	}
+
+	err = jsonCredential.AddProof(defaultSigner)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1609,7 +1494,10 @@ func TestAddSelectiveDisclosures(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Sign the credential
-	err = cred.AddProof(testIssuerPrivateKey)
+	defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
+	assert.NoError(t, err)
+
+	err = cred.AddProof(defaultSigner)
 	assert.NoError(t, err)
 
 	// Serialize to get SD-JWT string
@@ -1642,7 +1530,7 @@ func TestAddSelectiveDisclosures(t *testing.T) {
 	assert.Len(t, parsedNew.Disclosures, 3, "expected 3 disclosures: firstname + email + phone")
 
 	// Step 4: Re-sign the credential with new disclosures
-	err = newCred.AddProof(testIssuerPrivateKey)
+	err = newCred.AddProof(defaultSigner)
 	assert.NoError(t, err)
 
 	// Step 5: Serialize and verify the final SD-JWT

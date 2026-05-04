@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
@@ -27,10 +27,7 @@ func Init(baseURL string) {
 }
 
 type Presentation interface {
-	AddProof(priv string, opts ...PresentationOpt) error
-
-	GetSigningInput() ([]byte, error)
-	AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error
+	AddProof(signer signer.SignerProvider, opts ...PresentationOpt) error
 
 	Verify(opts ...PresentationOpt) error
 

@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"golang.org/x/sync/errgroup"
 )
 
 type JSONCredential struct {
 	credentialData     CredentialData
-	proof              *dto.Proof
 	verificationMethod string
 }
 
@@ -50,7 +49,7 @@ func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (Credential, err
 	return e, e.executeOptions(opts...)
 }
 
-func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
+func (e *JSONCredential) AddProof(signer signer.SignerProvider, opts ...CredentialOpt) error {
 	err := e.executeOptions(opts...)
 	if err != nil {
 		return err
@@ -64,26 +63,7 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 
 	options := getOptions(opts...)
 
-	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(priv, verificationMethod, "assertionMethod", options.didBaseURL)
-}
-
-func (e *JSONCredential) GetSigningInput() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.credentialData).Canonicalize()
-}
-
-func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
-	if proof == nil {
-		return fmt.Errorf("proof cannot be nil")
-	}
-
-	err := e.executeOptions(opts...)
-	if err != nil {
-		return err
-	}
-
-	e.proof = proof
-
-	return (*jsonmap.JSONMap)(&e.credentialData).AddCustomProof(e.proof)
+	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signer, verificationMethod, "assertionMethod", options.didBaseURL)
 }
 
 func (e *JSONCredential) Verify(opts ...CredentialOpt) error {

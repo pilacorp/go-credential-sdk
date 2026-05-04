@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -28,10 +28,7 @@ func Init(baseURL string) {
 }
 
 type Credential interface {
-	AddProof(priv string, opts ...CredentialOpt) error
-
-	GetSigningInput() ([]byte, error)
-	AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error
+	AddProof(signer signer.SignerProvider, opts ...CredentialOpt) error
 
 	// Verify verifies the credential
 	Verify(opts ...CredentialOpt) error
