@@ -71,7 +71,7 @@ func TestJWTSigner_SignString_Provider64ByteSignatureVerifies(t *testing.T) {
 	signingString := "header.payload"
 	hash := sha256.Sum256([]byte(signingString))
 
-	// Provider returns R||S (64 bytes).
+	// go-ethereum returns R||S||V (65 bytes); a provider may return only R||S (64 bytes).
 	sig65, err := crypto.Sign(hash[:], priv)
 	if err != nil {
 		t.Fatalf("crypto.Sign: %v", err)

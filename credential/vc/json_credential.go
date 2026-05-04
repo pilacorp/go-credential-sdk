@@ -59,6 +59,10 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 }
 
 func (e *JSONCredential) AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error {
+	if signerProvider == nil {
+		return fmt.Errorf("signer provider cannot be nil")
+	}
+
 	err := e.executeOptions(opts...)
 	if err != nil {
 		return err

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
 
@@ -149,6 +149,10 @@ func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 }
 
 func (j *JWTPresentation) AddProofByProvider(signerProvider signer.SignerProvider, opts ...PresentationOpt) error {
+	if signerProvider == nil {
+		return fmt.Errorf("signer provider cannot be nil")
+	}
+
 	jwtSigner := jwt.NewJWTSigner(signerProvider)
 
 	// Sign the existing signing input

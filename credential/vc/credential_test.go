@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
@@ -814,7 +816,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		credential, err := NewJSONCredential(credentialContents)
 		assert.NoError(t, err, "Failed to create JSON credential")
 
-		// Add proof using AddProof method
+		// Add proof using AddProofByProvider method
 		defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
 		assert.NoError(t, err, "NewDefaultProvider failed")
 
@@ -840,7 +842,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		credential, err := NewJWTCredential(credentialContents)
 		assert.NoError(t, err, "Failed to create JWT credential")
 
-		// Add proof using AddProof method
+		// Add proof using AddProofByProvider method
 		defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
 		assert.NoError(t, err, "NewDefaultProvider failed")
 
@@ -899,6 +901,102 @@ func TestCredentialAddProofNilSigner(t *testing.T) {
 
 		err = cred.AddProofByProvider(nil)
 		assert.Error(t, err)
+	})
+}
+
+func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
+	issuerPriv := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+
+	contents := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:      "urn:uuid:legacy-external-signing",
+		Types:   []string{"VerifiableCredential"},
+		Issuer:  issuerDID,
+		Subject: []Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{"name": "Alice"}}},
+		ValidFrom: func() time.Time {
+			t, _ := time.Parse(time.RFC3339, "2024-01-01T00:00:00Z")
+			return t
+		}(),
+	}
+
+	t.Run("JWT GetSigningInput + AddCustomProof", func(t *testing.T) {
+		cred, err := NewJWTCredential(contents)
+		assert.NoError(t, err)
+
+		signingInput, err := cred.GetSigningInput()
+		assert.NoError(t, err)
+		assert.NotEmpty(t, signingInput)
+
+		sig, err := jwt.ES256K.Sign(string(signingInput), issuerPriv)
+		assert.NoError(t, err)
+		assert.NotEmpty(t, sig)
+
+		err = cred.AddCustomProof(&dto.Proof{Signature: sig})
+		assert.NoError(t, err)
+
+		serialized, err := cred.Serialize()
+		assert.NoError(t, err)
+		jwtToken, ok := serialized.(string)
+		assert.True(t, ok)
+		assert.Equal(t, 3, len(strings.Split(jwtToken, ".")))
+	})
+
+	t.Run("JWT AddCustomProof equals AddProofByProvider", func(t *testing.T) {
+		cred1, err := NewJWTCredential(contents)
+		assert.NoError(t, err)
+		cred2, err := NewJWTCredential(contents)
+		assert.NoError(t, err)
+
+		defaultSigner, err := signer.NewDefaultProvider(issuerPriv)
+		assert.NoError(t, err)
+
+		assert.NoError(t, cred1.AddProofByProvider(defaultSigner))
+
+		signingInput, err := cred2.GetSigningInput()
+		assert.NoError(t, err)
+		sig, err := jwt.ES256K.Sign(string(signingInput), issuerPriv)
+		assert.NoError(t, err)
+		assert.NoError(t, cred2.AddCustomProof(&dto.Proof{Signature: sig}))
+
+		s1, err := cred1.Serialize()
+		assert.NoError(t, err)
+		s2, err := cred2.Serialize()
+		assert.NoError(t, err)
+		assert.Equal(t, s1, s2)
+	})
+
+	t.Run("JWT AddCustomProof(nil) errors", func(t *testing.T) {
+		cred, err := NewJWTCredential(contents)
+		assert.NoError(t, err)
+		assert.Error(t, cred.AddCustomProof(nil))
+	})
+
+	t.Run("JSON AddCustomProof attaches proof", func(t *testing.T) {
+		cred, err := NewJSONCredential(contents)
+		assert.NoError(t, err)
+
+		err = cred.AddCustomProof(&dto.Proof{
+			Type:               "DataIntegrityProof",
+			Created:            "2024-01-01T00:00:00Z",
+			VerificationMethod: issuerDID + "#key-1",
+			ProofPurpose:       "assertionMethod",
+			Cryptosuite:        "ecdsa-rdfc-2019",
+			ProofValue:         "deadbeef",
+		})
+		assert.NoError(t, err)
+
+		serialized, err := cred.Serialize()
+		assert.NoError(t, err)
+		credMap, ok := serialized.(map[string]interface{})
+		assert.True(t, ok)
+		assert.Contains(t, credMap, "proof")
+	})
+
+	t.Run("JSON AddCustomProof(nil) errors", func(t *testing.T) {
+		cred, err := NewJSONCredential(contents)
+		assert.NoError(t, err)
+		assert.Error(t, cred.AddCustomProof(nil))
 	})
 }
 
@@ -1920,7 +2018,7 @@ func TestAddSelectiveDisclosures_PreservesRegisteredClaims(t *testing.T) {
 	parts := strings.Split(newStr, ".")
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	assert.NoError(t, err)
-	
+
 	var payload map[string]interface{}
 	err = json.Unmarshal(payloadBytes, &payload)
 	assert.NoError(t, err)
@@ -1931,7 +2029,7 @@ func TestAddSelectiveDisclosures_PreservesRegisteredClaims(t *testing.T) {
 	assert.Equal(t, "urn:uuid:test-claims", payload["jti"], "jti should be preserved")
 	assert.NotNil(t, payload["exp"], "exp should be preserved")
 	assert.NotNil(t, payload["iat"], "iat should be preserved")
-	
+
 	// Verify vc claim exists
 	_, hasVC := payload["vc"]
 	assert.True(t, hasVC, "vc claim should exist")

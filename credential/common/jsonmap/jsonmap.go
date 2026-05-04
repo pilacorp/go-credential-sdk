@@ -92,7 +92,7 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
 	if signerProvider == nil {
-		return fmt.Errorf("jsonmap: signer cannot be nil")
+		return fmt.Errorf("jsonmap: signer provider cannot be nil")
 	}
 	if verificationMethod == "" {
 		return fmt.Errorf("jsonmap: verification method is required")

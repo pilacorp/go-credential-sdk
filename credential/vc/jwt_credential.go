@@ -179,6 +179,10 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 }
 
 func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error {
+	if signerProvider == nil {
+		return fmt.Errorf("signer provider cannot be nil")
+	}
+
 	jwtSigner := jwt.NewJWTSigner(signerProvider)
 	signature, err := jwtSigner.SignString(j.signingInput)
 	if err != nil {

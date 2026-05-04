@@ -55,6 +55,10 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 }
 
 func (e *JSONPresentation) AddProofByProvider(signerProvider signer.SignerProvider, opts ...PresentationOpt) error {
+	if signerProvider == nil {
+		return fmt.Errorf("signer provider cannot be nil")
+	}
+
 	err := e.executeOptions(opts...)
 	if err != nil {
 		return err

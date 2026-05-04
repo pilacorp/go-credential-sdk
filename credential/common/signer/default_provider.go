@@ -10,8 +10,9 @@ import (
 
 // DefaultProvider signs using an in-memory ECDSA private key.
 //
-// This is intended for development/testing. Production integrations should
-// implement SignerProvider using Vault/HSM/remote signing services.
+// This is suitable for local/private-key usage (including production if your
+// threat model allows it). For stronger key management, implement SignerProvider
+// using Vault/HSM/remote signing services.
 type DefaultProvider struct {
 	priv *ecdsa.PrivateKey
 }
@@ -28,6 +29,9 @@ func NewDefaultProvider(privHex string) (*DefaultProvider, error) {
 }
 
 func (s *DefaultProvider) Sign(hashPayload []byte) ([]byte, error) {
+	if s == nil || s.priv == nil {
+		return nil, fmt.Errorf("default signer private key is nil")
+	}
 	if len(hashPayload) != 32 {
 		return nil, fmt.Errorf("hash payload must be 32 bytes, got %d", len(hashPayload))
 	}
@@ -43,4 +47,3 @@ func (s *DefaultProvider) Sign(hashPayload []byte) ([]byte, error) {
 
 	return signature, nil
 }
-

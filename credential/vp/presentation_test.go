@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
@@ -573,7 +575,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 			t.Fatalf("Failed to create JSON presentation: %v", err)
 		}
 
-		// Add proof using AddProof method
+		// Add proof using AddProofByProvider method
 		err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
 		if err != nil {
 			t.Fatalf("Failed to add proof to JSON presentation: %v", err)
@@ -608,7 +610,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 			t.Fatalf("Failed to create JWT presentation: %v", err)
 		}
 
-		// Add proof using AddProof method
+		// Add proof using AddProofByProvider method
 		err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
 		if err != nil {
 			t.Fatalf("Failed to add proof to JWT presentation: %v", err)
@@ -670,6 +672,123 @@ func TestPresentationAddProofNilSigner(t *testing.T) {
 
 		if err := p.AddProofByProvider(nil); err == nil {
 			t.Fatalf("expected error for nil signer")
+		}
+	})
+}
+
+func TestPresentation_LegacyExternalSigningFlow(t *testing.T) {
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+
+	vpc := vp.PresentationContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:      "urn:uuid:legacy-external-signing-vp",
+		Types:   []string{"VerifiablePresentation"},
+		Holder:  "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce",
+	}
+
+	t.Run("JWT GetSigningInput + AddCustomProof", func(t *testing.T) {
+		p, err := vp.NewJWTPresentation(vpc)
+		if err != nil {
+			t.Fatalf("NewJWTPresentation: %v", err)
+		}
+
+		signingInput, err := p.GetSigningInput()
+		if err != nil {
+			t.Fatalf("GetSigningInput: %v", err)
+		}
+		if len(signingInput) == 0 {
+			t.Fatalf("expected non-empty signing input")
+		}
+
+		sig, err := jwt.ES256K.Sign(string(signingInput), privateKeyHex)
+		if err != nil {
+			t.Fatalf("Sign: %v", err)
+		}
+
+		if err := p.AddCustomProof(&dto.Proof{Signature: sig}); err != nil {
+			t.Fatalf("AddCustomProof: %v", err)
+		}
+
+		serialized, err := p.Serialize()
+		if err != nil {
+			t.Fatalf("Serialize: %v", err)
+		}
+		if _, ok := serialized.(string); !ok {
+			t.Fatalf("expected JWT string")
+		}
+	})
+
+	t.Run("JWT AddCustomProof equals AddProofByProvider", func(t *testing.T) {
+		p1, err := vp.NewJWTPresentation(vpc)
+		if err != nil {
+			t.Fatalf("NewJWTPresentation: %v", err)
+		}
+		p2, err := vp.NewJWTPresentation(vpc)
+		if err != nil {
+			t.Fatalf("NewJWTPresentation: %v", err)
+		}
+
+		defaultSigner, err := signer.NewDefaultProvider(privateKeyHex)
+		if err != nil {
+			t.Fatalf("NewDefaultProvider: %v", err)
+		}
+
+		if err := p1.AddProofByProvider(defaultSigner); err != nil {
+			t.Fatalf("AddProofByProvider: %v", err)
+		}
+
+		signingInput, err := p2.GetSigningInput()
+		if err != nil {
+			t.Fatalf("GetSigningInput: %v", err)
+		}
+		sig, err := jwt.ES256K.Sign(string(signingInput), privateKeyHex)
+		if err != nil {
+			t.Fatalf("Sign: %v", err)
+		}
+		if err := p2.AddCustomProof(&dto.Proof{Signature: sig}); err != nil {
+			t.Fatalf("AddCustomProof: %v", err)
+		}
+
+		s1, err := p1.Serialize()
+		if err != nil {
+			t.Fatalf("Serialize: %v", err)
+		}
+		s2, err := p2.Serialize()
+		if err != nil {
+			t.Fatalf("Serialize: %v", err)
+		}
+		if s1 != s2 {
+			t.Fatalf("expected JWTs to match")
+		}
+	})
+
+	t.Run("JSON AddCustomProof attaches proof", func(t *testing.T) {
+		p, err := vp.NewJSONPresentation(vpc)
+		if err != nil {
+			t.Fatalf("NewJSONPresentation: %v", err)
+		}
+
+		if err := p.AddCustomProof(&dto.Proof{
+			Type:               "DataIntegrityProof",
+			Created:            "2024-01-01T00:00:00Z",
+			VerificationMethod: "did:example:holder#key-1",
+			ProofPurpose:       "authentication",
+			Cryptosuite:        "ecdsa-rdfc-2019",
+			ProofValue:         "deadbeef",
+		}); err != nil {
+			t.Fatalf("AddCustomProof: %v", err)
+		}
+
+		serialized, err := p.Serialize()
+		if err != nil {
+			t.Fatalf("Serialize: %v", err)
+		}
+		m, ok := serialized.(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected map")
+		}
+		if _, ok := m["proof"]; !ok {
+			t.Fatalf("expected proof field")
 		}
 	})
 }
