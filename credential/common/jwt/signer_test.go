@@ -1,9 +1,13 @@
 package jwt
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"testing"
+
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 type testSigner struct {
@@ -54,5 +58,41 @@ func TestJWTSigner_SignString_InvalidSignatureLength(t *testing.T) {
 	j := NewJWTSigner(&testSigner{sig: make([]byte, 63)})
 	if _, err := j.SignString("header.payload"); err == nil {
 		t.Fatalf("expected error for invalid signature length")
+	}
+}
+
+func TestJWTSigner_SignString_Provider64ByteSignatureVerifies(t *testing.T) {
+	privHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	priv, err := crypto.HexToECDSA(privHex)
+	if err != nil {
+		t.Fatalf("HexToECDSA: %v", err)
+	}
+
+	signingString := "header.payload"
+	hash := sha256.Sum256([]byte(signingString))
+
+	// Provider returns R||S (64 bytes).
+	sig65, err := crypto.Sign(hash[:], priv)
+	if err != nil {
+		t.Fatalf("crypto.Sign: %v", err)
+	}
+	sig64 := sig65[:64]
+
+	j := NewJWTSigner(&testSigner{sig: sig64})
+	out, err := j.SignString(signingString)
+	if err != nil {
+		t.Fatalf("SignString error: %v", err)
+	}
+
+	raw, err := base64.RawURLEncoding.DecodeString(out)
+	if err != nil {
+		t.Fatalf("DecodeString error: %v", err)
+	}
+	if len(raw) != 64 {
+		t.Fatalf("expected 64-byte signature, got %d", len(raw))
+	}
+
+	if err := ES256K.Verify(signingString, raw, &priv.PublicKey); err != nil {
+		t.Fatalf("Verify failed: %v (sig=%s)", err, hex.EncodeToString(raw))
 	}
 }

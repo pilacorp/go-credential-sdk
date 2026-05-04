@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -27,7 +28,16 @@ func Init(baseURL string) {
 }
 
 type Presentation interface {
-	AddProof(signer signer.SignerProvider, opts ...PresentationOpt) error
+	// AddProof signs using a local private key (legacy API).
+	AddProof(priv string, opts ...PresentationOpt) error
+
+	// GetSigningInput returns the signing bytes for external signing (legacy API).
+	GetSigningInput() ([]byte, error)
+	// AddCustomProof attaches a caller-provided proof/signature (legacy API).
+	AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error
+
+	// AddProofByProvider signs using a signer provider (Vault/HSM/local).
+	AddProofByProvider(signerProvider signer.SignerProvider, opts ...PresentationOpt) error
 
 	Verify(opts ...PresentationOpt) error
 

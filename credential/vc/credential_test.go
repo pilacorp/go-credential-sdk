@@ -715,7 +715,7 @@ func TestCreateCredentialJWT(t *testing.T) {
 	defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
 	assert.NoError(t, err, "NewDefaultProvider failed")
 
-	err = credential.AddProof(defaultSigner)
+	err = credential.AddProofByProvider(defaultSigner)
 	assert.NoError(t, err, "Failed to add proof to credential")
 
 	// Serialize the credential to get JWT string
@@ -818,7 +818,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
 		assert.NoError(t, err, "NewDefaultProvider failed")
 
-		err = credential.AddProof(defaultSigner)
+		err = credential.AddProofByProvider(defaultSigner)
 		assert.NoError(t, err, "Failed to add proof to JSON credential")
 
 		// Verify the credential
@@ -844,7 +844,7 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
 		assert.NoError(t, err, "NewDefaultProvider failed")
 
-		err = credential.AddProof(defaultSigner)
+		err = credential.AddProofByProvider(defaultSigner)
 		assert.NoError(t, err, "Failed to add proof to JWT credential")
 
 		// Serialize to get JWT token
@@ -869,6 +869,37 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		assert.NoError(t, err, "Failed to verify JWT credential")
 	})
 
+}
+
+func TestCredentialAddProofNilSigner(t *testing.T) {
+	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+	credentialContents := CredentialContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:      "urn:uuid:nil-signer-test",
+		Types:   []string{"VerifiableCredential"},
+		Issuer:  issuerDID,
+		Subject: []Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{"name": "Alice"}}},
+		ValidFrom: func() time.Time {
+			t, _ := time.Parse(time.RFC3339, "2024-01-01T00:00:00Z")
+			return t
+		}(),
+	}
+
+	t.Run("JSON", func(t *testing.T) {
+		cred, err := NewJSONCredential(credentialContents)
+		assert.NoError(t, err)
+
+		err = cred.AddProofByProvider(nil)
+		assert.Error(t, err)
+	})
+
+	t.Run("JWT", func(t *testing.T) {
+		cred, err := NewJWTCredential(credentialContents)
+		assert.NoError(t, err)
+
+		err = cred.AddProofByProvider(nil)
+		assert.Error(t, err)
+	})
 }
 
 func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
@@ -917,7 +948,7 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 		t.Fatalf("NewDefaultProvider failed: %v", err)
 	}
 
-	err = embededCredential.AddProof(defaultSigner)
+	err = embededCredential.AddProofByProvider(defaultSigner)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -990,7 +1021,7 @@ func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 		t.Fatalf("NewDefaultProvider failed: %v", err)
 	}
 
-	err = jwtCredential.AddProof(defaultSigner)
+	err = jwtCredential.AddProofByProvider(defaultSigner)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1109,7 +1140,7 @@ func TestSerializeJSONCredential(t *testing.T) {
 		t.Fatalf("NewDefaultProvider failed: %v", err)
 	}
 
-	err = jsonCredential.AddProof(defaultSigner)
+	err = jsonCredential.AddProofByProvider(defaultSigner)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1497,7 +1528,7 @@ func TestAddSelectiveDisclosures(t *testing.T) {
 	defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
 	assert.NoError(t, err)
 
-	err = cred.AddProof(defaultSigner)
+	err = cred.AddProofByProvider(defaultSigner)
 	assert.NoError(t, err)
 
 	// Serialize to get SD-JWT string
@@ -1530,7 +1561,7 @@ func TestAddSelectiveDisclosures(t *testing.T) {
 	assert.Len(t, parsedNew.Disclosures, 3, "expected 3 disclosures: firstname + email + phone")
 
 	// Step 4: Re-sign the credential with new disclosures
-	err = newCred.AddProof(defaultSigner)
+	err = newCred.AddProofByProvider(defaultSigner)
 	assert.NoError(t, err)
 
 	// Step 5: Serialize and verify the final SD-JWT

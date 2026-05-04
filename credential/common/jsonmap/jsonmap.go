@@ -131,6 +131,19 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 	return nil
 }
 
+// AddCustomProof adds custom proof to the JSONMap.
+func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
+	if m == nil {
+		return fmt.Errorf("JSONMap is nil")
+	}
+	if proof == nil {
+		return fmt.Errorf("proof is nil")
+	}
+	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
+
+	return nil
+}
+
 // parseRawToProof converts a JSON object to a Proof struct.
 func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 	var result dto.Proof

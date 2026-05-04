@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
@@ -169,8 +170,16 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 	return e, e.executeOptions(opts...)
 }
 
-func (j *JWTCredential) AddProof(signer signer.SignerProvider, opts ...CredentialOpt) error {
-	jwtSigner := jwt.NewJWTSigner(signer)
+func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
+	defaultSigner, err := signer.NewDefaultProvider(priv)
+	if err != nil {
+		return fmt.Errorf("failed to create default signer: %w", err)
+	}
+	return j.AddProofByProvider(defaultSigner, opts...)
+}
+
+func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error {
+	jwtSigner := jwt.NewJWTSigner(signerProvider)
 	signature, err := jwtSigner.SignString(j.signingInput)
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
@@ -182,6 +191,27 @@ func (j *JWTCredential) AddProof(signer signer.SignerProvider, opts ...Credentia
 	}
 
 	j.signature = signature
+	return nil
+}
+
+func (j *JWTCredential) GetSigningInput() ([]byte, error) {
+	return []byte(j.signingInput), nil
+}
+
+func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
+	if proof == nil {
+		return fmt.Errorf("proof cannot be nil")
+	}
+	if len(proof.Signature) == 0 {
+		return fmt.Errorf("proof signature cannot be empty")
+	}
+
+	err := j.executeOptions(opts...)
+	if err != nil {
+		return err
+	}
+
+	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
 	return nil
 }
 
