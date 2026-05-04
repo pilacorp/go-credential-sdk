@@ -6,11 +6,11 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
 
 type JSONPresentation struct {
 	presentationData   PresentationData
-	proof              *dto.Proof
 	verificationMethod string
 }
 
@@ -47,6 +47,18 @@ func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (Presentatio
 }
 
 func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error {
+	defaultSigner, err := signer.NewDefaultProvider(priv)
+	if err != nil {
+		return fmt.Errorf("failed to create default signer: %w", err)
+	}
+	return e.AddProofByProvider(defaultSigner, opts...)
+}
+
+func (e *JSONPresentation) AddProofByProvider(signerProvider signer.SignerProvider, opts ...PresentationOpt) error {
+	if signerProvider == nil {
+		return fmt.Errorf("signer provider cannot be nil")
+	}
+
 	err := e.executeOptions(opts...)
 	if err != nil {
 		return err
@@ -60,7 +72,7 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 
 	options := getOptions(opts...)
 
-	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(priv, verificationMethod, "authentication", options.didBaseURL)
+	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(signerProvider, verificationMethod, "authentication", options.didBaseURL)
 }
 
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
@@ -77,9 +89,7 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 		return err
 	}
 
-	e.proof = proof
-
-	return (*jsonmap.JSONMap)(&e.presentationData).AddCustomProof(e.proof)
+	return (*jsonmap.JSONMap)(&e.presentationData).AddCustomProof(proof)
 }
 
 func (e *JSONPresentation) Verify(opts ...PresentationOpt) error {

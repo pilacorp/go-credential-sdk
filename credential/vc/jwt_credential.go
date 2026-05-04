@@ -10,6 +10,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -170,8 +171,20 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 }
 
 func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
-	signer := jwt.NewJWTSigner(priv)
-	signature, err := signer.SignString(j.signingInput)
+	defaultSigner, err := signer.NewDefaultProvider(priv)
+	if err != nil {
+		return fmt.Errorf("failed to create default signer: %w", err)
+	}
+	return j.AddProofByProvider(defaultSigner, opts...)
+}
+
+func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error {
+	if signerProvider == nil {
+		return fmt.Errorf("signer provider cannot be nil")
+	}
+
+	jwtSigner := jwt.NewJWTSigner(signerProvider)
+	signature, err := jwtSigner.SignString(j.signingInput)
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}

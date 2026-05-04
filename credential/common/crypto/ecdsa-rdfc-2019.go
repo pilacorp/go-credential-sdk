@@ -10,26 +10,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// Sign signs a message using ECDSA with secp256k1, producing a 65-byte [r, s, v] signature.
-func ECDSASign(msg []byte, hexPrivateKey string) ([]byte, error) {
-	privKey, err := crypto.HexToECDSA(hexPrivateKey)
-	if err != nil {
-		return nil, fmt.Errorf("ecdsa: invalid private key: %w", err)
-	}
-
-	signature, err := crypto.Sign(msg, privKey)
-	if err != nil {
-		return nil, fmt.Errorf("ecdsa: sign error: %w", err)
-	}
-
-	// Validate signature length
-	if len(signature) != 65 {
-		return nil, fmt.Errorf("ecdsa: invalid signature length, expected 65 bytes")
-	}
-
-	return signature, nil
-}
-
 func ECDSAVerifySignature(publicKey, signature string, msg []byte) (bool, error) {
 	// Decode hex-encoded public key
 	pubKeyBytes, err := hex.DecodeString(publicKey)

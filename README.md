@@ -68,7 +68,7 @@ go get github.com/piprate/json-gold/ld
 
 - Create W3C Verifiable Credentials in both JSON and JWT formats
 - **SD-JWT** (RFC 9901): issue and parse credentials with selective disclosure; Holder can reveal only chosen claims to Verifiers
-- Add ECDSA cryptographic proofs using private key hex strings
+- Add ECDSA cryptographic proofs via pluggable signer providers (Vault/HSM/local)
 - Support for credential status (revocation/suspension)
 - Serialize credentials to their native format (JSON object or JWT string)
 - Parse and verify credentials with DID resolution
@@ -90,9 +90,7 @@ To create a Verifiable Credential, you need:
 1. Initialize the VC package with a DID resolver endpoint
 2. Define credential contents using `vc.CredentialContents`
 3. Create the credential using `vc.NewJSONCredential()` or `vc.NewJWTCredential()`
-4. Add a cryptographic proof using one of two methods:
-   - **Direct signing**: Provide private key to `AddProof()`
-   - **External signing**: Get signing string, sign externally, then add signature
+4. Add a cryptographic proof using `AddProof()` with a signer provider
 5. Serialize and verify the credential
 
 ### Parsing a Verifiable Credential
@@ -127,46 +125,14 @@ if email != nil {
 
 ### Adding Proofs/Signatures
 
-The SDK supports two approaches for adding cryptographic proofs:
-
-#### **Method 1: Direct Signing**
-
-The SDK handles the entire signing process internally.
+The SDK signs via a pluggable signer provider (Vault/HSM/local).
 
 ```go
+signer, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+if err != nil { /* handle */ }
+
 // Add cryptographic proof (works for both JSON and JWT)
-err = credential.AddProof(privateKeyHex)
-```
-
-#### **Method 2: External Signing**
-
-Get the signing string, sign externally, then add the signature back.
-
-```go
-// Step 1: Get the signing string
-signingInput, err := credential.GetSigningInput()
-if err != nil {
-    log.Fatalf("Failed to get signing input: %v", err)
-}
-
-// Step 2: Sign externally (using your preferred signing method)
-signature := signExternally(signingInput, privateKey)
-
-// Step 3: Add the signature back
-// For JSON credentials - adds DataIntegrityProof
-err = credential.AddCustomProof(&dto.Proof{
-    Type:               "DataIntegrityProof",
-    Created:            time.Now().UTC().Format(time.RFC3339),
-    VerificationMethod: "did:example:issuer#key-1",
-    ProofPurpose:       "assertionMethod",
-    Cryptosuite:        "ecdsa-rdfc-2019",
-    ProofValue:         signature,
-})
-
-// For JWT credentials - sets signature directly
-err = jwtCredential.AddCustomProof(&dto.Proof{
-    Signature: signature,
-})
+err = credential.AddProof(signer)
 ```
 
 ### Available Options
@@ -260,17 +226,21 @@ paths := []string{
     "credentialSubject.family_name",
     "credentialSubject.email",
 }
-cred, err := vc.NewJWTCredential(contents,
-    vc.WithSDSelectivePaths(paths),
-)
-if err != nil {
-    log.Fatal(err)
-}
-err = cred.AddProof(privateKeyHex)
-if err != nil {
-    log.Fatal(err)
-}
-sdJWT, err := cred.Serialize()
+	cred, err := vc.NewJWTCredential(contents,
+	    vc.WithSDSelectivePaths(paths),
+	)
+	if err != nil {
+	    log.Fatal(err)
+	}
+	issuerSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+	if err != nil {
+	    log.Fatal(err)
+	}
+	err = cred.AddProof(issuerSigner)
+	if err != nil {
+	    log.Fatal(err)
+	}
+	sdJWT, err := cred.Serialize()
 if err != nil {
     log.Fatal(err)
 }
@@ -336,19 +306,23 @@ if err != nil {
 
 // 2. Add new selective disclosure paths
 // Note: All existing disclosures will be rebuilt + new ones added
-newCred, err := cred.AddSelectiveDisclosures([]string{
-    "credentialSubject.phone",
-    "credentialSubject.address",
-})
-if err != nil {
-    log.Fatal(err)
-}
+	newCred, err := cred.AddSelectiveDisclosures([]string{
+	    "credentialSubject.phone",
+	    "credentialSubject.address",
+	})
+	if err != nil {
+	    log.Fatal(err)
+	}
 
-// 3. Re-sign the credential with issuer's private key
-err = newCred.AddProof(privateKeyHex)
-if err != nil {
-    log.Fatal(err)
-}
+	// 3. Re-sign the credential with issuer's private key
+	issuerSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+	if err != nil {
+	    log.Fatal(err)
+	}
+	err = newCred.AddProof(issuerSigner)
+	if err != nil {
+	    log.Fatal(err)
+	}
 
 // 4. Serialize to get the new SD-JWT with additional disclosures
 newSDJWT, err := newCred.Serialize()
@@ -516,16 +490,20 @@ func main() {
 	}
 
 	// Create the credential (JSON format) with schema validation
-	credential, err := vc.NewJSONCredential(vcc, vc.WithSchemaValidation())
-	if err != nil {
-		log.Fatalf("Failed to create credential: %v", err)
-	}
+		credential, err := vc.NewJSONCredential(vcc, vc.WithSchemaValidation())
+		if err != nil {
+			log.Fatalf("Failed to create credential: %v", err)
+		}
 
-	// Add a cryptographic proof using private key hex
-	err = credential.AddProof(privateKeyHex)
-	if err != nil {
-		log.Fatalf("Failed to add proof: %v", err)
-	}
+		// Add a cryptographic proof using private key hex
+		issuerSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+		if err != nil {
+			log.Fatalf("Failed to create signer: %v", err)
+		}
+		err = credential.AddProof(issuerSigner)
+		if err != nil {
+			log.Fatalf("Failed to add proof: %v", err)
+		}
 
 	// Serialize the credential to JSON
 	vcSerialized, err := credential.Serialize()
@@ -545,16 +523,16 @@ func main() {
 	fmt.Println("Proof verified successfully")
 
 	// Example: Create JWT credential with custom verification method key
-	jwtCredential, err := vc.NewJWTCredential(vcc, vc.WithVerificationMethodKey("key-2"))
-	if err != nil {
-		log.Fatalf("Failed to create JWT credential: %v", err)
-	}
+		jwtCredential, err := vc.NewJWTCredential(vcc, vc.WithVerificationMethodKey("key-2"))
+		if err != nil {
+			log.Fatalf("Failed to create JWT credential: %v", err)
+		}
 
-	// Add proof to JWT credential
-	err = jwtCredential.AddProof(privateKeyHex)
-	if err != nil {
-		log.Fatalf("Failed to add proof to JWT credential: %v", err)
-	}
+		// Add proof to JWT credential
+		err = jwtCredential.AddProof(issuerSigner)
+		if err != nil {
+			log.Fatalf("Failed to add proof to JWT credential: %v", err)
+		}
 
 	// Serialize JWT credential
 	jwtSerialized, err := jwtCredential.Serialize()
@@ -604,9 +582,7 @@ To create a Verifiable Presentation, you need:
 2. Create or obtain Verifiable Credentials to include
 3. Define presentation contents using `vp.PresentationContents`
 4. Create the presentation using `vp.NewJSONPresentation()` or `vp.NewJWTPresentation()`
-5. Add a cryptographic proof using one of two methods:
-   - **Direct signing**: Provide private key to `AddProof()`
-   - **External signing**: Get signing string, sign externally, then add signature
+5. Add a cryptographic proof using `AddProof()` with a signer provider
 6. Serialize and verify the presentation
 
 ### Parsing a Verifiable Presentation
@@ -617,46 +593,14 @@ To create a Verifiable Presentation, you need:
 
 ### Adding Proofs/Signatures
 
-The SDK supports two approaches for adding cryptographic proofs:
-
-#### **Method 1: Direct Signing**
-
-The SDK handles the entire signing process internally.
+The SDK signs via a pluggable signer provider (Vault/HSM/local).
 
 ```go
+holderSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+if err != nil { /* handle */ }
+
 // Add cryptographic proof (works for both JSON and JWT)
-err = presentation.AddProof(privateKeyHex)
-```
-
-#### **Method 2: External Signing**
-
-Get the signing string, sign externally, then add the signature back.
-
-```go
-// Step 1: Get the signing string
-signingInput, err := presentation.GetSigningInput()
-if err != nil {
-    log.Fatalf("Failed to get signing input: %v", err)
-}
-
-// Step 2: Sign externally (using your preferred signing method)
-signature := signExternally(signingInput, privateKey)
-
-// Step 3: Add the signature back
-// For JSON presentations - adds DataIntegrityProof
-err = presentation.AddCustomProof(&dto.Proof{
-    Type:               "DataIntegrityProof",
-    Created:            time.Now().UTC().Format(time.RFC3339),
-    VerificationMethod: "did:example:holder#key-1",
-    ProofPurpose:       "authentication",
-    Cryptosuite:        "ecdsa-rdfc-2019",
-    ProofValue:         signature,
-})
-
-// For JWT presentations - sets signature directly
-err = jwtPresentation.AddCustomProof(&dto.Proof{
-    Signature: signature,
-})
+err = presentation.AddProof(holderSigner)
 ```
 
 ### Available Options
@@ -724,11 +668,12 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"fmt"
-	"log"
+		"log"
 
-	"github.com/pilacorp/go-credential-sdk/credential/vc"
-	"github.com/pilacorp/go-credential-sdk/credential/vp"
-)
+		"github.com/pilacorp/go-credential-sdk/credential/vc"
+		"github.com/pilacorp/go-credential-sdk/credential/vp"
+		"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	)
 
 func main() {
 	// Generate a secure ECDSA private key for the holder
@@ -765,11 +710,15 @@ func main() {
 		log.Fatalf("Failed to create presentation: %v", err)
 	}
 
-	// Add a cryptographic proof using holder's private key
-	err = presentation.AddProof(privateKeyHex)
-	if err != nil {
-		log.Fatalf("Failed to add proof: %v", err)
-	}
+		// Add a cryptographic proof using holder's private key
+		holderSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+		if err != nil {
+			log.Fatalf("Failed to create signer: %v", err)
+		}
+		err = presentation.AddProof(holderSigner)
+		if err != nil {
+			log.Fatalf("Failed to add proof: %v", err)
+		}
 
 	// Serialize the presentation to JSON
 	presentationJSON, err := presentation.Serialize()
@@ -795,16 +744,16 @@ func main() {
 	log.Println("Proof verified successfully in the presentation")
 
 	// Example: Create JWT presentation with custom verification method key
-	jwtPresentation, err := vp.NewJWTPresentation(vpc, vp.WithVerificationMethodKey("key-2"))
-	if err != nil {
-		log.Fatalf("Failed to create JWT presentation: %v", err)
-	}
+		jwtPresentation, err := vp.NewJWTPresentation(vpc, vp.WithVerificationMethodKey("key-2"))
+		if err != nil {
+			log.Fatalf("Failed to create JWT presentation: %v", err)
+		}
 
-	// Add proof to JWT presentation
-	err = jwtPresentation.AddProof(privateKeyHex)
-	if err != nil {
-		log.Fatalf("Failed to add proof to JWT presentation: %v", err)
-	}
+		// Add proof to JWT presentation
+		err = jwtPresentation.AddProof(holderSigner)
+		if err != nil {
+			log.Fatalf("Failed to add proof to JWT presentation: %v", err)
+		}
 
 	// Serialize JWT presentation
 	jwtSerialized, err := jwtPresentation.Serialize()
@@ -942,10 +891,11 @@ cred, err := vc.ParseCredentialWithValidation(data)
 // Note: Signature must be recreated after adding disclosures
 newCred, err := cred.AddSelectiveDisclosures([]string{"credentialSubject.phone"})
 
-// Add proof and verify
-err = cred.AddProof(privateKeyHex)
-err = cred.Verify()
-result, err := cred.Serialize()
+	// Add proof and verify
+	issuerSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+	err = cred.AddProof(issuerSigner)
+	err = cred.Verify()
+	result, err := cred.Serialize()
 ```
 
 ### VP API
@@ -959,10 +909,11 @@ jwtPres, err := vp.NewJWTPresentation(contents)
 pres, err := vp.ParsePresentation(data)
 pres, err := vp.ParsePresentationWithValidation(data)
 
-// Add proof and verify
-err = pres.AddProof(privateKeyHex)
-err = pres.Verify()
-result, err := pres.Serialize()
+	// Add proof and verify
+	holderSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+	err = pres.AddProof(holderSigner)
+	err = pres.Verify()
+	result, err := pres.Serialize()
 ```
 
 ### Options Usage Examples
