@@ -89,16 +89,16 @@ func (m *JSONMap) Canonicalize() ([]byte, error) {
 // AddECDSAProof adds an ECDSA proof to the JSONMap.
 func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose, didBaseURL string) error {
 	if m == nil {
-		return fmt.Errorf("JSONMap is nil")
+		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
 	if signerProvider == nil {
-		return fmt.Errorf("signer cannot be nil")
+		return fmt.Errorf("jsonmap: signer cannot be nil")
 	}
 	if verificationMethod == "" {
-		return fmt.Errorf("verification method is required")
+		return fmt.Errorf("jsonmap: verification method is required")
 	}
 	if proofPurpose == "" {
-		return fmt.Errorf("proof purpose is required")
+		return fmt.Errorf("jsonmap: proof purpose is required")
 	}
 
 	proof := &dto.Proof{
@@ -111,19 +111,19 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 
 	signData, err := m.Canonicalize()
 	if err != nil {
-		return fmt.Errorf("failed to canonicalize JSONMap: %w", err)
+		return fmt.Errorf("jsonmap: failed to canonicalize JSONMap: %w", err)
 	}
 
 	if len(signData) != 32 {
-		return fmt.Errorf("invalid signing digest length: got %d, want 32", len(signData))
+		return fmt.Errorf("jsonmap: invalid signing digest length: got %d, want 32", len(signData))
 	}
 
 	signature, err := signerProvider.Sign(signData)
 	if err != nil {
-		return fmt.Errorf("failed to sign ECDSA proof: %w", err)
+		return fmt.Errorf("jsonmap: failed to sign digest: %w", err)
 	}
 	if err := signer.ValidateSignatureLength(signature); err != nil {
-		return err
+		return fmt.Errorf("jsonmap: %w", err)
 	}
 	proof.ProofValue = hex.EncodeToString(signature)
 	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})

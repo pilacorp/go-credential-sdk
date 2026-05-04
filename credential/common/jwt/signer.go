@@ -23,16 +23,16 @@ func NewJWTSigner(signer signer.SignerProvider) *JWTSigner {
 // SignString signs a string and returns the signature
 func (s *JWTSigner) SignString(signingString string) (string, error) {
 	if s.signer == nil {
-		return "", fmt.Errorf("signer cannot be nil")
+		return "", fmt.Errorf("jwt signer: signer cannot be nil")
 	}
 
 	hash := sha256.Sum256([]byte(signingString))
 	signature, err := s.signer.Sign(hash[:])
 	if err != nil {
-		return "", fmt.Errorf("failed to sign: %w", err)
+		return "", fmt.Errorf("jwt signer: failed to sign digest: %w", err)
 	}
 	if err := signer.ValidateSignatureLength(signature); err != nil {
-		return "", err
+		return "", fmt.Errorf("jwt signer: %w", err)
 	}
 	if len(signature) == 65 {
 		signature = signature[:64]
