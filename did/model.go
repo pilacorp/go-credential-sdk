@@ -1,6 +1,8 @@
 package did
 
 import (
+	"time"
+
 	"github.com/pilacorp/go-credential-sdk/did/blockchain"
 )
 
@@ -38,10 +40,12 @@ type DIDDocument struct {
 }
 
 type VerificationMethod struct {
-	Id           string `json:"id"`
-	Type         string `json:"type"`                   //
-	Controller   string `json:"controller"`             //key
-	PublicKeyHex string `json:"publicKeyHex,omitempty"` // Return real public key
+	Id               string     `json:"id"`
+	Type             string     `json:"type"`                   //
+	Controller       string     `json:"controller"`             //key
+	PublicKeyHex     string     `json:"publicKeyHex,omitempty"` // Return real public key
+	Revoked          *time.Time `json:"revoked,omitempty"`
+	RevocationReason string     `json:"revocationReason,omitempty"`
 }
 
 type DID struct {

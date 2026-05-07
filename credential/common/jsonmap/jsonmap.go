@@ -1,6 +1,7 @@
 package jsonmap
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -172,10 +173,42 @@ func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 	return result, nil
 }
 
-// VerifyProof verifies an ECDSA-signed JSONMap.
-func (m *JSONMap) VerifyProof(didBaseURL string) (bool, error) {
+// VerifyProofOptions controls optional verifier behavior. The zero value
+// represents the SDK defaults: strict proofPurpose checking is ON.
+type VerifyProofOptions struct {
+	StrictProofPurpose bool
+}
+
+// VerifyProofOpt mutates VerifyProofOptions.
+type VerifyProofOpt func(*VerifyProofOptions)
+
+// WithStrictProofPurpose toggles whether the verifier rejects credentials
+// whose verification method is not listed in the relationship array for
+// the proof's purpose, or has been revoked. Default ON. Pass false only
+// for emergency rollback (matches the STRICT_PROOF_PURPOSE flag used in
+// downstream services).
+func WithStrictProofPurpose(strict bool) VerifyProofOpt {
+	return func(o *VerifyProofOptions) {
+		o.StrictProofPurpose = strict
+	}
+}
+
+func defaultVerifyProofOptions() *VerifyProofOptions {
+	return &VerifyProofOptions{StrictProofPurpose: true}
+}
+
+// VerifyProof verifies an ECDSA-signed JSONMap. When the strict-purpose
+// option is enabled (default), the verifier additionally rejects proofs
+// whose VM has a hard revocation reason, was revoked before proof.created,
+// or is missing from the relationship array for proof.proofPurpose.
+func (m *JSONMap) VerifyProof(didBaseURL string, opts ...VerifyProofOpt) (bool, error) {
 	if m == nil {
 		return false, fmt.Errorf("JSONMap is nil")
+	}
+
+	options := defaultVerifyProofOptions()
+	for _, opt := range opts {
+		opt(options)
 	}
 
 	proofs, ok := (*m)["proof"].([]interface{})
@@ -191,34 +224,195 @@ func (m *JSONMap) VerifyProof(didBaseURL string) (bool, error) {
 		return false, fmt.Errorf("failed to parse proof: %w", err)
 	}
 
+	resolver := verificationmethod.NewResolver(didBaseURL)
+
 	if proof.Type == JwtProof2020 {
 		issuerDID, ok := (*m)["issuer"].(string)
 		if !ok {
 			return false, fmt.Errorf("issuer is missing or invalid in the request")
 		}
 
-		resolver := verificationmethod.NewResolver(didBaseURL)
-		publicKey, err := resolver.GetDefaultPublicKey(issuerDID)
+		// Resolve the VM the JWT was signed with. Prefer the kid header on
+		// the JWT proof; fall back to the issuer's #key-1 for legacy JWTs
+		// that omit kid. JWTs over VCs always sign with assertionMethod, so
+		// strict purpose check uses that array.
+		vmURL, err := jwtVerificationMethodURL((*m), issuerDID)
 		if err != nil {
-			return false, fmt.Errorf("failed to resolve public key: %w", err)
+			return false, err
 		}
 
-		return crypto.VerifyJwtProof((*map[string]interface{})(m), publicKey)
+		doc, vm, err := resolver.ResolveDocumentAndVM(vmURL)
+		if err != nil {
+			return false, fmt.Errorf("failed to resolve verification method: %w", err)
+		}
+		publicKey, err := publicKeyHexFromVM(vm)
+		if err != nil {
+			return false, err
+		}
+
+		ok2, err := crypto.VerifyJwtProof((*map[string]interface{})(m), publicKey)
+		if err != nil || !ok2 {
+			return ok2, err
+		}
+		if options.StrictProofPurpose {
+			if err := strictPurposeCheck(doc, vm, "assertionMethod", proof.Created); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
 	} else if proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY {
 
 		return m.verifyEcdsaProofLegacy()
 	} else if proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019 {
-		resolver := verificationmethod.NewResolver(didBaseURL)
-		publicKey, err := resolver.GetPublicKey(proof.VerificationMethod)
+		doc, vm, err := resolver.ResolveDocumentAndVM(proof.VerificationMethod)
 		if err != nil {
-			return false, fmt.Errorf("failed to resolve public key: %w", err)
+			return false, fmt.Errorf("failed to resolve verification method: %w", err)
+		}
+		publicKey, err := publicKeyHexFromVM(vm)
+		if err != nil {
+			return false, err
 		}
 
-		return m.verifyECDSA(publicKey, &proof)
+		ok2, err := m.verifyECDSA(publicKey, &proof)
+		if err != nil || !ok2 {
+			return ok2, err
+		}
+		if options.StrictProofPurpose {
+			if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
 	} else {
 
 		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
 	}
+}
+
+// strictPurposeCheck enforces the post-crypto checks for multi-VM:
+//  1. Hard revocation reason → reject (key compromised, all signatures invalid).
+//  2. Revoked timestamp set and proof.created on/after revoked → reject.
+//  3. VM id missing from the relationship array for proofPurpose → reject.
+//
+// Order is significant: hard reasons short-circuit before the timestamp
+// comparison so the verifier returns the strongest failure reason first.
+func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmethod.VerificationMethodEntry, proofPurpose, proofCreated string) error {
+	if verificationmethod.IsHardRevocationReason(vm.RevocationReason) {
+		return fmt.Errorf("verification method '%s' revoked with hard reason '%s'", vm.ID, vm.RevocationReason)
+	}
+
+	if vm.Revoked != nil {
+		created, err := time.Parse(time.RFC3339, proofCreated)
+		if err != nil {
+			return fmt.Errorf("invalid proof.created timestamp '%s': %w", proofCreated, err)
+		}
+		if !created.Before(*vm.Revoked) {
+			return fmt.Errorf("verification method '%s' was revoked at %s; proof.created %s is not earlier",
+				vm.ID, vm.Revoked.UTC().Format(time.RFC3339), created.UTC().Format(time.RFC3339))
+		}
+	}
+
+	var arr []string
+	switch proofPurpose {
+	case "authentication":
+		arr = doc.Authentication
+	case "assertionMethod":
+		arr = doc.AssertionMethod
+	default:
+		return fmt.Errorf("unsupported proofPurpose '%s'", proofPurpose)
+	}
+	if !idInArray(vm.ID, doc.ID, arr) {
+		return fmt.Errorf("verification method '%s' is not granted purpose '%s' on DID '%s'",
+			vm.ID, proofPurpose, doc.ID)
+	}
+	return nil
+}
+
+// idInArray reports whether vm.ID (full URL or fragment) appears in arr.
+func idInArray(vmID, docID string, arr []string) bool {
+	frag := vmID
+	if i := len(docID); len(vmID) > i && vmID[:i] == docID && vmID[i] == '#' {
+		frag = vmID[i:]
+	}
+	for _, ref := range arr {
+		if ref == vmID || ref == frag {
+			return true
+		}
+	}
+	return false
+}
+
+// publicKeyHexFromVM extracts the hex public key from the VM, supporting
+// both publicKeyHex and publicKeyJwk encodings.
+func publicKeyHexFromVM(vm *verificationmethod.VerificationMethodEntry) (string, error) {
+	if vm == nil {
+		return "", fmt.Errorf("verification method is nil")
+	}
+	if vm.PublicKeyHex != "" {
+		return stripHexPrefix(vm.PublicKeyHex), nil
+	}
+	if vm.PublicKeyJwk != nil {
+		return verificationmethod.JWKToHex(vm.PublicKeyJwk)
+	}
+	return "", fmt.Errorf("verification method '%s' has no public key material", vm.ID)
+}
+
+func stripHexPrefix(s string) string {
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		return s[2:]
+	}
+	return s
+}
+
+// jwtVerificationMethodURL returns the verification method URL for a JWT
+// proof. Preference order: explicit kid in the proof's JWS header → the
+// proof's `verificationMethod` field → fall back to <issuer>#key-1 for
+// legacy JWTs that carry neither.
+func jwtVerificationMethodURL(m map[string]interface{}, issuerDID string) (string, error) {
+	if proofMap, ok := m["proof"].(map[string]interface{}); ok {
+		if vm, ok := proofMap["verificationMethod"].(string); ok && vm != "" {
+			return vm, nil
+		}
+		if jws, ok := proofMap["jws"].(string); ok && jws != "" {
+			if kid, ok := jwsKid(jws); ok && kid != "" {
+				if kid[0] == '#' {
+					return issuerDID + kid, nil
+				}
+				return kid, nil
+			}
+		}
+	}
+	if issuerDID == "" {
+		return "", fmt.Errorf("cannot resolve verification method: issuer DID and proof.kid are both empty")
+	}
+	return issuerDID + "#key-1", nil
+}
+
+// jwsKid pulls the kid claim out of the JWS header (first segment of a
+// compact JWS, base64url-encoded JSON).
+func jwsKid(jws string) (string, bool) {
+	dot := -1
+	for i := 0; i < len(jws); i++ {
+		if jws[i] == '.' {
+			dot = i
+			break
+		}
+	}
+	if dot <= 0 {
+		return "", false
+	}
+	headerB64 := jws[:dot]
+	headerBytes, err := base64.RawURLEncoding.DecodeString(headerB64)
+	if err != nil {
+		return "", false
+	}
+	var hdr struct {
+		Kid string `json:"kid"`
+	}
+	if err := json.Unmarshal(headerBytes, &hdr); err != nil {
+		return "", false
+	}
+	return hdr.Kid, hdr.Kid != ""
 }
 
 // VerifyECDSA verifies an ECDSA-signed JSONMap.

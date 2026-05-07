@@ -70,10 +70,15 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 		payload[key] = value
 	}
 
+	kid, err := resolveVerificationMethodURL(vcc.Issuer, "assertionMethod", options.verificationMethodKey, options.didBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolve verification method: %w", err)
+	}
+
 	header := map[string]interface{}{
 		"typ": "JWT",
 		"alg": "ES256K",
-		"kid": fmt.Sprintf("%s#%s", vcc.Issuer, options.verificationMethodKey),
+		"kid": kid,
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -448,7 +453,10 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 				return fmt.Errorf("serialize credential: %w", err)
 			}
 
-			verifier := jwt.NewJWTVerifierWithResolver(options.resolver)
+			verifier := jwt.NewJWTVerifierWithResolver(
+				options.resolver,
+				jwt.WithStrictProofPurpose(options.strictProofPurpose),
+			)
 			if err := verifier.VerifyJWT(serialized.(string)); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}

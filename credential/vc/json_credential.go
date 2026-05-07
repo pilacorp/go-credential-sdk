@@ -6,6 +6,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -60,11 +61,35 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	if !ok || issuer == "" {
 		return fmt.Errorf("issuer is missing or invalid")
 	}
-	verificationMethod := fmt.Sprintf("%s#%s", issuer, e.verificationMethod)
 
 	options := getOptions(opts...)
 
+	verificationMethod, err := resolveVerificationMethodURL(issuer, "assertionMethod", e.verificationMethod, options.didBaseURL)
+	if err != nil {
+		return fmt.Errorf("resolve verification method: %w", err)
+	}
+
 	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(priv, verificationMethod, "assertionMethod", options.didBaseURL)
+}
+
+// resolveVerificationMethodURL returns the full verification method URL for
+// the proof. Resolution order:
+//
+//  1. If kid is non-empty, return "<did>#<kid>" (caller-specified pin).
+//  2. Otherwise resolve the DID and pick the latest active VM in the given
+//     purpose array. This keeps single-VM partners working unchanged
+//     (their only VM is #key-1 and it's in assertionMethod) while letting
+//     multi-VM callers omit kid and get the most recent rotation.
+func resolveVerificationMethodURL(did, purpose, kid, didBaseURL string) (string, error) {
+	if kid != "" {
+		return fmt.Sprintf("%s#%s", did, kid), nil
+	}
+	resolver := verificationmethod.NewResolver(didBaseURL)
+	_, vmID, err := resolver.GetVerificationMethodByPurpose(did, purpose)
+	if err != nil {
+		return "", err
+	}
+	return vmID, nil
 }
 
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {
@@ -143,7 +168,10 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 
 	if options.isVerifyProof {
 		g.Go(func() error {
-			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(options.didBaseURL)
+			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
+				options.didBaseURL,
+				jsonmap.WithStrictProofPurpose(options.strictProofPurpose),
+			)
 			if err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}

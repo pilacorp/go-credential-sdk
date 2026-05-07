@@ -6,6 +6,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 type JSONPresentation struct {
@@ -56,11 +57,30 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 	if !ok || holder == "" {
 		return fmt.Errorf("holder is missing or invalid")
 	}
-	verificationMethod := fmt.Sprintf("%s#%s", holder, e.verificationMethod)
 
 	options := getOptions(opts...)
 
+	verificationMethod, err := resolveVerificationMethodURL(holder, "authentication", e.verificationMethod, options.didBaseURL)
+	if err != nil {
+		return fmt.Errorf("resolve verification method: %w", err)
+	}
+
 	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(priv, verificationMethod, "authentication", options.didBaseURL)
+}
+
+// resolveVerificationMethodURL returns the full verification method URL for
+// a presentation proof. See vc.resolveVerificationMethodURL for resolution
+// rules — the only difference is the default purpose (authentication).
+func resolveVerificationMethodURL(did, purpose, kid, didBaseURL string) (string, error) {
+	if kid != "" {
+		return fmt.Sprintf("%s#%s", did, kid), nil
+	}
+	resolver := verificationmethod.NewResolver(didBaseURL)
+	_, vmID, err := resolver.GetVerificationMethodByPurpose(did, purpose)
+	if err != nil {
+		return "", err
+	}
+	return vmID, nil
 }
 
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
@@ -122,7 +142,10 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	}
 
 	if options.isVerifyProof {
-		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(options.didBaseURL)
+		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
+			options.didBaseURL,
+			jsonmap.WithStrictProofPurpose(options.strictProofPurpose),
+		)
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}

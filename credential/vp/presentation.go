@@ -68,6 +68,7 @@ type presentationOptions struct {
 	isValidateVC          bool
 	isVerifyProof         bool
 	isCheckExpiration     bool
+	strictProofPurpose    bool
 	didBaseURL            string
 	verificationMethodKey string
 }
@@ -86,10 +87,20 @@ func WithBaseURL(baseURL string) PresentationOpt {
 	}
 }
 
-// WithVerificationMethodKey sets the verification method key (default: "key-1").
+// WithVerificationMethodKey sets the verification method fragment used when
+// signing — e.g. "key-2". When omitted, the SDK resolves the holder DID and
+// picks the latest active VM in the authentication relationship array.
 func WithVerificationMethodKey(key string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.verificationMethodKey = key
+	}
+}
+
+// WithStrictProofPurpose toggles strict proofPurpose checking during proof
+// verification. Default ON.
+func WithStrictProofPurpose(strict bool) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.strictProofPurpose = strict
 	}
 }
 
@@ -109,11 +120,15 @@ func WithCheckExpiration() PresentationOpt {
 
 func getOptions(opts ...PresentationOpt) *presentationOptions {
 	options := &presentationOptions{
-		isValidateVC:          false,
-		isVerifyProof:         false,
-		isCheckExpiration:     false,
-		didBaseURL:            config.BaseURL,
-		verificationMethodKey: "key-1",
+		isValidateVC:       false,
+		isVerifyProof:      false,
+		isCheckExpiration:  false,
+		strictProofPurpose: true,
+		didBaseURL:         config.BaseURL,
+		// verificationMethodKey is left empty so AddProof resolves the
+		// latest VM in the authentication array. Override with
+		// WithVerificationMethodKey to pin a specific kid.
+		verificationMethodKey: "",
 	}
 
 	for _, opt := range opts {

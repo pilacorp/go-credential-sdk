@@ -53,10 +53,15 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 	}
 
 	options := getOptions(opts...)
+	kid, err := resolveVerificationMethodURL(vpc.Holder, "authentication", options.verificationMethodKey, options.didBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolve verification method: %w", err)
+	}
+
 	header := map[string]interface{}{
 		"typ": "JWT",
 		"alg": "ES256K",
-		"kid": fmt.Sprintf("%s#%s", vpc.Holder, options.verificationMethodKey),
+		"kid": kid,
 	}
 
 	// Encode header and payload
@@ -227,7 +232,10 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 			return fmt.Errorf("failed to serialize presentation: %w", err)
 		}
 
-		verifier := jwt.NewJWTVerifier(options.didBaseURL)
+		verifier := jwt.NewJWTVerifier(
+			options.didBaseURL,
+			jwt.WithStrictProofPurpose(options.strictProofPurpose),
+		)
 		err = verifier.VerifyJWT(serialized.(string))
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)

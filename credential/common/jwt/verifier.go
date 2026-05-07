@@ -14,20 +14,43 @@ import (
 
 // JWTVerifier handles JWT verification operations
 type JWTVerifier struct {
-	resolver verificationmethod.ResolverProvider
+	resolver           verificationmethod.ResolverProvider
+	strictProofPurpose bool
+}
+
+// VerifierOption mutates JWTVerifier construction.
+type VerifierOption func(*JWTVerifier)
+
+// WithStrictProofPurpose toggles strict proofPurpose checking. Default ON.
+// Strict checks require the resolver to satisfy DocumentResolver; static
+// resolvers fall back to crypto-only verification regardless of this flag.
+func WithStrictProofPurpose(strict bool) VerifierOption {
+	return func(v *JWTVerifier) {
+		v.strictProofPurpose = strict
+	}
 }
 
 // NewJWTVerifier creates a new JWT verifier with DID resolver (kept for backward compatibility).
-func NewJWTVerifier(didResolverURL string) *JWTVerifier {
-	return &JWTVerifier{
-		resolver: verificationmethod.NewResolver(didResolverURL),
+func NewJWTVerifier(didResolverURL string, opts ...VerifierOption) *JWTVerifier {
+	v := &JWTVerifier{
+		resolver:           verificationmethod.NewResolver(didResolverURL),
+		strictProofPurpose: true,
 	}
+	for _, opt := range opts {
+		opt(v)
+	}
+	return v
 }
 
-func NewJWTVerifierWithResolver(resolver verificationmethod.ResolverProvider) *JWTVerifier {
-	return &JWTVerifier{
-		resolver: resolver,
+func NewJWTVerifierWithResolver(resolver verificationmethod.ResolverProvider, opts ...VerifierOption) *JWTVerifier {
+	v := &JWTVerifier{
+		resolver:           resolver,
+		strictProofPurpose: true,
 	}
+	for _, opt := range opts {
+		opt(v)
+	}
+	return v
 }
 
 // VerifyJWT verifies a JWT token
@@ -59,9 +82,37 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("kid not found in header")
 	}
 
-	publicKeyHex, err := v.resolver.GetPublicKey(kid)
-	if err != nil {
-		return fmt.Errorf("failed to get public key: %w", err)
+	// Try the document resolver path first so strict-purpose checks have
+	// access to the VM's revocation state and the DID's relationship arrays.
+	// Fall through to the plain ResolverProvider for static resolvers, which
+	// can still handle crypto verification with a fixed public key.
+	var (
+		doc          *verificationmethod.DIDDocument
+		vm           *verificationmethod.VerificationMethodEntry
+		publicKeyHex string
+	)
+	if dr, ok := v.resolver.(verificationmethod.DocumentResolver); ok {
+		var rerr error
+		doc, vm, rerr = dr.ResolveDocumentAndVM(kid)
+		if rerr != nil {
+			return fmt.Errorf("failed to resolve verification method: %w", rerr)
+		}
+		if vm.PublicKeyHex != "" {
+			publicKeyHex = strings.TrimPrefix(vm.PublicKeyHex, "0x")
+		} else if vm.PublicKeyJwk != nil {
+			publicKeyHex, rerr = verificationmethod.JWKToHex(vm.PublicKeyJwk)
+			if rerr != nil {
+				return fmt.Errorf("convert JWK: %w", rerr)
+			}
+		} else {
+			return fmt.Errorf("verification method '%s' has no public key material", vm.ID)
+		}
+	} else {
+		var rerr error
+		publicKeyHex, rerr = v.resolver.GetPublicKey(kid)
+		if rerr != nil {
+			return fmt.Errorf("failed to get public key: %w", rerr)
+		}
 	}
 
 	publicKey, err := hexToECDSAPublicKey(publicKeyHex)
@@ -75,7 +126,79 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("invalid signature: %w", err)
 	}
 
-	return ES256K.Verify(signingString, signature, publicKey)
+	if err := ES256K.Verify(signingString, signature, publicKey); err != nil {
+		return err
+	}
+
+	// Strict-purpose check is only meaningful when we actually resolved a
+	// VM from a real DID document. JWT credentials always sign over VCs
+	// with proofPurpose = assertionMethod (W3C VC Data Integrity); JWTs
+	// over VPs use authentication. Detect from the JWT body's first claim.
+	if v.strictProofPurpose && vm != nil && doc != nil {
+		purpose, perr := jwtProofPurpose(parts[1])
+		if perr != nil {
+			return perr
+		}
+		if err := strictPurposeCheck(doc, vm, purpose); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// jwtProofPurpose returns the proofPurpose to enforce for the JWT body —
+// assertionMethod for credentials (presence of "vc" claim) and
+// authentication for presentations ("vp"). Returns an error if neither is
+// present.
+func jwtProofPurpose(payloadB64 string) (string, error) {
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return "", fmt.Errorf("invalid payload encoding: %w", err)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &body); err != nil {
+		return "", fmt.Errorf("invalid payload JSON: %w", err)
+	}
+	if _, ok := body["vc"]; ok {
+		return "assertionMethod", nil
+	}
+	if _, ok := body["vp"]; ok {
+		return "authentication", nil
+	}
+	return "", fmt.Errorf("JWT body has neither vc nor vp claim; cannot determine proofPurpose")
+}
+
+// strictPurposeCheck mirrors the post-crypto checks used by jsonmap.VerifyProof
+// for embedded ECDSA proofs. JWTs do not carry a proof.created field, so the
+// timestamp check is omitted here — verifiers that need it should encode the
+// signing time as `iat` and add their own enforcement.
+func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmethod.VerificationMethodEntry, proofPurpose string) error {
+	if verificationmethod.IsHardRevocationReason(vm.RevocationReason) {
+		return fmt.Errorf("verification method '%s' revoked with hard reason '%s'", vm.ID, vm.RevocationReason)
+	}
+	if vm.Revoked != nil {
+		return fmt.Errorf("verification method '%s' was revoked at %s", vm.ID, vm.Revoked.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+
+	var arr []string
+	switch proofPurpose {
+	case "authentication":
+		arr = doc.Authentication
+	case "assertionMethod":
+		arr = doc.AssertionMethod
+	default:
+		return fmt.Errorf("unsupported proofPurpose '%s'", proofPurpose)
+	}
+	frag := vm.ID
+	if i := len(doc.ID); len(vm.ID) > i && vm.ID[:i] == doc.ID && vm.ID[i] == '#' {
+		frag = vm.ID[i:]
+	}
+	for _, ref := range arr {
+		if ref == vm.ID || ref == frag {
+			return nil
+		}
+	}
+	return fmt.Errorf("verification method '%s' is not granted purpose '%s' on DID '%s'", vm.ID, proofPurpose, doc.ID)
 }
 
 // hexToECDSAPublicKey converts hex string to ECDSA public key
