@@ -1,6 +1,7 @@
 package vp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -72,7 +73,7 @@ func (e *JSONPresentation) AddProofByProvider(signerProvider signer.SignerProvid
 
 	options := getOptions(opts...)
 
-	verificationMethod, err := resolveVerificationMethodURL(holder, "authentication", e.verificationMethod, options.didBaseURL)
+	verificationMethod, err := verificationmethod.ResolveVerificationMethodURL(context.Background(), holder, "authentication", e.verificationMethod, options.resolver)
 	if err != nil {
 		return fmt.Errorf("resolve verification method: %w", err)
 	}
@@ -83,18 +84,6 @@ func (e *JSONPresentation) AddProofByProvider(signerProvider signer.SignerProvid
 // resolveVerificationMethodURL returns the full verification method URL for
 // a presentation proof. See vc.resolveVerificationMethodURL for resolution
 // rules — the only difference is the default purpose (authentication).
-func resolveVerificationMethodURL(did, purpose, kid, didBaseURL string) (string, error) {
-	if kid != "" {
-		return fmt.Sprintf("%s#%s", did, kid), nil
-	}
-	resolver := verificationmethod.NewResolver(didBaseURL)
-	_, vmID, err := resolver.GetVerificationMethodByPurpose(did, purpose)
-	if err != nil {
-		return "", err
-	}
-	return vmID, nil
-}
-
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
 }

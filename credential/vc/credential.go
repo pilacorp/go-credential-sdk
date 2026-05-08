@@ -266,7 +266,7 @@ func getOptions(opts ...CredentialOpt) *credentialOptions {
 	}
 
 	if options.resolver == nil {
-		options.resolver = verificationmethod.NewResolver(options.didBaseURL)
+		options.resolver = verificationmethod.NewHTTPResolver(options.didBaseURL)
 	}
 
 	return options

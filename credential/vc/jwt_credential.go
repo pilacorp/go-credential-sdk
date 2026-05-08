@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -71,7 +73,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 		payload[key] = value
 	}
 
-	kid, err := resolveVerificationMethodURL(vcc.Issuer, "assertionMethod", options.verificationMethodKey, options.didBaseURL)
+	kid, err := verificationmethod.ResolveVerificationMethodURL(context.Background(), vcc.Issuer, "assertionMethod", options.verificationMethodKey, options.resolver)
 	if err != nil {
 		return nil, fmt.Errorf("resolve verification method: %w", err)
 	}

@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,7 +16,7 @@ import (
 
 // JWTVerifier handles JWT verification operations
 type JWTVerifier struct {
-	resolver           verificationmethod.ResolverProvider
+	docResolver        verificationmethod.ResolverProvider
 	strictProofPurpose bool
 }
 
@@ -23,8 +24,9 @@ type JWTVerifier struct {
 type VerifierOption func(*JWTVerifier)
 
 // WithStrictProofPurpose toggles strict proofPurpose checking. Default ON.
-// Strict checks require the resolver to satisfy DocumentResolver; static
-// resolvers fall back to crypto-only verification regardless of this flag.
+// Strict checks require a non-nil docResolver; constructions without one
+// (e.g. token-only flows) fall back to crypto-only verification regardless
+// of this flag.
 func WithStrictProofPurpose(strict bool) VerifierOption {
 	return func(v *JWTVerifier) {
 		v.strictProofPurpose = strict
@@ -34,7 +36,7 @@ func WithStrictProofPurpose(strict bool) VerifierOption {
 // NewJWTVerifier creates a new JWT verifier with DID resolver (kept for backward compatibility).
 func NewJWTVerifier(didResolverURL string, opts ...VerifierOption) *JWTVerifier {
 	v := &JWTVerifier{
-		resolver:           verificationmethod.NewResolver(didResolverURL),
+		docResolver:        verificationmethod.NewHTTPResolver(didResolverURL),
 		strictProofPurpose: true,
 	}
 	for _, opt := range opts {
@@ -43,9 +45,12 @@ func NewJWTVerifier(didResolverURL string, opts ...VerifierOption) *JWTVerifier 
 	return v
 }
 
-func NewJWTVerifierWithResolver(resolver verificationmethod.ResolverProvider, opts ...VerifierOption) *JWTVerifier {
+func NewJWTVerifierWithResolver(
+	docResolver verificationmethod.ResolverProvider,
+	opts ...VerifierOption,
+) *JWTVerifier {
 	v := &JWTVerifier{
-		resolver:           resolver,
+		docResolver:        docResolver,
 		strictProofPurpose: true,
 	}
 	for _, opt := range opts {
@@ -83,37 +88,30 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("kid not found in header")
 	}
 
-	// Try the document resolver path first so strict-purpose checks have
-	// access to the VM's revocation state and the DID's relationship arrays.
-	// Fall through to the plain ResolverProvider for static resolvers, which
-	// can still handle crypto verification with a fixed public key.
-	var (
-		doc          *verificationmethod.DIDDocument
-		vm           *verificationmethod.VerificationMethodEntry
-		publicKeyHex string
-	)
-	if dr, ok := v.resolver.(verificationmethod.DocumentResolver); ok {
-		var rerr error
-		doc, vm, rerr = dr.ResolveDocumentAndVM(kid)
-		if rerr != nil {
-			return fmt.Errorf("failed to resolve verification method: %w", rerr)
-		}
-		if vm.PublicKeyHex != "" {
-			publicKeyHex = strings.TrimPrefix(vm.PublicKeyHex, "0x")
-		} else if vm.PublicKeyJwk != nil {
-			publicKeyHex, rerr = verificationmethod.JWKToHex(vm.PublicKeyJwk)
-			if rerr != nil {
-				return fmt.Errorf("convert JWK: %w", rerr)
-			}
-		} else {
-			return fmt.Errorf("verification method '%s' has no public key material", vm.ID)
-		}
-	} else {
-		var rerr error
-		publicKeyHex, rerr = v.resolver.GetPublicKey(kid)
-		if rerr != nil {
-			return fmt.Errorf("failed to get public key: %w", rerr)
-		}
+	if v.docResolver == nil {
+		return fmt.Errorf("document resolver is not configured")
+	}
+
+	// Resolve the document by the issuer DID claimed in the JWT body, not
+	// by the DID prefix of `kid`. The `iss` claim is the authoritative
+	// identifier of the signer; FindVerificationMethod will reject if the
+	// kid does not actually belong to that issuer's document.
+	issuer, derr := jwtIssuer(parts[1])
+	if derr != nil {
+		return derr
+	}
+	doc, derr := v.docResolver.ResolveDocument(context.Background(), issuer)
+	if derr != nil {
+		return fmt.Errorf("failed to resolve DID document for issuer '%s': %w", issuer, derr)
+	}
+	vm, verr := verificationmethod.FindVerificationMethod(doc, kid)
+	if verr != nil {
+		return fmt.Errorf("failed to resolve verification method: %w", verr)
+	}
+
+	publicKeyHex, err := publicKeyHexFromVM(vm)
+	if err != nil {
+		return err
 	}
 
 	publicKey, err := hexToECDSAPublicKey(publicKeyHex)
@@ -135,7 +133,7 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	// VM from a real DID document. JWT credentials always sign over VCs
 	// with proofPurpose = assertionMethod (W3C VC Data Integrity); JWTs
 	// over VPs use authentication. Detect from the JWT body's first claim.
-	if v.strictProofPurpose && vm != nil && doc != nil {
+	if v.strictProofPurpose {
 		purpose, perr := jwtProofPurpose(parts[1])
 		if perr != nil {
 			return perr
@@ -171,6 +169,28 @@ func jwtProofPurpose(payloadB64 string) (string, error) {
 		return "authentication", nil
 	}
 	return "", fmt.Errorf("JWT body has neither vc nor vp claim; cannot determine proofPurpose")
+}
+
+// jwtIssuer extracts the issuer DID from the `iss` claim in the JWT body.
+// Per W3C VC Data Model JWT encoding, both VC JWTs (issuer DID) and VP
+// JWTs (holder DID) put the signer DID in `iss`. The verifier resolves
+// the DID Document via this claim rather than the kid header so the
+// authoritative source is the signed body, not a key identifier hint.
+func jwtIssuer(payloadB64 string) (string, error) {
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return "", fmt.Errorf("invalid payload encoding: %w", err)
+	}
+	var body struct {
+		Iss string `json:"iss"`
+	}
+	if err := json.Unmarshal(payloadBytes, &body); err != nil {
+		return "", fmt.Errorf("invalid payload JSON: %w", err)
+	}
+	if body.Iss == "" {
+		return "", fmt.Errorf("JWT body is missing required `iss` claim")
+	}
+	return body.Iss, nil
 }
 
 // jwtIssuedAt extracts iat (issued at) as UTC time when present.
@@ -252,6 +272,19 @@ func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmet
 		}
 	}
 	return fmt.Errorf("verification method '%s' is not granted purpose '%s' on DID '%s'", vm.ID, proofPurpose, doc.ID)
+}
+
+func publicKeyHexFromVM(vm *verificationmethod.VerificationMethodEntry) (string, error) {
+	if vm == nil {
+		return "", fmt.Errorf("verification method is nil")
+	}
+	if vm.PublicKeyHex != "" {
+		return strings.TrimPrefix(vm.PublicKeyHex, "0x"), nil
+	}
+	if vm.PublicKeyJwk != nil {
+		return verificationmethod.JWKToHex(vm.PublicKeyJwk)
+	}
+	return "", fmt.Errorf("verification method '%s' has no public key material", vm.ID)
 }
 
 // hexToECDSAPublicKey converts hex string to ECDSA public key

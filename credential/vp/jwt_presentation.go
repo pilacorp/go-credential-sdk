@@ -1,6 +1,7 @@
 package vp
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 type JWTPresentation struct {
@@ -54,7 +56,7 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 	}
 
 	options := getOptions(opts...)
-	kid, err := resolveVerificationMethodURL(vpc.Holder, "authentication", options.verificationMethodKey, options.didBaseURL)
+	kid, err := verificationmethod.ResolveVerificationMethodURL(context.Background(), vpc.Holder, "authentication", options.verificationMethodKey, options.resolver)
 	if err != nil {
 		return nil, fmt.Errorf("resolve verification method: %w", err)
 	}

@@ -1,6 +1,7 @@
 package jsonmap
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -226,24 +227,27 @@ func (m *JSONMap) VerifyProof(didBaseURL string, opts ...VerifyProofOpt) (bool, 
 		return false, fmt.Errorf("failed to parse proof: %w", err)
 	}
 
-	resolver := verificationmethod.NewResolver(didBaseURL)
+	resolver := verificationmethod.NewHTTPResolver(didBaseURL)
+
+	// Resolve the document by the signer DID claimed in the body — `issuer`
+	// for VCs, `holder` for VPs. This is the authoritative source: we trust
+	// what the signed payload says about who created it, then verify the kid
+	// referenced in the proof actually belongs to that DID's document.
+	signerDID, err := signerDIDFromBody(*m)
+	if err != nil {
+		return false, err
+	}
+	doc, err := resolver.ResolveDocument(context.Background(), signerDID)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve DID document for '%s': %w", signerDID, err)
+	}
 
 	if proof.Type == JwtProof2020 {
-		issuerDID, ok := (*m)["issuer"].(string)
-		if !ok {
-			return false, fmt.Errorf("issuer is missing or invalid in the request")
-		}
-
-		// Resolve the VM the JWT was signed with. Prefer the kid header on
-		// the JWT proof; fall back to the issuer's #key-1 for legacy JWTs
-		// that omit kid. JWTs over VCs always sign with assertionMethod, so
-		// strict purpose check uses that array.
-		vmURL, err := jwtVerificationMethodURL((*m), issuerDID)
+		vmURL, err := jwtVerificationMethodURL((*m), signerDID)
 		if err != nil {
 			return false, err
 		}
-
-		doc, vm, err := resolver.ResolveDocumentAndVM(vmURL)
+		vm, err := verificationmethod.FindVerificationMethod(doc, vmURL)
 		if err != nil {
 			return false, fmt.Errorf("failed to resolve verification method: %w", err)
 		}
@@ -266,7 +270,7 @@ func (m *JSONMap) VerifyProof(didBaseURL string, opts ...VerifyProofOpt) (bool, 
 
 		return m.verifyEcdsaProofLegacy()
 	} else if proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019 {
-		doc, vm, err := resolver.ResolveDocumentAndVM(proof.VerificationMethod)
+		vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
 		if err != nil {
 			return false, fmt.Errorf("failed to resolve verification method: %w", err)
 		}
@@ -289,6 +293,37 @@ func (m *JSONMap) VerifyProof(didBaseURL string, opts ...VerifyProofOpt) (bool, 
 
 		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
 	}
+}
+
+// signerDIDFromBody returns the DID of the entity that signed the JSONMap.
+// VCs put it in `issuer`, VPs in `holder`; both forms accept either a plain
+// string DID or an object with an `id` field per W3C VC Data Model. Returns
+// an error when neither key is present so the verifier never silently falls
+// back to extracting a DID from the proof field.
+func signerDIDFromBody(m map[string]interface{}) (string, error) {
+	if did, ok := didFromField(m["issuer"]); ok {
+		return did, nil
+	}
+	if did, ok := didFromField(m["holder"]); ok {
+		return did, nil
+	}
+	return "", fmt.Errorf("body is missing required `issuer` (VC) or `holder` (VP) field")
+}
+
+// didFromField accepts either a plain string DID or an object form
+// `{"id": "did:..."}` and returns the DID string when present.
+func didFromField(v interface{}) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		if t != "" {
+			return t, true
+		}
+	case map[string]interface{}:
+		if id, ok := t["id"].(string); ok && id != "" {
+			return id, true
+		}
+	}
+	return "", false
 }
 
 // strictPurposeCheck enforces the post-crypto checks for multi-VM:
@@ -377,17 +412,11 @@ func jwtVerificationMethodURL(m map[string]interface{}, issuerDID string) (strin
 		}
 		if jws, ok := proofMap["jws"].(string); ok && jws != "" {
 			if kid, ok := jwsKid(jws); ok && kid != "" {
-				if kid[0] == '#' {
-					return issuerDID + kid, nil
-				}
 				return kid, nil
 			}
 		}
 	}
-	if issuerDID == "" {
-		return "", fmt.Errorf("cannot resolve verification method: issuer DID and proof.kid are both empty")
-	}
-	return issuerDID + "#key-1", nil
+	return "", fmt.Errorf("token is missing verification method id (kid/verificationMethod)")
 }
 
 // jwsKid pulls the kid claim out of the JWS header (first segment of a

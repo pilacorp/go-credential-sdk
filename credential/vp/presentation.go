@@ -10,6 +10,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
@@ -78,6 +79,7 @@ type presentationOptions struct {
 	strictProofPurpose    bool
 	didBaseURL            string
 	verificationMethodKey string
+	resolver              verificationmethod.ResolverProvider
 }
 
 // WithVCValidation enables validation for credentials in the presentation.
@@ -125,6 +127,13 @@ func WithCheckExpiration() PresentationOpt {
 	}
 }
 
+// WithResolver sets the document resolver for presentation signing/verification.
+func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.resolver = resolver
+	}
+}
+
 func getOptions(opts ...PresentationOpt) *presentationOptions {
 	options := &presentationOptions{
 		isValidateVC:       false,
@@ -136,10 +145,15 @@ func getOptions(opts ...PresentationOpt) *presentationOptions {
 		// latest VM in the authentication array. Override with
 		// WithVerificationMethodKey to pin a specific kid.
 		verificationMethodKey: "",
+		resolver:              nil,
 	}
 
 	for _, opt := range opts {
 		opt(options)
+	}
+
+	if options.resolver == nil {
+		options.resolver = verificationmethod.NewHTTPResolver(options.didBaseURL)
 	}
 
 	return options

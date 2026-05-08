@@ -1282,7 +1282,12 @@ func TestNewJWTCredential_WithSDDisclosures_SerializesSDJWT(t *testing.T) {
 	// selective paths for name
 	selectivePaths := []string{"credentialSubject.name"}
 
-	cred, err := NewJWTCredential(vcc, WithSDDisclosures(disclosures), WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(
+		vcc,
+		WithVerificationMethodKey("key-1"),
+		WithSDDisclosures(disclosures),
+		WithSDSelectivePaths(selectivePaths),
+	)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
@@ -1356,7 +1361,7 @@ func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 
 	selectivePaths := []string{"credentialSubject.emails[1]"}
 
-	cred, err := NewJWTCredential(vcc, WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
@@ -1457,7 +1462,7 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 
 	selectivePaths := []string{"credentialSubject.profile.name"}
 
-	cred, err := NewJWTCredential(vcc, WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
@@ -1558,7 +1563,7 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	}
 	selectivePaths := []string{"credentialSubject.firstname", "credentialSubject.email"}
 
-	cred, err := NewJWTCredential(vcc, WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
 	assert.NoError(t, err)
 	serialized, err := cred.Serialize()
 	assert.NoError(t, err)
@@ -1619,7 +1624,7 @@ func TestAddSelectiveDisclosures(t *testing.T) {
 
 	// Step 1: Issue SD-JWT with initial selective disclosure (firstname only)
 	initialPaths := []string{"credentialSubject.firstname"}
-	cred, err := NewJWTCredential(vcc, WithSDSelectivePaths(initialPaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(initialPaths))
 	assert.NoError(t, err)
 
 	// Sign the credential
@@ -1712,7 +1717,7 @@ func TestAddSelectiveDisclosures_EmptyPaths(t *testing.T) {
 	}
 
 	// Create credential without selective disclosures
-	cred, err := NewJWTCredential(vcc)
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"))
 	assert.NoError(t, err)
 
 	// Try to add empty selective paths - should error
@@ -1740,7 +1745,7 @@ func TestAddSelectiveDisclosures_PlainJWT(t *testing.T) {
 	}
 
 	// Create plain JWT (no selective disclosures)
-	cred, err := NewJWTCredential(vcc)
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"))
 	assert.NoError(t, err)
 
 	// Add selective disclosures to plain JWT - should work
@@ -1776,6 +1781,7 @@ func TestWithSDDecoyDigests_Array(t *testing.T) {
 
 	// Issue SD-JWT with selective disclosure on first email and decoy on second
 	cred, err := NewJWTCredential(vcc,
+		WithVerificationMethodKey("key-1"),
 		WithSDSelectivePaths([]string{"credentialSubject.emails[0]"}),
 		WithSDDecoyDigests([]Decoy{
 			{Path: "credentialSubject.emails[1]", Count: 1},
@@ -1848,7 +1854,7 @@ func TestExtractField(t *testing.T) {
 		ValidUntil: time.Now().Add(24 * time.Hour),
 	}
 
-	jwtCred, err := NewJWTCredential(vcc)
+	jwtCred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"))
 	assert.NoError(t, err)
 
 	// Test extracting from JWT credential
@@ -2002,7 +2008,7 @@ func TestAddSelectiveDisclosures_PreservesRegisteredClaims(t *testing.T) {
 
 	// Issue SD-JWT with firstname disclosure
 	initialPaths := []string{"credentialSubject.firstname"}
-	cred, err := NewJWTCredential(vcc, WithSDSelectivePaths(initialPaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(initialPaths))
 	assert.NoError(t, err)
 
 	// Parse to get credential with disclosures

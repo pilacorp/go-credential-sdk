@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -76,32 +77,12 @@ func (e *JSONCredential) AddProofByProvider(signerProvider signer.SignerProvider
 
 	options := getOptions(opts...)
 
-	verificationMethod, err := resolveVerificationMethodURL(issuer, "assertionMethod", e.verificationMethod, options.didBaseURL)
+	verificationMethod, err := verificationmethod.ResolveVerificationMethodURL(context.Background(), issuer, "assertionMethod", e.verificationMethod, options.resolver)
 	if err != nil {
 		return fmt.Errorf("resolve verification method: %w", err)
 	}
 
 	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signerProvider, verificationMethod, "assertionMethod", options.didBaseURL)
-}
-
-// resolveVerificationMethodURL returns the full verification method URL for
-// the proof. Resolution order:
-//
-//  1. If kid is non-empty, return "<did>#<kid>" (caller-specified pin).
-//  2. Otherwise resolve the DID and pick the latest active VM in the given
-//     purpose array. This keeps single-VM partners working unchanged
-//     (their only VM is #key-1 and it's in assertionMethod) while letting
-//     multi-VM callers omit kid and get the most recent rotation.
-func resolveVerificationMethodURL(did, purpose, kid, didBaseURL string) (string, error) {
-	if kid != "" {
-		return fmt.Sprintf("%s#%s", did, kid), nil
-	}
-	resolver := verificationmethod.NewResolver(didBaseURL)
-	_, vmID, err := resolver.GetVerificationMethodByPurpose(did, purpose)
-	if err != nil {
-		return "", err
-	}
-	return vmID, nil
 }
 
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {
