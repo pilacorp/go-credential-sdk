@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
@@ -139,7 +140,11 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		if perr != nil {
 			return perr
 		}
-		if err := strictPurposeCheck(doc, vm, purpose); err != nil {
+		issuedAt, ierr := jwtIssuedAt(parts[1])
+		if ierr != nil {
+			return ierr
+		}
+		if err := strictPurposeCheck(doc, vm, purpose, issuedAt); err != nil {
 			return err
 		}
 	}
@@ -168,16 +173,64 @@ func jwtProofPurpose(payloadB64 string) (string, error) {
 	return "", fmt.Errorf("JWT body has neither vc nor vp claim; cannot determine proofPurpose")
 }
 
+// jwtIssuedAt extracts iat (issued at) as UTC time when present.
+// Returns (nil, nil) when iat is absent.
+func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid payload encoding: %w", err)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &body); err != nil {
+		return nil, fmt.Errorf("invalid payload JSON: %w", err)
+	}
+
+	raw, ok := body["iat"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+
+	var sec int64
+	switch t := raw.(type) {
+	case float64:
+		sec = int64(t)
+	case int64:
+		sec = t
+	case json.Number:
+		v, err := t.Int64()
+		if err != nil {
+			return nil, fmt.Errorf("invalid iat: %v", err)
+		}
+		sec = v
+	default:
+		return nil, fmt.Errorf("invalid iat type: %T", raw)
+	}
+
+	if sec <= 0 {
+		return nil, fmt.Errorf("invalid iat value: %v", raw)
+	}
+
+	tm := time.Unix(sec, 0).UTC()
+	return &tm, nil
+}
+
 // strictPurposeCheck mirrors the post-crypto checks used by jsonmap.VerifyProof
 // for embedded ECDSA proofs. JWTs do not carry a proof.created field, so the
 // timestamp check is omitted here — verifiers that need it should encode the
 // signing time as `iat` and add their own enforcement.
-func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmethod.VerificationMethodEntry, proofPurpose string) error {
+func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmethod.VerificationMethodEntry, proofPurpose string, issuedAt *time.Time) error {
 	if verificationmethod.IsHardRevocationReason(vm.RevocationReason) {
 		return fmt.Errorf("verification method '%s' revoked with hard reason '%s'", vm.ID, vm.RevocationReason)
 	}
 	if vm.Revoked != nil {
-		return fmt.Errorf("verification method '%s' was revoked at %s", vm.ID, vm.Revoked.UTC().Format("2006-01-02T15:04:05Z"))
+		if issuedAt == nil {
+			return fmt.Errorf("verification method '%s' was revoked at %s (missing iat for time-based revocation check)",
+				vm.ID, vm.Revoked.UTC().Format(time.RFC3339))
+		}
+		if !issuedAt.Before(*vm.Revoked) {
+			return fmt.Errorf("verification method '%s' was revoked at %s; iat %s is not earlier",
+				vm.ID, vm.Revoked.UTC().Format(time.RFC3339), issuedAt.UTC().Format(time.RFC3339))
+		}
 	}
 
 	var arr []string

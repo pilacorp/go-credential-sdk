@@ -124,6 +124,78 @@ type Transaction struct {
 	TxHash string
 }
 
+// SetDocumentHashRequest builds a raw tx for setDocumentHash(did, docHash, capId, v, r, s).
+type SetDocumentHashRequest struct {
+	// DIDAddress is the subject DID's ethereum address (0x...).
+	DIDAddress string
+	// DocHash is the keccak256 hash of canonicalized DID Document (0x... 32 bytes).
+	DocHash string
+	// CapID is the capability id (0x... 32 bytes).
+	CapID string
+	// IssuerSig is the issuer signature (v,r,s) over capability payload.
+	IssuerSig *issuer.Signature
+	// Nonce is tx nonce for txSigner.
+	Nonce uint64
+}
+
+func (r *SetDocumentHashRequest) Validate() error {
+	if r == nil {
+		return errors.New("SetDocumentHashRequest is required")
+	}
+	if !common.IsHexAddress(r.DIDAddress) {
+		return fmt.Errorf("invalid did address: %s", r.DIDAddress)
+	}
+	if r.IssuerSig == nil || r.IssuerSig.V == nil || r.IssuerSig.R == nil || r.IssuerSig.S == nil {
+		return errors.New("issuer signature V, R, S are required")
+	}
+
+	docHashLen := len(r.DocHash)
+	if strings.HasPrefix(r.DocHash, "0x") {
+		docHashLen -= 2
+	}
+	if docHashLen != DocHashHexLength {
+		return fmt.Errorf("invalid docHash length: expected %d hex chars (32 bytes), got %d", DocHashHexLength, docHashLen)
+	}
+
+	capIDLen := len(r.CapID)
+	if strings.HasPrefix(r.CapID, "0x") {
+		capIDLen -= 2
+	}
+	if capIDLen != CapIDHexLength {
+		return fmt.Errorf("invalid capID length: expected %d hex chars (32 bytes), got %d", CapIDHexLength, capIDLen)
+	}
+
+	return nil
+}
+
+// SetDocumentHashByIssuerRequest builds a raw tx for setDocumentHashByIssuer(did, docHash).
+type SetDocumentHashByIssuerRequest struct {
+	// DIDAddress is the subject DID's ethereum address (0x...).
+	DIDAddress string
+	// DocHash is the keccak256 hash of canonicalized DID Document (0x... 32 bytes).
+	DocHash string
+	// Nonce is tx nonce for txSigner.
+	Nonce uint64
+}
+
+func (r *SetDocumentHashByIssuerRequest) Validate() error {
+	if r == nil {
+		return errors.New("SetDocumentHashByIssuerRequest is required")
+	}
+	if !common.IsHexAddress(r.DIDAddress) {
+		return fmt.Errorf("invalid did address: %s", r.DIDAddress)
+	}
+
+	docHashLen := len(r.DocHash)
+	if strings.HasPrefix(r.DocHash, "0x") {
+		docHashLen -= 2
+	}
+	if docHashLen != DocHashHexLength {
+		return fmt.Errorf("invalid docHash length: expected %d hex chars (32 bytes), got %d", DocHashHexLength, docHashLen)
+	}
+	return nil
+}
+
 // Validate validates the Config to ensure required fields are present and valid.
 //
 // Checks:
