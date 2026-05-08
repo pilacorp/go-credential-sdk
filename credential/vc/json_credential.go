@@ -6,13 +6,13 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"golang.org/x/sync/errgroup"
 )
 
 type JSONCredential struct {
 	credentialData     CredentialData
-	proof              *dto.Proof
 	verificationMethod string
 }
 
@@ -52,6 +52,18 @@ func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (Credential, err
 }
 
 func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
+	defaultSigner, err := signer.NewDefaultProvider(priv)
+	if err != nil {
+		return fmt.Errorf("failed to create default signer: %w", err)
+	}
+	return e.AddProofByProvider(defaultSigner, opts...)
+}
+
+func (e *JSONCredential) AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error {
+	if signerProvider == nil {
+		return fmt.Errorf("signer provider cannot be nil")
+	}
+
 	err := e.executeOptions(opts...)
 	if err != nil {
 		return err
@@ -69,7 +81,7 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 		return fmt.Errorf("resolve verification method: %w", err)
 	}
 
-	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(priv, verificationMethod, "assertionMethod", options.didBaseURL)
+	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signerProvider, verificationMethod, "assertionMethod", options.didBaseURL)
 }
 
 // resolveVerificationMethodURL returns the full verification method URL for
@@ -106,9 +118,7 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 		return err
 	}
 
-	e.proof = proof
-
-	return (*jsonmap.JSONMap)(&e.credentialData).AddCustomProof(e.proof)
+	return (*jsonmap.JSONMap)(&e.credentialData).AddCustomProof(proof)
 }
 
 func (e *JSONCredential) Verify(opts ...CredentialOpt) error {

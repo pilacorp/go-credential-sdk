@@ -10,6 +10,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
@@ -87,24 +88,18 @@ func (m *JSONMap) Canonicalize() ([]byte, error) {
 }
 
 // AddECDSAProof adds an ECDSA proof to the JSONMap.
-func (m *JSONMap) AddECDSAProof(priv, verificationMethod, proofPurpose, didBaseURL string) error {
+func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose, didBaseURL string) error {
 	if m == nil {
-		return fmt.Errorf("JSONMap is nil")
+		return fmt.Errorf("jsonmap: JSONMap is nil")
+	}
+	if signerProvider == nil {
+		return fmt.Errorf("jsonmap: signer provider cannot be nil")
 	}
 	if verificationMethod == "" {
-		return fmt.Errorf("verification method is required")
+		return fmt.Errorf("jsonmap: verification method is required")
 	}
 	if proofPurpose == "" {
-		return fmt.Errorf("proof purpose is required")
-	}
-
-	resolver := verificationmethod.NewResolver(didBaseURL)
-	isValid, err := resolver.CheckVerificationMethod(priv, verificationMethod)
-	if err != nil {
-		return fmt.Errorf("failed to verify Private key and verification method: %w", err)
-	}
-	if !isValid {
-		return fmt.Errorf("private key and verification method do not match")
+		return fmt.Errorf("jsonmap: proof purpose is required")
 	}
 
 	proof := &dto.Proof{
@@ -117,12 +112,19 @@ func (m *JSONMap) AddECDSAProof(priv, verificationMethod, proofPurpose, didBaseU
 
 	signData, err := m.Canonicalize()
 	if err != nil {
-		return fmt.Errorf("failed to canonicalize JSONMap: %w", err)
+		return fmt.Errorf("jsonmap: failed to canonicalize JSONMap: %w", err)
 	}
 
-	signature, err := crypto.ECDSASign(signData, priv)
+	if len(signData) != 32 {
+		return fmt.Errorf("jsonmap: invalid signing digest length: got %d, want 32", len(signData))
+	}
+
+	signature, err := signerProvider.Sign(signData)
 	if err != nil {
-		return fmt.Errorf("failed to sign ECDSA proof: %w", err)
+		return fmt.Errorf("jsonmap: failed to sign digest: %w", err)
+	}
+	if err := signer.ValidateSignatureLength(signature); err != nil {
+		return fmt.Errorf("jsonmap: %w", err)
 	}
 	proof.ProofValue = hex.EncodeToString(signature)
 	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
