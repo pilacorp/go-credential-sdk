@@ -159,7 +159,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 			}
 
 			if !isValid {
-				return fmt.Errorf("invalid proof")
+				return fmt.Errorf("verify proof: invalid proof")
 			}
 
 			return nil

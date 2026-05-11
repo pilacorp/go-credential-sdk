@@ -183,18 +183,34 @@ func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider,
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
+	options := getOptions(opts...)
+
 	jwtSigner := jwt.NewJWTSigner(signerProvider)
 	signature, err := jwtSigner.SignString(j.signingInput)
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
 
+	// Set signature before running option-driven verification.
+	j.signature = signature
+
+	// Self-verify after signing to surface detailed errors early.
+	if len(j.disclosures) == 0 {
+		serialized, err := j.Serialize()
+		if err != nil {
+			return fmt.Errorf("proof self-verification failed: serialize credential: %w", err)
+		}
+
+		verifier := jwt.NewJWTVerifierWithResolver(options.resolver)
+		if err := verifier.VerifyJWT(serialized.(string)); err != nil {
+			return fmt.Errorf("proof self-verification failed: %w", err)
+		}
+	}
+
 	err = j.executeOptions(opts...)
 	if err != nil {
 		return err
 	}
-
-	j.signature = signature
 	return nil
 }
 
@@ -320,7 +336,7 @@ func (j *JWTCredential) extractPayload() (map[string]interface{}, string, error)
 func (j *JWTCredential) buildCredential(payload map[string]interface{}, header string, vc map[string]interface{}, disc []string) (*JWTCredential, error) {
 	// Replace vc claim while preserving all other payload claims (iss, sub, exp, iat, nbf, jti, etc.)
 	payload["vc"] = vc
-	
+
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)

@@ -128,6 +128,16 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 	proof.ProofValue = hex.EncodeToString(signature)
 	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
 
+	// Self-verify after adding proof to provide detailed errors early (expected/got)
+	// instead of deferring to later Verify() calls.
+	isValid, err := m.VerifyProof(didBaseURL)
+	if err != nil {
+		return fmt.Errorf("jsonmap: proof self-verification failed: %w", err)
+	}
+	if !isValid {
+		return fmt.Errorf("jsonmap: proof self-verification failed: invalid proof")
+	}
+
 	return nil
 }
 
@@ -180,17 +190,24 @@ func (m *JSONMap) VerifyProof(didBaseURL string) (bool, error) {
 		return false, fmt.Errorf("JSONMap is nil")
 	}
 
-	proofs, ok := (*m)["proof"].([]interface{})
+	rawProofField, hasProofField := (*m)["proof"]
+	if !hasProofField {
+		return false, fmt.Errorf("JSONMap has no proof")
+	}
+
+	proofs, ok := rawProofField.([]interface{})
 	if !ok {
-		if proof, exists := (*m)["proof"]; exists {
-			proofs = []interface{}{proof}
-		} else {
-			return false, fmt.Errorf("JSONMap has no proof")
-		}
+		proofs = []interface{}{rawProofField}
+	}
+	if len(proofs) == 0 {
+		return false, fmt.Errorf("expected proof array to have at least 1 entry, got 0")
 	}
 	proof, err := ParseRawToProof(proofs[0])
 	if err != nil {
 		return false, fmt.Errorf("failed to parse proof: %w", err)
+	}
+	if proof.Type == "" {
+		return false, fmt.Errorf("expected proof.type to be non-empty string, got empty")
 	}
 
 	if proof.Type == JwtProof2020 {
@@ -205,10 +222,36 @@ func (m *JSONMap) VerifyProof(didBaseURL string) (bool, error) {
 			return false, fmt.Errorf("failed to resolve public key: %w", err)
 		}
 
-		return crypto.VerifyJwtProof((*map[string]interface{})(m), publicKey)
+		// VerifyJwtProof expects proof to be a map with a "jwt" field, not an array.
+		rawProofMap, ok := proofs[0].(map[string]interface{})
+		if !ok {
+			return false, fmt.Errorf("expected proof to be map[string]interface{} for %s, got %T", JwtProof2020, proofs[0])
+		}
+
+		tmp := make(map[string]interface{}, len(*m))
+		for k, v := range *m {
+			tmp[k] = v
+		}
+		tmp["proof"] = rawProofMap
+
+		verified, err := crypto.VerifyJwtProof(&tmp, publicKey)
+		if err != nil {
+			return false, err
+		}
+		if !verified {
+			return false, fmt.Errorf("signature verification failed: expected %s signature to match resolved public key, but it did not", JwtProof2020)
+		}
+		return true, nil
 	} else if proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY {
 
-		return m.verifyEcdsaProofLegacy()
+		verified, err := m.verifyEcdsaProofLegacyFromRaw(proofs[0])
+		if err != nil {
+			return false, err
+		}
+		if !verified {
+			return false, fmt.Errorf("signature verification failed: expected legacy ECDSA proof signature to match verificationMethod, but it did not")
+		}
+		return true, nil
 	} else if proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019 {
 		resolver := verificationmethod.NewResolver(didBaseURL)
 		publicKey, err := resolver.GetPublicKey(proof.VerificationMethod)
@@ -216,10 +259,20 @@ func (m *JSONMap) VerifyProof(didBaseURL string) (bool, error) {
 			return false, fmt.Errorf("failed to resolve public key: %w", err)
 		}
 
-		return m.verifyECDSA(publicKey, &proof)
+		verified, err := m.verifyECDSA(publicKey, &proof)
+		if err != nil {
+			return false, err
+		}
+		if !verified {
+			return false, fmt.Errorf("signature verification failed: expected %s/%s signature to match verificationMethod %q, but it did not", DataIntegrityProof, ECDSARDFC2019, proof.VerificationMethod)
+		}
+		return true, nil
 	} else {
 
-		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
+		if proof.Type == DataIntegrityProof && proof.Cryptosuite != ECDSARDFC2019 {
+			return false, fmt.Errorf("unsupported cryptosuite for %s: expected %q, got %q", DataIntegrityProof, ECDSARDFC2019, proof.Cryptosuite)
+		}
+		return false, fmt.Errorf("unsupported proof type: expected one of %q, %q, %q, got %q", JwtProof2020, DataIntegrityProof, EcdsaSecp256k1Signature2019, proof.Type)
 	}
 }
 
@@ -229,26 +282,36 @@ func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) 
 	if err != nil {
 		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
 	}
+	if len(doc) != 32 {
+		return false, fmt.Errorf("invalid signing digest length: expected 32 bytes, got %d", len(doc))
+	}
 
 	return crypto.ECDSAVerifySignature(publicKey, proof.ProofValue, doc)
 }
 
-// verifyEcdsaProofLegacy verifies an ECDSA-signed JSONMap.
-// This function support lecacy VC for compatibility
-func (m *JSONMap) verifyEcdsaProofLegacy() (bool, error) {
-
-	proofValue, ok := (*m)["proof"].(map[string]interface{})["proofValue"].(string)
-	if !ok || proofValue == "" {
-		return false, fmt.Errorf("proof value is missing or invalid in the request")
+// verifyEcdsaProofLegacyFromRaw verifies a legacy ECDSA-signed JSONMap.
+// This function supports legacy VC for compatibility.
+func (m *JSONMap) verifyEcdsaProofLegacyFromRaw(rawProof interface{}) (bool, error) {
+	proofMap, ok := rawProof.(map[string]interface{})
+	if !ok {
+		return false, fmt.Errorf("expected proof to be map[string]interface{}, got %T", rawProof)
 	}
-	publicKeyHex, ok := (*m)["proof"].(map[string]interface{})["verificationMethod"].(string)
+
+	proofValue, ok := proofMap["proofValue"].(string)
+	if !ok || proofValue == "" {
+		return false, fmt.Errorf("expected proof.proofValue to be non-empty string, got %T", proofMap["proofValue"])
+	}
+	publicKeyHex, ok := proofMap["verificationMethod"].(string)
 	if !ok || publicKeyHex == "" {
-		return false, fmt.Errorf("proof verificationMethod is missing or invalid in the request")
+		return false, fmt.Errorf("expected proof.verificationMethod to be non-empty string, got %T", proofMap["verificationMethod"])
 	}
 
 	signatureBytes, err := hex.DecodeString(proofValue)
 	if err != nil {
 		return false, fmt.Errorf("failed to decode proof value to bytes: %w", err)
+	}
+	if err := signer.ValidateSignatureLength(signatureBytes); err != nil {
+		return false, err
 	}
 
 	reqCopy := make(map[string]interface{})
