@@ -188,9 +188,9 @@ func (doc *DIDDocument) addPurpose(p VerificationPurpose, kid string) error {
 
 	switch p {
 	case PurposeAuthentication:
-		doc.Authentication = appendUnique(doc.Authentication, kid)
+		doc.Authentication = addRefNormalized(doc.Authentication, kid, doc.Id)
 	case PurposeAssertionMethod:
-		doc.AssertionMethod = appendUnique(doc.AssertionMethod, kid)
+		doc.AssertionMethod = addRefNormalized(doc.AssertionMethod, kid, doc.Id)
 	}
 	return nil
 }
@@ -202,28 +202,57 @@ func (doc *DIDDocument) removePurpose(p VerificationPurpose, kid string) error {
 
 	switch p {
 	case PurposeAuthentication:
-		doc.Authentication = removeAll(doc.Authentication, kid)
+		doc.Authentication = removeRefNormalized(doc.Authentication, kid, doc.Id)
 	case PurposeAssertionMethod:
-		doc.AssertionMethod = removeAll(doc.AssertionMethod, kid)
+		doc.AssertionMethod = removeRefNormalized(doc.AssertionMethod, kid, doc.Id)
 	}
 	return nil
 }
 
-func appendUnique(in []string, v string) []string {
-	for _, x := range in {
-		if x == v {
-			return in
-		}
+func canonRef(ref, did string) string {
+	if strings.HasPrefix(ref, "#") {
+		return did + ref
 	}
-	return append(in, v)
+	return ref
 }
 
-func removeAll(in []string, v string) []string {
-	out := in[:0]
-	for _, x := range in {
-		if x != v {
-			out = append(out, x)
+// addRefNormalized rewrites every entry in arr to canonical form, dedupes,
+// then appends `kid` (also canonicalised) if not already present.
+func addRefNormalized(arr []string, kid, did string) []string {
+	target := canonRef(kid, did)
+	seen := make(map[string]struct{}, len(arr)+1)
+	out := make([]string, 0, len(arr)+1)
+	for _, x := range arr {
+		c := canonRef(x, did)
+		if _, dup := seen[c]; dup {
+			continue
 		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	if _, dup := seen[target]; !dup {
+		out = append(out, target)
+	}
+	return out
+}
+
+// removeRefNormalized rewrites entries to canonical form, dedupes, then drops
+// any entry that matches kid (compared against canonical). Caller may pass
+// kid as fragment ("#key-2") or full URL — both resolve to the same VM.
+func removeRefNormalized(arr []string, kid, did string) []string {
+	target := canonRef(kid, did)
+	seen := make(map[string]struct{}, len(arr))
+	out := make([]string, 0, len(arr))
+	for _, x := range arr {
+		c := canonRef(x, did)
+		if c == target {
+			continue
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
 	}
 	return out
 }
@@ -258,27 +287,31 @@ func containsKidRef(arr []string, kid, did string) bool {
 	return false
 }
 
-// replacePurposeRefs rewrites purpose references for oldFullID to newFullID,
-// preserving fragment/full variants if they exist.
+// replacePurposeRefs rewrites purpose references for oldFullID to newFullID.
+// Used by RotateVerificationMethod after the new VM has already been added
+// via AddVerificationMethod.
 func (doc *DIDDocument) replacePurposeRefs(oldFullID, newFullID string) {
-	oldFrag := strings.TrimPrefix(oldFullID, doc.Id)
-	newFrag := strings.TrimPrefix(newFullID, doc.Id)
-
-	doc.Authentication = replaceAll(doc.Authentication, oldFullID, newFullID, oldFrag, newFrag)
-	doc.AssertionMethod = replaceAll(doc.AssertionMethod, oldFullID, newFullID, oldFrag, newFrag)
+	doc.Authentication = replaceAndNormalize(doc.Authentication, oldFullID, newFullID, doc.Id)
+	doc.AssertionMethod = replaceAndNormalize(doc.AssertionMethod, oldFullID, newFullID, doc.Id)
 }
 
-func replaceAll(arr []string, oldFull, newFull, oldFrag, newFrag string) []string {
-	out := make([]string, len(arr))
-	for i, v := range arr {
-		switch v {
-		case oldFull:
-			out[i] = newFull
-		case oldFrag:
-			out[i] = newFrag
-		default:
-			out[i] = v
+// replaceAndNormalize replaces every reference matching oldID (fragment or
+// full URL) with the canonical newID, then dedupes the result.
+func replaceAndNormalize(arr []string, oldID, newID, did string) []string {
+	oldCanon := canonRef(oldID, did)
+	newCanon := canonRef(newID, did)
+	seen := make(map[string]struct{}, len(arr))
+	out := make([]string, 0, len(arr))
+	for _, v := range arr {
+		c := canonRef(v, did)
+		if c == oldCanon {
+			c = newCanon
 		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
 	}
 	return out
 }
