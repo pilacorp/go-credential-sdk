@@ -134,10 +134,10 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	if options.isVerifyProof {
 		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(options.didBaseURL)
 		if err != nil {
-			return fmt.Errorf("failed to verify presentation: %w", err)
+			return fmt.Errorf("verify proof: %w", err)
 		}
 		if !isValid {
-			return fmt.Errorf("invalid proof")
+			return fmt.Errorf("verify proof: invalid proof")
 		}
 	}
 

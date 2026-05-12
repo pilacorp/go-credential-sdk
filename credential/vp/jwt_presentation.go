@@ -153,6 +153,8 @@ func (j *JWTPresentation) AddProofByProvider(signerProvider signer.SignerProvide
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
+	options := getOptions(opts...)
+
 	jwtSigner := jwt.NewJWTSigner(signerProvider)
 
 	// Sign the existing signing input
@@ -161,13 +163,24 @@ func (j *JWTPresentation) AddProofByProvider(signerProvider signer.SignerProvide
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
 
+	// Set signature before running option-driven verification.
+	j.signature = signature
+
+	// Self-verify after signing to surface detailed errors early.
+	serialized, err := j.Serialize()
+	if err != nil {
+		return fmt.Errorf("proof self-verification failed: failed to serialize presentation: %w", err)
+	}
+
+	verifier := jwt.NewJWTVerifier(options.didBaseURL)
+	if err := verifier.VerifyJWT(serialized.(string)); err != nil {
+		return fmt.Errorf("proof self-verification failed: %w", err)
+	}
+
 	err = j.executeOptions(opts...)
 	if err != nil {
 		return err
 	}
-
-	// Update signature
-	j.signature = signature
 
 	return nil
 }
@@ -241,7 +254,7 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 		verifier := jwt.NewJWTVerifier(options.didBaseURL)
 		err = verifier.VerifyJWT(serialized.(string))
 		if err != nil {
-			return fmt.Errorf("failed to verify presentation: %w", err)
+			return fmt.Errorf("verify proof: %w", err)
 		}
 	}
 

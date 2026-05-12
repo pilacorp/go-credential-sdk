@@ -52,7 +52,7 @@ func (m *SigningMethodES256K) Verify(signingString string, signature []byte, key
 	}
 
 	if len(signature) != 64 {
-		return fmt.Errorf("invalid signature length")
+		return fmt.Errorf("invalid signature length: expected 64, got %d", len(signature))
 	}
 
 	hash := sha256.Sum256([]byte(signingString))
@@ -60,7 +60,7 @@ func (m *SigningMethodES256K) Verify(signingString string, signature []byte, key
 	s := new(big.Int).SetBytes(signature[32:])
 
 	if !ecdsa.Verify(publicKey, hash[:], r, s) {
-		return fmt.Errorf("signature verification failed")
+		return fmt.Errorf("signature verification failed: expected signature to verify with the resolved public key, but it did not")
 	}
 
 	return nil
