@@ -56,9 +56,14 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 	}
 
 	options := getOptions(opts...)
-	kid, err := verificationmethod.ResolveVerificationMethodURL(context.Background(), vpc.Holder, "authentication", options.verificationMethodKey, options.resolver)
-	if err != nil {
-		return nil, fmt.Errorf("resolve verification method: %w", err)
+	kid := options.verificationMethodKey
+	if kid == "" {
+		kid, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), vpc.Holder, "authentication", options.resolver)
+		if err != nil {
+			return nil, fmt.Errorf("resolve verification method: %w", err)
+		}
+	} else {
+		kid = verificationmethod.NormalizeVerificationMethodURL(vpc.Holder, kid)
 	}
 
 	header := map[string]interface{}{

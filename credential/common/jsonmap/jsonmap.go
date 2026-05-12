@@ -20,6 +20,8 @@ import (
 type JSONMap map[string]interface{}
 
 const (
+	proofField string = "proof"
+
 	JwtProof2020                string = "JwtProof2020"
 	EcdsaSecp256k1Signature2019 string = "EcdsaSecp256k1Signature2019"
 	DataIntegrityProof          string = "DataIntegrityProof"
@@ -46,15 +48,13 @@ func (m *JSONMap) ToJSON() ([]byte, error) {
 }
 
 func (m *JSONMap) ToMap() (map[string]interface{}, error) {
-	// Marshal the JSONMap to bytes
-	bytes, err := json.Marshal(m)
+	raw, err := json.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal JSONMap: %w", err)
 	}
 
-	// Unmarshal the bytes to a map
 	var data map[string]interface{}
-	if err := json.Unmarshal(bytes, &data); err != nil {
+	if err := json.Unmarshal(raw, &data); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal JSONMap: %w", err)
 	}
 
@@ -65,7 +65,7 @@ func (m *JSONMap) ToMap() (map[string]interface{}, error) {
 func (m *JSONMap) Canonicalize() ([]byte, error) {
 	mCopy := make(JSONMap)
 	for k, v := range *m {
-		if k != "proof" {
+		if k != proofField {
 			mCopy[k] = v
 		}
 	}
@@ -88,8 +88,9 @@ func (m *JSONMap) Canonicalize() ([]byte, error) {
 	return processor.ComputeDigest(canonicalDoc)
 }
 
-// AddECDSAProof adds an ECDSA proof to the JSONMap.
-func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose, didBaseURL string) error {
+// AddECDSAProof adds an ECDSA proof to the JSONMap. verificationMethod must
+// be a full DID URL (caller's responsibility to resolve/normalize).
+func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string) error {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
@@ -146,9 +147,169 @@ func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
 	return nil
 }
 
-// parseRawToProof converts a JSON object to a Proof struct.
+// VerifyProof verifies an ECDSA-signed JSONMap. When the strict-purpose
+// option is enabled the verifier additionally rejects proofs
+// whose VM has a hard revocation reason, was revoked before proof.created,
+// or is missing from the relationship array for proof.proofPurpose.
+func (m *JSONMap) VerifyProof(strictProofPurpose *bool, resolver verificationmethod.ResolverProvider) (bool, error) {
+	if m == nil {
+		return false, fmt.Errorf("JSONMap is nil")
+	}
+	if resolver == nil {
+		return false, fmt.Errorf("document resolver is required")
+	}
+
+	strictPurpose := true
+	if strictProofPurpose != nil {
+		strictPurpose = *strictProofPurpose
+	}
+
+	proof, err := ParseRawToProof(m.getFirstProof())
+	if err != nil {
+		return false, fmt.Errorf("failed to parse proof: %w", err)
+	}
+
+	signerDID, err := signerDIDFromBody(*m)
+	if err != nil {
+		return false, err
+	}
+	doc, err := resolver.ResolveDocument(context.Background(), signerDID)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve DID document for '%s': %w", signerDID, err)
+	}
+
+	switch {
+	case proof.Type == JwtProof2020:
+		return m.verifyJWTProof(doc, &proof, strictPurpose, signerDID)
+
+	case proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY:
+		return m.verifyEcdsaProofLegacy()
+
+	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019:
+		return m.verifyDataIntegrityProof(doc, &proof, strictPurpose)
+
+	default:
+		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
+	}
+}
+
+// verifyECDSA verifies an ECDSA-signed JSONMap.
+func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) {
+	doc, err := m.Canonicalize()
+	if err != nil {
+		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
+	}
+
+	return crypto.ECDSAVerifySignature(publicKey, proof.ProofValue, doc)
+}
+
+func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, strictPurpose bool, signerDID string) (bool, error) {
+	vmURL, err := jwtVerificationMethodURL((*m), signerDID)
+	if err != nil {
+		return false, err
+	}
+	vm, err := verificationmethod.FindVerificationMethod(doc, vmURL)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve verification method: %w", err)
+	}
+	publicKey, err := publicKeyHexFromVM(vm)
+	if err != nil {
+		return false, err
+	}
+
+	ok, err := crypto.VerifyJwtProof((*map[string]interface{})(m), publicKey)
+	if err != nil || !ok {
+		return ok, err
+	}
+	if strictPurpose {
+		if err := strictPurposeCheck(doc, vm, "assertionMethod", proof.Created); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, strictPurpose bool) (bool, error) {
+	vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve verification method: %w", err)
+	}
+	publicKey, err := publicKeyHexFromVM(vm)
+	if err != nil {
+		return false, err
+	}
+
+	ok, err := m.verifyECDSA(publicKey, proof)
+	if err != nil || !ok {
+		return ok, err
+	}
+	if strictPurpose {
+		if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// verifyEcdsaProofLegacy verifies an ECDSA-signed JSONMap.
+// This function support lecacy VC for compatibility
+func (m *JSONMap) verifyEcdsaProofLegacy() (bool, error) {
+
+	proofValue, ok := (*m)[proofField].(map[string]interface{})["proofValue"].(string)
+	if !ok || proofValue == "" {
+		return false, fmt.Errorf("proof value is missing or invalid in the request")
+	}
+	publicKeyHex, ok := (*m)[proofField].(map[string]interface{})["verificationMethod"].(string)
+	if !ok || publicKeyHex == "" {
+		return false, fmt.Errorf("proof verificationMethod is missing or invalid in the request")
+	}
+
+	signatureBytes, err := hex.DecodeString(proofValue)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode proof value to bytes: %w", err)
+	}
+
+	reqCopy := make(map[string]interface{})
+
+	for k, v := range *m {
+		if k != proofField {
+			reqCopy[k] = v
+		}
+	}
+
+	message, err := json.Marshal(reqCopy)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal request to JSON: %w", err)
+	}
+
+	pubBytes, err := crypto.KeyToBytes(publicKeyHex)
+	if err != nil {
+		return false, fmt.Errorf("failed to convert public key to bytes: %w", err)
+	}
+
+	verified := crypto.VerifyJSONSignature(pubBytes, message, signatureBytes)
+
+	return verified, nil
+}
+
+// ===== Helpers (internal) =====
+
+func (m *JSONMap) getFirstProof() interface{} {
+	if raw, ok := (*m)[proofField]; ok {
+		if arr, ok := raw.([]interface{}); ok && len(arr) > 0 {
+			return arr[0]
+		}
+		return raw
+	}
+	return nil
+}
+
+// ParseRawToProof converts a JSON object to a Proof struct.
 func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 	var result dto.Proof
+	if proof == nil {
+		return result, fmt.Errorf("JSONMap has no proof")
+	}
 	proofMap, ok := proof.(map[string]interface{})
 	if !ok {
 		return result, fmt.Errorf("invalid proof format: expected map[string]interface{}, got %T", proof)
@@ -174,137 +335,6 @@ func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 	}
 
 	return result, nil
-}
-
-// VerifyProofOptions controls optional verifier behavior. The zero value
-// represents the SDK defaults: strict proofPurpose checking is ON.
-type VerifyProofOptions struct {
-	StrictProofPurpose bool
-	Resolver           verificationmethod.ResolverProvider
-}
-
-// VerifyProofOpt mutates VerifyProofOptions.
-type VerifyProofOpt func(*VerifyProofOptions)
-
-// WithResolverProvider overrides the default HTTP resolver used by VerifyProof.
-// This enables offline tests or custom resolver implementations.
-func WithResolverProvider(r verificationmethod.ResolverProvider) VerifyProofOpt {
-	return func(o *VerifyProofOptions) {
-		o.Resolver = r
-	}
-}
-
-// WithStrictProofPurpose toggles whether the verifier rejects credentials
-// whose verification method is not listed in the relationship array for
-// the proof's purpose, or has been revoked. Default ON. Pass false only
-// for emergency rollback (matches the STRICT_PROOF_PURPOSE flag used in
-// downstream services).
-func WithStrictProofPurpose(strict bool) VerifyProofOpt {
-	return func(o *VerifyProofOptions) {
-		o.StrictProofPurpose = strict
-	}
-}
-
-func defaultVerifyProofOptions() *VerifyProofOptions {
-	return &VerifyProofOptions{StrictProofPurpose: true}
-}
-
-// VerifyProof verifies an ECDSA-signed JSONMap. When the strict-purpose
-// option is enabled (default), the verifier additionally rejects proofs
-// whose VM has a hard revocation reason, was revoked before proof.created,
-// or is missing from the relationship array for proof.proofPurpose.
-func (m *JSONMap) VerifyProof(didBaseURL string, opts ...VerifyProofOpt) (bool, error) {
-	if m == nil {
-		return false, fmt.Errorf("JSONMap is nil")
-	}
-
-	options := defaultVerifyProofOptions()
-	for _, opt := range opts {
-		opt(options)
-	}
-
-	proofs, ok := (*m)["proof"].([]interface{})
-	if !ok {
-		if proof, exists := (*m)["proof"]; exists {
-			proofs = []interface{}{proof}
-		} else {
-			return false, fmt.Errorf("JSONMap has no proof")
-		}
-	}
-	proof, err := ParseRawToProof(proofs[0])
-	if err != nil {
-		return false, fmt.Errorf("failed to parse proof: %w", err)
-	}
-
-	resolver := options.Resolver
-	if resolver == nil {
-		resolver = verificationmethod.NewHTTPResolver(didBaseURL)
-	}
-
-	// Resolve the document by the signer DID claimed in the body — `issuer`
-	// for VCs, `holder` for VPs. This is the authoritative source: we trust
-	// what the signed payload says about who created it, then verify the kid
-	// referenced in the proof actually belongs to that DID's document.
-	signerDID, err := signerDIDFromBody(*m)
-	if err != nil {
-		return false, err
-	}
-	doc, err := resolver.ResolveDocument(context.Background(), signerDID)
-	if err != nil {
-		return false, fmt.Errorf("failed to resolve DID document for '%s': %w", signerDID, err)
-	}
-
-	if proof.Type == JwtProof2020 {
-		vmURL, err := jwtVerificationMethodURL((*m), signerDID)
-		if err != nil {
-			return false, err
-		}
-		vm, err := verificationmethod.FindVerificationMethod(doc, vmURL)
-		if err != nil {
-			return false, fmt.Errorf("failed to resolve verification method: %w", err)
-		}
-		publicKey, err := publicKeyHexFromVM(vm)
-		if err != nil {
-			return false, err
-		}
-
-		ok2, err := crypto.VerifyJwtProof((*map[string]interface{})(m), publicKey)
-		if err != nil || !ok2 {
-			return ok2, err
-		}
-		if options.StrictProofPurpose {
-			if err := strictPurposeCheck(doc, vm, "assertionMethod", proof.Created); err != nil {
-				return false, err
-			}
-		}
-		return true, nil
-	} else if proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY {
-
-		return m.verifyEcdsaProofLegacy()
-	} else if proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019 {
-		vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
-		if err != nil {
-			return false, fmt.Errorf("failed to resolve verification method: %w", err)
-		}
-		publicKey, err := publicKeyHexFromVM(vm)
-		if err != nil {
-			return false, err
-		}
-
-		ok2, err := m.verifyECDSA(publicKey, &proof)
-		if err != nil || !ok2 {
-			return ok2, err
-		}
-		if options.StrictProofPurpose {
-			if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
-				return false, err
-			}
-		}
-		return true, nil
-	} else {
-
-		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
-	}
 }
 
 // signerDIDFromBody returns the DID of the entity that signed the JSONMap.
@@ -456,55 +486,4 @@ func jwsKid(jws string) (string, bool) {
 		return "", false
 	}
 	return hdr.Kid, hdr.Kid != ""
-}
-
-// VerifyECDSA verifies an ECDSA-signed JSONMap.
-func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) {
-	doc, err := m.Canonicalize()
-	if err != nil {
-		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
-	}
-
-	return crypto.ECDSAVerifySignature(publicKey, proof.ProofValue, doc)
-}
-
-// verifyEcdsaProofLegacy verifies an ECDSA-signed JSONMap.
-// This function support lecacy VC for compatibility
-func (m *JSONMap) verifyEcdsaProofLegacy() (bool, error) {
-
-	proofValue, ok := (*m)["proof"].(map[string]interface{})["proofValue"].(string)
-	if !ok || proofValue == "" {
-		return false, fmt.Errorf("proof value is missing or invalid in the request")
-	}
-	publicKeyHex, ok := (*m)["proof"].(map[string]interface{})["verificationMethod"].(string)
-	if !ok || publicKeyHex == "" {
-		return false, fmt.Errorf("proof verificationMethod is missing or invalid in the request")
-	}
-
-	signatureBytes, err := hex.DecodeString(proofValue)
-	if err != nil {
-		return false, fmt.Errorf("failed to decode proof value to bytes: %w", err)
-	}
-
-	reqCopy := make(map[string]interface{})
-
-	for k, v := range *m {
-		if k != "proof" {
-			reqCopy[k] = v
-		}
-	}
-
-	message, err := json.Marshal(reqCopy)
-	if err != nil {
-		return false, fmt.Errorf("failed to marshal request to JSON: %w", err)
-	}
-
-	pubBytes, err := crypto.KeyToBytes(publicKeyHex)
-	if err != nil {
-		return false, fmt.Errorf("failed to convert public key to bytes: %w", err)
-	}
-
-	verified := crypto.VerifyJSONSignature(pubBytes, message, signatureBytes)
-
-	return verified, nil
 }

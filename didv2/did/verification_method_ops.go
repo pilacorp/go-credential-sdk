@@ -120,7 +120,6 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 	oldVM.Revoked = &revokedAt
 	oldVM.RevocationReason = reason
 
-
 	if err := doc.validateInvariants(); err != nil {
 		return "", err
 	}

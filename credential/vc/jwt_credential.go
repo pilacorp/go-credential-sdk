@@ -73,9 +73,14 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 		payload[key] = value
 	}
 
-	kid, err := verificationmethod.ResolveVerificationMethodURL(context.Background(), vcc.Issuer, "assertionMethod", options.verificationMethodKey, options.resolver)
-	if err != nil {
-		return nil, fmt.Errorf("resolve verification method: %w", err)
+	kid := options.verificationMethodKey
+	if kid == "" {
+		kid, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), vcc.Issuer, "assertionMethod", options.resolver)
+		if err != nil {
+			return nil, fmt.Errorf("resolve verification method: %w", err)
+		}
+	} else {
+		kid = verificationmethod.NormalizeVerificationMethodURL(vcc.Issuer, kid)
 	}
 
 	header := map[string]interface{}{

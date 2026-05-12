@@ -13,8 +13,8 @@ import (
 )
 
 type JSONCredential struct {
-	credentialData     CredentialData
-	verificationMethod string
+	credentialData        CredentialData
+	verificationMethodKey string
 }
 
 func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
@@ -26,8 +26,8 @@ func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (Credentia
 	options := getOptions(opts...)
 
 	e := &JSONCredential{
-		credentialData:     m,
-		verificationMethod: options.verificationMethodKey,
+		credentialData:        m,
+		verificationMethodKey: options.verificationMethodKey,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -77,12 +77,22 @@ func (e *JSONCredential) AddProofByProvider(signerProvider signer.SignerProvider
 
 	options := getOptions(opts...)
 
-	verificationMethod, err := verificationmethod.ResolveVerificationMethodURL(context.Background(), issuer, "assertionMethod", e.verificationMethod, options.resolver)
-	if err != nil {
-		return fmt.Errorf("resolve verification method: %w", err)
+	// Precedence: per-call opt > constructor pin > resolve via DID
+	verificationMethodKey := e.verificationMethodKey
+	if options.verificationMethodKey != "" {
+		verificationMethodKey = options.verificationMethodKey
 	}
 
-	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signerProvider, verificationMethod, "assertionMethod", options.didBaseURL)
+	if verificationMethodKey == "" {
+		verificationMethodKey, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), issuer, "assertionMethod", options.resolver)
+		if err != nil {
+			return fmt.Errorf("resolve verification method: %w", err)
+		}
+	} else {
+		verificationMethodKey = verificationmethod.NormalizeVerificationMethodURL(issuer, verificationMethodKey)
+	}
+
+	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signerProvider, verificationMethodKey, "assertionMethod")
 }
 
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {
@@ -160,8 +170,8 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	if options.isVerifyProof {
 		g.Go(func() error {
 			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
-				options.didBaseURL,
-				jsonmap.WithStrictProofPurpose(options.strictProofPurpose),
+				&options.strictProofPurpose,
+				options.resolver,
 			)
 			if err != nil {
 				return fmt.Errorf("verify proof: %w", err)
