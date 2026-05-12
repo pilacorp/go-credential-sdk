@@ -147,21 +147,19 @@ func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
 	return nil
 }
 
-// VerifyProof verifies an ECDSA-signed JSONMap. When the strict-purpose
-// option is enabled the verifier additionally rejects proofs
-// whose VM has a hard revocation reason, was revoked before proof.created,
-// or is missing from the relationship array for proof.proofPurpose.
-func (m *JSONMap) VerifyProof(strictProofPurpose *bool, resolver verificationmethod.ResolverProvider) (bool, error) {
+// VerifyProof verifies an ECDSA-signed JSONMap. It also runs the
+// strict-purpose check: rejects proofs whose VM has a hard revocation reason,
+// was revoked before proof.created, or is missing from the relationship array
+// for proof.proofPurpose.
+//
+// resolver is required; callers must construct it (e.g. via
+// verificationmethod.NewHTTPResolver(baseURL)) before invoking VerifyProof.
+func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider) (bool, error) {
 	if m == nil {
 		return false, fmt.Errorf("JSONMap is nil")
 	}
 	if resolver == nil {
 		return false, fmt.Errorf("document resolver is required")
-	}
-
-	strictPurpose := true
-	if strictProofPurpose != nil {
-		strictPurpose = *strictProofPurpose
 	}
 
 	proof, err := ParseRawToProof(m.getFirstProof())
@@ -180,13 +178,13 @@ func (m *JSONMap) VerifyProof(strictProofPurpose *bool, resolver verificationmet
 
 	switch {
 	case proof.Type == JwtProof2020:
-		return m.verifyJWTProof(doc, &proof, strictPurpose, signerDID)
+		return m.verifyJWTProof(doc, &proof, signerDID)
 
 	case proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY:
 		return m.verifyEcdsaProofLegacy()
 
 	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019:
-		return m.verifyDataIntegrityProof(doc, &proof, strictPurpose)
+		return m.verifyDataIntegrityProof(doc, &proof)
 
 	default:
 		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
@@ -203,7 +201,7 @@ func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) 
 	return crypto.ECDSAVerifySignature(publicKey, proof.ProofValue, doc)
 }
 
-func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, strictPurpose bool, signerDID string) (bool, error) {
+func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, signerDID string) (bool, error) {
 	vmURL, err := jwtVerificationMethodURL((*m), signerDID)
 	if err != nil {
 		return false, err
@@ -221,15 +219,13 @@ func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto
 	if err != nil || !ok {
 		return ok, err
 	}
-	if strictPurpose {
-		if err := strictPurposeCheck(doc, vm, "assertionMethod", proof.Created); err != nil {
-			return false, err
-		}
+	if err := strictPurposeCheck(doc, vm, "assertionMethod", proof.Created); err != nil {
+		return false, err
 	}
 	return true, nil
 }
 
-func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, strictPurpose bool) (bool, error) {
+func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
 	vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
@@ -243,10 +239,8 @@ func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, 
 	if err != nil || !ok {
 		return ok, err
 	}
-	if strictPurpose {
-		if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
-			return false, err
-		}
+	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
+		return false, err
 	}
 	return true, nil
 }

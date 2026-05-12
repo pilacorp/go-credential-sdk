@@ -14,30 +14,19 @@ import (
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
-// JWTVerifier handles JWT verification operations
+// JWTVerifier handles JWT verification operations. It always enforces the
+// strict-purpose check after crypto verification.
 type JWTVerifier struct {
-	docResolver        verificationmethod.ResolverProvider
-	strictProofPurpose bool
+	docResolver verificationmethod.ResolverProvider
 }
 
 // VerifierOption mutates JWTVerifier construction.
 type VerifierOption func(*JWTVerifier)
 
-// WithStrictProofPurpose toggles strict proofPurpose checking. Default ON.
-// Strict checks require a non-nil docResolver; constructions without one
-// (e.g. token-only flows) fall back to crypto-only verification regardless
-// of this flag.
-func WithStrictProofPurpose(strict bool) VerifierOption {
-	return func(v *JWTVerifier) {
-		v.strictProofPurpose = strict
-	}
-}
-
 // NewJWTVerifier creates a new JWT verifier with DID resolver (kept for backward compatibility).
 func NewJWTVerifier(didResolverURL string, opts ...VerifierOption) *JWTVerifier {
 	v := &JWTVerifier{
-		docResolver:        verificationmethod.NewHTTPResolver(didResolverURL),
-		strictProofPurpose: true,
+		docResolver: verificationmethod.NewHTTPResolver(didResolverURL),
 	}
 	for _, opt := range opts {
 		opt(v)
@@ -50,8 +39,7 @@ func NewJWTVerifierWithResolver(
 	opts ...VerifierOption,
 ) *JWTVerifier {
 	v := &JWTVerifier{
-		docResolver:        docResolver,
-		strictProofPurpose: true,
+		docResolver: docResolver,
 	}
 	for _, opt := range opts {
 		opt(v)
@@ -129,22 +117,19 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return err
 	}
 
-	// Strict-purpose check is only meaningful when we actually resolved a
-	// VM from a real DID document. JWT credentials always sign over VCs
-	// with proofPurpose = assertionMethod (W3C VC Data Integrity); JWTs
-	// over VPs use authentication. Detect from the JWT body's first claim.
-	if v.strictProofPurpose {
-		purpose, perr := jwtProofPurpose(parts[1])
-		if perr != nil {
-			return perr
-		}
-		issuedAt, ierr := jwtIssuedAt(parts[1])
-		if ierr != nil {
-			return ierr
-		}
-		if err := strictPurposeCheck(doc, vm, purpose, issuedAt); err != nil {
-			return err
-		}
+	// Strict-purpose check (always on): JWT VCs use proofPurpose =
+	// assertionMethod, JWT VPs use authentication. Detect from the JWT
+	// body's first claim.
+	purpose, perr := jwtProofPurpose(parts[1])
+	if perr != nil {
+		return perr
+	}
+	issuedAt, ierr := jwtIssuedAt(parts[1])
+	if ierr != nil {
+		return ierr
+	}
+	if err := strictPurposeCheck(doc, vm, purpose, issuedAt); err != nil {
+		return err
 	}
 	return nil
 }

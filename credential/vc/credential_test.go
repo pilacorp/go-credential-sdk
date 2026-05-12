@@ -1908,7 +1908,6 @@ func TestGetOptions_Defaults(t *testing.T) {
 	assert.False(t, opts.isVerifyProof)
 	assert.False(t, opts.isCheckExpiration)
 	assert.False(t, opts.isCheckRevocation)
-	assert.True(t, opts.strictProofPurpose, "strict proofPurpose check defaults ON")
 	assert.Equal(t, config.BaseURL, opts.didBaseURL)
 	// Multi-VM: default verificationMethodKey is empty so the SDK resolves
 	// the latest VM in the assertionMethod array at sign time.

@@ -152,7 +152,6 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 
 	if options.isVerifyProof {
 		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
-			&options.strictProofPurpose,
 			options.resolver,
 		)
 		if err != nil {

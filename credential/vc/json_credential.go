@@ -170,7 +170,6 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	if options.isVerifyProof {
 		g.Go(func() error {
 			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
-				&options.strictProofPurpose,
 				options.resolver,
 			)
 			if err != nil {

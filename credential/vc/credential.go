@@ -118,7 +118,6 @@ type credentialOptions struct {
 	isVerifyProof         bool
 	isCheckExpiration     bool
 	isCheckRevocation     bool
-	strictProofPurpose    bool
 	didBaseURL            string
 	verificationMethodKey string
 	sdDisclosures         []string
@@ -144,15 +143,6 @@ func WithBaseURL(baseURL string) CredentialOpt {
 func WithVerificationMethodKey(key string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.verificationMethodKey = key
-	}
-}
-
-// WithStrictProofPurpose toggles strict proofPurpose checking during proof
-// verification. Default ON. Pass false only as an emergency rollback —
-// matches the STRICT_PROOF_PURPOSE flag exposed by downstream services.
-func WithStrictProofPurpose(strict bool) CredentialOpt {
-	return func(c *credentialOptions) {
-		c.strictProofPurpose = strict
 	}
 }
 
@@ -251,7 +241,6 @@ func getOptions(opts ...CredentialOpt) *credentialOptions {
 		isVerifyProof:      false,
 		isCheckExpiration:  false,
 		isCheckRevocation:  false,
-		strictProofPurpose: true,
 		didBaseURL:         config.BaseURL,
 		loadedSchemaLoader: nil,
 		// verificationMethodKey is left empty so the signer/proof builder

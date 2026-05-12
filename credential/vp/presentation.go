@@ -76,7 +76,6 @@ type presentationOptions struct {
 	isValidateVC          bool
 	isVerifyProof         bool
 	isCheckExpiration     bool
-	strictProofPurpose    bool
 	didBaseURL            string
 	verificationMethodKey string
 	resolver              verificationmethod.ResolverProvider
@@ -105,14 +104,6 @@ func WithVerificationMethodKey(key string) PresentationOpt {
 	}
 }
 
-// WithStrictProofPurpose toggles strict proofPurpose checking during proof
-// verification. Default ON.
-func WithStrictProofPurpose(strict bool) PresentationOpt {
-	return func(p *presentationOptions) {
-		p.strictProofPurpose = strict
-	}
-}
-
 // WithVerifyProof enables proof verification during presentation parsing.
 func WithVerifyProof() PresentationOpt {
 	return func(p *presentationOptions) {
@@ -136,11 +127,10 @@ func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt 
 
 func getOptions(opts ...PresentationOpt) *presentationOptions {
 	options := &presentationOptions{
-		isValidateVC:       false,
-		isVerifyProof:      false,
-		isCheckExpiration:  false,
-		strictProofPurpose: true,
-		didBaseURL:         config.BaseURL,
+		isValidateVC:      false,
+		isVerifyProof:     false,
+		isCheckExpiration: false,
+		didBaseURL:        config.BaseURL,
 		// verificationMethodKey is left empty so AddProof resolves the
 		// latest VM in the authentication array. Override with
 		// WithVerificationMethodKey to pin a specific kid.

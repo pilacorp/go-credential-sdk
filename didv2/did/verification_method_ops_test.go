@@ -19,10 +19,18 @@ func TestAddVerificationMethod_AssignsSequentialID(t *testing.T) {
 	}
 }
 
-func TestUpdateVerificationMethodPurposes_RejectUnknownKid(t *testing.T) {
+func TestAddVerificationMethodPurposes_RejectUnknownKid(t *testing.T) {
 	doc := GenerateDIDDocument("0x02", "did:nda:0x0000000000000000000000000000000000000001", "", "did:nda:0xissuer", DIDTypePeople, nil)
 
-	if err := doc.UpdateVerificationMethodPurposes(doc.Id+"#key-9", []VerificationPurpose{PurposeAuthentication}, nil); err == nil {
+	if err := doc.AddVerificationMethodPurposes(doc.Id+"#key-9", []VerificationPurpose{PurposeAuthentication}); err == nil {
+		t.Fatalf("expected error")
+	}
+}
+
+func TestRemoveVerificationMethodPurposes_RejectUnknownKid(t *testing.T) {
+	doc := GenerateDIDDocument("0x02", "did:nda:0x0000000000000000000000000000000000000001", "", "did:nda:0xissuer", DIDTypePeople, nil)
+
+	if err := doc.RemoveVerificationMethodPurposes(doc.Id+"#key-9", []VerificationPurpose{PurposeAuthentication}); err == nil {
 		t.Fatalf("expected error")
 	}
 }
@@ -49,17 +57,17 @@ func TestRotateVerificationMethod_CopiesPurposesAndRevokesOld(t *testing.T) {
 	}
 }
 
-// TestUpdatePurposes_DedupesFragmentAndFull guards against duplicate refs when
+// TestAddPurposes_DedupesFragmentAndFull guards against duplicate refs when
 // a caller adds a purpose using a fragment kid that already exists as the
 // canonical full-URL form (or vice versa). Each VM must appear at most once
 // in any relationship array.
-func TestUpdatePurposes_DedupesFragmentAndFull(t *testing.T) {
+func TestAddPurposes_DedupesFragmentAndFull(t *testing.T) {
 	doc := GenerateDIDDocument("0x02", "did:nda:0x0000000000000000000000000000000000000001", "", "did:nda:0xissuer", DIDTypePeople, nil)
 
 	// #key-1 is already in both arrays (full URL form, from GenerateDIDDocument).
 	// Adding again via fragment must NOT duplicate.
-	if err := doc.UpdateVerificationMethodPurposes("#key-1", []VerificationPurpose{PurposeAuthentication, PurposeAssertionMethod}, nil); err != nil {
-		t.Fatalf("UpdateVerificationMethodPurposes err: %v", err)
+	if err := doc.AddVerificationMethodPurposes("#key-1", []VerificationPurpose{PurposeAuthentication, PurposeAssertionMethod}); err != nil {
+		t.Fatalf("AddVerificationMethodPurposes err: %v", err)
 	}
 	if len(doc.Authentication) != 1 {
 		t.Fatalf("authentication: expected 1 entry, got %d: %v", len(doc.Authentication), doc.Authentication)
@@ -69,10 +77,10 @@ func TestUpdatePurposes_DedupesFragmentAndFull(t *testing.T) {
 	}
 }
 
-// TestUpdatePurposes_NormalizesToFullURL guards that any add op writes the
+// TestAddPurposes_NormalizesToFullURL guards that any add op writes the
 // canonical full-URL form, never the fragment shorthand, regardless of how
 // the caller supplied the kid.
-func TestUpdatePurposes_NormalizesToFullURL(t *testing.T) {
+func TestAddPurposes_NormalizesToFullURL(t *testing.T) {
 	doc := GenerateDIDDocument("0x02", "did:nda:0x0000000000000000000000000000000000000001", "", "did:nda:0xissuer", DIDTypePeople, nil)
 
 	// Add a 2nd VM without any purpose, then grant via fragment kid.
@@ -80,8 +88,8 @@ func TestUpdatePurposes_NormalizesToFullURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddVerificationMethod err: %v", err)
 	}
-	if err := doc.UpdateVerificationMethodPurposes("#key-2", []VerificationPurpose{PurposeAuthentication}, nil); err != nil {
-		t.Fatalf("UpdateVerificationMethodPurposes err: %v", err)
+	if err := doc.AddVerificationMethodPurposes("#key-2", []VerificationPurpose{PurposeAuthentication}); err != nil {
+		t.Fatalf("AddVerificationMethodPurposes err: %v", err)
 	}
 
 	// Authentication must contain only canonical full-URL references.
@@ -110,8 +118,8 @@ func TestRemovePurpose_MatchesFragmentAndFull(t *testing.T) {
 	doc := GenerateDIDDocument("0x02", "did:nda:0x0000000000000000000000000000000000000001", "", "did:nda:0xissuer", DIDTypePeople, nil)
 
 	// Caller passes fragment; array currently holds the canonical full URL.
-	if err := doc.UpdateVerificationMethodPurposes("#key-1", nil, []VerificationPurpose{PurposeAuthentication}); err != nil {
-		t.Fatalf("UpdateVerificationMethodPurposes err: %v", err)
+	if err := doc.RemoveVerificationMethodPurposes("#key-1", []VerificationPurpose{PurposeAuthentication}); err != nil {
+		t.Fatalf("RemoveVerificationMethodPurposes err: %v", err)
 	}
 	if len(doc.Authentication) != 0 {
 		t.Fatalf("expected authentication empty after remove, got %v", doc.Authentication)

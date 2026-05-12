@@ -153,24 +153,48 @@ func (doc *DIDDocument) RevokeVerificationMethod(kid string, reason string, revo
 	return doc.validateInvariants()
 }
 
-// UpdateVerificationMethodPurposes adds/removes relationship references for a VM.
-func (doc *DIDDocument) UpdateVerificationMethodPurposes(kid string, add []VerificationPurpose, remove []VerificationPurpose) error {
+// AddVerificationMethodPurposes grants the given purposes to a VM by adding
+// it to each relationship array. Idempotent: existing refs are not duplicated.
+func (doc *DIDDocument) AddVerificationMethodPurposes(kid string, purposes []VerificationPurpose) error {
 	if doc == nil {
 		return fmt.Errorf("document is nil")
 	}
 	if kid == "" {
 		return fmt.Errorf("kid is required")
 	}
+	if len(purposes) == 0 {
+		return fmt.Errorf("purposes is required")
+	}
 	if doc.FindVerificationMethod(kid) == nil {
 		return fmt.Errorf("verification method not found: %s", kid)
 	}
 
-	for _, p := range add {
+	for _, p := range purposes {
 		if err := doc.addPurpose(p, kid); err != nil {
 			return err
 		}
 	}
-	for _, p := range remove {
+	return doc.validateInvariants()
+}
+
+// RemoveVerificationMethodPurposes revokes the given purposes from a VM by
+// removing it from each relationship array. Idempotent: missing refs are
+// silently ignored.
+func (doc *DIDDocument) RemoveVerificationMethodPurposes(kid string, purposes []VerificationPurpose) error {
+	if doc == nil {
+		return fmt.Errorf("document is nil")
+	}
+	if kid == "" {
+		return fmt.Errorf("kid is required")
+	}
+	if len(purposes) == 0 {
+		return fmt.Errorf("purposes is required")
+	}
+	if doc.FindVerificationMethod(kid) == nil {
+		return fmt.Errorf("verification method not found: %s", kid)
+	}
+
+	for _, p := range purposes {
 		if err := doc.removePurpose(p, kid); err != nil {
 			return err
 		}
