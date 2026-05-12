@@ -88,6 +88,7 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 		return fmt.Errorf("proof cannot be nil")
 	}
 
+	opts = append(opts, WithVerifyProof())
 	err := e.executeOptions(opts...)
 	if err != nil {
 		return err
