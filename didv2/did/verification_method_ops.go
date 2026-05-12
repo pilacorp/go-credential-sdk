@@ -337,7 +337,7 @@ func replaceAndNormalize(arr []string, oldID, newID, did string) []string {
 	return out
 }
 
-// validateInvariants enforces basic DID document integrity for Pila.
+// validateInvariants enforces basic DID document integrity.
 func (doc *DIDDocument) validateInvariants() error {
 	if doc == nil {
 		return fmt.Errorf("document is nil")
