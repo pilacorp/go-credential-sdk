@@ -26,10 +26,10 @@ const (
 	DIDTypePeople DIDType = 0
 	// DIDTypeItem represents a DID for an item or product.
 	DIDTypeItem DIDType = 1
-	// DIDTypeActivity represents a DID for an activity or event.
-	DIDTypeActivity DIDType = 2
 	// DIDTypeLocation represents a DID for a location.
-	DIDTypeLocation DIDType = 3
+	DIDTypeLocation DIDType = 2
+	// DIDTypeActivity represents a DID for an activity or event.
+	DIDTypeActivity DIDType = 3
 )
 
 // DIDDocument represents a W3C-compliant DID Document.

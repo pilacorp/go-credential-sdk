@@ -120,8 +120,6 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 	oldVM.Revoked = &revokedAt
 	oldVM.RevocationReason = reason
 
-	// Move any purpose references that used fragment form to the canonical full id.
-	doc.replacePurposeRefs(oldVM.Id, newID)
 
 	if err := doc.validateInvariants(); err != nil {
 		return "", err

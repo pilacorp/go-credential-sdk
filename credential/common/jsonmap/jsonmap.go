@@ -180,10 +180,19 @@ func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 // represents the SDK defaults: strict proofPurpose checking is ON.
 type VerifyProofOptions struct {
 	StrictProofPurpose bool
+	Resolver           verificationmethod.ResolverProvider
 }
 
 // VerifyProofOpt mutates VerifyProofOptions.
 type VerifyProofOpt func(*VerifyProofOptions)
+
+// WithResolverProvider overrides the default HTTP resolver used by VerifyProof.
+// This enables offline tests or custom resolver implementations.
+func WithResolverProvider(r verificationmethod.ResolverProvider) VerifyProofOpt {
+	return func(o *VerifyProofOptions) {
+		o.Resolver = r
+	}
+}
 
 // WithStrictProofPurpose toggles whether the verifier rejects credentials
 // whose verification method is not listed in the relationship array for
@@ -227,7 +236,10 @@ func (m *JSONMap) VerifyProof(didBaseURL string, opts ...VerifyProofOpt) (bool, 
 		return false, fmt.Errorf("failed to parse proof: %w", err)
 	}
 
-	resolver := verificationmethod.NewHTTPResolver(didBaseURL)
+	resolver := options.Resolver
+	if resolver == nil {
+		resolver = verificationmethod.NewHTTPResolver(didBaseURL)
+	}
 
 	// Resolve the document by the signer DID claimed in the body — `issuer`
 	// for VCs, `holder` for VPs. This is the authoritative source: we trust
