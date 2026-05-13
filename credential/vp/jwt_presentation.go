@@ -250,7 +250,7 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 			return fmt.Errorf("failed to serialize presentation: %w", err)
 		}
 
-		verifier := jwt.NewJWTVerifier(options.didBaseURL)
+		verifier := jwt.NewJWTVerifier(options.resolver)
 		err = verifier.VerifyJWT(serialized.(string))
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)

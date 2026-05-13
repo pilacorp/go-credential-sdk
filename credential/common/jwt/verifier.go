@@ -23,18 +23,7 @@ type JWTVerifier struct {
 // VerifierOption mutates JWTVerifier construction.
 type VerifierOption func(*JWTVerifier)
 
-// NewJWTVerifier creates a new JWT verifier with DID resolver (kept for backward compatibility).
-func NewJWTVerifier(didResolverURL string, opts ...VerifierOption) *JWTVerifier {
-	v := &JWTVerifier{
-		docResolver: verificationmethod.NewHTTPResolver(didResolverURL),
-	}
-	for _, opt := range opts {
-		opt(v)
-	}
-	return v
-}
-
-func NewJWTVerifierWithResolver(
+func NewJWTVerifier(
 	docResolver verificationmethod.ResolverProvider,
 	opts ...VerifierOption,
 ) *JWTVerifier {

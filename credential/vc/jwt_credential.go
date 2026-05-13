@@ -473,7 +473,7 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 				return fmt.Errorf("serialize credential: %w", err)
 			}
 
-			verifier := jwt.NewJWTVerifierWithResolver(options.resolver)
+			verifier := jwt.NewJWTVerifier(options.resolver)
 			if err := verifier.VerifyJWT(serialized.(string)); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
