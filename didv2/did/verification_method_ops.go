@@ -308,14 +308,6 @@ func containsKidRef(arr []string, kid, did string) bool {
 	return false
 }
 
-// replacePurposeRefs rewrites purpose references for oldFullID to newFullID.
-// Used by RotateVerificationMethod after the new VM has already been added
-// via AddVerificationMethod.
-func (doc *DIDDocument) replacePurposeRefs(oldFullID, newFullID string) {
-	doc.Authentication = replaceAndNormalize(doc.Authentication, oldFullID, newFullID, doc.Id)
-	doc.AssertionMethod = replaceAndNormalize(doc.AssertionMethod, oldFullID, newFullID, doc.Id)
-}
-
 // replaceAndNormalize replaces every reference matching oldID (fragment or
 // full URL) with the canonical newID, then dedupes the result.
 func replaceAndNormalize(arr []string, oldID, newID, did string) []string {
