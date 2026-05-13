@@ -178,7 +178,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider) (boo
 
 	switch {
 	case proof.Type == JwtProof2020:
-		return m.verifyJWTProof(doc, &proof, signerDID)
+		return m.verifyJWTProof(doc, &proof)
 
 	case proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY:
 		return m.verifyEcdsaProofLegacy()
@@ -201,8 +201,8 @@ func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) 
 	return crypto.ECDSAVerifySignature(publicKey, proof.ProofValue, doc)
 }
 
-func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, signerDID string) (bool, error) {
-	vmURL, err := jwtVerificationMethodURL((*m), signerDID)
+func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
+	vmURL, err := jwtVerificationMethodURL((*m))
 	if err != nil {
 		return false, err
 	}
@@ -441,11 +441,8 @@ func stripHexPrefix(s string) string {
 	return s
 }
 
-// jwtVerificationMethodURL returns the verification method URL for a JWT
-// proof. Preference order: explicit kid in the proof's JWS header → the
-// proof's `verificationMethod` field → fall back to <issuer>#key-1 for
-// legacy JWTs that carry neither.
-func jwtVerificationMethodURL(m map[string]interface{}, issuerDID string) (string, error) {
+// jwtVerificationMethodURL returns the verification method URL for a JWT proof.
+func jwtVerificationMethodURL(m map[string]interface{}) (string, error) {
 	if proofMap, ok := m["proof"].(map[string]interface{}); ok {
 		if vm, ok := proofMap["verificationMethod"].(string); ok && vm != "" {
 			return vm, nil
