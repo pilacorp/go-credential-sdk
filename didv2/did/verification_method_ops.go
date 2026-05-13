@@ -74,10 +74,6 @@ func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []
 		}
 	}
 
-	if err := doc.validateInvariants(); err != nil {
-		return "", err
-	}
-
 	return vm.Id, nil
 }
 
@@ -99,30 +95,38 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 		reason = "superseded"
 	}
 
-	oldVM := doc.FindVerificationMethod(oldKid)
-	if oldVM == nil {
+	oldIdx := -1
+	oldVMID := ""
+	for i := range doc.VerificationMethod {
+		vm := &doc.VerificationMethod[i]
+		if vm.Id == oldKid {
+			oldIdx = i
+			oldVMID = vm.Id
+			break
+		}
+		if strings.HasPrefix(oldKid, "#") && vm.Id == doc.Id+oldKid {
+			oldIdx = i
+			oldVMID = vm.Id
+			break
+		}
+	}
+	if oldIdx < 0 {
 		return "", fmt.Errorf("verification method not found: %s", oldKid)
 	}
-	oldVMID := oldVM.Id
 
-	purposes := doc.purposesOfKid(oldVM.Id)
+	purposes := doc.purposesOfKid(oldVMID)
 
 	newID, err := doc.AddVerificationMethod(newVM, purposes)
 	if err != nil {
 		return "", err
 	}
 
-	// Re-fetch after appending (slice may reallocate, invalidating oldVM pointer).
-	oldVM = doc.FindVerificationMethod(oldVMID)
-	if oldVM == nil {
-		return "", fmt.Errorf("verification method not found after append: %s", oldVMID)
+	oldVM := &doc.VerificationMethod[oldIdx]
+	if oldVM.Id != oldVMID {
+		return "", fmt.Errorf("verification method index mismatch after append: %s", oldVMID)
 	}
 	oldVM.Revoked = &revokedAt
 	oldVM.RevocationReason = reason
-
-	if err := doc.validateInvariants(); err != nil {
-		return "", err
-	}
 
 	return newID, nil
 }
@@ -149,8 +153,7 @@ func (doc *DIDDocument) RevokeVerificationMethod(kid string, reason string, revo
 
 	vm.Revoked = &revokedAt
 	vm.RevocationReason = reason
-
-	return doc.validateInvariants()
+	return nil
 }
 
 // AddVerificationMethodPurposes grants the given purposes to a VM by adding
@@ -174,7 +177,7 @@ func (doc *DIDDocument) AddVerificationMethodPurposes(kid string, purposes []Ver
 			return err
 		}
 	}
-	return doc.validateInvariants()
+	return nil
 }
 
 // RemoveVerificationMethodPurposes revokes the given purposes from a VM by
@@ -199,7 +202,7 @@ func (doc *DIDDocument) RemoveVerificationMethodPurposes(kid string, purposes []
 			return err
 		}
 	}
-	return doc.validateInvariants()
+	return nil
 }
 
 func (doc *DIDDocument) addPurpose(p VerificationPurpose, kid string) error {
@@ -306,81 +309,6 @@ func containsKidRef(arr []string, kid, did string) bool {
 		}
 	}
 	return false
-}
-
-// replaceAndNormalize replaces every reference matching oldID (fragment or
-// full URL) with the canonical newID, then dedupes the result.
-func replaceAndNormalize(arr []string, oldID, newID, did string) []string {
-	oldCanon := canonRef(oldID, did)
-	newCanon := canonRef(newID, did)
-	seen := make(map[string]struct{}, len(arr))
-	out := make([]string, 0, len(arr))
-	for _, v := range arr {
-		c := canonRef(v, did)
-		if c == oldCanon {
-			c = newCanon
-		}
-		if _, dup := seen[c]; dup {
-			continue
-		}
-		seen[c] = struct{}{}
-		out = append(out, c)
-	}
-	return out
-}
-
-// validateInvariants enforces basic DID document integrity.
-func (doc *DIDDocument) validateInvariants() error {
-	if doc == nil {
-		return fmt.Errorf("document is nil")
-	}
-	if doc.Id == "" {
-		return fmt.Errorf("document.id is required")
-	}
-	if len(doc.VerificationMethod) == 0 {
-		return fmt.Errorf("document must have at least one verification method")
-	}
-
-	seen := make(map[string]struct{}, len(doc.VerificationMethod))
-	known := make(map[string]struct{}, len(doc.VerificationMethod)*2)
-
-	for _, vm := range doc.VerificationMethod {
-		if vm.Id == "" {
-			return fmt.Errorf("verification method id is required")
-		}
-		if _, dup := seen[vm.Id]; dup {
-			return fmt.Errorf("duplicate verification method id: %s", vm.Id)
-		}
-		seen[vm.Id] = struct{}{}
-		known[vm.Id] = struct{}{}
-		if frag, ok := strings.CutPrefix(vm.Id, doc.Id); ok {
-			known[frag] = struct{}{}
-		}
-	}
-
-	checkRefs := func(p VerificationPurpose, refs []string) error {
-		for _, r := range refs {
-			if _, ok := known[r]; !ok {
-				return fmt.Errorf("%s contains unknown verification method: %s", p, r)
-			}
-		}
-		return nil
-	}
-
-	if err := checkRefs(PurposeAuthentication, doc.Authentication); err != nil {
-		return err
-	}
-	if err := checkRefs(PurposeAssertionMethod, doc.AssertionMethod); err != nil {
-		return err
-	}
-
-	for _, vm := range doc.VerificationMethod {
-		if vm.Revoked != nil && vm.RevocationReason == "" {
-			return fmt.Errorf("verification method %s revoked but reason missing", vm.Id)
-		}
-	}
-
-	return nil
 }
 
 // nextSequentialKid returns the next sequential "#key-N" id based on the

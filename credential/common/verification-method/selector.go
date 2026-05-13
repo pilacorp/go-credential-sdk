@@ -8,20 +8,6 @@ import (
 // SelectLatestActiveVMForPurpose picks the active verification method that
 // holds the given purpose ("authentication" or "assertionMethod") and has
 // the highest sequential `#key-N` index in the relationship array.
-//
-// Pila's append-only DID document grows by adding higher-numbered fragments
-// on each rotation, so the maximum N corresponds to the most recently
-// issued key. VMs whose id does not follow the `#key-N` convention are
-// still considered but ranked as 0, ensuring an explicit `#key-N` entry
-// always wins.
-//
-// Returns an error if doc is nil, the purpose is unsupported, the
-// relationship array is empty, or no listed VM is active.
-//
-// This helper is intentionally document-based (no HTTP) so callers that
-// already have a resolved DID Document from any source — Pila's gRPC
-// resolver, an in-memory cache, a test fixture — can pick a signing key
-// without going through the SDK's HTTPResolver.
 func SelectLatestActiveVMForPurpose(doc *DIDDocument, purpose string) (*VerificationMethodEntry, error) {
 	if doc == nil {
 		return nil, fmt.Errorf("did document is nil")
@@ -71,9 +57,9 @@ func SelectLatestActiveVMForPurpose(doc *DIDDocument, purpose string) (*Verifica
 // Document, preferring an explicit kid when provided.
 //
 //   - kid empty (legacy tokens) → fall back to SelectLatestActiveVMForPurpose.
-//   - kid non-empty → look up by id (full URL or fragment); the returned VM
-//     may be revoked. Apply revocation timing and purpose authorization
-//     checks separately at the verifier.
+//   - kid non-empty → look up by id (full URL "did:...#key-1", "#key-1", or
+//     bare "key-1"); the returned VM may be revoked. Apply revocation timing
+//     and purpose authorization checks separately at the verifier.
 func SelectVMForPurpose(doc *DIDDocument, purpose, kid string) (*VerificationMethodEntry, error) {
 	if kid == "" {
 		return SelectLatestActiveVMForPurpose(doc, purpose)
@@ -81,9 +67,11 @@ func SelectVMForPurpose(doc *DIDDocument, purpose, kid string) (*VerificationMet
 	if doc == nil {
 		return nil, fmt.Errorf("did document is nil")
 	}
+
+	canonicalKid := NormalizeVerificationMethodURL(doc.ID, kid)
 	for i := range doc.VerificationMethod {
 		vm := &doc.VerificationMethod[i]
-		if vm.ID == kid {
+		if vm.ID == canonicalKid {
 			return vm, nil
 		}
 	}

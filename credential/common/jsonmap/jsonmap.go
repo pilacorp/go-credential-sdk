@@ -245,15 +245,19 @@ func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, 
 	return true, nil
 }
 
-// verifyEcdsaProofLegacy verifies an ECDSA-signed JSONMap.
-// This function support lecacy VC for compatibility
+// verifyEcdsaProofLegacy verifies an ECDSA-signed JSONMap. Supports legacy
+// VC for compatibility.
 func (m *JSONMap) verifyEcdsaProofLegacy() (bool, error) {
+	proofMap, ok := m.getFirstProof().(map[string]interface{})
+	if !ok {
+		return false, fmt.Errorf("proof is missing or has unexpected format")
+	}
 
-	proofValue, ok := (*m)[proofField].(map[string]interface{})["proofValue"].(string)
+	proofValue, ok := proofMap["proofValue"].(string)
 	if !ok || proofValue == "" {
 		return false, fmt.Errorf("proof value is missing or invalid in the request")
 	}
-	publicKeyHex, ok := (*m)[proofField].(map[string]interface{})["verificationMethod"].(string)
+	publicKeyHex, ok := proofMap["verificationMethod"].(string)
 	if !ok || publicKeyHex == "" {
 		return false, fmt.Errorf("proof verificationMethod is missing or invalid in the request")
 	}
