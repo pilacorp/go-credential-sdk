@@ -51,6 +51,9 @@ func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []
 	if doc.Id == "" {
 		return "", fmt.Errorf("document.id is required")
 	}
+	if vm.PublicKeyHex == "" {
+		return "", fmt.Errorf("verification method must have PublicKeyHex")
+	}
 
 	if vm.Id == "" {
 		vm.Id = nextSequentialKid(*doc)
@@ -64,6 +67,15 @@ func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []
 
 	if doc.FindVerificationMethod(vm.Id) != nil {
 		return "", fmt.Errorf("verification method already exists: %s", vm.Id)
+	}
+	// Reject if the same PublicKeyHex is already registered under a
+	// different id — the caller is likely re-adding an existing key by
+	// mistake. Comparison is case-insensitive and "0x"-prefix tolerant.
+	normalizedKey := strings.ToLower(strings.TrimPrefix(vm.PublicKeyHex, "0x"))
+	for _, existing := range doc.VerificationMethod {
+		if strings.ToLower(strings.TrimPrefix(existing.PublicKeyHex, "0x")) == normalizedKey {
+			return "", fmt.Errorf("verification method with the same PublicKeyHex already exists: %s", existing.Id)
+		}
 	}
 
 	doc.VerificationMethod = append(doc.VerificationMethod, vm)
@@ -99,12 +111,7 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 	oldVMID := ""
 	for i := range doc.VerificationMethod {
 		vm := &doc.VerificationMethod[i]
-		if vm.Id == oldKid {
-			oldIdx = i
-			oldVMID = vm.Id
-			break
-		}
-		if strings.HasPrefix(oldKid, "#") && vm.Id == doc.Id+oldKid {
+		if vm.Id == oldKid || (strings.HasPrefix(oldKid, "#") && vm.Id == doc.Id+oldKid) {
 			oldIdx = i
 			oldVMID = vm.Id
 			break
@@ -112,6 +119,9 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 	}
 	if oldIdx < 0 {
 		return "", fmt.Errorf("verification method not found: %s", oldKid)
+	}
+	if doc.VerificationMethod[oldIdx].Revoked != nil {
+		return "", fmt.Errorf("verification method %q is already revoked", oldVMID)
 	}
 
 	purposes := doc.purposesOfKid(oldVMID)
@@ -149,6 +159,10 @@ func (doc *DIDDocument) RevokeVerificationMethod(kid string, reason string, revo
 	vm := doc.FindVerificationMethod(kid)
 	if vm == nil {
 		return fmt.Errorf("verification method not found: %s", kid)
+	}
+	if vm.Revoked != nil {
+		return fmt.Errorf("verification method %q is already revoked at %s (reason: %s)",
+			vm.Id, vm.Revoked.UTC().Format(time.RFC3339), vm.RevocationReason)
 	}
 
 	vm.Revoked = &revokedAt
