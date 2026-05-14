@@ -319,6 +319,95 @@ func (d *DIDGenerator) GenerateDIDCreateTransaction(
 	return txResult, nil
 }
 
+// GenerateSetDocumentHashTransaction generates a signed raw transaction for
+// updating an existing DID's document hash on-chain using the capability flow:
+//
+//	setDocumentHash(did, docHash, capId, v, r, s)
+//
+// The tx is signed by the DID (cfg.DIDSigner). The issuerSig authorizes the
+// update (same capability signature concept as DID creation).
+func (d *DIDGenerator) GenerateSetDocumentHashTransaction(
+	ctx context.Context,
+	docHash, didAddr string,
+	issuerSig *issuer.Signature,
+	options ...DIDOption,
+) (*didcontract.Transaction, error) {
+	cfg, err := d.resolveConfig(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
+	}
+
+	if cfg.DIDSigner == nil {
+		return nil, fmt.Errorf("did signer is required")
+	}
+	if issuerSig == nil {
+		return nil, fmt.Errorf("issuer signature is required")
+	}
+
+	if cfg.SyncNonce {
+		nonce, err := d.didContract.GetNonce(ctx, common.HexToAddress(didAddr))
+		if err != nil {
+			return nil, fmt.Errorf("failed to get nonce: %w", err)
+		}
+		cfg.Nonce = nonce
+	}
+
+	req := &didcontract.SetDocumentHashRequest{
+		DIDAddress: didAddr,
+		DocHash:    docHash,
+		CapID:      cfg.CapID,
+		IssuerSig:  issuerSig,
+		Nonce:      cfg.Nonce,
+	}
+
+	txResult, err := d.didContract.SetDocumentHashTx(ctx, req, cfg.DIDSigner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate setDocumentHash Tx: %w", err)
+	}
+	return txResult, nil
+}
+
+// GenerateSetDocumentHashByIssuerTransaction generates a signed raw transaction
+// for updating an existing DID's document hash on-chain by the issuer:
+//
+//	setDocumentHashByIssuer(did, docHash)
+//
+// The tx is signed by the issuer (cfg.IssuerSigner).
+func (d *DIDGenerator) GenerateSetDocumentHashByIssuerTransaction(
+	ctx context.Context,
+	docHash, didAddr string,
+	options ...DIDOption,
+) (*didcontract.Transaction, error) {
+	cfg, err := d.resolveConfig(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
+	}
+
+	if cfg.IssuerSigner == nil {
+		return nil, fmt.Errorf("issuer signer is required")
+	}
+
+	if cfg.SyncNonce {
+		nonce, err := d.didContract.GetNonce(ctx, common.HexToAddress(cfg.IssuerSigner.GetAddress()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to get nonce: %w", err)
+		}
+		cfg.Nonce = nonce
+	}
+
+	req := &didcontract.SetDocumentHashByIssuerRequest{
+		DIDAddress: didAddr,
+		DocHash:    docHash,
+		Nonce:      cfg.Nonce,
+	}
+
+	txResult, err := d.didContract.SetDocumentHashByIssuerTx(ctx, req, cfg.IssuerSigner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate setDocumentHashByIssuer Tx: %w", err)
+	}
+	return txResult, nil
+}
+
 // resolveConfig merges runtime options with the base configuration.
 //
 // It applies all provided options to the base config and automatically generates

@@ -406,6 +406,96 @@ For complete working examples, see:
 
 ---
 
+## Updating an existing DID Document (multi verification methods, metadata, etc.)
+
+To update a DID after it has been registered, you modify the DID Document JSON, hash it, then generate a raw transaction to update the on-chain `docHash`.
+
+There are **two** supported on-chain update methods:
+
+1) **Capability flow (DID owner tx + issuer signature)**: `setDocumentHash(did, docHash, capId, v, r, s)`
+2) **Issuer flow (issuer tx)**: `setDocumentHashByIssuer(did, docHash)`
+
+### Step 1: Modify the DID Document
+
+Load the current DID Document (from your resolver/registrar), apply your changes, then compute the new `docHash`:
+
+```go
+import "github.com/pilacorp/go-credential-sdk/didv2/did"
+
+var doc did.DIDDocument
+// json.Unmarshal(existingDocJSON, &doc)
+
+// Example: mutate verification methods / purposes using SDK helpers
+_, _ = doc.AddVerificationMethod(did.VerificationMethod{
+    PublicKeyHex: "0x...",
+}, []did.VerificationPurpose{did.PurposeAuthentication})
+
+docHash, _ := doc.Hash()
+```
+
+### Step 2A (Capability flow): build `setDocumentHash` tx
+
+This is used when the **DID owner** signs the transaction, and the **issuer** authorizes the change via capability signature (`issuerSig`).
+
+```go
+import (
+    "context"
+    "github.com/pilacorp/go-credential-sdk/didv2"
+    "github.com/pilacorp/go-credential-sdk/didv2/issuer"
+    "github.com/pilacorp/go-credential-sdk/didv2/signer"
+)
+
+ctx := context.Background()
+
+didSigner, _ := signer.NewDefaultProvider("0x...")    // DID private key (tx signer)
+issuerSigner, _ := signer.NewDefaultProvider("0x...") // Issuer private key (for issuerSig)
+
+gen, _ := didv2.NewDIDGenerator(didv2.WithIssuerSignerProvider(issuerSigner))
+
+didAddr := "0x..." // ethereum address part of the DID
+issuerAddr := issuerSigner.GetAddress()
+
+// issuerSig authorizes the DID update capability (capId/epoch can be synced/controlled via options)
+issuerSig, _ := gen.GenerateIssuerSignature(ctx, did.DIDTypePeople, didAddr, issuerAddr)
+
+tx, _ := gen.GenerateSetDocumentHashTransaction(
+    ctx,
+    docHash,
+    didAddr,
+    issuerSig,
+    didv2.WithDIDSignerProvider(didSigner),
+)
+
+// Submit tx.TxHex to the chain
+_ = tx
+```
+
+### Step 2B (Issuer flow): build `setDocumentHashByIssuer` tx
+
+This is used when the **issuer** signs the transaction and updates the DID’s `docHash` directly:
+
+```go
+import (
+    "context"
+    "github.com/pilacorp/go-credential-sdk/didv2"
+    "github.com/pilacorp/go-credential-sdk/didv2/signer"
+)
+
+ctx := context.Background()
+
+issuerSigner, _ := signer.NewDefaultProvider("0x...") // Issuer private key (tx signer)
+gen, _ := didv2.NewDIDGenerator(didv2.WithIssuerSignerProvider(issuerSigner))
+
+didAddr := "0x..."
+
+tx, _ := gen.GenerateSetDocumentHashByIssuerTransaction(ctx, docHash, didAddr)
+
+// Submit tx.TxHex to the chain
+_ = tx
+```
+
+After submitting the raw tx, persist the **new DID Document JSON** off-chain (e.g., via your registrar) so resolvers can serve the updated document.
+
 ## Configuration Options
 
 ### Option Functions

@@ -127,6 +127,17 @@ func WithSyncNonce(sync bool) DIDOption {
 	return func(c *DIDConfig) { c.SyncNonce = sync }
 }
 
+// WithNonce sets the transaction nonce manually.
+//
+// Use this when nonce management lives outside the SDK (e.g. a per-sender
+// nonce locker in the caller service that hands out monotonic values across
+// concurrent tx-builders). Setting Nonce explicitly takes precedence over
+// the default zero value; SyncNonce, when also enabled, will still override
+// this with a freshly fetched on-chain value.
+func WithNonce(nonce uint64) DIDOption {
+	return func(c *DIDConfig) { c.Nonce = nonce }
+}
+
 // WithCapID sets the capability ID for this DID issuance.
 //
 // If not set, a random CapID is automatically generated.

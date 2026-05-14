@@ -1,18 +1,20 @@
 package vc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"golang.org/x/sync/errgroup"
 )
 
 type JSONCredential struct {
-	credentialData     CredentialData
-	verificationMethod string
+	credentialData        CredentialData
+	verificationMethodKey string
 }
 
 func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
@@ -24,8 +26,8 @@ func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (Credentia
 	options := getOptions(opts...)
 
 	e := &JSONCredential{
-		credentialData:     m,
-		verificationMethod: options.verificationMethodKey,
+		credentialData:        m,
+		verificationMethodKey: options.verificationMethodKey,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -72,11 +74,25 @@ func (e *JSONCredential) AddProofByProvider(signerProvider signer.SignerProvider
 	if !ok || issuer == "" {
 		return fmt.Errorf("issuer is missing or invalid")
 	}
-	verificationMethod := fmt.Sprintf("%s#%s", issuer, e.verificationMethod)
 
 	options := getOptions(opts...)
 
-	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signerProvider, verificationMethod, "assertionMethod", options.didBaseURL)
+	// Precedence: per-call opt > constructor pin > resolve via DID
+	verificationMethodKey := e.verificationMethodKey
+	if options.verificationMethodKey != "" {
+		verificationMethodKey = options.verificationMethodKey
+	}
+
+	if verificationMethodKey == "" {
+		verificationMethodKey, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), issuer, "assertionMethod", options.resolver)
+		if err != nil {
+			return fmt.Errorf("resolve verification method: %w", err)
+		}
+	} else {
+		verificationMethodKey = verificationmethod.NormalizeVerificationMethodURL(issuer, verificationMethodKey)
+	}
+
+	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signerProvider, verificationMethodKey, "assertionMethod")
 }
 
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {
@@ -153,7 +169,9 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 
 	if options.isVerifyProof {
 		g.Go(func() error {
-			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(options.didBaseURL)
+			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
+				options.resolver,
+			)
 			if err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}

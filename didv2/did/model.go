@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/didv2/did/jsoncanonicalizer"
@@ -25,10 +26,10 @@ const (
 	DIDTypePeople DIDType = 0
 	// DIDTypeItem represents a DID for an item or product.
 	DIDTypeItem DIDType = 1
-	// DIDTypeActivity represents a DID for an activity or event.
-	DIDTypeActivity DIDType = 2
 	// DIDTypeLocation represents a DID for a location.
-	DIDTypeLocation DIDType = 3
+	DIDTypeLocation DIDType = 2
+	// DIDTypeActivity represents a DID for an activity or event.
+	DIDTypeActivity DIDType = 3
 )
 
 // DIDDocument represents a W3C-compliant DID Document.
@@ -74,6 +75,14 @@ type VerificationMethod struct {
 	Controller string `json:"controller"`
 	// PublicKeyHex is the hex-encoded public key (compressed format).
 	PublicKeyHex string `json:"publicKeyHex,omitempty"`
+	// Revoked, when present, marks the moment this verification method was
+	// retired. Verifiers reject signatures whose proof.created is on or
+	// after this timestamp. Empty for active keys.
+	Revoked *time.Time `json:"revoked,omitempty"`
+	// RevocationReason carries the reason code (RFC 5280 §5.3.1) for the
+	// revocation. Hard reasons (keyCompromise, cACompromise, aACompromise)
+	// invalidate every signature ever produced by the key.
+	RevocationReason string `json:"revocationReason,omitempty"`
 }
 
 // KeyPair represents an ECDSA key pair for a DID.

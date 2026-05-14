@@ -29,7 +29,7 @@ func TestJSONMap_AddECDSAProof_Accepts64ByteSignature(t *testing.T) {
 		sig64[i] = 0xAB
 	}
 
-	err := (&m).AddECDSAProof(&testSigner{sig: sig64}, "did:example:issuer#key-1", "assertionMethod", "https://example.invalid")
+	err := (&m).AddECDSAProof(&testSigner{sig: sig64}, "did:example:issuer#key-1", "assertionMethod")
 	if err != nil {
 		t.Fatalf("AddECDSAProof error: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestJSONMap_AddECDSAProof_Accepts65ByteSignature(t *testing.T) {
 		sig65[i] = 0xCD
 	}
 
-	err := (&m).AddECDSAProof(&testSigner{sig: sig65}, "did:example:issuer#key-1", "assertionMethod", "https://example.invalid")
+	err := (&m).AddECDSAProof(&testSigner{sig: sig65}, "did:example:issuer#key-1", "assertionMethod")
 	if err != nil {
 		t.Fatalf("AddECDSAProof error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestJSONMap_AddECDSAProof_RejectsInvalidSignatureLength(t *testing.T) {
 		"type":   "VerifiableCredential",
 	}
 
-	err := (&m).AddECDSAProof(&testSigner{sig: make([]byte, 66)}, "did:example:issuer#key-1", "assertionMethod", "https://example.invalid")
+	err := (&m).AddECDSAProof(&testSigner{sig: make([]byte, 66)}, "did:example:issuer#key-1", "assertionMethod")
 	if err == nil {
 		t.Fatalf("expected error for invalid signature length")
 	}

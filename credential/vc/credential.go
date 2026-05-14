@@ -136,7 +136,10 @@ func WithBaseURL(baseURL string) CredentialOpt {
 	}
 }
 
-// WithVerificationMethodKey sets the verification method key (default: "key-1").
+// WithVerificationMethodKey sets the verification method fragment used when
+// signing — e.g. "key-2". When omitted, the SDK resolves the issuer DID and
+// picks the latest active VM listed in the assertionMethod relationship
+// array (or authentication for VPs).
 func WithVerificationMethodKey(key string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.verificationMethodKey = key
@@ -234,13 +237,16 @@ func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 // getOptions returns the credential options.
 func getOptions(opts ...CredentialOpt) *credentialOptions {
 	options := &credentialOptions{
-		isValidateSchema:      false,
-		isVerifyProof:         false,
-		isCheckExpiration:     false,
-		isCheckRevocation:     false,
-		didBaseURL:            config.BaseURL,
-		loadedSchemaLoader:    nil,
-		verificationMethodKey: "key-1",
+		isValidateSchema:   false,
+		isVerifyProof:      false,
+		isCheckExpiration:  false,
+		isCheckRevocation:  false,
+		didBaseURL:         config.BaseURL,
+		loadedSchemaLoader: nil,
+		// verificationMethodKey is left empty so the signer/proof builder
+		// can resolve the latest VM in the assertionMethod array. Callers
+		// can override with WithVerificationMethodKey to pin a specific kid.
+		verificationMethodKey: "",
 		resolver:              nil,
 	}
 
@@ -249,7 +255,7 @@ func getOptions(opts ...CredentialOpt) *credentialOptions {
 	}
 
 	if options.resolver == nil {
-		options.resolver = verificationmethod.NewResolver(options.didBaseURL)
+		options.resolver = verificationmethod.NewHTTPResolver(options.didBaseURL)
 	}
 
 	return options

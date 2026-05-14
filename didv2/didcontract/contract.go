@@ -177,6 +177,95 @@ func (e *Contract) CreateDIDTx(ctx context.Context, req *CreateDIDRequest, txSig
 	return serializeTx(tx)
 }
 
+// SetDocumentHashTx creates a signed raw transaction for setDocumentHash.
+//
+// This method validates that:
+//   - Hash(document) is computed by caller and passed via req.DocHash
+//   - The tx is signed by txSigner (the DID owner)
+//   - IssuerSig authorizes the update (capability flow)
+func (e *Contract) SetDocumentHashTx(ctx context.Context, req *SetDocumentHashRequest, txSigner signer.SignerProvider) (*Transaction, error) {
+	if txSigner == nil {
+		return nil, fmt.Errorf("tx signer is required")
+	}
+	if req == nil {
+		return nil, fmt.Errorf("SetDocumentHashRequest is required")
+	}
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	auth, err := e.getTransactOpts(ctx, txSigner, int64(req.Nonce))
+	if err != nil {
+		return nil, err
+	}
+
+	docHashBytes, err := hexToBytes32(req.DocHash)
+	if err != nil {
+		return nil, fmt.Errorf("invalid docHash: %w", err)
+	}
+	capIdBytes, err := hexToBytes32(req.CapID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid capId: %w", err)
+	}
+
+	v := uint8(req.IssuerSig.V.Uint64())
+	r := bytesToBytes32(req.IssuerSig.R.Bytes())
+	s := bytesToBytes32(req.IssuerSig.S.Bytes())
+
+	tx, err := e.contract.Transact(
+		auth,
+		"setDocumentHash",
+		common.HexToAddress(req.DIDAddress),
+		docHashBytes,
+		capIdBytes,
+		v,
+		r,
+		s,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate setDocumentHash Tx: %w", err)
+	}
+
+	return serializeTx(tx)
+}
+
+// SetDocumentHashByIssuerTx creates a signed raw transaction for setDocumentHashByIssuer.
+//
+// The tx must be signed by the issuer (txSigner).
+func (e *Contract) SetDocumentHashByIssuerTx(ctx context.Context, req *SetDocumentHashByIssuerRequest, txSigner signer.SignerProvider) (*Transaction, error) {
+	if txSigner == nil {
+		return nil, fmt.Errorf("tx signer is required")
+	}
+	if req == nil {
+		return nil, fmt.Errorf("SetDocumentHashByIssuerRequest is required")
+	}
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	auth, err := e.getTransactOpts(ctx, txSigner, int64(req.Nonce))
+	if err != nil {
+		return nil, err
+	}
+
+	docHashBytes, err := hexToBytes32(req.DocHash)
+	if err != nil {
+		return nil, fmt.Errorf("invalid docHash: %w", err)
+	}
+
+	tx, err := e.contract.Transact(
+		auth,
+		"setDocumentHashByIssuer",
+		common.HexToAddress(req.DIDAddress),
+		docHashBytes,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate setDocumentHashByIssuer Tx: %w", err)
+	}
+
+	return serializeTx(tx)
+}
+
 // GetCapabilityEpoch retrieves the current capability epoch for an issuer from the blockchain.
 //
 // The capability epoch is used to validate issuer signatures. Issuers can revoke

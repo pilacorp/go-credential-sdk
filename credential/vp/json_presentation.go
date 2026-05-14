@@ -1,17 +1,19 @@
 package vp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 type JSONPresentation struct {
-	presentationData   PresentationData
-	verificationMethod string
+	presentationData      PresentationData
+	verificationMethodKey string
 }
 
 func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
@@ -22,7 +24,7 @@ func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pre
 
 	options := getOptions(opts...)
 
-	e := &JSONPresentation{presentationData: m, verificationMethod: options.verificationMethodKey}
+	e := &JSONPresentation{presentationData: m, verificationMethodKey: options.verificationMethodKey}
 
 	return e, e.executeOptions(opts...)
 }
@@ -68,13 +70,30 @@ func (e *JSONPresentation) AddProofByProvider(signerProvider signer.SignerProvid
 	if !ok || holder == "" {
 		return fmt.Errorf("holder is missing or invalid")
 	}
-	verificationMethod := fmt.Sprintf("%s#%s", holder, e.verificationMethod)
 
 	options := getOptions(opts...)
 
-	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(signerProvider, verificationMethod, "authentication", options.didBaseURL)
+	// Precedence: per-call opt > constructor pin > resolve via DID
+	verificationMethodKey := e.verificationMethodKey
+	if options.verificationMethodKey != "" {
+		verificationMethodKey = options.verificationMethodKey
+	}
+
+	if verificationMethodKey == "" {
+		verificationMethodKey, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), holder, "authentication", options.resolver)
+		if err != nil {
+			return fmt.Errorf("resolve verification method: %w", err)
+		}
+	} else {
+		verificationMethodKey = verificationmethod.NormalizeVerificationMethodURL(holder, verificationMethodKey)
+	}
+
+	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(signerProvider, verificationMethodKey, "authentication")
 }
 
+// resolveVerificationMethodURL returns the full verification method URL for
+// a presentation proof. See vc.resolveVerificationMethodURL for resolution
+// rules — the only difference is the default purpose (authentication).
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
 }
@@ -132,7 +151,9 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	}
 
 	if options.isVerifyProof {
-		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(options.didBaseURL)
+		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
+			options.resolver,
+		)
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}

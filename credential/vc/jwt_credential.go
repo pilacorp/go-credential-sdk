@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -71,10 +73,20 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 		payload[key] = value
 	}
 
+	kid := options.verificationMethodKey
+	if kid == "" {
+		kid, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), vcc.Issuer, "assertionMethod", options.resolver)
+		if err != nil {
+			return nil, fmt.Errorf("resolve verification method: %w", err)
+		}
+	} else {
+		kid = verificationmethod.NormalizeVerificationMethodURL(vcc.Issuer, kid)
+	}
+
 	header := map[string]interface{}{
 		"typ": "JWT",
 		"alg": "ES256K",
-		"kid": fmt.Sprintf("%s#%s", vcc.Issuer, options.verificationMethodKey),
+		"kid": kid,
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -461,7 +473,7 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 				return fmt.Errorf("serialize credential: %w", err)
 			}
 
-			verifier := jwt.NewJWTVerifierWithResolver(options.resolver)
+			verifier := jwt.NewJWTVerifier(options.resolver)
 			if err := verifier.VerifyJWT(serialized.(string)); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}

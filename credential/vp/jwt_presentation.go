@@ -1,6 +1,7 @@
 package vp
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 type JWTPresentation struct {
@@ -54,10 +56,20 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 	}
 
 	options := getOptions(opts...)
+	kid := options.verificationMethodKey
+	if kid == "" {
+		kid, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), vpc.Holder, "authentication", options.resolver)
+		if err != nil {
+			return nil, fmt.Errorf("resolve verification method: %w", err)
+		}
+	} else {
+		kid = verificationmethod.NormalizeVerificationMethodURL(vpc.Holder, kid)
+	}
+
 	header := map[string]interface{}{
 		"typ": "JWT",
 		"alg": "ES256K",
-		"kid": fmt.Sprintf("%s#%s", vpc.Holder, options.verificationMethodKey),
+		"kid": kid,
 	}
 
 	// Encode header and payload
@@ -238,7 +250,7 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 			return fmt.Errorf("failed to serialize presentation: %w", err)
 		}
 
-		verifier := jwt.NewJWTVerifier(options.didBaseURL)
+		verifier := jwt.NewJWTVerifier(options.resolver)
 		err = verifier.VerifyJWT(serialized.(string))
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
