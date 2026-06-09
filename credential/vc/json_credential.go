@@ -60,26 +60,26 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	return e.AddProofByProvider(defaultSigner, opts...)
 }
 
-func (e *JSONCredential) AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error {
-	if signerProvider == nil {
+func (e *JSONCredential) AddProofByProvider(provider any, opts ...CredentialOpt) error {
+	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
-	vmURL, err := e.resolveVMForSigning(jsonmap.ECDSASECPKEY, opts...)
-	if err != nil {
-		return err
+	switch p := provider.(type) {
+	case signer.JWSSignerProvider:
+		vmURL, err := e.resolveVMForSigning(jsonmap.JsonWebKey2020, opts...)
+		if err != nil {
+			return err
+		}
+		return (*jsonmap.JSONMap)(&e.credentialData).AddJWSProof(p, vmURL, "assertionMethod")
+	case signer.SignerProvider:
+		vmURL, err := e.resolveVMForSigning(jsonmap.ECDSASECPKEY, opts...)
+		if err != nil {
+			return err
+		}
+		return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(p, vmURL, "assertionMethod")
+	default:
+		return fmt.Errorf("unsupported provider type: %T", provider)
 	}
-	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signerProvider, vmURL, "assertionMethod")
-}
-
-func (e *JSONCredential) AddProofByJWSProvider(jwsSigner signer.JWSSignerProvider, opts ...CredentialOpt) error {
-	if jwsSigner == nil {
-		return fmt.Errorf("jws signer provider cannot be nil")
-	}
-	vmURL, err := e.resolveVMForSigning(jsonmap.JsonWebKey2020, opts...)
-	if err != nil {
-		return err
-	}
-	return (*jsonmap.JSONMap)(&e.credentialData).AddJWSProof(jwsSigner, vmURL, "assertionMethod")
 }
 
 func (e *JSONCredential) resolveVMForSigning(vmType string, opts ...CredentialOpt) (string, error) {

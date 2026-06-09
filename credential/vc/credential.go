@@ -37,8 +37,10 @@ type Credential interface {
 	// AddCustomProof attaches a caller-provided proof/signature (legacy API).
 	AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error
 
-	// AddProofByProvider signs using a signer provider (Vault/HSM/local).
-	AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error
+	// AddProofByProvider signs using a signer provider. Accepts either
+	// signer.SignerProvider (ECDSA path) or signer.JWSSignerProvider (JWS path).
+	// Routing is decided at runtime; passing an unrelated type returns an error.
+	AddProofByProvider(provider any, opts ...CredentialOpt) error
 
 	// Verify verifies the credential
 	Verify(opts ...CredentialOpt) error
@@ -63,13 +65,6 @@ type Credential interface {
 	ExtractField(path string) interface{}
 
 	executeOptions(opts ...CredentialOpt) error
-}
-
-// JWSProofAdder is implemented by credential types that support attaching a
-// JsonWebSignature2020 proof (currently only *JSONCredential). Use a type
-// assertion to access this capability from a Credential value.
-type JWSProofAdder interface {
-	AddProofByJWSProvider(jwsSigner signer.JWSSignerProvider, opts ...CredentialOpt) error
 }
 
 // CredentialData represents credential data in JSON format (suitable for both JWT and JSON credentials).

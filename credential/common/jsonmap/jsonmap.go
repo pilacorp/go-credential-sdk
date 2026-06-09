@@ -180,7 +180,7 @@ func (m *JSONMap) AddJWSProof(jwsSigner signer.JWSSignerProvider, verificationMe
 	signingInput = append(signingInput, '.')
 	signingInput = append(signingInput, payload...)
 
-	sig, err := jwsSigner.Sign(signingInput)
+	sig, err := jwsSigner.SignJWS(signingInput)
 	if err != nil {
 		return fmt.Errorf("jsonmap: jws sign: %w", err)
 	}

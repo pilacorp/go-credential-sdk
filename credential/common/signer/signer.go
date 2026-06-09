@@ -20,7 +20,7 @@ type SignerProvider interface {
 // JWSSignerProvider signs the JWS signing input (encodedHeader + "." + payload)
 // and reports the JWS algorithm identifier (e.g. "RS256").
 type JWSSignerProvider interface {
-	Sign(signingInput []byte) ([]byte, error)
+	SignJWS(signingInput []byte) ([]byte, error)
 	Algorithm() string
 }
 
