@@ -65,6 +65,13 @@ type Credential interface {
 	executeOptions(opts ...CredentialOpt) error
 }
 
+// JWSProofAdder is implemented by credential types that support attaching a
+// JsonWebSignature2020 proof (currently only *JSONCredential). Use a type
+// assertion to access this capability from a Credential value.
+type JWSProofAdder interface {
+	AddProofByJWSProvider(jwsSigner signer.JWSSignerProvider, opts ...CredentialOpt) error
+}
+
 // CredentialData represents credential data in JSON format (suitable for both JWT and JSON credentials).
 type CredentialData jsonmap.JSONMap
 

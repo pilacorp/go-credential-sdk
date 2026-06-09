@@ -2,6 +2,7 @@ package verificationmethod
 
 import (
 	"crypto/ecdsa"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -63,4 +64,29 @@ func JWKToHex(jwk *JWK) (string, error) {
 
 	uncompressed := crypto.FromECDSAPub(publicKey)
 	return hex.EncodeToString(uncompressed), nil
+}
+
+// RSAPubKeyFromJWK builds an *rsa.PublicKey from a JWK with kty=RSA.
+func RSAPubKeyFromJWK(jwk *JWK) (*rsa.PublicKey, error) {
+	if jwk == nil {
+		return nil, fmt.Errorf("jwk is nil")
+	}
+	if jwk.Kty != "RSA" {
+		return nil, fmt.Errorf("unsupported key type: %s", jwk.Kty)
+	}
+	if jwk.N == "" || jwk.E == "" {
+		return nil, fmt.Errorf("RSA jwk missing n or e")
+	}
+	nBytes, err := base64.RawURLEncoding.DecodeString(jwk.N)
+	if err != nil {
+		return nil, fmt.Errorf("decode n: %w", err)
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(jwk.E)
+	if err != nil {
+		return nil, fmt.Errorf("decode e: %w", err)
+	}
+	return &rsa.PublicKey{
+		N: new(big.Int).SetBytes(nBytes),
+		E: int(new(big.Int).SetBytes(eBytes).Int64()),
+	}, nil
 }

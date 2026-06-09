@@ -27,6 +27,8 @@ const (
 	DataIntegrityProof          string = "DataIntegrityProof"
 	ECDSARDFC2019               string = "ecdsa-rdfc-2019"
 	ECDSASECPKEY                string = "EcdsaSecp256k1VerificationKey2019"
+	JsonWebSignature2020        string = "JsonWebSignature2020"
+	JsonWebKey2020              string = "JsonWebKey2020"
 )
 
 // ToJSON serializes the JSONMap to JSON.
@@ -129,9 +131,92 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 		return fmt.Errorf("jsonmap: %w", err)
 	}
 	proof.ProofValue = hex.EncodeToString(signature)
-	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
+	m.appendProof(*proof)
 
 	return nil
+}
+
+// AddJWSProof attaches a JsonWebSignature2020 proof (RSA family) to the
+// JSONMap, appended to any existing proofs.
+func (m *JSONMap) AddJWSProof(jwsSigner signer.JWSSignerProvider, verificationMethod, proofPurpose string) error {
+	if m == nil {
+		return fmt.Errorf("jsonmap: JSONMap is nil")
+	}
+	if jwsSigner == nil {
+		return fmt.Errorf("jsonmap: jws signer provider cannot be nil")
+	}
+	if verificationMethod == "" {
+		return fmt.Errorf("jsonmap: verification method is required")
+	}
+	if proofPurpose == "" {
+		return fmt.Errorf("jsonmap: proof purpose is required")
+	}
+
+	proof := dto.Proof{
+		Type:               JsonWebSignature2020,
+		Created:            time.Now().UTC().Format(time.RFC3339),
+		VerificationMethod: verificationMethod,
+		ProofPurpose:       proofPurpose,
+	}
+
+	payload, err := m.Canonicalize()
+	if err != nil {
+		return fmt.Errorf("jsonmap: canonicalize: %w", err)
+	}
+
+	header := map[string]interface{}{
+		"alg":  jwsSigner.Algorithm(),
+		"b64":  false,
+		"crit": []string{"b64"},
+	}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return fmt.Errorf("jsonmap: marshal jws header: %w", err)
+	}
+	encHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
+
+	signingInput := make([]byte, 0, len(encHeader)+1+len(payload))
+	signingInput = append(signingInput, encHeader...)
+	signingInput = append(signingInput, '.')
+	signingInput = append(signingInput, payload...)
+
+	sig, err := jwsSigner.Sign(signingInput)
+	if err != nil {
+		return fmt.Errorf("jsonmap: jws sign: %w", err)
+	}
+	proof.JWS = encHeader + ".." + base64.RawURLEncoding.EncodeToString(sig)
+
+	m.appendProof(proof)
+	return nil
+}
+
+// collectProofs returns existing proofs as a slice (object or array form).
+func (m *JSONMap) collectProofs() []dto.Proof {
+	raw, ok := (*m)[proofField]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []interface{}:
+		out := make([]dto.Proof, 0, len(v))
+		for _, item := range v {
+			if p, err := ParseRawToProof(item); err == nil {
+				out = append(out, p)
+			}
+		}
+		return out
+	case map[string]interface{}:
+		if p, err := ParseRawToProof(v); err == nil {
+			return []dto.Proof{p}
+		}
+	}
+	return nil
+}
+
+func (m *JSONMap) appendProof(p dto.Proof) {
+	existing := m.collectProofs()
+	existing = append(existing, p)
+	(*m)["proof"] = util.SerializeProofs(existing)
 }
 
 // AddCustomProof adds custom proof to the JSONMap.
@@ -162,9 +247,9 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider) (boo
 		return false, fmt.Errorf("document resolver is required")
 	}
 
-	proof, err := ParseRawToProof(m.getFirstProof())
-	if err != nil {
-		return false, fmt.Errorf("failed to parse proof: %w", err)
+	proofs := m.collectProofs()
+	if len(proofs) == 0 {
+		return false, fmt.Errorf("JSONMap has no proof")
 	}
 
 	signerDID, err := signerDIDFromBody(*m)
@@ -176,19 +261,126 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider) (boo
 		return false, fmt.Errorf("failed to resolve DID document for '%s': %w", signerDID, err)
 	}
 
+	for i := range proofs {
+		ok, err := m.verifyOneProof(doc, &proofs[i])
+		if err != nil {
+			return false, fmt.Errorf("proof[%d] type=%s: %w", i, proofs[i].Type, err)
+		}
+		if !ok {
+			return false, fmt.Errorf("proof[%d] type=%s: signature invalid", i, proofs[i].Type)
+		}
+	}
+	return true, nil
+}
+
+func (m *JSONMap) verifyOneProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
 	switch {
 	case proof.Type == JwtProof2020:
-		return m.verifyJWTProof(doc, &proof)
+		return m.verifyJWTProof(doc, proof)
 
 	case proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY:
 		return m.verifyEcdsaProofLegacy()
 
 	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019:
-		return m.verifyDataIntegrityProof(doc, &proof)
+		return m.verifyDataIntegrityProof(doc, proof)
+
+	case proof.Type == JsonWebSignature2020:
+		return m.verifyJWSProof(doc, proof)
 
 	default:
 		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
 	}
+}
+
+func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
+	vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve verification method: %w", err)
+	}
+	if vm.Type != JsonWebKey2020 {
+		return false, fmt.Errorf("expected %s VM, got %s", JsonWebKey2020, vm.Type)
+	}
+	if vm.PublicKeyJwk == nil {
+		return false, fmt.Errorf("verification method '%s' has no publicKeyJwk", vm.ID)
+	}
+	pub, err := verificationmethod.RSAPubKeyFromJWK(vm.PublicKeyJwk)
+	if err != nil {
+		return false, fmt.Errorf("parse RSA jwk: %w", err)
+	}
+
+	encHeader, encSig, ok := splitDetachedJWS(proof.JWS)
+	if !ok {
+		return false, fmt.Errorf("malformed detached JWS")
+	}
+
+	headerBytes, err := base64.RawURLEncoding.DecodeString(encHeader)
+	if err != nil {
+		return false, fmt.Errorf("decode jws header: %w", err)
+	}
+	var hdr struct {
+		Alg  string      `json:"alg"`
+		B64  interface{} `json:"b64"`
+		Crit []string    `json:"crit"`
+	}
+	if err := json.Unmarshal(headerBytes, &hdr); err != nil {
+		return false, fmt.Errorf("parse jws header: %w", err)
+	}
+	if b, ok := hdr.B64.(bool); !ok || b {
+		return false, fmt.Errorf("jws header b64 must be false")
+	}
+	if !containsString(hdr.Crit, "b64") {
+		return false, fmt.Errorf("jws header crit must include b64")
+	}
+
+	payload, err := m.Canonicalize()
+	if err != nil {
+		return false, fmt.Errorf("canonicalize: %w", err)
+	}
+	signingInput := make([]byte, 0, len(encHeader)+1+len(payload))
+	signingInput = append(signingInput, encHeader...)
+	signingInput = append(signingInput, '.')
+	signingInput = append(signingInput, payload...)
+
+	sig, err := base64.RawURLEncoding.DecodeString(encSig)
+	if err != nil {
+		return false, fmt.Errorf("decode jws signature: %w", err)
+	}
+
+	if err := crypto.VerifyRSAJWS(hdr.Alg, pub, signingInput, sig); err != nil {
+		return false, err
+	}
+	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func splitDetachedJWS(jws string) (string, string, bool) {
+	idx := -1
+	for i := 0; i+1 < len(jws); i++ {
+		if jws[i] == '.' && jws[i+1] == '.' {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		return "", "", false
+	}
+	header := jws[:idx]
+	sig := jws[idx+2:]
+	if header == "" || sig == "" {
+		return "", "", false
+	}
+	return header, sig, true
+}
+
+func containsString(arr []string, s string) bool {
+	for _, x := range arr {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyECDSA verifies an ECDSA-signed JSONMap.
@@ -327,6 +519,9 @@ func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 	}
 	if pv, ok := proofMap["proofValue"].(string); ok {
 		result.ProofValue = pv
+	}
+	if jws, ok := proofMap["jws"].(string); ok {
+		result.JWS = jws
 	}
 	if pv, ok := proofMap["cryptosuite"].(string); ok {
 		result.Cryptosuite = pv

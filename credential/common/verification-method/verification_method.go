@@ -2,13 +2,14 @@ package verificationmethod
 
 import "time"
 
-// JWK represents a JSON Web Key structure for secp256k1 keys (the only
-// curve Pila currently supports).
+// JWK represents a JSON Web Key. Supports EC (secp256k1) and RSA.
 type JWK struct {
-	Kty string `json:"kty"` // Key type ("EC")
-	Crv string `json:"crv"` // Curve ("secp256k1")
-	X   string `json:"x"`   // X coordinate (base64url, raw)
-	Y   string `json:"y"`   // Y coordinate (base64url, raw)
+	Kty string `json:"kty"`
+	Crv string `json:"crv,omitempty"`
+	X   string `json:"x,omitempty"`
+	Y   string `json:"y,omitempty"`
+	N   string `json:"n,omitempty"`
+	E   string `json:"e,omitempty"`
 }
 
 // VerificationMethodEntry represents a single verification method in a

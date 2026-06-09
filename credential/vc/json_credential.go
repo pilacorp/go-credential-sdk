@@ -64,35 +64,49 @@ func (e *JSONCredential) AddProofByProvider(signerProvider signer.SignerProvider
 	if signerProvider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
-
-	err := e.executeOptions(opts...)
+	vmURL, err := e.resolveVMForSigning(jsonmap.ECDSASECPKEY, opts...)
 	if err != nil {
 		return err
+	}
+	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signerProvider, vmURL, "assertionMethod")
+}
+
+func (e *JSONCredential) AddProofByJWSProvider(jwsSigner signer.JWSSignerProvider, opts ...CredentialOpt) error {
+	if jwsSigner == nil {
+		return fmt.Errorf("jws signer provider cannot be nil")
+	}
+	vmURL, err := e.resolveVMForSigning(jsonmap.JsonWebKey2020, opts...)
+	if err != nil {
+		return err
+	}
+	return (*jsonmap.JSONMap)(&e.credentialData).AddJWSProof(jwsSigner, vmURL, "assertionMethod")
+}
+
+func (e *JSONCredential) resolveVMForSigning(vmType string, opts ...CredentialOpt) (string, error) {
+	if err := e.executeOptions(opts...); err != nil {
+		return "", err
 	}
 
 	issuer, ok := e.credentialData["issuer"].(string)
 	if !ok || issuer == "" {
-		return fmt.Errorf("issuer is missing or invalid")
+		return "", fmt.Errorf("issuer is missing or invalid")
 	}
 
 	options := getOptions(opts...)
 
-	// Precedence: per-call opt > constructor pin > resolve via DID
 	verificationMethodKey := e.verificationMethodKey
 	if options.verificationMethodKey != "" {
 		verificationMethodKey = options.verificationMethodKey
 	}
 
 	if verificationMethodKey == "" {
-		verificationMethodKey, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), issuer, "assertionMethod", options.resolver)
+		resolved, err := verificationmethod.ResolveVerificationMethodURLByType(context.Background(), issuer, "assertionMethod", vmType, options.resolver)
 		if err != nil {
-			return fmt.Errorf("resolve verification method: %w", err)
+			return "", fmt.Errorf("resolve verification method: %w", err)
 		}
-	} else {
-		verificationMethodKey = verificationmethod.NormalizeVerificationMethodURL(issuer, verificationMethodKey)
+		return resolved, nil
 	}
-
-	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signerProvider, verificationMethodKey, "assertionMethod")
+	return verificationmethod.NormalizeVerificationMethodURL(issuer, verificationMethodKey), nil
 }
 
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {

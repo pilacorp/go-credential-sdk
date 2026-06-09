@@ -17,6 +17,13 @@ type SignerProvider interface {
 	Sign(hashPayload []byte) ([]byte, error)
 }
 
+// JWSSignerProvider signs the JWS signing input (encodedHeader + "." + payload)
+// and reports the JWS algorithm identifier (e.g. "RS256").
+type JWSSignerProvider interface {
+	Sign(signingInput []byte) ([]byte, error)
+	Algorithm() string
+}
+
 func ValidateSignatureLength(signature []byte) error {
 	switch len(signature) {
 	case 64, 65:

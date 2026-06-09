@@ -10,6 +10,13 @@ import (
 // for signing/verifying given DID and purpose by reading the DID document and
 // picking the latest active VM in the relationship array for the given purpose.
 func ResolveVerificationMethodURL(ctx context.Context, did, purpose string, resolver ResolverProvider) (string, error) {
+	return ResolveVerificationMethodURLByType(ctx, did, purpose, "", resolver)
+}
+
+// ResolveVerificationMethodURLByType is like ResolveVerificationMethodURL but
+// also filters candidate VMs by type (e.g. "JsonWebKey2020"). Empty vmType
+// disables the filter.
+func ResolveVerificationMethodURLByType(ctx context.Context, did, purpose, vmType string, resolver ResolverProvider) (string, error) {
 	if resolver == nil {
 		return "", fmt.Errorf("document resolver is not configured")
 	}
@@ -17,7 +24,7 @@ func ResolveVerificationMethodURL(ctx context.Context, did, purpose string, reso
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve DID '%s': %w", did, err)
 	}
-	vm, err := SelectLatestActiveVMForPurpose(doc, purpose)
+	vm, err := SelectLatestActiveVMForPurposeAndType(doc, purpose, vmType)
 	if err != nil {
 		return "", err
 	}
