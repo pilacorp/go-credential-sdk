@@ -190,7 +190,7 @@ func (m *JSONMap) AddJWSProof(jwsSigner signer.JWSSignerProvider, verificationMe
 	return nil
 }
 
-// collectProofs returns existing proofs as a slice (object or array form).
+// collectProofs returns existing proofs as a slice.
 func (m *JSONMap) collectProofs() []dto.Proof {
 	raw, ok := (*m)[proofField]
 	if !ok || raw == nil {
@@ -205,6 +205,18 @@ func (m *JSONMap) collectProofs() []dto.Proof {
 			}
 		}
 		return out
+	case []JSONMap:
+		out := make([]dto.Proof, 0, len(v))
+		for _, item := range v {
+			if p, err := ParseRawToProof(map[string]interface{}(item)); err == nil {
+				out = append(out, p)
+			}
+		}
+		return out
+	case JSONMap:
+		if p, err := ParseRawToProof(map[string]interface{}(v)); err == nil {
+			return []dto.Proof{p}
+		}
 	case map[string]interface{}:
 		if p, err := ParseRawToProof(v); err == nil {
 			return []dto.Proof{p}
