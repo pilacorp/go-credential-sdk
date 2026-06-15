@@ -205,6 +205,14 @@ func (m *JSONMap) collectProofs() []dto.Proof {
 			}
 		}
 		return out
+	case []map[string]interface{}:
+		out := make([]dto.Proof, 0, len(v))
+		for _, item := range v {
+			if p, err := ParseRawToProof(item); err == nil {
+				out = append(out, p)
+			}
+		}
+		return out
 	case []JSONMap:
 		out := make([]dto.Proof, 0, len(v))
 		for _, item := range v {
