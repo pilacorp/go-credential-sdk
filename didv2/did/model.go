@@ -65,16 +65,26 @@ type DIDDocument struct {
 // VerificationMethod represents a public key verification method in a DID Document.
 //
 // It specifies how signatures related to this DID can be verified using the
-// published public key.
+// published public key. The key material can be supplied either as a
+// compressed-secp256k1 hex string (PublicKeyHex, traditional) or as a JSON
+// Web Key (PublicKeyJwk, used for RSA / JsonWebKey2020 verification methods
+// such as keys held inside a CA token). Exactly one of the two should be
+// populated; the SDK and the canonical hash treat both as first-class.
 type VerificationMethod struct {
 	// Id is the unique identifier of this verification method (e.g., "did:nda:0x...#key-1").
 	Id string `json:"id"`
-	// Type specifies the cryptographic suite (e.g., "EcdsaSecp256k1VerificationKey2019").
+	// Type specifies the cryptographic suite (e.g., "EcdsaSecp256k1VerificationKey2019"
+	// or "JsonWebKey2020").
 	Type string `json:"type"`
 	// Controller is the DID that controls this verification method.
 	Controller string `json:"controller"`
-	// PublicKeyHex is the hex-encoded public key (compressed format).
+	// PublicKeyHex is the hex-encoded compressed secp256k1 public key. Used
+	// with EcdsaSecp256k1VerificationKey2019 / EcdsaSecp256k1Signature2019.
 	PublicKeyHex string `json:"publicKeyHex,omitempty"`
+	// PublicKeyJwk is the JSON Web Key form of the public key. Used with
+	// JsonWebKey2020 and other suites that operate on JWK material (RSA,
+	// non-secp256k1 ECDSA, EdDSA, ...). Mutually exclusive with PublicKeyHex.
+	PublicKeyJwk *JWK `json:"publicKeyJwk,omitempty"`
 	// Revoked, when present, marks the moment this verification method was
 	// retired. Verifiers reject signatures whose proof.created is on or
 	// after this timestamp. Empty for active keys.
@@ -83,6 +93,29 @@ type VerificationMethod struct {
 	// revocation. Hard reasons (keyCompromise, cACompromise, aACompromise)
 	// invalidate every signature ever produced by the key.
 	RevocationReason string `json:"revocationReason,omitempty"`
+}
+
+// JWK is the JSON Web Key encoding of a public key used as DID verification
+// method material. The shape is the RFC 7517 / 7518 intersection actually
+// produced by the SDK: RSA (kty=RSA, n, e), EC (kty=EC, crv, x, y) and
+// Octet (kty=OKP, crv, x). Unknown JWK parameters are intentionally NOT
+// modeled here — keys carrying extras should be added explicitly when the
+// need arises so that canonicalization stays deterministic.
+type JWK struct {
+	// Kty is the JWK key type (RSA, EC, OKP).
+	Kty string `json:"kty"`
+	// Crv is the curve name for EC / OKP keys (e.g., "secp256k1", "P-256",
+	// "Ed25519"). Omitted for RSA keys.
+	Crv string `json:"crv,omitempty"`
+	// X is the X coordinate (EC) or the raw public key (OKP), base64url
+	// without padding per RFC 7518.
+	X string `json:"x,omitempty"`
+	// Y is the Y coordinate for EC keys, base64url without padding.
+	Y string `json:"y,omitempty"`
+	// N is the RSA modulus, base64url without padding.
+	N string `json:"n,omitempty"`
+	// E is the RSA exponent, base64url without padding.
+	E string `json:"e,omitempty"`
 }
 
 // KeyPair represents an ECDSA key pair for a DID.
