@@ -10,7 +10,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
-	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
