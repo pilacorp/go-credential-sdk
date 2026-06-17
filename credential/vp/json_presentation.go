@@ -16,7 +16,9 @@ type JSONPresentation struct {
 	verificationMethodKey string
 }
 
-func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
+var _ Presentation = (*JSONPresentation)(nil)
+
+func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JSONPresentation, error) {
 	m, err := serializePresentationContents(&vpc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
@@ -29,7 +31,7 @@ func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pre
 	return e, e.executeOptions(opts...)
 }
 
-func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (Presentation, error) {
+func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (*JSONPresentation, error) {
 	if len(rawJSON) == 0 {
 		return nil, fmt.Errorf("JSON string is empty")
 	}
@@ -48,6 +50,7 @@ func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (Presentatio
 	return e, e.executeOptions(opts...)
 }
 
+//go:deprecated
 func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -56,48 +59,75 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 	return e.AddProofByProvider(defaultSigner, opts...)
 }
 
-func (e *JSONPresentation) AddProofByProvider(signerProvider signer.SignerProvider, opts ...PresentationOpt) error {
-	if signerProvider == nil {
+func (e *JSONPresentation) AddProofByProvider(provider any, opts ...PresentationOpt) error {
+	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
-	err := e.executeOptions(opts...)
-	if err != nil {
+	if err := e.executeOptions(opts...); err != nil {
 		return err
 	}
 
+	// Resolve the VM AFTER knowing the provider type, so the chosen VM holds a
+	// key compatible with the signer's cryptosuite.
+	switch p := provider.(type) {
+	case signer.JWSSignerProvider:
+		vmURL, err := e.resolveSigningVM(verificationmethod.KeyRSA, opts...)
+		if err != nil {
+			return err
+		}
+		return (*jsonmap.JSONMap)(&e.presentationData).AddJWSProof(p, vmURL, "authentication")
+	case *signer.P256Provider, *signer.P256FuncProvider:
+		// P-256 providers structurally satisfy ECDSASignerProvider but
+		// secp256k1 ecdsa-rdfc-2019 is not P-256; reject to avoid a broken proof.
+		return fmt.Errorf("P-256 signer is not supported for presentations (use secp256k1 or RSA)")
+	case signer.ECDSASignerProvider:
+		vmURL, err := e.resolveSigningVM(verificationmethod.KeySecp256k1, opts...)
+		if err != nil {
+			return err
+		}
+		return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(p, vmURL, "authentication")
+	default:
+		return fmt.Errorf("unsupported signer provider type: %T", provider)
+	}
+}
+
+// resolveSigningVM picks the verification method URL for signing: per-call opt >
+// constructor pin > resolve the latest active authentication VM whose key
+// matches kind.
+func (e *JSONPresentation) resolveSigningVM(kind verificationmethod.KeyKind, opts ...PresentationOpt) (string, error) {
 	holder, ok := e.presentationData["holder"].(string)
 	if !ok || holder == "" {
-		return fmt.Errorf("holder is missing or invalid")
+		return "", fmt.Errorf("holder is missing or invalid")
 	}
 
 	options := getOptions(opts...)
 
-	// Precedence: per-call opt > constructor pin > resolve via DID
 	verificationMethodKey := e.verificationMethodKey
 	if options.verificationMethodKey != "" {
 		verificationMethodKey = options.verificationMethodKey
 	}
 
 	if verificationMethodKey == "" {
-		verificationMethodKey, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), holder, "authentication", options.resolver)
+		vmURL, err := verificationmethod.ResolveVerificationMethodURLForKey(context.Background(), holder, "authentication", kind, options.resolver)
 		if err != nil {
-			return fmt.Errorf("resolve verification method: %w", err)
+			return "", fmt.Errorf("resolve verification method: %w", err)
 		}
-	} else {
-		verificationMethodKey = verificationmethod.NormalizeVerificationMethodURL(holder, verificationMethodKey)
+		return vmURL, nil
 	}
-
-	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(signerProvider, verificationMethodKey, "authentication")
+	return verificationmethod.NormalizeVerificationMethodURL(holder, verificationMethodKey), nil
 }
 
 // resolveVerificationMethodURL returns the full verification method URL for
 // a presentation proof. See vc.resolveVerificationMethodURL for resolution
 // rules — the only difference is the default purpose (authentication).
+//
+//go:deprecated
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
 }
 
+//go:deprecated
 func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -153,6 +183,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	if options.isVerifyProof {
 		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
 			options.resolver,
+			options.proofVerificationMethod,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)

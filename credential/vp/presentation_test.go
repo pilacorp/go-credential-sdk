@@ -166,7 +166,7 @@ func TestCreatePresentationWithContent(t *testing.T) {
 			}
 
 			// Get JSON from JSON presentation
-			embeddedPres := p.(*vp.JSONPresentation)
+			embeddedPres := p
 			data, err := embeddedPres.GetContents()
 			if err != nil {
 				t.Fatalf("GetContents failed: %v", err)
@@ -227,7 +227,7 @@ func TestParsePresentationContents(t *testing.T) {
 	}
 
 	// Get JSON from JSON presentation
-	embeddedPres := pContent.(*vp.JSONPresentation)
+	embeddedPres := pContent
 	pJson, err := embeddedPres.GetContents()
 	if err != nil {
 		t.Fatalf("GetContents failed: %v", err)
@@ -322,7 +322,7 @@ func TestAddECDSAProof(t *testing.T) {
 	}
 
 	// Get JSON from JSON presentation
-	embeddedPres := presentation.(*vp.JSONPresentation)
+	embeddedPres := presentation
 	presentationJSON, err := embeddedPres.Serialize()
 	presentationJSONBytes, err := json.Marshal(presentationJSON)
 	if err != nil {

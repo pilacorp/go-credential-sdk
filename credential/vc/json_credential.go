@@ -17,7 +17,9 @@ type JSONCredential struct {
 	verificationMethodKey string
 }
 
-func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
+var _ Credential = (*JSONCredential)(nil)
+
+func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (*JSONCredential, error) {
 	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
@@ -33,7 +35,7 @@ func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (Credentia
 	return e, e.executeOptions(opts...)
 }
 
-func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (Credential, error) {
+func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (*JSONCredential, error) {
 	if !isJSONCredential(rawJSON) {
 		return nil, fmt.Errorf("invalid JSON format")
 	}
@@ -52,6 +54,7 @@ func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (Credential, err
 	return e, e.executeOptions(opts...)
 }
 
+//go:deprecated
 func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -60,45 +63,52 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	return e.AddProofByProvider(defaultSigner, opts...)
 }
 
-func (e *JSONCredential) AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error {
-	if signerProvider == nil {
+// AddProofByProvider signs with a provider; the cryptosuite is chosen by the
+// provider type: SignerProvider (secp256k1) → ecdsa-rdfc-2019, JWSSignerProvider
+// (RSA) → JsonWebSignature2020. The verification method is resolved to a key of
+// the matching kind, so a DID holding both key types binds the proof to the
+// right VM automatically. With several VMs of the same kind, pin one with
+// WithVerificationMethodKey.
+func (e *JSONCredential) AddProofByProvider(provider any, opts ...CredentialOpt) error {
+	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
-	err := e.executeOptions(opts...)
-	if err != nil {
+	if err := e.executeOptions(opts...); err != nil {
 		return err
 	}
 
-	issuer, ok := e.credentialData["issuer"].(string)
-	if !ok || issuer == "" {
-		return fmt.Errorf("issuer is missing or invalid")
-	}
-
-	options := getOptions(opts...)
-
-	// Precedence: per-call opt > constructor pin > resolve via DID
-	verificationMethodKey := e.verificationMethodKey
-	if options.verificationMethodKey != "" {
-		verificationMethodKey = options.verificationMethodKey
-	}
-
-	if verificationMethodKey == "" {
-		verificationMethodKey, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), issuer, "assertionMethod", options.resolver)
+	// Resolve the VM AFTER knowing the provider type, so the chosen VM holds a
+	// key compatible with the signer's cryptosuite.
+	switch p := provider.(type) {
+	case signer.JWSSignerProvider:
+		vmURL, err := e.resolveSigningVM(verificationmethod.KeyRSA, opts...)
 		if err != nil {
-			return fmt.Errorf("resolve verification method: %w", err)
+			return err
 		}
-	} else {
-		verificationMethodKey = verificationmethod.NormalizeVerificationMethodURL(issuer, verificationMethodKey)
+		return (*jsonmap.JSONMap)(&e.credentialData).AddJWSProof(p, vmURL, "assertionMethod")
+	case *signer.P256Provider, *signer.P256FuncProvider:
+		// P-256 providers structurally satisfy ECDSASignerProvider (they have
+		// Sign) but secp256k1 ecdsa-rdfc-2019 is not P-256. P-256 is for
+		// ecdsa-sd-2023; route it through ECDSASDCredential instead.
+		return fmt.Errorf("P-256 signer is for ecdsa-sd-2023; use ECDSASDCredential.AddProofByProvider, not JSONCredential")
+	case signer.ECDSASignerProvider:
+		vmURL, err := e.resolveSigningVM(verificationmethod.KeySecp256k1, opts...)
+		if err != nil {
+			return err
+		}
+		return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(p, vmURL, "assertionMethod")
+	default:
+		return fmt.Errorf("unsupported signer provider type: %T", provider)
 	}
-
-	return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(signerProvider, verificationMethodKey, "assertionMethod")
 }
 
+//go:deprecated
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.credentialData).Canonicalize()
 }
 
+//go:deprecated
 func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -171,6 +181,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		g.Go(func() error {
 			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
 				options.resolver,
+				options.proofVerificationMethod,
 			)
 			if err != nil {
 				return fmt.Errorf("verify proof: %w", err)
@@ -198,6 +209,28 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	return nil
 }
 
-func (e *JSONCredential) AddSelectiveDisclosures(selectivePaths []string) (Credential, error) {
-	return nil, fmt.Errorf("JSON credential does not support selective disclosures")
+// resolveSigningVM picks the verification method URL: per-call option >
+// constructor pin > resolve the latest active VM whose key matches kind (so the
+// resolved VM is compatible with the signer's cryptosuite).
+func (e *JSONCredential) resolveSigningVM(kind verificationmethod.KeyKind, opts ...CredentialOpt) (string, error) {
+	issuer, ok := e.credentialData["issuer"].(string)
+	if !ok || issuer == "" {
+		return "", fmt.Errorf("issuer is missing or invalid")
+	}
+
+	options := getOptions(opts...)
+
+	verificationMethodKey := e.verificationMethodKey
+	if options.verificationMethodKey != "" {
+		verificationMethodKey = options.verificationMethodKey
+	}
+
+	if verificationMethodKey == "" {
+		vmURL, err := verificationmethod.ResolveVerificationMethodURLForKey(context.Background(), issuer, "assertionMethod", kind, options.resolver)
+		if err != nil {
+			return "", fmt.Errorf("resolve verification method: %w", err)
+		}
+		return vmURL, nil
+	}
+	return verificationmethod.NormalizeVerificationMethodURL(issuer, verificationMethodKey), nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
@@ -129,7 +130,7 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 		return fmt.Errorf("jsonmap: %w", err)
 	}
 	proof.ProofValue = hex.EncodeToString(signature)
-	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
+	m.appendProof(*proof)
 
 	return nil
 }
@@ -142,19 +143,24 @@ func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
 	if proof == nil {
 		return fmt.Errorf("proof is nil")
 	}
-	(*m)["proof"] = util.SerializeProofs([]dto.Proof{*proof})
+	m.appendProof(*proof)
 
 	return nil
 }
 
-// VerifyProof verifies an ECDSA-signed JSONMap. It also runs the
-// strict-purpose check: rejects proofs whose VM has a hard revocation reason,
-// was revoked before proof.created, or is missing from the relationship array
-// for proof.proofPurpose.
+// VerifyProof verifies the JSONMap's proof(s). It also runs the strict-purpose
+// check: rejects proofs whose VM has a hard revocation reason, was revoked
+// before proof.created, or is missing from the relationship array for
+// proof.proofPurpose.
+//
+// When targetVM is empty, every proof in the set must verify (W3C proof set,
+// AND semantics). When targetVM is a verification method URL, only the proof
+// bound to that VM is verified (the others are ignored); an error is returned
+// if no proof uses targetVM.
 //
 // resolver is required; callers must construct it (e.g. via
 // verificationmethod.NewHTTPResolver(baseURL)) before invoking VerifyProof.
-func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider) (bool, error) {
+func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targetVM string) (bool, error) {
 	if m == nil {
 		return false, fmt.Errorf("JSONMap is nil")
 	}
@@ -162,12 +168,46 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider) (boo
 		return false, fmt.Errorf("document resolver is required")
 	}
 
-	proof, err := ParseRawToProof(m.getFirstProof())
+	proofs, err := m.allProofs()
 	if err != nil {
 		return false, fmt.Errorf("failed to parse proof: %w", err)
 	}
+	if len(proofs) == 0 {
+		return false, fmt.Errorf("credential has no proof")
+	}
 
-	signerDID, err := signerDIDFromBody(*m)
+	// Verify a single, caller-selected proof.
+	if targetVM != "" {
+		for i := range proofs {
+			if proofs[i].VerificationMethod == targetVM {
+				ok, err := m.verifyOneProof(resolver, &proofs[i])
+				if err != nil {
+					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
+				}
+				return ok, nil
+			}
+		}
+		return false, fmt.Errorf("no proof found for verification method %q", targetVM)
+	}
+
+	// W3C proof set: every proof must verify, each against its own
+	// verification method.
+	for i := range proofs {
+		ok, err := m.verifyOneProof(resolver, &proofs[i])
+		if err != nil {
+			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+		}
+		if !ok {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// verifyOneProof verifies a single proof against the DID document resolved from
+// that proof's own verification method.
+func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof) (bool, error) {
+	signerDID, err := m.didForProof(proof)
 	if err != nil {
 		return false, err
 	}
@@ -178,17 +218,44 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider) (boo
 
 	switch {
 	case proof.Type == JwtProof2020:
-		return m.verifyJWTProof(doc, &proof)
+		return m.verifyJWTProof(doc, proof)
 
 	case proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY:
 		return m.verifyEcdsaProofLegacy()
 
 	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019:
-		return m.verifyDataIntegrityProof(doc, &proof)
+		return m.verifyDataIntegrityProof(doc, proof)
+
+	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSASD2023:
+		return m.verifyECDSASDProof(doc, proof)
+
+	case proof.Type == JsonWebSignature2020:
+		return m.verifyJWSProof(doc, proof)
 
 	default:
 		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
 	}
+}
+
+// didForProof returns the DID to resolve for a proof: the DID embedded in the
+// proof's verificationMethod when present, otherwise the body's issuer/holder.
+func (m *JSONMap) didForProof(proof *dto.Proof) (string, error) {
+	if did := didFromVMURL(proof.VerificationMethod); did != "" {
+		return did, nil
+	}
+	return signerDIDFromBody(*m)
+}
+
+// didFromVMURL extracts the DID prefix from a verification method URL
+// ("did:x:y#key-1" → "did:x:y"); returns "" when vm is not a DID URL.
+func didFromVMURL(vm string) string {
+	if !strings.HasPrefix(vm, "did:") {
+		return ""
+	}
+	if i := strings.IndexByte(vm, '#'); i > 0 {
+		return vm[:i]
+	}
+	return vm
 }
 
 // verifyECDSA verifies an ECDSA-signed JSONMap.
@@ -302,6 +369,52 @@ func (m *JSONMap) getFirstProof() interface{} {
 	return nil
 }
 
+// allProofs parses every proof on the JSONMap (single object or array).
+func (m *JSONMap) allProofs() ([]dto.Proof, error) {
+	list := m.rawProofList()
+	out := make([]dto.Proof, 0, len(list))
+	for _, raw := range list {
+		p, err := ParseRawToProof(raw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// rawProofList normalizes the proof field into a slice of raw proof entries,
+// accepting a single object, []interface{}, or []map[string]interface{}.
+func (m *JSONMap) rawProofList() []interface{} {
+	raw, ok := (*m)[proofField]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []interface{}:
+		return v
+	case []map[string]interface{}:
+		out := make([]interface{}, len(v))
+		for i := range v {
+			out[i] = v[i]
+		}
+		return out
+	default:
+		return []interface{}{raw}
+	}
+}
+
+// appendProof appends a proof, preserving existing proofs (W3C proof set). A
+// lone proof is stored as an object; multiple proofs as an array.
+func (m *JSONMap) appendProof(p dto.Proof) {
+	list := append(m.rawProofList(), util.SerializeProofs([]dto.Proof{p}))
+	if len(list) == 1 {
+		(*m)[proofField] = list[0]
+	} else {
+		(*m)[proofField] = list
+	}
+}
+
 // ParseRawToProof converts a JSON object to a Proof struct.
 func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 	var result dto.Proof
@@ -330,6 +443,9 @@ func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 	}
 	if pv, ok := proofMap["cryptosuite"].(string); ok {
 		result.Cryptosuite = pv
+	}
+	if jws, ok := proofMap["jws"].(string); ok {
+		result.JWS = jws
 	}
 
 	return result, nil

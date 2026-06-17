@@ -5,10 +5,90 @@ import (
 	"strings"
 )
 
+// KeyKind identifies the kind of signing key a verification method must hold,
+// so VM selection can match the signer's cryptosuite.
+type KeyKind int
+
+const (
+	KeySecp256k1 KeyKind = iota // ecdsa-rdfc-2019
+	KeyRSA                      // JsonWebSignature2020
+	KeyP256                     // ecdsa-sd-2023
+)
+
+func (k KeyKind) String() string {
+	switch k {
+	case KeySecp256k1:
+		return "secp256k1"
+	case KeyRSA:
+		return "RSA"
+	case KeyP256:
+		return "P-256"
+	default:
+		return "unknown"
+	}
+}
+
+func vmIsRSA(vm *VerificationMethodEntry) bool {
+	return vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "RSA"
+}
+
+func vmIsP256(vm *VerificationMethodEntry) bool {
+	return vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "P-256"
+}
+
+// vmMatchesKind reports whether a verification method holds a key of the given
+// kind. RSA and P-256 are matched explicitly on their JWK; secp256k1 is the
+// legacy default — any VM that is not explicitly RSA or P-256 (e.g. publicKeyHex
+// or an EcdsaSecp256k1VerificationKey2019) counts as secp256k1-compatible, so
+// existing DIDs keep resolving.
+func vmMatchesKind(vm *VerificationMethodEntry, kind KeyKind) bool {
+	switch kind {
+	case KeyRSA:
+		return vmIsRSA(vm)
+	case KeyP256:
+		return vmIsP256(vm)
+	case KeySecp256k1:
+		return !vmIsRSA(vm) && !vmIsP256(vm)
+	default:
+		return false
+	}
+}
+
 // SelectLatestActiveVMForPurpose picks the active verification method that
 // holds the given purpose ("authentication" or "assertionMethod") and has
 // the highest sequential `#key-N` index in the relationship array.
 func SelectLatestActiveVMForPurpose(doc *DIDDocument, purpose string) (*VerificationMethodEntry, error) {
+	vm, err := selectLatestActiveVM(doc, purpose, nil)
+	if err != nil {
+		return nil, err
+	}
+	if vm == nil {
+		return nil, fmt.Errorf("no active verification method for purpose '%s' on DID '%s'", purpose, doc.ID)
+	}
+	return vm, nil
+}
+
+// SelectLatestActiveVMForKey is like SelectLatestActiveVMForPurpose but only
+// considers verification methods holding a key of the given kind — so an RSA
+// signer never binds its proof to a secp256k1 VM (or vice versa) on a DID with
+// keys of several kinds in the same relationship array.
+func SelectLatestActiveVMForKey(doc *DIDDocument, purpose string, kind KeyKind) (*VerificationMethodEntry, error) {
+	vm, err := selectLatestActiveVM(doc, purpose, func(vm *VerificationMethodEntry) bool {
+		return vmMatchesKind(vm, kind)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if vm == nil {
+		return nil, fmt.Errorf("no active %s verification method for purpose '%s' on DID '%s'", kind, purpose, doc.ID)
+	}
+	return vm, nil
+}
+
+// selectLatestActiveVM returns the active VM with the highest sequential
+// `#key-N` index that satisfies match (match == nil accepts any). Returns
+// (nil, nil) when none match.
+func selectLatestActiveVM(doc *DIDDocument, purpose string, match func(*VerificationMethodEntry) bool) (*VerificationMethodEntry, error) {
 	if doc == nil {
 		return nil, fmt.Errorf("did document is nil")
 	}
@@ -37,6 +117,9 @@ func SelectLatestActiveVMForPurpose(doc *DIDDocument, purpose string) (*Verifica
 		if !idInPurposeArray(vm.ID, doc.ID, purposeArr) {
 			continue
 		}
+		if match != nil && !match(vm) {
+			continue
+		}
 		n, ok := parseSequentialFragment(vm.ID, doc.ID)
 		if !ok {
 			n = 0
@@ -47,9 +130,6 @@ func SelectLatestActiveVMForPurpose(doc *DIDDocument, purpose string) (*Verifica
 		}
 	}
 
-	if bestVM == nil {
-		return nil, fmt.Errorf("no active verification method for purpose '%s' on DID '%s'", purpose, doc.ID)
-	}
 	return bestVM, nil
 }
 

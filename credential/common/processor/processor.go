@@ -47,12 +47,24 @@ var w3cCredentialV2Context []byte
 //go:embed w3c.credential.examples.v2.json
 var w3cCredentialExamplesV2Context []byte
 
-// Well-known W3C context URLs mapped to their embedded JSON bytes.
+//go:embed w3c.credential.v1.json
+var w3cCredentialV1Context []byte
+
+//go:embed w3c.security.data-integrity.v2.json
+var w3cSecurityDataIntegrityV2Context []byte
+
+// Well-known W3C context URLs mapped to their embedded JSON bytes. These are
+// frozen, immutable published contexts, so serving them from embedded copies is
+// byte-for-byte equivalent to fetching them — it only removes the network
+// dependency (and avoids w3.org rate-limiting / 403s).
 var wellKnownContexts = map[string][]byte{
+	"https://www.w3.org/2018/credentials/v1":               w3cCredentialV1Context,
+	"https://www.w3.org/2018/credentials/v1.jsonld":        w3cCredentialV1Context,
 	"https://www.w3.org/ns/credentials/v2":                 w3cCredentialV2Context,
 	"https://www.w3.org/ns/credentials/v2.jsonld":          w3cCredentialV2Context,
 	"https://www.w3.org/ns/credentials/examples/v2":        w3cCredentialExamplesV2Context,
 	"https://www.w3.org/ns/credentials/examples/v2.jsonld": w3cCredentialExamplesV2Context,
+	"https://w3id.org/security/data-integrity/v2":          w3cSecurityDataIntegrityV2Context,
 }
 
 // localContextDocumentLoader wraps a default loader and checks for local context files first
@@ -94,15 +106,31 @@ var defaultDocumentLoader ld.DocumentLoader
 
 func init() {
 	innerLoader := ld.NewDefaultDocumentLoader(nil) // HTTP client
-	localLoader := &localContextDocumentLoader{fallback: innerLoader}
-	defaultDocumentLoader = ld.NewCachingDocumentLoader(localLoader)
+	// Cache only network fetches. Bundled local contexts are re-parsed fresh on
+	// every call (loadLocalContext json-unmarshals a new object each time) so
+	// json-gold can never mutate a shared cached context — that sharing caused
+	// intermittent "@protected ... not bool" panics once concurrency increased.
+	cachedNetwork := ld.NewCachingDocumentLoader(innerLoader)
+	defaultDocumentLoader = &localContextDocumentLoader{fallback: cachedNetwork}
+}
+
+// recoverJSONLD converts a panic from the json-gold library (e.g. its unchecked
+// `@protected.(bool)` assertion on a malformed @context) into an error, so
+// adversarial input cannot crash the process. A well-formed document never
+// panics here, so this is a pure safety net: it does not change the result for
+// any valid document.
+func recoverJSONLD(err *error, op string) {
+	if r := recover(); r != nil {
+		*err = fmt.Errorf("%s: malformed JSON-LD input: %v", op, r)
+	}
 }
 
 // CanonicalizeDocument canonicalizes a document using JSON-LD processing.
-func CanonicalizeDocument(doc map[string]interface{}) ([]byte, error) {
+func CanonicalizeDocument(doc map[string]interface{}) (out []byte, err error) {
 	if doc == nil {
 		return nil, fmt.Errorf("failed to canonicalize document: document is nil")
 	}
+	defer recoverJSONLD(&err, "canonicalize document")
 	processor := ld.NewJsonLdProcessor()
 	jsonldOptions := ld.NewJsonLdOptions("")
 	jsonldOptions.Format = "application/n-quads"
@@ -130,6 +158,44 @@ func ComputeDigest(data []byte) ([]byte, error) {
 	}
 	hash := sha256.Sum256(data)
 	return hash[:], nil
+}
+
+// standardizeForCanonicalization deep-copies a JSON document while preserving
+// native JSON types (numbers stay numeric, booleans stay boolean). It lets
+// json-gold assign the correct XSD datatypes per the JSON-LD 1.1 number rules
+// (no fractional part -> xsd:integer, otherwise xsd:double) so canonical
+// N-Quads match other conformant processors (e.g. digitalbazaar/rdf-canonize).
+//
+// The W3C-conformant ecdsa-sd-2023 path uses this. The legacy
+// CanonicalizeDocument keeps standardizeToJSONLD (which coerces numbers to
+// xsd:string) unchanged, so already-issued ecdsa-rdfc-2019 / secp256k1
+// credentials verify exactly as before.
+func standardizeForCanonicalization(input map[string]interface{}) (map[string]interface{}, error) {
+	if input == nil {
+		return nil, fmt.Errorf("failed to standardize to JSON-LD: input is nil")
+	}
+	out, _ := preserveNativeTypes(input).(map[string]interface{})
+	return out, nil
+}
+
+func preserveNativeTypes(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(v))
+		for k, val := range v {
+			out[k] = preserveNativeTypes(val)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, val := range v {
+			out[i] = preserveNativeTypes(val)
+		}
+		return out
+	default:
+		// numbers (float64/json.Number), bool, string, nil pass through as-is
+		return v
+	}
 }
 
 // standardizeToJSONLD converts a map to a JSON-LD-compatible format.

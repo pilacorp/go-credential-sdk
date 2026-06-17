@@ -20,7 +20,9 @@ type JWTPresentation struct {
 	signature    string           // JWT signature (if signed)
 }
 
-func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
+var _ Presentation = (*JWTPresentation)(nil)
+
+func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JWTPresentation, error) {
 	// Convert PresentationContents to PresentationData
 	m, err := serializePresentationContents(&vpc)
 	if err != nil {
@@ -58,7 +60,7 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 	options := getOptions(opts...)
 	kid := options.verificationMethodKey
 	if kid == "" {
-		kid, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), vpc.Holder, "authentication", options.resolver)
+		kid, err = verificationmethod.ResolveVerificationMethodURLForKey(context.Background(), vpc.Holder, "authentication", verificationmethod.KeySecp256k1, options.resolver)
 		if err != nil {
 			return nil, fmt.Errorf("resolve verification method: %w", err)
 		}
@@ -98,7 +100,7 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pres
 	return e, e.executeOptions(opts...)
 }
 
-func ParseJWTPresentation(rawJWT string, opts ...PresentationOpt) (Presentation, error) {
+func ParseJWTPresentation(rawJWT string, opts ...PresentationOpt) (*JWTPresentation, error) {
 	if !isJWTPresentation(rawJWT) {
 		return nil, fmt.Errorf("invalid JWT format")
 	}
@@ -152,6 +154,7 @@ func ParseJWTPresentation(rawJWT string, opts ...PresentationOpt) (Presentation,
 	return e, e.executeOptions(opts...)
 }
 
+//go:deprecated
 func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -160,9 +163,14 @@ func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	return j.AddProofByProvider(defaultSigner, opts...)
 }
 
-func (j *JWTPresentation) AddProofByProvider(signerProvider signer.SignerProvider, opts ...PresentationOpt) error {
-	if signerProvider == nil {
+func (j *JWTPresentation) AddProofByProvider(provider any, opts ...PresentationOpt) error {
+	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
+	}
+
+	signerProvider, ok := provider.(signer.SignerProvider)
+	if !ok {
+		return fmt.Errorf("JWT presentation supports only secp256k1 signer providers, got %T", provider)
 	}
 
 	jwtSigner := jwt.NewJWTSigner(signerProvider)
@@ -184,10 +192,12 @@ func (j *JWTPresentation) AddProofByProvider(signerProvider signer.SignerProvide
 	return nil
 }
 
+//go:deprecated
 func (j *JWTPresentation) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
+//go:deprecated
 func (j *JWTPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")

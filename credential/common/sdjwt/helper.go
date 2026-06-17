@@ -106,6 +106,12 @@ func BuildSDJWTPresentation(issuerSignedJWT string, selectedDisclosures []string
 	return sb.String()
 }
 
+// DecodeDisclosures decodes disclosure strings into DecodedDisclosure so a
+// Holder can inspect each field name and value before selecting which to present.
+func DecodeDisclosures(disclosures []string) ([]DecodedDisclosure, error) {
+	return parseDisclosures(disclosures)
+}
+
 // parseDisclosures parses a slice of disclosure strings into DecodedDisclosure.
 // Used by Holders to understand what each disclosure contains.
 func parseDisclosures(disclosures []string) ([]DecodedDisclosure, error) {

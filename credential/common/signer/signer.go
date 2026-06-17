@@ -17,6 +17,18 @@ type SignerProvider interface {
 	Sign(hashPayload []byte) ([]byte, error)
 }
 
+// ECDSASignerProvider is an alias for SignerProvider, named to mirror
+// JWSSignerProvider and the future BBSSignerProvider. Prefer this name.
+type ECDSASignerProvider = SignerProvider
+
+// JWSSignerProvider signs the JWS signing input (encodedHeader + "." + payload)
+// and reports its JOSE algorithm (e.g. "RS256"). It maps to the
+// JsonWebSignature2020 cryptosuite.
+type JWSSignerProvider interface {
+	SignJWS(signingInput []byte) ([]byte, error)
+	Algorithm() string
+}
+
 func ValidateSignatureLength(signature []byte) error {
 	switch len(signature) {
 	case 64, 65:
