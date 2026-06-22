@@ -79,12 +79,39 @@ type presentationOptions struct {
 	didBaseURL            string
 	verificationMethodKey string
 	resolver              verificationmethod.ResolverProvider
+
+	// vcVerifyOpts overrides the default options used when validating each VC
+	// inside the presentation (via WithVCValidation). When nil, defaults to
+	// schema + proof + expiration + revocation. Set via WithVCVerifyOpts.
+	vcVerifyOpts []vc.CredentialOpt
 }
 
 // WithVCValidation enables validation for credentials in the presentation.
 func WithVCValidation() PresentationOpt {
 	return func(p *presentationOptions) {
 		p.isValidateVC = true
+	}
+}
+
+// WithVCVerifyOpts overrides the options used when validating each VC inside the
+// presentation. Useful when the caller wants to skip a specific check (e.g.
+// revocation when the VC has no credentialStatus). When omitted, defaults to
+// schema + proof + expiration + revocation.
+//
+// Example — skip revocation:
+//
+//	pres.Verify(
+//	    vp.WithVerifyProof(),
+//	    vp.WithVCValidation(),
+//	    vp.WithVCVerifyOpts(
+//	        vc.WithSchemaValidation(),
+//	        vc.WithVerifyProof(),
+//	        vc.WithCheckExpiration(),
+//	    ),
+//	)
+func WithVCVerifyOpts(opts ...vc.CredentialOpt) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.vcVerifyOpts = opts
 	}
 }
 

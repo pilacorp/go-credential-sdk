@@ -233,7 +233,7 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
 	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(j.payloadData)); err != nil {
+		if err := verifyCredentials(PresentationData(j.payloadData), options.vcVerifyOpts...); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}

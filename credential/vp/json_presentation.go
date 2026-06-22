@@ -139,7 +139,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
 	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(e.presentationData)); err != nil {
+		if err := verifyCredentials(PresentationData(e.presentationData), options.vcVerifyOpts...); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}
