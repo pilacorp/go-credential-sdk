@@ -74,7 +74,7 @@ func verifyCredentials(jsonPresentation PresentationData) error {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
 		// Verify the credential using the new interface
-		err := v.Verify(vc.WithSchemaValidation())
+		err := v.Verify(vc.WithSchemaValidation(), vc.WithVerifyProof(), vc.WithCheckExpiration(), vc.WithCheckRevocation())
 		if err != nil {
 			return fmt.Errorf("failed to verify credential at index %d: %w", i, err)
 		}
