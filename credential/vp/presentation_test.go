@@ -68,31 +68,31 @@ func TestParsePresentation(t *testing.T) {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	if m["ID"] != vpc.ID {
-		t.Errorf("Expected ID '%s', got %v", vpc.ID, m["ID"])
+	if m["id"] != vpc.ID {
+		t.Errorf("Expected ID '%s', got %v", vpc.ID, m["id"])
 	}
 
-	if m["Holder"] != vpc.Holder {
-		t.Errorf("Expected holder '%s', got %v", vpc.Holder, m["Holder"])
+	if m["holder"] != vpc.Holder {
+		t.Errorf("Expected holder '%s', got %v", vpc.Holder, m["holder"])
 	}
 
-	credentials, ok := m["VerifiableCredentials"].([]interface{})
+	credentials, ok := m["verifiableCredential"].([]interface{})
 	if !ok {
-		t.Fatalf("Expected VerifiableCredentials to be a slice, got %T", m["VerifiableCredentials"])
+		t.Fatalf("Expected verifiableCredential to be a slice, got %T", m["verifiableCredential"])
 	}
 
 	if len(credentials) != len(vpc.VerifiableCredentials) {
 		t.Fatalf("Expected %d verifiableCredentials, got %d", len(vpc.VerifiableCredentials), len(credentials))
 	}
 
-	if len(m["Types"].([]interface{})) == len(vpc.Types) {
-		for i, k := range m["Types"].([]interface{}) {
+	if len(m["type"].([]interface{})) == len(vpc.Types) {
+		for i, k := range m["type"].([]interface{}) {
 			if k != vpc.Types[i] {
 				t.Fatalf("Expected type '%s', got %v", vpc.Types[i], k)
 			}
 		}
 	} else {
-		t.Errorf("Expected %d types, got %d", len(vpc.Types), len(m["Types"].([]interface{})))
+		t.Errorf("Expected %d types, got %d", len(vpc.Types), len(m["type"].([]interface{})))
 	}
 
 }

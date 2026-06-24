@@ -54,7 +54,7 @@ func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (*JSONCredential
 	return e, e.executeOptions(opts...)
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -63,13 +63,15 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	return e.AddProofByProvider(defaultSigner, opts...)
 }
 
-// AddProofByProvider signs with a provider; the cryptosuite is chosen by the
-// provider type: SignerProvider (secp256k1) → ecdsa-rdfc-2019, JWSSignerProvider
-// (RSA) → JsonWebSignature2020. The verification method is resolved to a key of
-// the matching kind, so a DID holding both key types binds the proof to the
-// right VM automatically. With several VMs of the same kind, pin one with
-// WithVerificationMethodKey.
-func (e *JSONCredential) AddProofByProvider(provider any, opts ...CredentialOpt) error {
+// AddProofByProvider signs with a provider. The cryptosuite is chosen from the
+// bound verification method's key type: secp256k1 → ecdsa-rdfc-2019, RSA →
+// JsonWebSignature2020 (alg via AlgorithmProvider, default RS256). The VM is the
+// pinned one (WithVerificationMethodKey) or the latest active assertionMethod VM.
+//
+// A resolver is REQUIRED at signing time — the SDK reads the VM's key type from
+// the resolved DID document to pick the cryptosuite, even when the VM is pinned.
+// Provide one with WithResolver (a default HTTP resolver is used otherwise).
+func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts ...CredentialOpt) error {
 	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
@@ -78,37 +80,34 @@ func (e *JSONCredential) AddProofByProvider(provider any, opts ...CredentialOpt)
 		return err
 	}
 
-	// Resolve the VM AFTER knowing the provider type, so the chosen VM holds a
-	// key compatible with the signer's cryptosuite.
-	switch p := provider.(type) {
-	case signer.JWSSignerProvider:
-		vmURL, err := e.resolveSigningVM(verificationmethod.KeyRSA, opts...)
-		if err != nil {
-			return err
-		}
-		return (*jsonmap.JSONMap)(&e.credentialData).AddJWSProof(p, vmURL, "assertionMethod")
-	case *signer.P256Provider, *signer.P256FuncProvider:
-		// P-256 providers structurally satisfy ECDSASignerProvider (they have
-		// Sign) but secp256k1 ecdsa-rdfc-2019 is not P-256. P-256 is for
-		// ecdsa-sd-2023; route it through ECDSASDCredential instead.
-		return fmt.Errorf("P-256 signer is for ecdsa-sd-2023; use ECDSASDCredential.AddProofByProvider, not JSONCredential")
-	case signer.ECDSASignerProvider:
-		vmURL, err := e.resolveSigningVM(verificationmethod.KeySecp256k1, opts...)
-		if err != nil {
-			return err
-		}
-		return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(p, vmURL, "assertionMethod")
+	vm, vmURL, err := e.resolveSigningVMEntry(opts...)
+	if err != nil {
+		return err
+	}
+
+	kind, ok := verificationmethod.VMKeyKind(vm)
+	if !ok {
+		return fmt.Errorf("verification method %q has an unrecognized key type", vmURL)
+	}
+
+	switch kind {
+	case verificationmethod.KeySecp256k1:
+		return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(provider, vmURL, "assertionMethod")
+	case verificationmethod.KeyRSA:
+		return (*jsonmap.JSONMap)(&e.credentialData).AddJWSProof(provider, vmURL, "assertionMethod")
+	case verificationmethod.KeyP256:
+		return fmt.Errorf("verification method %q holds a P-256 key; use ECDSASDCredential for ecdsa-sd-2023", vmURL)
 	default:
-		return fmt.Errorf("unsupported signer provider type: %T", provider)
+		return fmt.Errorf("unsupported key kind %v for JSON credential", kind)
 	}
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.credentialData).Canonicalize()
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -128,7 +127,7 @@ func (e *JSONCredential) Verify(opts ...CredentialOpt) error {
 	return e.executeOptions(opts...)
 }
 
-func (e *JSONCredential) Serialize() (interface{}, error) {
+func (e *JSONCredential) Serialize() (any, error) {
 	// Check if credential has proof
 	if e.credentialData["proof"] == nil {
 		return nil, fmt.Errorf("credential must have proof before serialization")
@@ -145,7 +144,7 @@ func (e *JSONCredential) GetType() string {
 	return "JSON"
 }
 
-func (e *JSONCredential) ExtractField(path string) interface{} {
+func (e *JSONCredential) ExtractField(path string) any {
 	if e.credentialData == nil {
 		return nil
 	}
@@ -207,6 +206,25 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	return nil
+}
+
+// resolveSigningVMEntry resolves the verification method to sign with (pinned
+// kid > latest active assertionMethod VM) and returns the entry so the caller
+// can read its key type and choose the cryptosuite.
+func (e *JSONCredential) resolveSigningVMEntry(opts ...CredentialOpt) (*verificationmethod.VerificationMethodEntry, string, error) {
+	issuer, ok := e.credentialData["issuer"].(string)
+	if !ok || issuer == "" {
+		return nil, "", fmt.Errorf("issuer is missing or invalid")
+	}
+
+	options := getOptions(opts...)
+
+	pinned := e.verificationMethodKey
+	if options.verificationMethodKey != "" {
+		pinned = options.verificationMethodKey
+	}
+
+	return verificationmethod.ResolveSigningVM(context.Background(), issuer, "assertionMethod", pinned, options.resolver)
 }
 
 // resolveSigningVM picks the verification method URL: per-call option >

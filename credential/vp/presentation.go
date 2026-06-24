@@ -31,13 +31,14 @@ type Presentation interface {
 
 	// Serialize returns the presentation in its native format:
 	// the JWT string (JWT) or the JSON object with proof (JSON).
-	Serialize() (interface{}, error)
+	Serialize() (any, error)
 
 	GetContents() ([]byte, error)
 
 	GetType() string
 
-	executeOptions(opts ...PresentationOpt) error
+	// ExtractField returns a field by dot-notation path, or nil if absent.
+	ExtractField(path string) any
 }
 
 // PresentationData represents presentation data in JSON format (suitable for both JWT and JSON presentations).
@@ -45,13 +46,13 @@ type PresentationData jsonmap.JSONMap
 
 // PresentationContents represents the structured contents of a Presentation.
 type PresentationContents struct {
-	Context               []interface{}
-	ID                    string
-	Types                 []string
-	Holder                string
-	ValidFrom             time.Time // Issuance date
-	ValidUntil            time.Time // Expiration date
-	VerifiableCredentials []vc.Credential
+	Context               []interface{}   `json:"context,omitempty"`
+	ID                    string          `json:"id,omitempty"`
+	Types                 []string        `json:"type,omitempty"`
+	Holder                string          `json:"holder,omitempty"`
+	ValidFrom             time.Time       `json:"validFrom,omitempty"`  // Issuance date
+	ValidUntil            time.Time       `json:"validUntil,omitempty"` // Expiration date
+	VerifiableCredentials []vc.Credential `json:"verifiableCredential,omitempty"`
 }
 
 // PresentationOpt configures presentation processing options.
@@ -94,6 +95,10 @@ func WithBaseURL(baseURL string) PresentationOpt {
 // WithVerificationMethodKey sets the verification method fragment used when
 // signing — e.g. "key-2". When omitted, the SDK resolves the holder DID and
 // picks the latest active VM in the authentication relationship array.
+//
+// The cryptosuite is chosen from the bound VM's key type. If the DID holds
+// keys of DIFFERENT types, you MUST pin the VM here, otherwise the latest
+// active VM is used and may not match your signer.
 func WithVerificationMethodKey(key string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.verificationMethodKey = key

@@ -4,87 +4,74 @@ import (
 	stdcrypto "crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/sha512"
 	"fmt"
 )
 
 var (
-	_ JWSSignerProvider = (*RSAProvider)(nil)
-	_ JWSSignerProvider = (*RSAFuncProvider)(nil)
+	_ SignerProvider    = (*RSAProvider)(nil)
+	_ AlgorithmProvider = (*RSAProvider)(nil)
 )
 
-// RSAProvider signs the JWS signing input with an in-memory RSA private key
-// (suitable for local/dev; the key lives in this process).
+// RSAProvider signs a digest with an RSA key for JsonWebSignature2020, using
+// either an in-memory key or a caller-supplied callback (HSM/KMS). The JOSE
+// algorithm (RS256/384/512, PS256/384/512) is declared via Algorithm so the SDK
+// hashes the signing input with the matching SHA and writes the JWS header.
 type RSAProvider struct {
-	priv *rsa.PrivateKey
-	alg  string
-}
-
-// NewRSAProvider creates an RSA JWS signer from an in-memory key. alg defaults
-// to "RS256" when omitted.
-func NewRSAProvider(priv *rsa.PrivateKey, alg ...string) (*RSAProvider, error) {
-	if priv == nil {
-		return nil, fmt.Errorf("rsa private key is nil")
-	}
-	a := "RS256"
-	if len(alg) > 0 && alg[0] != "" {
-		a = alg[0]
-	}
-	return &RSAProvider{priv: priv, alg: a}, nil
-}
-
-func (p *RSAProvider) Algorithm() string { return p.alg }
-
-func (p *RSAProvider) SignJWS(signingInput []byte) ([]byte, error) {
-	return rsaSign(p.alg, p.priv, signingInput)
-}
-
-// RSAFuncProvider delegates signing to a caller-supplied callback (e.g. HSM,
-// KMS, remote RPC), so the private key never enters the SDK.
-type RSAFuncProvider struct {
 	sign func([]byte) ([]byte, error)
 	alg  string
 }
 
-// NewRSAFunc creates a JWS signer that calls signFn to sign. signFn receives the
-// JWS signing input and must return the raw RSA signature for alg.
-func NewRSAFunc(signFn func([]byte) ([]byte, error), alg string) (*RSAFuncProvider, error) {
+// NewRSAProvider creates an RSA JWS signer from an in-memory key. alg defaults
+// to "RS256"; supported: RS256/384/512, PS256/384/512.
+func NewRSAProvider(priv *rsa.PrivateKey, alg ...string) (*RSAProvider, error) {
+	if priv == nil {
+		return nil, fmt.Errorf("rsa private key is nil")
+	}
+	a := jwsAlg(alg...)
+	return &RSAProvider{
+		sign: func(digest []byte) ([]byte, error) { return rsaSignDigest(a, priv, digest) },
+		alg:  a,
+	}, nil
+}
+
+// NewRSAFunc creates an RSA JWS signer that delegates to signFn. signFn receives
+// the digest (already hashed by the SDK with alg's SHA) and returns the raw
+// signature for alg.
+func NewRSAFunc(signFn func([]byte) ([]byte, error), alg string) (*RSAProvider, error) {
 	if signFn == nil {
 		return nil, fmt.Errorf("sign function is nil")
 	}
-	if alg == "" {
-		alg = "RS256"
+	return &RSAProvider{sign: signFn, alg: jwsAlg(alg)}, nil
+}
+
+func (p *RSAProvider) Algorithm() string { return p.alg }
+
+func (p *RSAProvider) Sign(digest []byte) ([]byte, error) {
+	return p.sign(digest)
+}
+
+func jwsAlg(alg ...string) string {
+	if len(alg) > 0 && alg[0] != "" {
+		return alg[0]
 	}
-	return &RSAFuncProvider{sign: signFn, alg: alg}, nil
+	return "RS256"
 }
 
-func (p *RSAFuncProvider) Algorithm() string { return p.alg }
-
-func (p *RSAFuncProvider) SignJWS(signingInput []byte) ([]byte, error) {
-	return p.sign(signingInput)
-}
-
-func rsaSign(alg string, priv *rsa.PrivateKey, signingInput []byte) ([]byte, error) {
+// rsaSignDigest signs a pre-hashed digest for the given JOSE alg.
+func rsaSignDigest(alg string, priv *rsa.PrivateKey, digest []byte) ([]byte, error) {
 	switch alg {
 	case "RS256":
-		h := sha256.Sum256(signingInput)
-		return rsa.SignPKCS1v15(rand.Reader, priv, stdcrypto.SHA256, h[:])
+		return rsa.SignPKCS1v15(rand.Reader, priv, stdcrypto.SHA256, digest)
 	case "PS256":
-		h := sha256.Sum256(signingInput)
-		return rsa.SignPSS(rand.Reader, priv, stdcrypto.SHA256, h[:], nil)
+		return rsa.SignPSS(rand.Reader, priv, stdcrypto.SHA256, digest, nil)
 	case "RS384":
-		h := sha512.Sum384(signingInput)
-		return rsa.SignPKCS1v15(rand.Reader, priv, stdcrypto.SHA384, h[:])
+		return rsa.SignPKCS1v15(rand.Reader, priv, stdcrypto.SHA384, digest)
 	case "PS384":
-		h := sha512.Sum384(signingInput)
-		return rsa.SignPSS(rand.Reader, priv, stdcrypto.SHA384, h[:], nil)
+		return rsa.SignPSS(rand.Reader, priv, stdcrypto.SHA384, digest, nil)
 	case "RS512":
-		h := sha512.Sum512(signingInput)
-		return rsa.SignPKCS1v15(rand.Reader, priv, stdcrypto.SHA512, h[:])
+		return rsa.SignPKCS1v15(rand.Reader, priv, stdcrypto.SHA512, digest)
 	case "PS512":
-		h := sha512.Sum512(signingInput)
-		return rsa.SignPSS(rand.Reader, priv, stdcrypto.SHA512, h[:], nil)
+		return rsa.SignPSS(rand.Reader, priv, stdcrypto.SHA512, digest, nil)
 	default:
 		return nil, fmt.Errorf("unsupported JWS alg: %s", alg)
 	}

@@ -3,11 +3,32 @@ package vp
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
+
+// extractFieldFromMap returns the value at a dot-notation path in a
+// presentation's data map (e.g. "holder" or "verifiableCredential.0.id"), or
+// nil if any segment is missing or a non-map is traversed.
+func extractFieldFromMap(m PresentationData, path string) interface{} {
+	current := interface{}(map[string]interface{}(m))
+	for _, part := range strings.Split(path, ".") {
+		mm, ok := current.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		val, exists := mm[part]
+		if !exists {
+			return nil
+		}
+		current = val
+	}
+	return current
+}
 
 // parseStringField extracts a string field from PresentationData.
 func parseStringField(obj PresentationData, fieldName string) (string, error) {
@@ -56,8 +77,9 @@ func checkExpiration(p PresentationData) error {
 	return nil
 }
 
-// verifyCredentials verifies the signatures of a slice of Verifiable Credentials.
-func verifyCredentials(jsonPresentation PresentationData) error {
+// verifyCredentials verifies the signatures of a slice of Verifiable
+// Credentials, resolving DIDs through the caller-provided resolver.
+func verifyCredentials(jsonPresentation PresentationData, resolver verificationmethod.ResolverProvider) error {
 	contents, err := parsePresentationContents(jsonPresentation)
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
@@ -73,8 +95,7 @@ func verifyCredentials(jsonPresentation PresentationData) error {
 		if v == nil {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
-		// Verify the credential using the new interface
-		err := v.Verify(vc.WithSchemaValidation())
+		err := v.Verify(vc.WithResolver(resolver), vc.WithSchemaValidation())
 		if err != nil {
 			return fmt.Errorf("failed to verify credential at index %d: %w", i, err)
 		}
@@ -120,16 +141,11 @@ func serializePresentationContents(vpc *PresentationContents) (PresentationData,
 		// Serialize credentials for presentation storage
 		credentialList := make([]interface{}, len(vpc.VerifiableCredentials))
 		for i, vc := range vpc.VerifiableCredentials {
-			// Use Serialize() method which returns the appropriate format for each credential type
 			serialized, err := vc.Serialize()
 			if err != nil {
 				return nil, fmt.Errorf("failed to serialize credential %d: %w", i, err)
 			}
 			credentialList[i] = serialized
-			err = vc.Verify()
-			if err != nil {
-				return nil, fmt.Errorf("failed to verify credential %d: %w", i, err)
-			}
 		}
 		vpJSON["verifiableCredential"] = credentialList
 	}

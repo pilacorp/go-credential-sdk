@@ -32,12 +32,13 @@ type Credential interface {
 	Verify(opts ...CredentialOpt) error
 	// Serialize returns the JWT string (JWT) or the JSON object with proof (JSON).
 	Serialize() (any, error)
-	GetContents() ([]byte, error)
-	GetType() string
-	// ExtractField returns a field by dot-notation path, or nil if absent.
-	ExtractField(path string) interface{}
 
-	executeOptions(opts ...CredentialOpt) error
+	GetContents() ([]byte, error)
+
+	GetType() string
+
+	// ExtractField returns a field by dot-notation path, or nil if absent.
+	ExtractField(path string) any
 }
 
 // CredentialData represents credential data in JSON format (suitable for both JWT and JSON credentials).
@@ -89,19 +90,19 @@ type CredentialOpt func(*credentialOptions)
 
 // credentialOptions holds configuration for credential processing.
 type credentialOptions struct {
-	isValidateSchema      bool
-	isVerifyProof         bool
-	isCheckExpiration     bool
-	isCheckRevocation     bool
-	didBaseURL            string
-	verificationMethodKey string
-	sdDisclosures         []string
-	sdSelectivePaths      []string
-	sdAlg                 string
-	sdShuffle             bool
-	sdDecoys              []sdjwt.DecoyConfig
-	loadedSchemaLoader    SchemaLoaderFunc
-	resolver              verificationmethod.ResolverProvider
+	isValidateSchema        bool
+	isVerifyProof           bool
+	isCheckExpiration       bool
+	isCheckRevocation       bool
+	didBaseURL              string
+	verificationMethodKey   string
+	sdDisclosures           []string
+	sdSelectivePaths        []string
+	sdAlg                   string
+	sdShuffle               bool
+	sdDecoys                []sdjwt.DecoyConfig
+	loadedSchemaLoader      SchemaLoaderFunc
+	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
 }
 
@@ -126,6 +127,11 @@ func WithBaseURL(baseURL string) CredentialOpt {
 // signing — e.g. "key-2". When omitted, the SDK resolves the issuer DID and
 // picks the latest active VM listed in the assertionMethod relationship
 // array (or authentication for VPs).
+//
+// The cryptosuite is chosen from the bound VM's key type. If the DID holds
+// keys of DIFFERENT types (e.g. secp256k1 and RSA), you MUST pin the VM here:
+// otherwise the latest active VM is used and its key type may not match your
+// signer, producing a proof that fails verification.
 func WithVerificationMethodKey(key string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.verificationMethodKey = key

@@ -2,9 +2,8 @@ package jsonmap
 
 import (
 	"encoding/hex"
+	"fmt"
 	"testing"
-
-	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
 
 type testSigner struct {
@@ -13,7 +12,7 @@ type testSigner struct {
 
 func (s *testSigner) Sign(hashPayload []byte) ([]byte, error) {
 	if len(hashPayload) != 32 {
-		return nil, signer.ValidateSignatureLength(hashPayload)
+		return nil, fmt.Errorf("hash payload must be 32 bytes, got %d", len(hashPayload))
 	}
 	return s.sig, nil
 }
@@ -70,15 +69,18 @@ func TestJSONMap_AddECDSAProof_Accepts65ByteSignature(t *testing.T) {
 	}
 }
 
-func TestJSONMap_AddECDSAProof_RejectsInvalidSignatureLength(t *testing.T) {
+// A non-secp256k1-shaped signature (e.g. an RSA signer mis-routed to a
+// secp256k1 VM) must be rejected at signing time, not stored silently.
+func TestJSONMap_AddECDSAProof_RejectsNonECDSASignature(t *testing.T) {
 	m := JSONMap{
 		"issuer": "did:example:issuer",
 		"type":   "VerifiableCredential",
 	}
 
-	err := (&m).AddECDSAProof(&testSigner{sig: make([]byte, 66)}, "did:example:issuer#key-1", "assertionMethod")
+	err := (&m).AddECDSAProof(&testSigner{sig: make([]byte, 256)}, "did:example:issuer#key-1", "assertionMethod")
 	if err == nil {
-		t.Fatalf("expected error for invalid signature length")
+		t.Fatalf("expected error for non-64/65-byte signature")
 	}
 }
+
 

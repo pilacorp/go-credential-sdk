@@ -36,17 +36,6 @@ func ParseECDSASDCredential(rawJSON []byte, opts ...CredentialOpt) (*ECDSASDCred
 	return &ECDSASDCredential{base: jc}, nil
 }
 
-// AddProof signs with a local P-256 private key (hex scalar). mandatoryPaths
-// (dot-notation) are always disclosed; all other claims become selectively
-// disclosable.
-func (e *ECDSASDCredential) AddProof(priv string, mandatoryPaths []string, opts ...CredentialOpt) error {
-	p, err := signer.NewP256ProviderFromHex(priv)
-	if err != nil {
-		return fmt.Errorf("failed to create p256 signer: %w", err)
-	}
-	return e.AddProofByProvider(p, mandatoryPaths, opts...)
-}
-
 // AddProofByProvider signs the credential into an ecdsa-sd-2023 base proof.
 // mandatoryPaths (dot-notation) are always disclosed; all other claims become
 // selectively disclosable.
@@ -83,14 +72,10 @@ func (e *ECDSASDCredential) Derive(selectivePaths []string) (*JSONCredential, er
 
 func (e *ECDSASDCredential) Verify(opts ...CredentialOpt) error { return e.base.Verify(opts...) }
 
-func (e *ECDSASDCredential) Serialize() (interface{}, error) { return e.base.Serialize() }
+func (e *ECDSASDCredential) Serialize() (any, error) { return e.base.Serialize() }
 
 func (e *ECDSASDCredential) GetContents() ([]byte, error) { return e.base.GetContents() }
 
 func (e *ECDSASDCredential) GetType() string { return e.base.GetType() }
 
-func (e *ECDSASDCredential) ExtractField(path string) interface{} { return e.base.ExtractField(path) }
-
-func (e *ECDSASDCredential) executeOptions(opts ...CredentialOpt) error {
-	return e.base.executeOptions(opts...)
-}
+func (e *ECDSASDCredential) ExtractField(path string) any { return e.base.ExtractField(path) }

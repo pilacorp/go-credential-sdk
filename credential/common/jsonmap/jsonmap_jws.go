@@ -1,6 +1,8 @@
 package jsonmap
 
 import (
+	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,14 +19,15 @@ const (
 	JsonWebKey2020       string = "JsonWebKey2020"
 )
 
-// AddJWSProof attaches a JsonWebSignature2020 (detached JWS, b64:false) proof
-// signed by an RSA JWS signer.
-func (m *JSONMap) AddJWSProof(jwsSigner signer.JWSSignerProvider, verificationMethod, proofPurpose string) error {
+// AddJWSProof attaches a JsonWebSignature2020 (detached JWS, b64:false) proof.
+// The JOSE algorithm comes from the signer (AlgorithmProvider, default RS256);
+// the signer signs the digest of the JWS signing input hashed with alg's SHA.
+func (m *JSONMap) AddJWSProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string) error {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
-	if jwsSigner == nil {
-		return fmt.Errorf("jsonmap: jws signer provider cannot be nil")
+	if signerProvider == nil {
+		return fmt.Errorf("jsonmap: signer provider cannot be nil")
 	}
 	if verificationMethod == "" {
 		return fmt.Errorf("jsonmap: verification method is required")
@@ -32,6 +35,8 @@ func (m *JSONMap) AddJWSProof(jwsSigner signer.JWSSignerProvider, verificationMe
 	if proofPurpose == "" {
 		return fmt.Errorf("jsonmap: proof purpose is required")
 	}
+
+	alg := signer.AlgorithmOf(signerProvider)
 
 	proof := dto.Proof{
 		Type:               JsonWebSignature2020,
@@ -45,20 +50,46 @@ func (m *JSONMap) AddJWSProof(jwsSigner signer.JWSSignerProvider, verificationMe
 		return fmt.Errorf("jsonmap: canonicalize: %w", err)
 	}
 
-	encHeader, err := encodeDetachedJWSHeader(jwsSigner.Algorithm())
+	encHeader, err := encodeDetachedJWSHeader(alg)
 	if err != nil {
 		return err
 	}
 	signingInput := jwsSigningInput(encHeader, payload)
+	digest, err := hashForJWSAlg(alg, signingInput)
+	if err != nil {
+		return fmt.Errorf("jsonmap: %w", err)
+	}
 
-	sig, err := jwsSigner.SignJWS(signingInput)
+	sig, err := signerProvider.Sign(digest)
 	if err != nil {
 		return fmt.Errorf("jsonmap: jws sign: %w", err)
+	}
+	// Guard against a mis-routed ECDSA signer bound to an RSA verification
+	// method: an ECDSA signature is 64/65 bytes, never a valid RSA signature.
+	if l := len(sig); l == 64 || l == 65 {
+		return fmt.Errorf("jsonmap: JsonWebSignature2020 expects an RSA signature but the signer returned %d bytes (an ECDSA signature); the signer does not match the RSA verification method — pin the right VM with WithVerificationMethodKey", l)
 	}
 	proof.JWS = encHeader + ".." + base64.RawURLEncoding.EncodeToString(sig)
 
 	m.appendProof(proof)
 	return nil
+}
+
+// hashForJWSAlg hashes input with the SHA matching the JOSE algorithm.
+func hashForJWSAlg(alg string, input []byte) ([]byte, error) {
+	switch alg {
+	case "RS256", "PS256":
+		h := sha256.Sum256(input)
+		return h[:], nil
+	case "RS384", "PS384":
+		h := sha512.Sum384(input)
+		return h[:], nil
+	case "RS512", "PS512":
+		h := sha512.Sum512(input)
+		return h[:], nil
+	default:
+		return nil, fmt.Errorf("unsupported JWS alg: %s", alg)
+	}
 }
 
 func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {

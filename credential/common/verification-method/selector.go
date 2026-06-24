@@ -5,14 +5,14 @@ import (
 	"strings"
 )
 
-// KeyKind identifies the kind of signing key a verification method must hold,
-// so VM selection can match the signer's cryptosuite.
+// KeyKind identifies the key type a verification method holds, so VM selection
+// can match the signer's key.
 type KeyKind int
 
 const (
-	KeySecp256k1 KeyKind = iota // ecdsa-rdfc-2019
-	KeyRSA                      // JsonWebSignature2020
-	KeyP256                     // ecdsa-sd-2023
+	KeySecp256k1 KeyKind = iota
+	KeyRSA
+	KeyP256
 )
 
 func (k KeyKind) String() string {
@@ -36,11 +36,32 @@ func vmIsP256(vm *VerificationMethodEntry) bool {
 	return vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "P-256"
 }
 
+// vmIsSecp256k1 matches an EC secp256k1 JWK or a publicKeyHex (the
+// EcdsaSecp256k1VerificationKey2019 representation).
+func vmIsSecp256k1(vm *VerificationMethodEntry) bool {
+	if vm.PublicKeyJwk != nil {
+		return vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "secp256k1"
+	}
+	return vm.PublicKeyHex != ""
+}
+
+// VMKeyKind reports the key kind a verification method holds, and whether it was
+// recognized. Signing uses it to pick the cryptosuite from the bound key.
+func VMKeyKind(vm *VerificationMethodEntry) (KeyKind, bool) {
+	switch {
+	case vmIsSecp256k1(vm):
+		return KeySecp256k1, true
+	case vmIsP256(vm):
+		return KeyP256, true
+	case vmIsRSA(vm):
+		return KeyRSA, true
+	default:
+		return KeySecp256k1, false
+	}
+}
+
 // vmMatchesKind reports whether a verification method holds a key of the given
-// kind. RSA and P-256 are matched explicitly on their JWK; secp256k1 is the
-// legacy default — any VM that is not explicitly RSA or P-256 (e.g. publicKeyHex
-// or an EcdsaSecp256k1VerificationKey2019) counts as secp256k1-compatible, so
-// existing DIDs keep resolving.
+// kind, matched explicitly on its key material.
 func vmMatchesKind(vm *VerificationMethodEntry, kind KeyKind) bool {
 	switch kind {
 	case KeyRSA:
@@ -48,7 +69,7 @@ func vmMatchesKind(vm *VerificationMethodEntry, kind KeyKind) bool {
 	case KeyP256:
 		return vmIsP256(vm)
 	case KeySecp256k1:
-		return !vmIsRSA(vm) && !vmIsP256(vm)
+		return vmIsSecp256k1(vm)
 	default:
 		return false
 	}

@@ -50,7 +50,7 @@ func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (*JSONPresen
 	return e, e.executeOptions(opts...)
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -59,7 +59,14 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 	return e.AddProofByProvider(defaultSigner, opts...)
 }
 
-func (e *JSONPresentation) AddProofByProvider(provider any, opts ...PresentationOpt) error {
+// AddProofByProvider signs the presentation. The cryptosuite is chosen from the
+// bound verification method's key type: secp256k1 → ecdsa-rdfc-2019, RSA →
+// JsonWebSignature2020 (alg via AlgorithmProvider, default RS256). The VM is the
+// pinned one (WithVerificationMethodKey) or the latest active authentication VM.
+//
+// A resolver is REQUIRED at signing time — the SDK reads the VM's key type from
+// the resolved DID document to pick the cryptosuite, even when the VM is pinned.
+func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, opts ...PresentationOpt) error {
 	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
@@ -68,66 +75,55 @@ func (e *JSONPresentation) AddProofByProvider(provider any, opts ...Presentation
 		return err
 	}
 
-	// Resolve the VM AFTER knowing the provider type, so the chosen VM holds a
-	// key compatible with the signer's cryptosuite.
-	switch p := provider.(type) {
-	case signer.JWSSignerProvider:
-		vmURL, err := e.resolveSigningVM(verificationmethod.KeyRSA, opts...)
-		if err != nil {
-			return err
-		}
-		return (*jsonmap.JSONMap)(&e.presentationData).AddJWSProof(p, vmURL, "authentication")
-	case *signer.P256Provider, *signer.P256FuncProvider:
-		// P-256 providers structurally satisfy ECDSASignerProvider but
-		// secp256k1 ecdsa-rdfc-2019 is not P-256; reject to avoid a broken proof.
-		return fmt.Errorf("P-256 signer is not supported for presentations (use secp256k1 or RSA)")
-	case signer.ECDSASignerProvider:
-		vmURL, err := e.resolveSigningVM(verificationmethod.KeySecp256k1, opts...)
-		if err != nil {
-			return err
-		}
-		return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(p, vmURL, "authentication")
+	vm, vmURL, err := e.resolveSigningVMEntry(opts...)
+	if err != nil {
+		return err
+	}
+
+	kind, ok := verificationmethod.VMKeyKind(vm)
+	if !ok {
+		return fmt.Errorf("verification method %q has an unrecognized key type", vmURL)
+	}
+
+	switch kind {
+	case verificationmethod.KeySecp256k1:
+		return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(provider, vmURL, "authentication")
+	case verificationmethod.KeyRSA:
+		return (*jsonmap.JSONMap)(&e.presentationData).AddJWSProof(provider, vmURL, "authentication")
 	default:
-		return fmt.Errorf("unsupported signer provider type: %T", provider)
+		return fmt.Errorf("verification method %q key kind %v is not supported for presentations (secp256k1 or RSA)", vmURL, kind)
 	}
 }
 
-// resolveSigningVM picks the verification method URL for signing: per-call opt >
-// constructor pin > resolve the latest active authentication VM whose key
-// matches kind.
-func (e *JSONPresentation) resolveSigningVM(kind verificationmethod.KeyKind, opts ...PresentationOpt) (string, error) {
+// resolveSigningVMEntry resolves the verification method to sign with (pinned
+// kid > latest active authentication VM) and returns the entry so the caller
+// can read its key type and choose the cryptosuite.
+func (e *JSONPresentation) resolveSigningVMEntry(opts ...PresentationOpt) (*verificationmethod.VerificationMethodEntry, string, error) {
 	holder, ok := e.presentationData["holder"].(string)
 	if !ok || holder == "" {
-		return "", fmt.Errorf("holder is missing or invalid")
+		return nil, "", fmt.Errorf("holder is missing or invalid")
 	}
 
 	options := getOptions(opts...)
 
-	verificationMethodKey := e.verificationMethodKey
+	pinned := e.verificationMethodKey
 	if options.verificationMethodKey != "" {
-		verificationMethodKey = options.verificationMethodKey
+		pinned = options.verificationMethodKey
 	}
 
-	if verificationMethodKey == "" {
-		vmURL, err := verificationmethod.ResolveVerificationMethodURLForKey(context.Background(), holder, "authentication", kind, options.resolver)
-		if err != nil {
-			return "", fmt.Errorf("resolve verification method: %w", err)
-		}
-		return vmURL, nil
-	}
-	return verificationmethod.NormalizeVerificationMethodURL(holder, verificationMethodKey), nil
+	return verificationmethod.ResolveSigningVM(context.Background(), holder, "authentication", pinned, options.resolver)
 }
 
 // resolveVerificationMethodURL returns the full verification method URL for
 // a presentation proof. See vc.resolveVerificationMethodURL for resolution
 // rules — the only difference is the default purpose (authentication).
 //
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -165,11 +161,15 @@ func (e *JSONPresentation) GetType() string {
 	return "JSON"
 }
 
+func (e *JSONPresentation) ExtractField(path string) interface{} {
+	return extractFieldFromMap(e.presentationData, path)
+}
+
 func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
 	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(e.presentationData)); err != nil {
+		if err := verifyCredentials(PresentationData(e.presentationData), options.resolver); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}

@@ -154,7 +154,7 @@ func ParseJWTPresentation(rawJWT string, opts ...PresentationOpt) (*JWTPresentat
 	return e, e.executeOptions(opts...)
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -163,17 +163,12 @@ func (j *JWTPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	return j.AddProofByProvider(defaultSigner, opts...)
 }
 
-func (j *JWTPresentation) AddProofByProvider(provider any, opts ...PresentationOpt) error {
+func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opts ...PresentationOpt) error {
 	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
-	signerProvider, ok := provider.(signer.SignerProvider)
-	if !ok {
-		return fmt.Errorf("JWT presentation supports only secp256k1 signer providers, got %T", provider)
-	}
-
-	jwtSigner := jwt.NewJWTSigner(signerProvider)
+	jwtSigner := jwt.NewJWTSigner(provider)
 
 	// Sign the existing signing input
 	signature, err := jwtSigner.SignString(j.signingInput)
@@ -192,12 +187,12 @@ func (j *JWTPresentation) AddProofByProvider(provider any, opts ...PresentationO
 	return nil
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTPresentation) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -239,11 +234,15 @@ func (j *JWTPresentation) GetType() string {
 	return "JWT"
 }
 
+func (j *JWTPresentation) ExtractField(path string) interface{} {
+	return extractFieldFromMap(j.payloadData, path)
+}
+
 func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
 	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(j.payloadData)); err != nil {
+		if err := verifyCredentials(PresentationData(j.payloadData), options.resolver); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}

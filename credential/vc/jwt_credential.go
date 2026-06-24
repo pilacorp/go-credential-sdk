@@ -184,7 +184,7 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 	return e, e.executeOptions(opts...)
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -213,12 +213,12 @@ func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider,
 	return nil
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTCredential) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
-//go:deprecated
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -241,7 +241,7 @@ func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 	return j.executeOptions(opts...)
 }
 
-func (j *JWTCredential) Serialize() (interface{}, error) {
+func (j *JWTCredential) Serialize() (any, error) {
 	base := j.signingInput
 	if j.signature != "" || len(j.disclosures) > 0 {
 		base = base + "." + j.signature
@@ -273,7 +273,7 @@ func (j *JWTCredential) GetType() string {
 	return "JWT"
 }
 
-func (j *JWTCredential) ExtractField(path string) interface{} {
+func (j *JWTCredential) ExtractField(path string) any {
 	if j.payloadData == nil {
 		return nil
 	}

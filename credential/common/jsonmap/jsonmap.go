@@ -126,8 +126,10 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 	if err != nil {
 		return fmt.Errorf("jsonmap: failed to sign digest: %w", err)
 	}
-	if err := signer.ValidateSignatureLength(signature); err != nil {
-		return fmt.Errorf("jsonmap: %w", err)
+	// Guard against a mis-routed non-secp256k1 signer bound to an ecdsa-rdfc-2019
+	// verification method: a secp256k1 ECDSA signature is 64 or 65 bytes.
+	if l := len(signature); l != 64 && l != 65 {
+		return fmt.Errorf("jsonmap: ecdsa-rdfc-2019 expects a 64/65-byte secp256k1 signature but the signer returned %d bytes; the signer does not match the verification method — pin the right VM with WithVerificationMethodKey", l)
 	}
 	proof.ProofValue = hex.EncodeToString(signature)
 	m.appendProof(*proof)

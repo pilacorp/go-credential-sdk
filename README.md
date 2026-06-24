@@ -126,48 +126,73 @@ if email != nil {
 
 ### Adding Proofs/Signatures
 
-The SDK signs via a pluggable signer provider (Vault/HSM/local). The cryptosuite
-is chosen by the **provider type** — the provider self-describes its suite, so
-partners do not need to pass cryptosuite strings:
-
-| Provider type | Cryptosuite | Key |
-|---|---|---|
-| `signer.SignerProvider` (e.g. `NewDefaultProvider`) | `ecdsa-rdfc-2019` | secp256k1 |
-| `signer.JWSSignerProvider` (e.g. `NewRSAProvider`) | `JsonWebSignature2020` | RSA |
+The SDK signs via a single pluggable signer provider — anything that can sign a
+digest (local key, Vault, HSM, KMS):
 
 ```go
-signer, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+type SignerProvider interface {
+    Sign(digest []byte) ([]byte, error)
+}
+```
+
+The cryptosuite is chosen from the **key type of the bound verification method**
+(read from the resolved DID document at signing time), together with the
+credential type:
+
+| Credential / method | VM key type | Cryptosuite |
+|---|---|---|
+| `JSONCredential` / `JSONPresentation` | secp256k1 | `ecdsa-rdfc-2019` |
+| `JSONCredential` / `JSONPresentation` | RSA | `JsonWebSignature2020` |
+| `ECDSASDCredential` | P-256 | `ecdsa-sd-2023` (selective disclosure) |
+| `JWTCredential` / `JWTPresentation` | secp256k1 | `ES256K` (JWT) |
+
+Built-in providers: `NewDefaultProvider(hex)` (secp256k1); `NewP256Provider` /
+`NewP256ProviderFromHex` / `NewP256Func` (P-256); `NewRSAProvider(key, alg...)` /
+`NewRSAFunc(fn, alg)` (RSA).
+
+> **A resolver is required when signing a JSON VC/VP**, even when the VM is
+> pinned — the SDK reads the VM key type from the DID document to pick the
+> cryptosuite. Pass `vc.WithResolver(...)` (a default HTTP resolver is used
+> otherwise).
+
+```go
+prov, err := signer.NewDefaultProvider(privateKeyHex) // secp256k1, local/dev
 if err != nil { /* handle */ }
 
-// Add cryptographic proof (works for both JSON and JWT)
-err = credential.AddProof(signer)
+cred, _ := vc.ParseJSONCredential(rawJSON)
+err = cred.AddProofByProvider(prov, vc.WithResolver(resolver)) // → ecdsa-rdfc-2019
 ```
 
 #### JsonWebSignature2020 (RSA) for JSON-LD credentials
 
-Sign a JSON-LD credential with an RSA key. Use `NewRSAProvider` for a local
-in-memory key, or `NewRSAFunc` to delegate signing to an HSM/KMS/remote callback
-so the private key never enters the SDK. The issuer DID must expose a
-`JsonWebKey2020` verification method with an RSA `publicKeyJwk`.
+Sign a JSON-LD credential with an RSA key. The issuer DID must expose a
+`JsonWebKey2020` verification method with an RSA `publicKeyJwk`. The JOSE
+algorithm (RS256/384/512, PS256/384/512; default RS256) is declared by the
+provider and written to the JWS header.
 
 ```go
 // Local key (dev). alg defaults to "RS256".
-rsaProvider, err := signer.NewRSAProvider(rsaPrivateKey)
+rsaProvider, err := signer.NewRSAProvider(rsaPrivateKey)          // RS256
+rsaProvider, err = signer.NewRSAProvider(rsaPrivateKey, "PS256")  // or PS256, RS384, ...
 
-// Or HSM/KMS callback — the key stays remote.
-rsaProvider, err := signer.NewRSAFunc(func(signingInput []byte) ([]byte, error) {
-    return hsm.SignRSA(signingInput) // returns the raw RSA signature
-}, "RS256")
+// Or HSM/KMS callback — the key stays remote. signFn receives the digest
+// (already hashed with alg's SHA) and returns the raw RSA signature.
+rsaProvider, err = signer.NewRSAFunc(func(digest []byte) ([]byte, error) {
+    return hsm.SignRSA(digest)
+}, "PS256")
 
-cred, err := vc.ParseJSONCredential(rawJSON)
-err = cred.AddProofByProvider(rsaProvider) // → JsonWebSignature2020
+cred, _ := vc.ParseJSONCredential(rawJSON)
+err = cred.AddProofByProvider(rsaProvider, vc.WithResolver(resolver)) // → JsonWebSignature2020
 ```
 
-When the issuer DID holds keys of different kinds (e.g. a secp256k1 and an RSA
-key), the verification method is selected to match the signer automatically — an
-RSA provider binds to the RSA VM, a secp256k1 provider to the secp256k1 VM. Only
-when there are several VMs of the **same** kind do you need to pin one with
-`vc.WithVerificationMethodKey("...")`.
+> **Pin the VM on mixed-key DIDs.** The suite comes from the bound VM's key type,
+> NOT from the provider. If the issuer DID holds keys of different types (e.g. a
+> secp256k1 and an RSA key), pin the right one with
+> `vc.WithVerificationMethodKey("key-2")`; otherwise the latest active VM is used
+> and a mismatched signer is rejected at signing time.
+
+For a complete, runnable issuer → holder → derive → present → verify flow, see
+[`examples/ecdsasd`](examples/ecdsasd).
 
 #### Multiple proofs (proof set)
 
@@ -179,8 +204,8 @@ verification methods:
 
 ```go
 cred, _ := vc.ParseJSONCredential(rawJSON)
-cred.AddProofByProvider(ecdsaSigner, vc.WithVerificationMethodKey("key-1")) // ecdsa-rdfc-2019
-cred.AddProofByProvider(rsaProvider, vc.WithVerificationMethodKey("key-2")) // JsonWebSignature2020
+cred.AddProofByProvider(ecdsaSigner, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)) // ecdsa-rdfc-2019
+cred.AddProofByProvider(rsaProvider, vc.WithVerificationMethodKey("key-2"), vc.WithResolver(resolver)) // JsonWebSignature2020
 ```
 
 On `Verify`, **every** proof must pass (AND), each checked against the DID

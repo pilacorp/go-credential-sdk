@@ -183,7 +183,7 @@ func mp2CredJSON(issuerDID string) []byte {
 }
 
 type signSpec struct {
-	provider any
+	provider signer.SignerProvider
 	key      string
 }
 
@@ -274,41 +274,6 @@ func TestMultiProof_MixedKeyTypes(t *testing.T) {
 	}
 }
 
-// One JsonWebSignature2020 proof per RSA JOSE algorithm, all in one proof set.
-func TestMultiProof_VariousJWSAlgs(t *testing.T) {
-	did := "did:example:mp2-algs"
-	algs := []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}
-
-	keys := make([]*rsa.PrivateKey, len(algs))
-	vms := make([]verificationmethod.VerificationMethodEntry, len(algs))
-	for i := range algs {
-		keys[i] = genRSA(t)
-		vms[i] = verificationmethod.NewRSAVM(did, fmt.Sprintf("key-%d", i+1), &keys[i].PublicKey)
-	}
-	resolver := verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(did, vms...))
-
-	cred, err := vc.ParseJSONCredential(mp2CredJSON(did))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for i, alg := range algs {
-		prov, err := signer.NewRSAProvider(keys[i], alg)
-		if err != nil {
-			t.Fatalf("rsa provider %s: %v", alg, err)
-		}
-		if err := cred.AddProofByProvider(prov,
-			vc.WithVerificationMethodKey(fmt.Sprintf("key-%d", i+1)),
-			vc.WithResolver(resolver)); err != nil {
-			t.Fatalf("add %s proof: %v", alg, err)
-		}
-	}
-
-	assertProofCount(t, cred, len(algs))
-	if err := reparse(t, cred).Verify(vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("verify multi-alg proof set: %v", err)
-	}
-}
-
 // Proof set whose proofs reference verification methods in two different DID
 // documents — each proof is resolved against its own DID.
 func TestMultiProof_CrossDIDVerificationMethods(t *testing.T) {
@@ -380,81 +345,42 @@ func TestMultiProof_PartialFailureRejected(t *testing.T) {
 	}
 }
 
-func firstProofVM(t *testing.T, cred *vc.JSONCredential) string {
-	t.Helper()
-	serialized, err := cred.Serialize()
+// One JsonWebSignature2020 proof per RSA JOSE algorithm, all in one proof set.
+func TestMultiProof_VariousJWSAlgs(t *testing.T) {
+	did := "did:example:mp2-algs"
+	algs := []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}
+
+	keys := make([]*rsa.PrivateKey, len(algs))
+	vms := make([]verificationmethod.VerificationMethodEntry, len(algs))
+	for i := range algs {
+		keys[i] = genRSA(t)
+		vms[i] = verificationmethod.NewRSAVM(did, fmt.Sprintf("key-%d", i+1), &keys[i].PublicKey)
+	}
+	resolver := verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(did, vms...))
+
+	cred, err := vc.ParseJSONCredential(mp2CredJSON(did))
 	if err != nil {
-		t.Fatalf("serialize: %v", err)
+		t.Fatalf("parse: %v", err)
 	}
-	b, _ := json.Marshal(serialized)
-	var doc map[string]interface{}
-	if err := json.Unmarshal(b, &doc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	switch p := doc["proof"].(type) {
-	case map[string]interface{}:
-		vm, _ := p["verificationMethod"].(string)
-		return vm
-	case []interface{}:
-		if len(p) > 0 {
-			if m, ok := p[0].(map[string]interface{}); ok {
-				vm, _ := m["verificationMethod"].(string)
-				return vm
-			}
+	for i, alg := range algs {
+		prov, err := signer.NewRSAProvider(keys[i], alg)
+		if err != nil {
+			t.Fatalf("rsa provider %s: %v", alg, err)
+		}
+		if err := cred.AddProofByProvider(prov,
+			vc.WithVerificationMethodKey(fmt.Sprintf("key-%d", i+1)),
+			vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("add %s proof: %v", alg, err)
 		}
 	}
-	return ""
-}
 
-// Auto-resolve must bind the RSA proof to the RSA VM even though a secp256k1 VM
-// is the "latest active" one — regression for the key-kind selection fix.
-func TestAutoResolveVM_RSASkipsSecpVM(t *testing.T) {
-	did := "did:example:autokind-rsa"
-	rsaKey := genRSA(t)
-	resolver := verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(did,
-		verificationmethod.NewRSAVM(did, "key-1", &rsaKey.PublicKey),
-		verificationmethod.NewSecp256k1VM(did, "key-2", pubHex(t, mpSecpPriv)), // latest, wrong kind for RSA
-	))
-
-	cred, err := vc.ParseJSONCredential(mp2CredJSON(did))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	rsaProv, _ := signer.NewRSAProvider(rsaKey)
-	if err := cred.AddProofByProvider(rsaProv, vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("sign rsa (no pin): %v", err)
-	}
-
-	if got := firstProofVM(t, cred); got != did+"#key-1" {
-		t.Fatalf("RSA proof bound to %q, want %q (the RSA VM)", got, did+"#key-1")
-	}
+	assertProofCount(t, cred, len(algs))
 	if err := reparse(t, cred).Verify(vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("verify: %v", err)
+		t.Fatalf("verify multi-alg proof set: %v", err)
 	}
 }
 
-// Mirror case: a secp256k1 signer must skip an RSA "latest active" VM.
-func TestAutoResolveVM_SecpSkipsRSAVM(t *testing.T) {
-	did := "did:example:autokind-secp"
-	rsaKey := genRSA(t)
-	resolver := verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(did,
-		verificationmethod.NewSecp256k1VM(did, "key-1", pubHex(t, mpSecpPriv)),
-		verificationmethod.NewRSAVM(did, "key-2", &rsaKey.PublicKey), // latest, wrong kind for secp
-	))
-
-	cred, err := vc.ParseJSONCredential(mp2CredJSON(did))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	secp, _ := signer.NewDefaultProvider(mpSecpPriv)
-	if err := cred.AddProofByProvider(secp, vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("sign secp (no pin): %v", err)
-	}
-
-	if got := firstProofVM(t, cred); got != did+"#key-1" {
-		t.Fatalf("secp proof bound to %q, want %q (the secp VM)", got, did+"#key-1")
-	}
-	if err := reparse(t, cred).Verify(vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("verify: %v", err)
-	}
-}
+// NOTE: auto-select no longer filters by the signer's key type (a SignerProvider
+// has no key kind). On a DID holding several keys of different types, pin the VM
+// with WithVerificationMethodKey; otherwise the latest active VM for the purpose
+// is used and its key type decides the cryptosuite.

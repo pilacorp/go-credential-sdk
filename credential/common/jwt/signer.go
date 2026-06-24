@@ -31,9 +31,6 @@ func (s *JWTSigner) SignString(signingString string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("jwt signer: failed to sign digest: %w", err)
 	}
-	if err := signer.ValidateSignatureLength(signature); err != nil {
-		return "", fmt.Errorf("jwt signer: %w", err)
-	}
 	if len(signature) == 65 {
 		signature = signature[:64]
 	}

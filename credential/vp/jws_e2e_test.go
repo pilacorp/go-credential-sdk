@@ -76,21 +76,23 @@ func TestVP_VerifySpecificProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse vp: %v", err)
 	}
-	// Pinned keys → signing needs no resolver.
-	rsaProv, _ := signer.NewRSAProvider(rsaKey)
-	secp, _ := signer.NewDefaultProvider(holderSecpPriv)
-	if err := pres.AddProofByProvider(rsaProv, vp.WithVerificationMethodKey("key-1")); err != nil {
-		t.Fatalf("sign rsa proof: %v", err)
-	}
-	if err := pres.AddProofByProvider(secp, vp.WithVerificationMethodKey("key-2")); err != nil {
-		t.Fatalf("sign secp proof: %v", err)
-	}
 
-	// Resolver advertises a WRONG secp256k1 key for key-2.
+	// Resolver advertises a WRONG secp256k1 key for key-2. The key types are
+	// correct, so signing routes by VM key type; the wrong key value only makes
+	// the key-2 proof fail verification.
 	resolver := vm.NewStaticResolver(vm.NewDIDDocument(jwsHolderDID,
 		vm.NewRSAVM(jwsHolderDID, "key-1", &rsaKey.PublicKey),
 		vm.NewSecp256k1VM(jwsHolderDID, "key-2", secpPubHex(t, wrongSecpPriv)),
 	))
+
+	rsaProv, _ := signer.NewRSAProvider(rsaKey)
+	secp, _ := signer.NewDefaultProvider(holderSecpPriv)
+	if err := pres.AddProofByProvider(rsaProv, vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign rsa proof: %v", err)
+	}
+	if err := pres.AddProofByProvider(secp, vp.WithVerificationMethodKey("key-2"), vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign secp proof: %v", err)
+	}
 
 	// Full verification fails because the key-2 proof does not match.
 	if err := pres.Verify(vp.WithResolver(resolver)); err == nil {
