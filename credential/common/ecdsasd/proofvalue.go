@@ -47,7 +47,13 @@ type specDerivedProof struct {
 }
 
 func serializeBaseProofValue(p *specBaseProof) (string, error) {
-	payload := []interface{}{p.BaseSignature, p.PublicKey, p.HMACKey, p.Signatures, p.MandatoryPointers}
+	// Encode mandatoryPointers as an empty CBOR array (not null) when none were
+	// given, so the proof value always carries the array component per spec.
+	mandatoryPointers := p.MandatoryPointers
+	if mandatoryPointers == nil {
+		mandatoryPointers = []string{}
+	}
+	payload := []interface{}{p.BaseSignature, p.PublicKey, p.HMACKey, p.Signatures, mandatoryPointers}
 	enc, err := cborDet.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("ecdsasd: cbor marshal base proof: %w", err)

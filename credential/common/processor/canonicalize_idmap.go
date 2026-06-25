@@ -125,6 +125,8 @@ func sdOptions() *ld.JsonLdOptions {
 	opts := ld.NewJsonLdOptions("")
 	opts.Algorithm = ld.AlgorithmURDNA2015
 	opts.DocumentLoader = defaultDocumentLoader
+	// Fail on undefined terms instead of silently dropping them (lossless).
+	opts.SafeMode = true
 	return opts
 }
 

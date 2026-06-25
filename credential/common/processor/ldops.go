@@ -54,5 +54,8 @@ func newProcessor() (*ld.JsonLdProcessor, *ld.JsonLdOptions) {
 	opts := ld.NewJsonLdOptions("")
 	opts.Algorithm = ld.AlgorithmURDNA2015
 	opts.DocumentLoader = defaultDocumentLoader
+	// Lossless processing: fail (don't silently drop) on terms that don't
+	// expand to an absolute IRI or keyword (W3C VC-DI DATA_LOSS_DETECTION).
+	opts.SafeMode = true
 	return proc, opts
 }

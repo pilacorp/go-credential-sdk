@@ -137,6 +137,8 @@ func CanonicalizeDocument(doc map[string]interface{}) (out []byte, err error) {
 	jsonldOptions.Algorithm = ld.AlgorithmURDNA2015
 	// Use CachingDocumentLoader to cache remote contexts
 	jsonldOptions.DocumentLoader = defaultDocumentLoader
+	// Fail on undefined terms instead of silently dropping them (lossless).
+	jsonldOptions.SafeMode = true
 
 	standardizedDoc, err := standardizeToJSONLD(doc)
 	if err != nil {

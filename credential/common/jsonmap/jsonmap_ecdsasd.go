@@ -15,6 +15,36 @@ import (
 // selective-disclosure suite (P-256).
 const ECDSASD2023 string = "ecdsa-sd-2023"
 
+// dataIntegrityV2Context defines the Data Integrity proof terms
+// (DataIntegrityProof, cryptosuite, proofPurpose, verificationMethod).
+const dataIntegrityV2Context = "https://w3id.org/security/data-integrity/v2"
+
+// ensureDataIntegrityContext appends the data-integrity context to @context when
+// the document doesn't already define the proof terms (e.g. a VC 1.1 document
+// using only the 2018 credentials context), so the secured document expands
+// losslessly. A context adds no RDF triples, so the canonical statements — and
+// therefore the signature — are unchanged.
+func (m *JSONMap) ensureDataIntegrityContext() {
+	const credentialsV2 = "https://www.w3.org/ns/credentials/v2"
+	covers := func(s string) bool { return s == credentialsV2 || s == dataIntegrityV2Context }
+
+	switch c := (*m)["@context"].(type) {
+	case nil:
+		(*m)["@context"] = []interface{}{dataIntegrityV2Context}
+	case string:
+		if !covers(c) {
+			(*m)["@context"] = []interface{}{c, dataIntegrityV2Context}
+		}
+	case []interface{}:
+		for _, e := range c {
+			if s, ok := e.(string); ok && covers(s) {
+				return
+			}
+		}
+		(*m)["@context"] = append(append([]interface{}{}, c...), dataIntegrityV2Context)
+	}
+}
+
 // AddECDSASDBaseProof adds an ecdsa-sd-2023 base proof to the JSONMap. The body
 // is left unchanged (blank nodes preserved); holders can later derive
 // selective-disclosure proofs. mandatoryPointers lists claims (as JSON Pointers,
@@ -37,6 +67,13 @@ func (m *JSONMap) AddECDSASDBaseProof(
 	if proofPurpose == "" {
 		return fmt.Errorf("jsonmap: proof purpose is required")
 	}
+	if cs, ok := (*m)["credentialSubject"]; !ok || cs == nil {
+		return fmt.Errorf("jsonmap: credential is missing credentialSubject")
+	}
+
+	// Ensure the proof's data-integrity terms are defined in @context (VC 1.1
+	// documents only carry the 2018 credentials context).
+	m.ensureDataIntegrityContext()
 
 	proof := dto.Proof{
 		Type:               DataIntegrityProof,
