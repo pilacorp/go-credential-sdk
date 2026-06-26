@@ -212,8 +212,8 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 // kid > latest active assertionMethod VM) and returns the entry so the caller
 // can read its key type and choose the cryptosuite.
 func (e *JSONCredential) resolveSigningVMEntry(opts ...CredentialOpt) (*verificationmethod.VerificationMethodEntry, string, error) {
-	issuer, ok := e.credentialData["issuer"].(string)
-	if !ok || issuer == "" {
+	issuer, ok := jsonmap.DIDFromField(e.credentialData["issuer"])
+	if !ok {
 		return nil, "", fmt.Errorf("issuer is missing or invalid")
 	}
 
@@ -231,8 +231,8 @@ func (e *JSONCredential) resolveSigningVMEntry(opts ...CredentialOpt) (*verifica
 // constructor pin > resolve the latest active VM whose key matches kind (so the
 // resolved VM is compatible with the signer's cryptosuite).
 func (e *JSONCredential) resolveSigningVM(kind verificationmethod.KeyKind, opts ...CredentialOpt) (string, error) {
-	issuer, ok := e.credentialData["issuer"].(string)
-	if !ok || issuer == "" {
+	issuer, ok := jsonmap.DIDFromField(e.credentialData["issuer"])
+	if !ok {
 		return "", fmt.Errorf("issuer is missing or invalid")
 	}
 

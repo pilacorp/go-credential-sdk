@@ -459,18 +459,20 @@ func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 // an error when neither key is present so the verifier never silently falls
 // back to extracting a DID from the proof field.
 func signerDIDFromBody(m map[string]interface{}) (string, error) {
-	if did, ok := didFromField(m["issuer"]); ok {
+	if did, ok := DIDFromField(m["issuer"]); ok {
 		return did, nil
 	}
-	if did, ok := didFromField(m["holder"]); ok {
+	if did, ok := DIDFromField(m["holder"]); ok {
 		return did, nil
 	}
 	return "", fmt.Errorf("body is missing required `issuer` (VC) or `holder` (VP) field")
 }
 
-// didFromField accepts either a plain string DID or an object form
-// `{"id": "did:..."}` and returns the DID string when present.
-func didFromField(v interface{}) (string, bool) {
+// DIDFromField accepts either a plain string DID or an object form
+// `{"id": "did:..."}` (per W3C VC Data Model) and returns the DID when present.
+// Shared by the signing and verification paths so both accept the same issuer
+// shapes.
+func DIDFromField(v interface{}) (string, bool) {
 	switch t := v.(type) {
 	case string:
 		if t != "" {
