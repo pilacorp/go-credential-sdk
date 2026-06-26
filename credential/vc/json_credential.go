@@ -93,10 +93,10 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 	switch kind {
 	case verificationmethod.KeySecp256k1:
 		return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(provider, vmURL, "assertionMethod")
-	case verificationmethod.KeyRSA:
+	case verificationmethod.KeyRSA, verificationmethod.KeyP256:
+		// P-256 signs a plain JSON VC via JsonWebSignature2020 (ES256); RSA via
+		// RS/PS. (For P-256 selective disclosure use ECDSASDCredential instead.)
 		return (*jsonmap.JSONMap)(&e.credentialData).AddJWSProof(provider, vmURL, "assertionMethod")
-	case verificationmethod.KeyP256:
-		return fmt.Errorf("verification method %q holds a P-256 key; use ECDSASDCredential for ecdsa-sd-2023", vmURL)
 	default:
 		return fmt.Errorf("unsupported key kind %v for JSON credential", kind)
 	}

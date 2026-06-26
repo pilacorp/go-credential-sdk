@@ -19,6 +19,7 @@ import (
 	commoncrypto "github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 // W3C ecdsa-sd-2023 byte-exact conformance gate.
@@ -169,20 +170,20 @@ func TestW3CConformance_Phase1_Multikey(t *testing.T) {
 	exp := w3cLoadExpected(t)
 
 	// (a) p256-pub Multikey decode/encode round-trips.
-	proofPubRaw, _, err := decodeP256PubMultibase(keys.ProofKeyPair.PublicKeyMultibase)
+	proofPubRaw, _, err := verificationmethod.DecodeP256PubMultibase(keys.ProofKeyPair.PublicKeyMultibase)
 	if err != nil {
 		t.Fatalf("decode proof pub: %v", err)
 	}
-	if got := encodeMultibaseKey(proofPubRaw); got != keys.ProofKeyPair.PublicKeyMultibase {
+	if got := verificationmethod.EncodeMultibaseKey(proofPubRaw); got != keys.ProofKeyPair.PublicKeyMultibase {
 		t.Fatalf("proof pub round-trip: %s != %s", got, keys.ProofKeyPair.PublicKeyMultibase)
 	}
 
 	// (b) Secret-key Multikey derives the matching public-key Multikey.
-	basePriv, err := decodeP256PrivMultibase(keys.BaseKeyPair.SecretKeyMultibase)
+	basePriv, err := verificationmethod.DecodeP256PrivMultibase(keys.BaseKeyPair.SecretKeyMultibase)
 	if err != nil {
 		t.Fatalf("decode base priv: %v", err)
 	}
-	if got := encodeP256PubMultibase(&basePriv.PublicKey); got != keys.BaseKeyPair.PublicKeyMultibase {
+	if got := verificationmethod.EncodeP256PubMultibase(&basePriv.PublicKey); got != keys.BaseKeyPair.PublicKeyMultibase {
 		t.Fatalf("derived base pub %s != %s", got, keys.BaseKeyPair.PublicKeyMultibase)
 	}
 
@@ -207,7 +208,7 @@ func TestW3CConformance_Phase1_Multikey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("baseSignature: %v", err)
 	}
-	_, basePub, err := decodeP256PubMultibase(keys.BaseKeyPair.PublicKeyMultibase)
+	_, basePub, err := verificationmethod.DecodeP256PubMultibase(keys.BaseKeyPair.PublicKeyMultibase)
 	if err != nil {
 		t.Fatalf("decode base pub: %v", err)
 	}
@@ -328,7 +329,7 @@ func TestW3CConformance_Phase5_RoundTrip(t *testing.T) {
 	exp := w3cLoadExpected(t)
 	keys := w3cLoadKeys(t)
 
-	issuerPriv, err := decodeP256PrivMultibase(keys.BaseKeyPair.SecretKeyMultibase)
+	issuerPriv, err := verificationmethod.DecodeP256PrivMultibase(keys.BaseKeyPair.SecretKeyMultibase)
 	if err != nil {
 		t.Fatalf("issuer priv: %v", err)
 	}
@@ -357,7 +358,7 @@ func TestW3CConformance_Phase5_RoundTrip(t *testing.T) {
 		t.Fatalf("serialize derived: %v", err)
 	}
 
-	_, issuerPub, err := decodeP256PubMultibase(keys.BaseKeyPair.PublicKeyMultibase)
+	_, issuerPub, err := verificationmethod.DecodeP256PubMultibase(keys.BaseKeyPair.PublicKeyMultibase)
 	if err != nil {
 		t.Fatalf("issuer pub: %v", err)
 	}
@@ -375,8 +376,8 @@ func TestW3CConformance_Phase6_BaseProofValue(t *testing.T) {
 	if hex.EncodeToString(bp.BaseSignature) != exp.BaseSignature {
 		t.Fatalf("decoded baseSignature mismatch")
 	}
-	if encodeMultibaseKey(bp.PublicKey) != exp.ProofPublicKey {
-		t.Fatalf("decoded publicKey = %s, want %s", encodeMultibaseKey(bp.PublicKey), exp.ProofPublicKey)
+	if verificationmethod.EncodeMultibaseKey(bp.PublicKey) != exp.ProofPublicKey {
+		t.Fatalf("decoded publicKey = %s, want %s", verificationmethod.EncodeMultibaseKey(bp.PublicKey), exp.ProofPublicKey)
 	}
 	if len(bp.MandatoryPointers) != 1 || bp.MandatoryPointers[0] != "/issuer" {
 		t.Fatalf("decoded mandatoryPointers = %v", bp.MandatoryPointers)
@@ -443,7 +444,7 @@ func TestW3CConformance_Phase8_VerifyDerived(t *testing.T) {
 		t.Fatalf("serialize: %v", err)
 	}
 
-	_, issuerPub, err := decodeP256PubMultibase(keys.BaseKeyPair.PublicKeyMultibase)
+	_, issuerPub, err := verificationmethod.DecodeP256PubMultibase(keys.BaseKeyPair.PublicKeyMultibase)
 	if err != nil {
 		t.Fatalf("decode issuer pub: %v", err)
 	}
@@ -568,8 +569,8 @@ func createBaseProofDeterministic(document, proofConfig map[string]interface{}, 
 		d := sha256.Sum256([]byte(nq))
 		signatures[i] = signRFC6979(ephemeralPriv, d[:])
 	}
-	ephPub := append(append([]byte{}, p256PubPrefix...),
-		elliptic.MarshalCompressed(elliptic.P256(), ephemeralPriv.X, ephemeralPriv.Y)...)
+	ephPub := verificationmethod.P256PubToMultikeyBytes(
+		elliptic.MarshalCompressed(elliptic.P256(), ephemeralPriv.X, ephemeralPriv.Y))
 
 	toSign := make([]byte, 0, len(proofHash)+len(ephPub)+len(mandatoryHash))
 	toSign = append(toSign, proofHash...)
@@ -597,11 +598,11 @@ func TestW3CConformance_Phase5_ByteExactIssuance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hmacKey: %v", err)
 	}
-	ephemeralPriv, err := decodeP256PrivMultibase(keys.ProofKeyPair.SecretKeyMultibase)
+	ephemeralPriv, err := verificationmethod.DecodeP256PrivMultibase(keys.ProofKeyPair.SecretKeyMultibase)
 	if err != nil {
 		t.Fatalf("ephemeral priv: %v", err)
 	}
-	issuerPriv, err := decodeP256PrivMultibase(keys.BaseKeyPair.SecretKeyMultibase)
+	issuerPriv, err := verificationmethod.DecodeP256PrivMultibase(keys.BaseKeyPair.SecretKeyMultibase)
 	if err != nil {
 		t.Fatalf("issuer priv: %v", err)
 	}

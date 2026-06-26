@@ -1,6 +1,7 @@
 package jsonmap
 
 import (
+	"crypto/ecdsa"
 	"fmt"
 	"time"
 
@@ -140,12 +141,12 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
 	}
-	if vm.PublicKeyJwk == nil {
-		return false, fmt.Errorf("ecdsa-sd-2023 verification method '%s' must publish a P-256 publicKeyJwk", vm.ID)
-	}
-	pub, err := verificationmethod.P256PubKeyFromJWK(vm.PublicKeyJwk)
+	// ecdsa-sd-2023 standardizes on P-256; this SDK also accepts a secp256k1
+	// issuer key as a non-standard extension. Pick the resolver explicitly from
+	// the verification method's curve.
+	pub, err := ecdsasdIssuerPub(vm)
 	if err != nil {
-		return false, fmt.Errorf("parse P-256 jwk: %w", err)
+		return false, err
 	}
 
 	docNoProof, err := m.bodyWithoutProof()
@@ -198,4 +199,19 @@ func (m *JSONMap) bodyWithoutProof() (map[string]interface{}, error) {
 // setSingleProof sets proof to a single proof object.
 func (m *JSONMap) setSingleProof(p dto.Proof) {
 	(*m)[proofField] = util.SerializeProofs([]dto.Proof{p})
+}
+
+// ecdsasdIssuerPub resolves the issuer public key for an ecdsa-sd-2023 proof,
+// dispatching on the verification method's curve. A secp256k1 VM (EC secp256k1
+// JWK or publicKeyHex) is the non-standard extension; everything else is the
+// standard P-256 path (P-256 JWK or publicKeyMultibase Multikey).
+func ecdsasdIssuerPub(vm *verificationmethod.VerificationMethodEntry) (*ecdsa.PublicKey, error) {
+	if verificationmethod.VMIsSecp256k1(vm) {
+		hexKey, err := verificationmethod.PublicKeyHexFromVM(vm)
+		if err != nil {
+			return nil, err
+		}
+		return verificationmethod.Secp256k1PubFromHex(hexKey)
+	}
+	return verificationmethod.P256PubFromVM(vm)
 }

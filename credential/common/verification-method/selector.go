@@ -28,17 +28,18 @@ func (k KeyKind) String() string {
 	}
 }
 
-func vmIsRSA(vm *VerificationMethodEntry) bool {
+func VMIsRSA(vm *VerificationMethodEntry) bool {
 	return vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "RSA"
 }
 
-func vmIsP256(vm *VerificationMethodEntry) bool {
+func VMIsP256(vm *VerificationMethodEntry) bool {
 	return vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "P-256"
 }
 
-// vmIsSecp256k1 matches an EC secp256k1 JWK or a publicKeyHex (the
-// EcdsaSecp256k1VerificationKey2019 representation).
-func vmIsSecp256k1(vm *VerificationMethodEntry) bool {
+// VMIsSecp256k1 matches an EC secp256k1 JWK or a publicKeyHex (the
+// EcdsaSecp256k1VerificationKey2019 representation). P-256 keys never use
+// publicKeyHex.
+func VMIsSecp256k1(vm *VerificationMethodEntry) bool {
 	if vm.PublicKeyJwk != nil {
 		return vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "secp256k1"
 	}
@@ -49,11 +50,11 @@ func vmIsSecp256k1(vm *VerificationMethodEntry) bool {
 // recognized. Signing uses it to pick the cryptosuite from the bound key.
 func VMKeyKind(vm *VerificationMethodEntry) (KeyKind, bool) {
 	switch {
-	case vmIsSecp256k1(vm):
+	case VMIsSecp256k1(vm):
 		return KeySecp256k1, true
-	case vmIsP256(vm):
+	case VMIsP256(vm):
 		return KeyP256, true
-	case vmIsRSA(vm):
+	case VMIsRSA(vm):
 		return KeyRSA, true
 	default:
 		return KeySecp256k1, false
@@ -65,11 +66,11 @@ func VMKeyKind(vm *VerificationMethodEntry) (KeyKind, bool) {
 func vmMatchesKind(vm *VerificationMethodEntry, kind KeyKind) bool {
 	switch kind {
 	case KeyRSA:
-		return vmIsRSA(vm)
+		return VMIsRSA(vm)
 	case KeyP256:
-		return vmIsP256(vm)
+		return VMIsP256(vm)
 	case KeySecp256k1:
-		return vmIsSecp256k1(vm)
+		return VMIsSecp256k1(vm)
 	default:
 		return false
 	}

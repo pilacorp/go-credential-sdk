@@ -8,18 +8,21 @@ import (
 
 	commoncrypto "github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 // verifyBaseProof verifies an ecdsa-sd-2023 base proof on a full document,
-// against the issuer's P-256 public key. It re-derives the canonical grouping
-// using the HMAC key embedded in the proof, then checks the issuer base
-// signature and every per-statement ephemeral signature.
+// against the issuer's public key (P-256 standard, or secp256k1 as a
+// non-standard extension). It re-derives the canonical grouping using the HMAC
+// key embedded in the proof, then checks the issuer base signature and every
+// per-statement ephemeral signature. The per-statement ephemeral keys are always
+// P-256 regardless of the issuer curve.
 func verifyBaseProof(document map[string]interface{}, proofConfig map[string]interface{}, baseProofValue string, issuerPub *ecdsa.PublicKey) error {
 	bp, err := parseBaseProofValue(baseProofValue)
 	if err != nil {
 		return err
 	}
-	ephPub, err := p256PubFromMultikeyBytes(bp.PublicKey)
+	ephPub, err := verificationmethod.P256PubFromMultikeyBytes(bp.PublicKey)
 	if err != nil {
 		return fmt.Errorf("ecdsasd: decode ephemeral key: %w", err)
 	}
@@ -42,7 +45,7 @@ func verifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 	signData = append(signData, bp.PublicKey...)
 	signData = append(signData, mandatoryHash...)
 	digest := sha256.Sum256(signData)
-	if !commoncrypto.VerifyP256(issuerPub, digest[:], bp.BaseSignature) {
+	if !commoncrypto.VerifyECDSA(issuerPub, digest[:], bp.BaseSignature) {
 		return fmt.Errorf("ecdsasd: issuer base signature invalid")
 	}
 
@@ -59,13 +62,14 @@ func verifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 }
 
 // verifyDerivedProof verifies an ecdsa-sd-2023 derived (disclosure) proof on a
-// revealed document, against the issuer's P-256 public key.
+// revealed document, against the issuer's public key (P-256 standard, or
+// secp256k1 as a non-standard extension).
 func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string]interface{}, derivedProofValue string, issuerPub *ecdsa.PublicKey) error {
 	dp, err := parseDisclosureProofValue(derivedProofValue)
 	if err != nil {
 		return err
 	}
-	ephPub, err := p256PubFromMultikeyBytes(dp.PublicKey)
+	ephPub, err := verificationmethod.P256PubFromMultikeyBytes(dp.PublicKey)
 	if err != nil {
 		return fmt.Errorf("ecdsasd: decode ephemeral key: %w", err)
 	}
@@ -110,7 +114,7 @@ func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string
 	signData = append(signData, dp.PublicKey...)
 	signData = append(signData, mandatoryHashArr[:]...)
 	digest := sha256.Sum256(signData)
-	if !commoncrypto.VerifyP256(issuerPub, digest[:], dp.BaseSignature) {
+	if !commoncrypto.VerifyECDSA(issuerPub, digest[:], dp.BaseSignature) {
 		return fmt.Errorf("ecdsasd: issuer base signature invalid")
 	}
 

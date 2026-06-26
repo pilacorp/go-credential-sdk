@@ -20,13 +20,14 @@ type JWK struct {
 // Revoked and RevocationReason are Pila extensions following W3C MAY
 // guidance for additional properties; see revocation.go for taxonomy.
 type VerificationMethodEntry struct {
-	ID               string     `json:"id"`
-	Type             string     `json:"type"`
-	Controller       string     `json:"controller"`
-	PublicKeyHex     string     `json:"publicKeyHex,omitempty"`
-	PublicKeyJwk     *JWK       `json:"publicKeyJwk,omitempty"`
-	Revoked          *time.Time `json:"revoked,omitempty"`
-	RevocationReason string     `json:"revocationReason,omitempty"`
+	ID                 string     `json:"id"`
+	Type               string     `json:"type"`
+	Controller         string     `json:"controller"`
+	PublicKeyHex       string     `json:"publicKeyHex,omitempty"`
+	PublicKeyJwk       *JWK       `json:"publicKeyJwk,omitempty"`
+	PublicKeyMultibase string     `json:"publicKeyMultibase,omitempty"`
+	Revoked            *time.Time `json:"revoked,omitempty"`
+	RevocationReason   string     `json:"revocationReason,omitempty"`
 }
 
 // DIDDocument represents the structure of a resolved DID Document. Only

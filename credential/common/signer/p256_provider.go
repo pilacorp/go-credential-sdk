@@ -76,6 +76,9 @@ func (p *P256Provider) Sign(hashPayload []byte) ([]byte, error) {
 	return p.sign(hashPayload)
 }
 
+// Algorithm reports the JOSE algorithm for P-256 JsonWebSignature2020 (ES256).
+func (p *P256Provider) Algorithm() string { return "ES256" }
+
 func p256SignFunc(priv *ecdsa.PrivateKey) func([]byte) ([]byte, error) {
 	return func(hashPayload []byte) ([]byte, error) {
 		r, s, err := ecdsa.Sign(rand.Reader, priv, hashPayload)

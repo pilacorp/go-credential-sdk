@@ -39,6 +39,11 @@ func ParseECDSASDCredential(rawJSON []byte, opts ...CredentialOpt) (*ECDSASDCred
 // AddProofByProvider signs the credential into an ecdsa-sd-2023 base proof.
 // mandatoryPaths (dot-notation) are always disclosed; all other claims become
 // selectively disclosable.
+//
+// The standard issuer key is P-256. As a non-standard extension this SDK also
+// accepts a secp256k1 issuer key (it does not interoperate with conformant
+// ecdsa-sd-2023 verifiers); to use it, pin a secp256k1 verification method with
+// WithVerificationMethodKey, since auto-resolution selects a P-256 VM.
 func (e *ECDSASDCredential) AddProofByProvider(signerProvider signer.SignerProvider, mandatoryPaths []string, opts ...CredentialOpt) error {
 	if signerProvider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
