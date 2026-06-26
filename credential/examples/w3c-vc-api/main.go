@@ -86,7 +86,8 @@ type server struct {
 
 func main() {
 	issuerHex := os.Getenv("ISSUER_P256_HEX")
-	if issuerHex == "" {
+	generated := issuerHex == ""
+	if generated {
 		priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			log.Fatalf("generate issuer key: %v", err)
@@ -117,7 +118,7 @@ func main() {
 	http.HandleFunc("/credentials/derive", s.handleDerive)
 	http.HandleFunc("/credentials/verify", s.handleVerify)
 
-	printStartupConfig(issuerDID, issuerHex, port)
+	printStartupConfig(issuerDID, issuerHex, port, generated)
 
 	log.Printf("listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
@@ -206,6 +207,7 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 func decode(r *http.Request, v interface{}) error {
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(nil, r.Body, 1<<20) // cap request body at 1 MiB
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		return fmt.Errorf("invalid JSON body: %w", err)
 	}
@@ -222,9 +224,15 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]interface{}{"errors": []string{err.Error()}})
 }
 
-func printStartupConfig(issuerDID, issuerHex, port string) {
+func printStartupConfig(issuerDID, issuerHex, port string, generated bool) {
 	fmt.Printf("\nissuer did:key : %s\n", issuerDID)
-	fmt.Printf("ISSUER_P256_HEX: %s   (set this env var to keep the key across restarts)\n\n", issuerHex)
+	if generated {
+		// Print the auto-generated key once so it can be captured, with a clear
+		// warning. When supplied via ISSUER_P256_HEX it is never echoed back.
+		fmt.Printf("ISSUER_P256_HEX: %s\n", issuerHex)
+		fmt.Printf("  ^ DEV-ONLY secret (issuer PRIVATE key, auto-generated). Set ISSUER_P256_HEX\n")
+		fmt.Printf("    to reuse it across restarts. Do not use in production or where stdout is logged.\n\n")
+	}
 	fmt.Printf("Paste into vc-di-ecdsa-test-suite/localConfig.cjs:\n\n")
 	fmt.Printf(`module.exports = {
   settings: {},

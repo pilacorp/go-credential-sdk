@@ -39,6 +39,10 @@ func NewP256ProviderFromHex(privHex string) (*P256Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode p256 private key hex: %w", err)
 	}
+	// Left-pad scalars whose hex omits leading zero bytes; NewPrivateKey wants 32.
+	if len(b) > 0 && len(b) < 32 {
+		b = append(make([]byte, 32-len(b)), b...)
+	}
 	ecdhPriv, err := ecdh.P256().NewPrivateKey(b)
 	if err != nil {
 		return nil, fmt.Errorf("invalid p256 private key: %w", err)

@@ -146,7 +146,10 @@ func selectLatestActiveVM(doc *DIDDocument, purpose string, match func(*Verifica
 		if !ok {
 			n = 0
 		}
-		if n > bestN {
+		// Higher #key-N wins. Tie (e.g. VMs without a sequential fragment, all
+		// n=0) breaks on the lexicographically larger ID so selection is
+		// deterministic regardless of the resolver's slice ordering.
+		if n > bestN || (n == bestN && bestVM != nil && vm.ID > bestVM.ID) {
 			bestN = n
 			bestVM = vm
 		}
