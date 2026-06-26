@@ -102,3 +102,13 @@ func NewP256VM(did, fragment string, pub *ecdsa.PublicKey) VerificationMethodEnt
 		},
 	}
 }
+
+// NewBLS12381G2VM builds a Multikey verification method for bbs-2023.
+func NewBLS12381G2VM(did, fragment, publicKeyMultibase string) VerificationMethodEntry {
+	return VerificationMethodEntry{
+		ID:                 did + "#" + fragment,
+		Type:               "Multikey",
+		Controller:         did,
+		PublicKeyMultibase: publicKeyMultibase,
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/bbs"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -79,7 +80,7 @@ func checkExpiration(p PresentationData) error {
 
 // verifyCredentials verifies the signatures of a slice of Verifiable
 // Credentials, resolving DIDs through the caller-provided resolver.
-func verifyCredentials(jsonPresentation PresentationData, resolver verificationmethod.ResolverProvider) error {
+func verifyCredentials(jsonPresentation PresentationData, resolver verificationmethod.ResolverProvider, bbsEngine bbs.Engine) error {
 	contents, err := parsePresentationContents(jsonPresentation)
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
@@ -95,7 +96,7 @@ func verifyCredentials(jsonPresentation PresentationData, resolver verificationm
 		if v == nil {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
-		err := v.Verify(vc.WithResolver(resolver), vc.WithSchemaValidation())
+		err := v.Verify(vc.WithResolver(resolver), vc.WithSchemaValidation(), vc.WithBBSEngine(bbsEngine))
 		if err != nil {
 			return fmt.Errorf("failed to verify credential at index %d: %w", i, err)
 		}
@@ -255,16 +256,6 @@ func parseVerifiableCredentials(vp PresentationData, contents *PresentationConte
 	return nil
 }
 
-// parseProofs extracts the proof field from a Presentation.
-func parseProofs(vp PresentationData, contents *PresentationContents) error {
-	proofRaw := vp["proof"]
-	if proofRaw == nil {
-		return nil
-	}
-
-	return nil
-}
-
 // parsePresentationContents parses the Presentation into structured contents.
 func parsePresentationContents(vp PresentationData) (PresentationContents, error) {
 	var contents PresentationContents
@@ -275,7 +266,6 @@ func parsePresentationContents(vp PresentationData) (PresentationContents, error
 		parseHolder,
 		parseDates,
 		parseVerifiableCredentials,
-		parseProofs,
 	}
 
 	for _, parser := range parsers {

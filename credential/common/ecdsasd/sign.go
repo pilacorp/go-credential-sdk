@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/sd"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
 
@@ -15,7 +16,7 @@ import (
 // createSignData + createBaseProofValue steps.
 func createBaseProof(document map[string]interface{}, proofConfig map[string]interface{}, mandatoryPointers []string, issuerSigner signer.SignerProvider) (string, error) {
 	// 1. proofHash over the proof configuration.
-	proofHash, err := hashProofConfig(proofConfig, document["@context"])
+	proofHash, err := sd.HashProofConfig(proofConfig, document["@context"])
 	if err != nil {
 		return "", err
 	}
@@ -27,15 +28,15 @@ func createBaseProof(document map[string]interface{}, proofConfig map[string]int
 	}
 
 	// 3. Canonicalize + group by mandatory pointers.
-	grouped, err := canonicalizeAndGroup(document, hmacKey, map[string][]string{"mandatory": mandatoryPointers})
+	grouped, err := sd.CanonicalizeAndGroup(document, hmacKey, map[string][]string{"mandatory": mandatoryPointers})
 	if err != nil {
 		return "", err
 	}
-	mg := grouped.groups["mandatory"]
-	nonMandatory := orderedValues(mg.nonMatching)
+	mg := grouped.Groups["mandatory"]
+	nonMandatory := sd.OrderedValues(mg.NonMatching)
 
 	// 4. mandatoryHash.
-	mandatoryHash := hashMandatory(mg.matching)
+	mandatoryHash := sd.HashMandatory(mg.Matching)
 
 	// 5. Generate an ephemeral P-256 key and sign each non-mandatory quad.
 	eph, err := newEphemeralKey()
@@ -71,13 +72,4 @@ func createBaseProof(document map[string]interface{}, proofConfig map[string]int
 		Signatures:        signatures,
 		MandatoryPointers: mandatoryPointers,
 	})
-}
-
-func orderedValues(m map[int]string) []string {
-	idxs := sortedIndexes(m)
-	out := make([]string, len(idxs))
-	for i, k := range idxs {
-		out[i] = m[k]
-	}
-	return out
 }

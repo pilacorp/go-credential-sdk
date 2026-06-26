@@ -4,7 +4,7 @@ import "time"
 
 // JWK represents a JSON Web Key. It supports EC (secp256k1) and RSA keys.
 type JWK struct {
-	Kty string `json:"kty"`         // "EC" or "RSA"
+	Kty string `json:"kty"`           // "EC" or "RSA"
 	Crv string `json:"crv,omitempty"` // EC curve ("secp256k1")
 	X   string `json:"x,omitempty"`   // EC X coordinate (base64url, raw)
 	Y   string `json:"y,omitempty"`   // EC Y coordinate (base64url, raw)
@@ -20,13 +20,14 @@ type JWK struct {
 // Revoked and RevocationReason are Pila extensions following W3C MAY
 // guidance for additional properties; see revocation.go for taxonomy.
 type VerificationMethodEntry struct {
-	ID               string     `json:"id"`
-	Type             string     `json:"type"`
-	Controller       string     `json:"controller"`
-	PublicKeyHex     string     `json:"publicKeyHex,omitempty"`
-	PublicKeyJwk     *JWK       `json:"publicKeyJwk,omitempty"`
-	Revoked          *time.Time `json:"revoked,omitempty"`
-	RevocationReason string     `json:"revocationReason,omitempty"`
+	ID                 string     `json:"id"`
+	Type               string     `json:"type"`
+	Controller         string     `json:"controller"`
+	PublicKeyHex       string     `json:"publicKeyHex,omitempty"`
+	PublicKeyMultibase string     `json:"publicKeyMultibase,omitempty"`
+	PublicKeyJwk       *JWK       `json:"publicKeyJwk,omitempty"`
+	Revoked            *time.Time `json:"revoked,omitempty"`
+	RevocationReason   string     `json:"revocationReason,omitempty"`
 }
 
 // DIDDocument represents the structure of a resolved DID Document. Only

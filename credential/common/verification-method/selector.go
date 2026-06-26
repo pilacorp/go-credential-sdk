@@ -13,6 +13,7 @@ const (
 	KeySecp256k1 KeyKind = iota
 	KeyRSA
 	KeyP256
+	KeyBLS12381G2
 )
 
 func (k KeyKind) String() string {
@@ -23,6 +24,8 @@ func (k KeyKind) String() string {
 		return "RSA"
 	case KeyP256:
 		return "P-256"
+	case KeyBLS12381G2:
+		return "BLS12-381 G2"
 	default:
 		return "unknown"
 	}
@@ -34,6 +37,10 @@ func vmIsRSA(vm *VerificationMethodEntry) bool {
 
 func vmIsP256(vm *VerificationMethodEntry) bool {
 	return vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "P-256"
+}
+
+func vmIsBLS12381G2(vm *VerificationMethodEntry) bool {
+	return vm.PublicKeyMultibase != ""
 }
 
 // vmIsSecp256k1 matches an EC secp256k1 JWK or a publicKeyHex (the
@@ -53,6 +60,8 @@ func VMKeyKind(vm *VerificationMethodEntry) (KeyKind, bool) {
 		return KeySecp256k1, true
 	case vmIsP256(vm):
 		return KeyP256, true
+	case vmIsBLS12381G2(vm):
+		return KeyBLS12381G2, true
 	case vmIsRSA(vm):
 		return KeyRSA, true
 	default:
@@ -68,6 +77,8 @@ func vmMatchesKind(vm *VerificationMethodEntry, kind KeyKind) bool {
 		return vmIsRSA(vm)
 	case KeyP256:
 		return vmIsP256(vm)
+	case KeyBLS12381G2:
+		return vmIsBLS12381G2(vm)
 	case KeySecp256k1:
 		return vmIsSecp256k1(vm)
 	default:

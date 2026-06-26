@@ -7,12 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/bbs"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
-// Config holds package configuration.
+// config holds package-level configuration set via Init.
 var config = struct {
 	BaseURL string
 }{
@@ -67,6 +68,7 @@ type presentationOptions struct {
 	verificationMethodKey   string
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
+	bbsEngine              bbs.Engine
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -123,6 +125,14 @@ func WithCheckExpiration() PresentationOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.resolver = resolver
+	}
+}
+
+// WithBBSEngine sets the bbs-2023 engine used when verifying embedded BBS
+// credentials inside a presentation.
+func WithBBSEngine(engine bbs.Engine) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.bbsEngine = engine
 	}
 }
 
