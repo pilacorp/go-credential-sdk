@@ -33,7 +33,14 @@ func VMIsRSA(vm *VerificationMethodEntry) bool {
 }
 
 func VMIsP256(vm *VerificationMethodEntry) bool {
-	return vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "P-256"
+	if vm.PublicKeyJwk != nil {
+		return vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "P-256"
+	}
+	if vm.PublicKeyMultibase != "" {
+		_, _, err := DecodeP256PubMultibase(vm.PublicKeyMultibase)
+		return err == nil
+	}
+	return false
 }
 
 // VMIsSecp256k1 matches an EC secp256k1 JWK or a publicKeyHex (the
@@ -197,6 +204,27 @@ func idInPurposeArray(vmID, did string, arr []string) bool {
 		}
 	}
 	return false
+}
+
+// EnsureVMAuthorizedForPurpose mirrors the verifier's strict purpose check on
+// the signing side: the VM must appear in the DID document's relationship array
+// for purpose. Used when a kid is pinned (which otherwise bypasses the
+// purpose-filtered selection), so a signer can't bind a proof to a key that the
+// verifier would reject for that purpose.
+func EnsureVMAuthorizedForPurpose(doc *DIDDocument, vmID, purpose string) error {
+	var arr []string
+	switch purpose {
+	case "authentication":
+		arr = doc.Authentication
+	case "assertionMethod":
+		arr = doc.AssertionMethod
+	default:
+		return fmt.Errorf("unsupported purpose '%s'", purpose)
+	}
+	if !idInPurposeArray(vmID, doc.ID, arr) {
+		return fmt.Errorf("verification method '%s' is not granted purpose '%s' on DID '%s'", vmID, purpose, doc.ID)
+	}
+	return nil
 }
 
 // parseSequentialFragment extracts N from a VM id of the form "<did>#key-N".
