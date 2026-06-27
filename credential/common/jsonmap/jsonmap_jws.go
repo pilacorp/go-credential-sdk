@@ -148,7 +148,7 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 		if !crypto.VerifyP256(pub, digest[:], sig) {
 			return false, fmt.Errorf("JsonWebSignature2020 ES256 signature verification failed")
 		}
-	default:
+	case "RS256", "RS384", "RS512", "PS256", "PS384", "PS512":
 		pub, err := verificationmethod.RSAPubKeyFromJWK(vm.PublicKeyJwk)
 		if err != nil {
 			return false, fmt.Errorf("parse RSA jwk: %w", err)
@@ -156,6 +156,8 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 		if err := crypto.VerifyRSAJWS(alg, pub, signingInput, sig); err != nil {
 			return false, err
 		}
+	default:
+		return false, fmt.Errorf("unsupported JsonWebSignature2020 alg: %q", alg)
 	}
 
 	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
