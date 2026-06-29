@@ -60,9 +60,10 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 }
 
 // AddProofByProvider signs the presentation. The cryptosuite is chosen from the
-// bound verification method's key type: secp256k1 → ecdsa-rdfc-2019, RSA →
-// JsonWebSignature2020 (alg via AlgorithmProvider, default RS256). The VM is the
-// pinned one (WithVerificationMethodKey) or the latest active authentication VM.
+// bound verification method's key type: secp256k1 → ecdsa-rdfc-2019, P-256 →
+// JsonWebSignature2020 (ES256), RSA → JsonWebSignature2020 (alg via
+// AlgorithmProvider, default RS256). The VM is the pinned one
+// (WithVerificationMethodKey) or the latest active authentication VM.
 //
 // A resolver is REQUIRED at signing time — the SDK reads the VM's key type from
 // the resolved DID document to pick the cryptosuite, even when the VM is pinned.
@@ -88,10 +89,12 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 	switch kind {
 	case verificationmethod.KeySecp256k1:
 		return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(provider, vmURL, "authentication")
-	case verificationmethod.KeyRSA:
+	case verificationmethod.KeyRSA, verificationmethod.KeyP256:
+		// P-256 signs the presentation via JsonWebSignature2020 (ES256); RSA via
+		// RS/PS. Same LD-proof path as JSONCredential, purpose "authentication".
 		return (*jsonmap.JSONMap)(&e.presentationData).AddJWSProof(provider, vmURL, "authentication")
 	default:
-		return fmt.Errorf("verification method %q key kind %v is not supported for presentations (secp256k1 or RSA)", vmURL, kind)
+		return fmt.Errorf("verification method %q key kind %v is not supported for presentations (secp256k1, P-256, or RSA)", vmURL, kind)
 	}
 }
 

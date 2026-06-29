@@ -67,6 +67,9 @@ func ResolveSigningVM(ctx context.Context, did, purpose, pinnedKid string, resol
 		if err != nil {
 			return nil, "", err
 		}
+		if err := EnsureVMAuthorizedForPurpose(doc, vm.ID, purpose); err != nil {
+			return nil, "", err
+		}
 		return vm, vm.ID, nil
 	}
 

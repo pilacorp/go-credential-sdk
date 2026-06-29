@@ -24,8 +24,8 @@ type VerificationMethodEntry struct {
 	Type               string     `json:"type"`
 	Controller         string     `json:"controller"`
 	PublicKeyHex       string     `json:"publicKeyHex,omitempty"`
-	PublicKeyMultibase string     `json:"publicKeyMultibase,omitempty"`
 	PublicKeyJwk       *JWK       `json:"publicKeyJwk,omitempty"`
+	PublicKeyMultibase string     `json:"publicKeyMultibase,omitempty"`
 	Revoked            *time.Time `json:"revoked,omitempty"`
 	RevocationReason   string     `json:"revocationReason,omitempty"`
 }

@@ -64,10 +64,8 @@ func (m *JSONMap) AddJWSProof(signerProvider signer.SignerProvider, verification
 	if err != nil {
 		return fmt.Errorf("jsonmap: jws sign: %w", err)
 	}
-	// Guard against a mis-routed ECDSA signer bound to an RSA verification
-	// method: an ECDSA signature is 64/65 bytes, never a valid RSA signature.
-	if l := len(sig); l == 64 || l == 65 {
-		return fmt.Errorf("jsonmap: JsonWebSignature2020 expects an RSA signature but the signer returned %d bytes (an ECDSA signature); the signer does not match the RSA verification method — pin the right VM with WithVerificationMethodKey", l)
+	if err := validateJWSSigShape(alg, len(sig)); err != nil {
+		return fmt.Errorf("jsonmap: %w", err)
 	}
 	proof.JWS = encHeader + ".." + base64.RawURLEncoding.EncodeToString(sig)
 
@@ -75,10 +73,25 @@ func (m *JSONMap) AddJWSProof(signerProvider signer.SignerProvider, verification
 	return nil
 }
 
+// validateJWSSigShape rejects a signer whose signature shape does not match the
+// JOSE algorithm (an ECDSA signer bound to an RSA VM, or vice versa).
+func validateJWSSigShape(alg string, n int) error {
+	if alg == "ES256" {
+		if n != 64 {
+			return fmt.Errorf("JsonWebSignature2020 ES256 expects a 64-byte ECDSA signature, got %d; the signer does not match the verification method — pin the right VM with WithVerificationMethodKey", n)
+		}
+		return nil
+	}
+	if n == 64 || n == 65 {
+		return fmt.Errorf("JsonWebSignature2020 %s expects an RSA signature but the signer returned %d bytes (an ECDSA signature); the signer does not match the RSA verification method — pin the right VM with WithVerificationMethodKey", alg, n)
+	}
+	return nil
+}
+
 // hashForJWSAlg hashes input with the SHA matching the JOSE algorithm.
 func hashForJWSAlg(alg string, input []byte) ([]byte, error) {
 	switch alg {
-	case "RS256", "PS256":
+	case "ES256", "RS256", "PS256":
 		h := sha256.Sum256(input)
 		return h[:], nil
 	case "RS384", "PS384":
@@ -103,10 +116,6 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 	if vm.PublicKeyJwk == nil {
 		return false, fmt.Errorf("verification method '%s' has no publicKeyJwk", vm.ID)
 	}
-	pub, err := verificationmethod.RSAPubKeyFromJWK(vm.PublicKeyJwk)
-	if err != nil {
-		return false, fmt.Errorf("parse RSA jwk: %w", err)
-	}
 
 	encHeader, encSig, ok := splitDetachedJWS(proof.JWS)
 	if !ok {
@@ -129,9 +138,28 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 		return false, fmt.Errorf("decode jws signature: %w", err)
 	}
 
-	if err := crypto.VerifyRSAJWS(alg, pub, signingInput, sig); err != nil {
-		return false, err
+	switch alg {
+	case "ES256":
+		pub, err := verificationmethod.P256PubKeyFromJWK(vm.PublicKeyJwk)
+		if err != nil {
+			return false, fmt.Errorf("parse P-256 jwk: %w", err)
+		}
+		digest := sha256.Sum256(signingInput)
+		if !crypto.VerifyP256(pub, digest[:], sig) {
+			return false, fmt.Errorf("JsonWebSignature2020 ES256 signature verification failed")
+		}
+	case "RS256", "RS384", "RS512", "PS256", "PS384", "PS512":
+		pub, err := verificationmethod.RSAPubKeyFromJWK(vm.PublicKeyJwk)
+		if err != nil {
+			return false, fmt.Errorf("parse RSA jwk: %w", err)
+		}
+		if err := crypto.VerifyRSAJWS(alg, pub, signingInput, sig); err != nil {
+			return false, err
+		}
+	default:
+		return false, fmt.Errorf("unsupported JsonWebSignature2020 alg: %q", alg)
 	}
+
 	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
 		return false, err
 	}

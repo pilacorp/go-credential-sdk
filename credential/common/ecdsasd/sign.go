@@ -7,13 +7,15 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/sd"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 // createBaseProof produces an ecdsa-sd-2023 base proof value for document.
-// issuerSigner signs the base signature with the issuer's P-256 key (returning
-// a 64-byte R||S signature over a 32-byte digest). The document body is left
-// unchanged (no skolemization is persisted). Ports the ecdsa-sd-2023
-// createSignData + createBaseProofValue steps.
+// issuerSigner signs the base signature with the issuer's key: a P-256 key
+// (standard, 64-byte R||S) or, as a non-standard extension, a secp256k1 key
+// (65-byte R||S||V). The per-statement ephemeral keys are always P-256. The
+// document body is left unchanged (no skolemization is persisted). Ports the
+// ecdsa-sd-2023 createSignData + createBaseProofValue steps.
 func createBaseProof(document map[string]interface{}, proofConfig map[string]interface{}, mandatoryPointers []string, issuerSigner signer.SignerProvider) (string, error) {
 	// 1. proofHash over the proof configuration.
 	proofHash, err := sd.HashProofConfig(proofConfig, document["@context"])
@@ -51,7 +53,7 @@ func createBaseProof(document map[string]interface{}, proofConfig map[string]int
 		}
 		signatures[i] = sig
 	}
-	ephPub := append(append([]byte{}, p256PubPrefix...), eph.publicKeyCompressed()...)
+	ephPub := verificationmethod.P256PubToMultikeyBytes(eph.publicKeyCompressed())
 
 	// 6. baseSignature over proofHash || ephemeralPub || mandatoryHash.
 	toSign := make([]byte, 0, len(proofHash)+len(ephPub)+len(mandatoryHash))

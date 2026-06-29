@@ -31,21 +31,25 @@ func (k KeyKind) String() string {
 	}
 }
 
-func vmIsRSA(vm *VerificationMethodEntry) bool {
+func VMIsRSA(vm *VerificationMethodEntry) bool {
 	return vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "RSA"
 }
 
-func vmIsP256(vm *VerificationMethodEntry) bool {
-	return vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "P-256"
+func VMIsP256(vm *VerificationMethodEntry) bool {
+	if vm.PublicKeyJwk != nil {
+		return vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "P-256"
+	}
+	if vm.PublicKeyMultibase != "" {
+		_, _, err := DecodeP256PubMultibase(vm.PublicKeyMultibase)
+		return err == nil
+	}
+	return false
 }
 
-func vmIsBLS12381G2(vm *VerificationMethodEntry) bool {
-	return vm.PublicKeyMultibase != ""
-}
-
-// vmIsSecp256k1 matches an EC secp256k1 JWK or a publicKeyHex (the
-// EcdsaSecp256k1VerificationKey2019 representation).
-func vmIsSecp256k1(vm *VerificationMethodEntry) bool {
+// VMIsSecp256k1 matches an EC secp256k1 JWK or a publicKeyHex (the
+// EcdsaSecp256k1VerificationKey2019 representation). P-256 keys never use
+// publicKeyHex.
+func VMIsSecp256k1(vm *VerificationMethodEntry) bool {
 	if vm.PublicKeyJwk != nil {
 		return vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "secp256k1"
 	}
@@ -56,13 +60,11 @@ func vmIsSecp256k1(vm *VerificationMethodEntry) bool {
 // recognized. Signing uses it to pick the cryptosuite from the bound key.
 func VMKeyKind(vm *VerificationMethodEntry) (KeyKind, bool) {
 	switch {
-	case vmIsSecp256k1(vm):
+	case VMIsSecp256k1(vm):
 		return KeySecp256k1, true
-	case vmIsP256(vm):
+	case VMIsP256(vm):
 		return KeyP256, true
-	case vmIsBLS12381G2(vm):
-		return KeyBLS12381G2, true
-	case vmIsRSA(vm):
+	case VMIsRSA(vm):
 		return KeyRSA, true
 	default:
 		return KeySecp256k1, false
@@ -74,13 +76,11 @@ func VMKeyKind(vm *VerificationMethodEntry) (KeyKind, bool) {
 func vmMatchesKind(vm *VerificationMethodEntry, kind KeyKind) bool {
 	switch kind {
 	case KeyRSA:
-		return vmIsRSA(vm)
+		return VMIsRSA(vm)
 	case KeyP256:
-		return vmIsP256(vm)
-	case KeyBLS12381G2:
-		return vmIsBLS12381G2(vm)
+		return VMIsP256(vm)
 	case KeySecp256k1:
-		return vmIsSecp256k1(vm)
+		return VMIsSecp256k1(vm)
 	default:
 		return false
 	}
@@ -156,7 +156,10 @@ func selectLatestActiveVM(doc *DIDDocument, purpose string, match func(*Verifica
 		if !ok {
 			n = 0
 		}
-		if n > bestN {
+		// Higher #key-N wins. Tie (e.g. VMs without a sequential fragment, all
+		// n=0) breaks on the lexicographically larger ID so selection is
+		// deterministic regardless of the resolver's slice ordering.
+		if n > bestN || (n == bestN && bestVM != nil && vm.ID > bestVM.ID) {
 			bestN = n
 			bestVM = vm
 		}
@@ -204,6 +207,27 @@ func idInPurposeArray(vmID, did string, arr []string) bool {
 		}
 	}
 	return false
+}
+
+// EnsureVMAuthorizedForPurpose mirrors the verifier's strict purpose check on
+// the signing side: the VM must appear in the DID document's relationship array
+// for purpose. Used when a kid is pinned (which otherwise bypasses the
+// purpose-filtered selection), so a signer can't bind a proof to a key that the
+// verifier would reject for that purpose.
+func EnsureVMAuthorizedForPurpose(doc *DIDDocument, vmID, purpose string) error {
+	var arr []string
+	switch purpose {
+	case "authentication":
+		arr = doc.Authentication
+	case "assertionMethod":
+		arr = doc.AssertionMethod
+	default:
+		return fmt.Errorf("unsupported purpose '%s'", purpose)
+	}
+	if !idInPurposeArray(vmID, doc.ID, arr) {
+		return fmt.Errorf("verification method '%s' is not granted purpose '%s' on DID '%s'", vmID, purpose, doc.ID)
+	}
+	return nil
 }
 
 // parseSequentialFragment extracts N from a VM id of the form "<did>#key-N".

@@ -1,6 +1,7 @@
 package ecdsasd
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
@@ -70,6 +71,9 @@ func createDisclosureData(document map[string]interface{}, baseProofValue string
 	revealDoc, err := sd.SelectJSONLD(document, combined)
 	if err != nil {
 		return nil, err
+	}
+	if revealDoc == nil {
+		return nil, fmt.Errorf("ecdsasd: no statements to reveal; provide mandatory or selective pointers")
 	}
 
 	// 8. Canonicalize the combined group's deskolemized N-Quads to get the
