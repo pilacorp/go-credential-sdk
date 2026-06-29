@@ -452,3 +452,55 @@ func TestBBSZKryptiumEndToEnd_ComplexExampleDerivedVerify(t *testing.T) {
 		t.Fatalf("verify derived proof: %v", err)
 	}
 }
+
+// blsMultibase encodes a raw BLS12-381 G2 public key as a Multikey multibase
+// string (multicodec 0xeb01 prefix) — the form a real DID document publishes,
+// and the form VMIsBLS12381G2 detects for key-kind classification.
+func blsMultibase(pubKey []byte) string {
+	raw := append([]byte{0xeb, 0x01}, pubKey...)
+	return "z" + base58.Encode(raw)
+}
+
+// TestBBS_UnpinnedSigning_ResolvesBLSVM issues a bbs-2023 base proof WITHOUT
+// pinning a kid, exercising auto-resolution by key kind (KeyBLS12381G2). Before
+// VMKeyKind/vmMatchesKind recognized BLS Multikeys, this failed with
+// "no active BLS12-381 G2 verification method", while every other cryptosuite
+// resolved unpinned — this guards that consistency.
+func TestBBS_UnpinnedSigning_ResolvesBLSVM(t *testing.T) {
+	pubKey := []byte("bbs-public-key")
+	bbsSigner := &fakeBBSSigner{publicKey: pubKey, signature: []byte("bbs-signature")}
+	engine := &fakeBBSEngine{publicKey: pubKey}
+
+	resolver := verificationmethod.NewStaticResolver(
+		verificationmethod.NewDIDDocument(
+			bbsIssuerDID,
+			verificationmethod.NewBLS12381G2VM(bbsIssuerDID, "key-1", blsMultibase(pubKey)),
+		),
+	)
+
+	base, err := vc.ParseBBSCredential(bbsCredentialJSON())
+	if err != nil {
+		t.Fatalf("parse base: %v", err)
+	}
+
+	// No WithVerificationMethodKey: the signer must auto-resolve the BLS VM by
+	// key kind rather than relying on a pinned kid.
+	if err := base.AddProofByProvider(
+		bbsSigner,
+		[]string{"issuer"},
+		vc.WithResolver(resolver),
+	); err != nil {
+		t.Fatalf("add base proof (unpinned): %v", err)
+	}
+	if err := base.Verify(vc.WithResolver(resolver), vc.WithBBSEngine(engine)); err != nil {
+		t.Fatalf("verify base proof: %v", err)
+	}
+
+	derived, err := base.Derive([]string{"credentialSubject.name"}, vc.WithBBSEngine(engine))
+	if err != nil {
+		t.Fatalf("derive: %v", err)
+	}
+	if err := derived.Verify(vc.WithResolver(resolver), vc.WithBBSEngine(engine)); err != nil {
+		t.Fatalf("verify derived proof: %v", err)
+	}
+}

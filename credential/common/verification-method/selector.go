@@ -1,6 +1,7 @@
 package verificationmethod
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 )
@@ -56,12 +57,28 @@ func VMIsSecp256k1(vm *VerificationMethodEntry) bool {
 	return vm.PublicKeyHex != ""
 }
 
+// VMIsBLS12381G2 matches a BLS12-381 G2 publicKeyMultibase Multikey (bbs-2023),
+// identified by its multicodec prefix. P-256 Multikeys use a different prefix,
+// so the two never collide.
+func VMIsBLS12381G2(vm *VerificationMethodEntry) bool {
+	if vm.PublicKeyMultibase == "" {
+		return false
+	}
+	raw, err := DecodeMultibaseKey(vm.PublicKeyMultibase)
+	if err != nil {
+		return false
+	}
+	return bytes.HasPrefix(raw, bls12381G2PublicKeyMulticodec)
+}
+
 // VMKeyKind reports the key kind a verification method holds, and whether it was
 // recognized. Signing uses it to pick the cryptosuite from the bound key.
 func VMKeyKind(vm *VerificationMethodEntry) (KeyKind, bool) {
 	switch {
 	case VMIsSecp256k1(vm):
 		return KeySecp256k1, true
+	case VMIsBLS12381G2(vm):
+		return KeyBLS12381G2, true
 	case VMIsP256(vm):
 		return KeyP256, true
 	case VMIsRSA(vm):
@@ -81,6 +98,8 @@ func vmMatchesKind(vm *VerificationMethodEntry, kind KeyKind) bool {
 		return VMIsP256(vm)
 	case KeySecp256k1:
 		return VMIsSecp256k1(vm)
+	case KeyBLS12381G2:
+		return VMIsBLS12381G2(vm)
 	default:
 		return false
 	}

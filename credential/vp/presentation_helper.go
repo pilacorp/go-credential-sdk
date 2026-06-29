@@ -3,6 +3,7 @@ package vp
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,19 +15,27 @@ import (
 
 // extractFieldFromMap returns the value at a dot-notation path in a
 // presentation's data map (e.g. "holder" or "verifiableCredential.0.id"), or
-// nil if any segment is missing or a non-map is traversed.
+// nil if any segment is missing or a segment can't be traversed. A numeric
+// segment indexes into an array (e.g. "0" selects the first element).
 func extractFieldFromMap(m PresentationData, path string) interface{} {
 	current := interface{}(map[string]interface{}(m))
 	for _, part := range strings.Split(path, ".") {
-		mm, ok := current.(map[string]interface{})
-		if !ok {
+		switch node := current.(type) {
+		case map[string]interface{}:
+			val, exists := node[part]
+			if !exists {
+				return nil
+			}
+			current = val
+		case []interface{}:
+			idx, err := strconv.Atoi(part)
+			if err != nil || idx < 0 || idx >= len(node) {
+				return nil
+			}
+			current = node[idx]
+		default:
 			return nil
 		}
-		val, exists := mm[part]
-		if !exists {
-			return nil
-		}
-		current = val
 	}
 	return current
 }
