@@ -145,3 +145,5 @@ config.local.*
 testdata/*.key
 testdata/*.pem
 testdata/*.env
+
+credential/common/bbs/zkryptium-bridge/target/

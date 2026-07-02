@@ -1,15 +1,15 @@
-package ecdsasd
+package sd
 
 import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 )
 
-// parsePointer parses an RFC 6901 JSON Pointer into path segments. Numeric
-// segments become int (array indexes); escaped segments are unescaped
-// (~1 -> "/", ~0 -> "~"). Ports digitalbazaar di-sd-primitives parsePointer.
-func parsePointer(pointer string) []interface{} {
+// ParsePointer parses an RFC 6901 JSON Pointer into path segments.
+func ParsePointer(pointer string) []interface{} {
 	parts := strings.Split(pointer, "/")
 	if len(parts) > 0 {
 		parts = parts[1:]
@@ -31,23 +31,23 @@ func parsePointer(pointer string) []interface{} {
 	return parsed
 }
 
-// selectJsonLd builds a JSON-LD selection document containing only the values
+// SelectJSONLD builds a JSON-LD selection document containing only the values
 // addressed by pointers, carrying @context and the id/type of every traversed
-// node. Ports digitalbazaar di-sd-primitives selectJsonLd (includeTypes=true).
-func selectJsonLd(document map[string]interface{}, pointers []string) (map[string]interface{}, error) {
+// node.
+func SelectJSONLD(document map[string]interface{}, pointers []string) (map[string]interface{}, error) {
 	if len(pointers) == 0 {
 		return nil, nil
 	}
 	sel := map[string]interface{}{}
 	if ctx, ok := document["@context"]; ok {
-		sel["@context"] = deepCopy(ctx)
+		sel["@context"] = util.DeepCopy(ctx)
 	}
 	initSelection(sel, document)
 
 	for _, pointer := range pointers {
-		paths := parsePointer(pointer)
+		paths := ParsePointer(pointer)
 		if len(paths) == 0 {
-			cloned, _ := deepCopy(document).(map[string]interface{})
+			cloned, _ := util.DeepCopy(document).(map[string]interface{})
 			return cloned, nil
 		}
 		if _, err := selectInto(document, paths, sel); err != nil {
@@ -58,9 +58,6 @@ func selectJsonLd(document map[string]interface{}, pointers []string) (map[strin
 	return sel, nil
 }
 
-// selectInto walks paths into source, blending the selection into sel (the
-// current selection node), and returns the (possibly grown) selection node so
-// slice growth propagates to the parent.
 func selectInto(source interface{}, paths []interface{}, sel interface{}) (interface{}, error) {
 	if len(paths) == 0 {
 		switch v := source.(type) {
@@ -72,11 +69,11 @@ func selectInto(source interface{}, paths []interface{}, sel interface{}) (inter
 				}
 			}
 			for k, val := range v {
-				merged[k] = deepCopy(val)
+				merged[k] = util.DeepCopy(val)
 			}
 			return merged, nil
 		case []interface{}:
-			return deepCopy(v), nil
+			return util.DeepCopy(v), nil
 		default:
 			return source, nil
 		}
@@ -104,8 +101,6 @@ func selectInto(source interface{}, paths []interface{}, sel interface{}) (inter
 	return setChild(sel, path, newChild), nil
 }
 
-// initSelection copies the non-blank id and type from source into sel (per the
-// spec: type is referenced, not cloned). Returns sel.
 func initSelection(sel map[string]interface{}, source interface{}) map[string]interface{} {
 	m, ok := source.(map[string]interface{})
 	if !ok {
@@ -162,7 +157,6 @@ func setChild(parent interface{}, path interface{}, val interface{}) interface{}
 	}
 }
 
-// densifyArrays removes nil holes left by sparse array selection.
 func densifyArrays(v interface{}) interface{} {
 	switch t := v.(type) {
 	case map[string]interface{}:

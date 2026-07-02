@@ -4,7 +4,7 @@ import "time"
 
 // JWK represents a JSON Web Key. It supports EC (secp256k1) and RSA keys.
 type JWK struct {
-	Kty string `json:"kty"`         // "EC" or "RSA"
+	Kty string `json:"kty"`           // "EC" or "RSA"
 	Crv string `json:"crv,omitempty"` // EC curve ("secp256k1")
 	X   string `json:"x,omitempty"`   // EC X coordinate (base64url, raw)
 	Y   string `json:"y,omitempty"`   // EC Y coordinate (base64url, raw)

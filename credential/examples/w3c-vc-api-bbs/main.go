@@ -1,20 +1,16 @@
-// Command w3c-vc-api is a minimal VC API server exposing this module's
-// ecdsa-sd-2023 implementation for the w3c/vc-di-ecdsa-test-suite.
+// Command w3c-vc-api-bbs is a minimal VC API server exposing this module's
+// bbs-2023 implementation for the w3c/vc-di-bbs-test-suite.
 //
 //	POST /credentials/issue   {credential, options.mandatoryPointers}  -> {verifiableCredential}
 //	POST /credentials/derive  {verifiableCredential, options.selectivePointers} -> {verifiableCredential}
 //	POST /credentials/verify  {verifiableCredential}                    -> 200 / 400
 //
-// The issuer key is a P-256 key surfaced as a self-resolving did:key, so no
-// external DID resolver is needed.
+// The issuer key is a BLS12-381 G2 key surfaced as a self-resolving did:key, so
+// no external DID resolver is needed.
 package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -22,91 +18,59 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mr-tron/base58"
-
+	"github.com/pilacorp/go-credential-sdk/credential/common/bbs"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
-	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vm "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
-// p256MulticodecPrefix is varint(0x1200) — the multicodec for a p256-pub key.
-var p256MulticodecPrefix = []byte{0x80, 0x24}
+// defaultIssuerHex is a known-valid BLS12-381 scalar (the W3C spec example issuer
+// key); override with ISSUER_BBS_HEX to use a different key.
+const defaultIssuerHex = "66d36e118832af4c5e28b2dfe1b9577857e57b042a33e06bdea37b811ed09ee0"
 
-// didKeyFromP256 encodes a P-256 public key as a did:key plus its multibase key
-// string (the part after "did:key:", also used as the VM fragment).
-func didKeyFromP256(pub *ecdsa.PublicKey) (did, multibaseKey string) {
-	compressed := elliptic.MarshalCompressed(elliptic.P256(), pub.X, pub.Y)
-	raw := append(append([]byte{}, p256MulticodecPrefix...), compressed...)
-	multibaseKey = "z" + base58.Encode(raw)
-	return "did:key:" + multibaseKey, multibaseKey
-}
+// bbsDIDKeyResolver resolves any BLS12-381 G2 did:key into a DID document with a
+// single Multikey verification method.
+type bbsDIDKeyResolver struct{}
 
-// p256FromDIDKey decodes the P-256 public key from a did:key (with or without a
-// "#fragment"), returning the key and the multibase key string.
-func p256FromDIDKey(did string) (*ecdsa.PublicKey, string, error) {
+func (bbsDIDKeyResolver) ResolveDocument(_ context.Context, did string) (*vm.DIDDocument, error) {
 	s := strings.TrimPrefix(did, "did:key:")
 	if i := strings.IndexByte(s, '#'); i >= 0 {
 		s = s[:i]
 	}
 	if !strings.HasPrefix(s, "z") {
-		return nil, "", fmt.Errorf("did:key: expected base58btc 'z' multibase: %q", did)
+		return nil, fmt.Errorf("did:key: expected base58btc 'z' multibase: %q", did)
 	}
-	raw, err := base58.Decode(s[1:])
-	if err != nil {
-		return nil, "", fmt.Errorf("did:key: decode multibase: %w", err)
+	if _, err := bbs.DecodePublicKeyMultibase(s); err != nil {
+		return nil, fmt.Errorf("did:key: not a BLS12-381 G2 multikey: %w", err)
 	}
-	if len(raw) < len(p256MulticodecPrefix) || raw[0] != p256MulticodecPrefix[0] || raw[1] != p256MulticodecPrefix[1] {
-		return nil, "", fmt.Errorf("did:key: not a p256-pub multikey: %q", did)
-	}
-	x, y := elliptic.UnmarshalCompressed(elliptic.P256(), raw[len(p256MulticodecPrefix):])
-	if x == nil {
-		return nil, "", fmt.Errorf("did:key: invalid P-256 point: %q", did)
-	}
-	return &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, s, nil
-}
-
-// didKeyResolver resolves any P-256 did:key into a DID document with a single
-// JsonWebKey2020 verification method (in assertionMethod + authentication).
-type didKeyResolver struct{}
-
-func (didKeyResolver) ResolveDocument(_ context.Context, did string) (*vm.DIDDocument, error) {
-	pub, multibaseKey, err := p256FromDIDKey(did)
-	if err != nil {
-		return nil, err
-	}
-	base := "did:key:" + multibaseKey
-	return vm.NewDIDDocument(base, vm.NewP256VM(base, multibaseKey, pub)), nil
+	base := "did:key:" + s
+	return vm.NewDIDDocument(base, vm.NewBLS12381G2VM(base, s, s)), nil
 }
 
 type server struct {
-	issuer   *signer.P256Provider
+	signer   bbs.Signer
+	engine  bbs.Engine
 	issuerVM string // did:key:z...#z...
 	resolver vm.ResolverProvider
 }
 
 func main() {
-	issuerHex := os.Getenv("ISSUER_P256_HEX")
-	generated := issuerHex == ""
-	if generated {
-		priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			log.Fatalf("generate issuer key: %v", err)
-		}
-		b := make([]byte, 32)
-		priv.D.FillBytes(b)
-		issuerHex = hex.EncodeToString(b)
+	issuerHex := os.Getenv("ISSUER_BBS_HEX")
+	if issuerHex == "" {
+		issuerHex = defaultIssuerHex
 	}
 
-	prov, err := signer.NewP256ProviderFromHex(issuerHex)
+	signer, err := bbs.NewZKryptiumSignerFromPrivateKeyHex(issuerHex)
 	if err != nil {
 		log.Fatalf("load issuer key: %v", err)
 	}
-	issuerDID, multibaseKey := didKeyFromP256(prov.Public())
+	multibaseKey := bbs.EncodePublicKeyMultibase(signer.PublicKey())
+	issuerDID := "did:key:" + multibaseKey
 
 	s := &server{
-		issuer:   prov,
+		signer:   signer,
+		engine:  bbs.NewZKryptiumEngine(),
 		issuerVM: issuerDID + "#" + multibaseKey,
-		resolver: didKeyResolver{},
+		resolver: bbsDIDKeyResolver{},
 	}
 
 	port := os.Getenv("PORT")
@@ -118,7 +82,7 @@ func main() {
 	http.HandleFunc("/credentials/derive", s.handleDerive)
 	http.HandleFunc("/credentials/verify", s.handleVerify)
 
-	printStartupConfig(issuerDID, issuerHex, port, generated)
+	printStartupConfig(issuerDID, issuerHex, port)
 
 	log.Printf("listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
@@ -144,7 +108,7 @@ func (s *server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := (&m).AddECDSASDBaseProof(s.issuer, s.issuerVM, "assertionMethod", body.Options.MandatoryPointers); err != nil {
+	if err := (&m).AddBBSBaseProof(s.signer, s.issuerVM, "assertionMethod", body.Options.MandatoryPointers); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("issue: %w", err))
 		return
 	}
@@ -170,7 +134,7 @@ func (s *server) handleDerive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	derived, err := (&m).DeriveECDSASD(body.Options.SelectivePointers)
+	derived, err := (&m).DeriveBBS(body.Options.SelectivePointers, nil, s.engine)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("derive: %w", err))
 		return
@@ -194,9 +158,12 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, err := (&m).VerifyProof(s.resolver, "")
+	ok, err := (&m).VerifyProof(s.resolver, "", s.engine)
 	if err != nil || !ok {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("verification failed: %v", err))
+		if err == nil {
+			err = fmt.Errorf("proof invalid")
+		}
+		writeError(w, http.StatusBadRequest, fmt.Errorf("verification failed: %w", err))
 		return
 	}
 
@@ -207,7 +174,6 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 func decode(r *http.Request, v interface{}) error {
 	defer r.Body.Close()
-	r.Body = http.MaxBytesReader(nil, r.Body, 1<<20) // cap request body at 1 MiB
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		return fmt.Errorf("invalid JSON body: %w", err)
 	}
@@ -224,16 +190,10 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]interface{}{"errors": []string{err.Error()}})
 }
 
-func printStartupConfig(issuerDID, issuerHex, port string, generated bool) {
+func printStartupConfig(issuerDID, issuerHex, port string) {
 	fmt.Printf("\nissuer did:key : %s\n", issuerDID)
-	if generated {
-		// Print the auto-generated key once so it can be captured, with a clear
-		// warning. When supplied via ISSUER_P256_HEX it is never echoed back.
-		fmt.Printf("ISSUER_P256_HEX: %s\n", issuerHex)
-		fmt.Printf("  ^ DEV-ONLY secret (issuer PRIVATE key, auto-generated). Set ISSUER_P256_HEX\n")
-		fmt.Printf("    to reuse it across restarts. Do not use in production or where stdout is logged.\n\n")
-	}
-	fmt.Printf("Paste into vc-di-ecdsa-test-suite/localConfig.cjs:\n\n")
+	fmt.Printf("ISSUER_BBS_HEX : %s   (set this env var to keep the key across restarts)\n\n", issuerHex)
+	fmt.Printf("Paste into vc-di-bbs-test-suite/localConfig.cjs:\n\n")
 	fmt.Printf(`module.exports = {
   settings: {},
   implementations: [{
@@ -242,20 +202,17 @@ func printStartupConfig(issuerDID, issuerHex, port string, generated bool) {
     issuers: [{
       id: '%s',
       endpoint: 'http://localhost:%s/credentials/issue',
-      supportedEcdsaKeyTypes: ['P-256'],
-      tags: ['ecdsa-sd-2023'],
+      tags: ['bbs-2023'],
     }],
     verifiers: [{
       id: 'go-credential-sdk',
       endpoint: 'http://localhost:%s/credentials/verify',
-      supportedEcdsaKeyTypes: ['P-256'],
-      tags: ['ecdsa-sd-2023'],
+      tags: ['bbs-2023'],
     }],
     vcHolders: [{
       id: 'go-credential-sdk',
       endpoint: 'http://localhost:%s/credentials/derive',
-      supportedEcdsaKeyTypes: ['P-256'],
-      tags: ['vcHolder'],
+      tags: ['vcHolder', 'bbs-2023'],
     }],
   }],
 };

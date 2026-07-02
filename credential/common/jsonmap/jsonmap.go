@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/bbs"
 	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
@@ -183,7 +184,7 @@ func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
 //
 // resolver is required; callers must construct it (e.g. via
 // verificationmethod.NewHTTPResolver(baseURL)) before invoking VerifyProof.
-func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targetVM string) (bool, error) {
+func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targetVM string, bbsEngine bbs.Engine) (bool, error) {
 	if m == nil {
 		return false, fmt.Errorf("JSONMap is nil")
 	}
@@ -203,7 +204,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	if targetVM != "" {
 		for i := range proofs {
 			if proofs[i].VerificationMethod == targetVM {
-				ok, err := m.verifyOneProof(resolver, &proofs[i])
+				ok, err := m.verifyOneProof(resolver, &proofs[i], bbsEngine)
 				if err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
@@ -216,7 +217,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	// W3C proof set: every proof must verify, each against its own
 	// verification method.
 	for i := range proofs {
-		ok, err := m.verifyOneProof(resolver, &proofs[i])
+		ok, err := m.verifyOneProof(resolver, &proofs[i], bbsEngine)
 		if err != nil {
 			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
 		}
@@ -229,7 +230,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 
 // verifyOneProof verifies a single proof against the DID document resolved from
 // that proof's own verification method.
-func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, bbsEngine bbs.Engine) (bool, error) {
 	signerDID, err := m.didForProof(proof)
 	if err != nil {
 		return false, err
@@ -237,6 +238,14 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 	doc, err := resolver.ResolveDocument(context.Background(), signerDID)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve DID document for '%s': %w", signerDID, err)
+	}
+
+	// Data Integrity proof configuration: a present `created` MUST be a valid
+	// datetime, otherwise the document is non-conforming and verification fails.
+	if proof.Type == DataIntegrityProof && proof.Created != "" {
+		if _, err := util.ParseTimeWrapper(proof.Created); err != nil {
+			return false, fmt.Errorf("invalid proof created datetime %q: %w", proof.Created, err)
+		}
 	}
 
 	switch {
@@ -251,6 +260,9 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 
 	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSASD2023:
 		return m.verifyECDSASDProof(doc, proof)
+
+	case proof.Type == DataIntegrityProof && proof.Cryptosuite == bbs.Cryptosuite:
+		return m.verifyBBSProof(doc, proof, bbsEngine)
 
 	case proof.Type == JsonWebSignature2020:
 		return m.verifyJWSProof(doc, proof)
@@ -520,10 +532,11 @@ func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmet
 	}
 
 	if vm.Revoked != nil {
-		created, err := time.Parse(time.RFC3339, proofCreated)
+		createdTW, err := util.ParseTimeWrapper(proofCreated)
 		if err != nil {
 			return fmt.Errorf("invalid proof.created timestamp '%s': %w", proofCreated, err)
 		}
+		created := createdTW.Time
 		if !created.Before(*vm.Revoked) {
 			return fmt.Errorf("verification method '%s' was revoked at %s; proof.created %s is not earlier",
 				vm.ID, vm.Revoked.UTC().Format(time.RFC3339), created.UTC().Format(time.RFC3339))

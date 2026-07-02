@@ -16,6 +16,8 @@ import (
 	"github.com/mr-tron/base58"
 )
 
+var bls12381G2PublicKeyMulticodec = []byte{0xeb, 0x01}
+
 // PublicKeyHexFromVM returns the public key hex material for the given VM.
 // It supports both `publicKeyHex` and `publicKeyJwk` encodings.
 //
@@ -32,6 +34,27 @@ func PublicKeyHexFromVM(vm *VerificationMethodEntry) (string, error) {
 		return JWKToHex(vm.PublicKeyJwk)
 	}
 	return "", fmt.Errorf("verification method '%s' has no public key material", vm.ID)
+}
+
+// PublicKeyMultibaseBytesFromVM decodes publicKeyMultibase verification material.
+func PublicKeyMultibaseBytesFromVM(vm *VerificationMethodEntry) ([]byte, error) {
+	if vm == nil {
+		return nil, fmt.Errorf("verification method is nil")
+	}
+	if vm.PublicKeyMultibase == "" {
+		return nil, fmt.Errorf("verification method '%s' has no publicKeyMultibase", vm.ID)
+	}
+	if vm.PublicKeyMultibase[0] != 'z' {
+		return nil, fmt.Errorf("unsupported multibase prefix in verification method '%s'", vm.ID)
+	}
+	raw, err := base58.Decode(vm.PublicKeyMultibase[1:])
+	if err != nil {
+		return nil, fmt.Errorf("decode publicKeyMultibase: %w", err)
+	}
+	if bytes.HasPrefix(raw, bls12381G2PublicKeyMulticodec) {
+		return raw[len(bls12381G2PublicKeyMulticodec):], nil
+	}
+	return raw, nil
 }
 
 // JWKToHex converts a secp256k1 JWK to its uncompressed hex representation

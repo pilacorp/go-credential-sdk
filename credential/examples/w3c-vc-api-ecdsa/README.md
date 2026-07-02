@@ -18,14 +18,14 @@ external DID resolver is needed.
 
 ```bash
 cd go-credential-sdk
-go run ./credential/examples/w3c-vc-api
+go run ./credential/examples/w3c-vc-api-ecdsa
 ```
 
 It prints the issuer `did:key` and a ready-to-paste `localConfig.cjs`. To keep
 the same key (and config) across restarts, copy the printed `ISSUER_P256_HEX`:
 
 ```bash
-ISSUER_P256_HEX=<hex> PORT=8080 go run ./credential/examples/w3c-vc-api
+ISSUER_P256_HEX=<hex> PORT=8080 go run ./credential/examples/w3c-vc-api-ecdsa
 ```
 
 ## 2. Point the test suite at it

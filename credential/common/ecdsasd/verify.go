@@ -8,6 +8,7 @@ import (
 
 	commoncrypto "github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sd"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -27,15 +28,15 @@ func verifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 		return fmt.Errorf("ecdsasd: decode ephemeral key: %w", err)
 	}
 
-	grouped, err := canonicalizeAndGroup(document, bp.HMACKey, map[string][]string{"mandatory": bp.MandatoryPointers})
+	grouped, err := sd.CanonicalizeAndGroup(document, bp.HMACKey, map[string][]string{"mandatory": bp.MandatoryPointers})
 	if err != nil {
 		return err
 	}
-	mg := grouped.groups["mandatory"]
-	nonMandatory := orderedValues(mg.nonMatching)
-	mandatoryHash := hashMandatory(mg.matching)
+	mg := grouped.Groups["mandatory"]
+	nonMandatory := sd.OrderedValues(mg.NonMatching)
+	mandatoryHash := sd.HashMandatory(mg.Matching)
 
-	proofHash, err := hashProofConfig(proofConfig, document["@context"])
+	proofHash, err := sd.HashProofConfig(proofConfig, document["@context"])
 	if err != nil {
 		return err
 	}
@@ -80,7 +81,7 @@ func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string
 	if err != nil {
 		return fmt.Errorf("ecdsasd: canonicalize reveal doc: %w", err)
 	}
-	relabeled := relabelBlankNodes(canonicalNQuads, dp.LabelMap)
+	relabeled := sd.RelabelBlankNodes(canonicalNQuads, dp.LabelMap)
 	sort.Strings(relabeled)
 
 	// Split into mandatory / non-mandatory by the relative mandatory indexes.
@@ -98,7 +99,7 @@ func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string
 	}
 
 	// Recompute hashes.
-	proofHash, err := hashProofConfig(proofConfig, revealDoc["@context"])
+	proofHash, err := sd.HashProofConfig(proofConfig, revealDoc["@context"])
 	if err != nil {
 		return err
 	}

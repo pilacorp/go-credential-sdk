@@ -197,6 +197,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
 				options.resolver,
 				options.proofVerificationMethod,
+				options.bbsEngine,
 			)
 			if err != nil {
 				return fmt.Errorf("verify proof: %w", err)
@@ -267,4 +268,21 @@ func (e *JSONCredential) resolveSigningVM(kind verificationmethod.KeyKind, opts 
 		return vmURL, nil
 	}
 	return verificationmethod.NormalizeVerificationMethodURL(issuer, verificationMethodKey), nil
+}
+
+// issuerDIDFromField extracts the issuer DID from either the string form
+// ("did:...") or the W3C object form ({"id": "did:...", ...}), matching what the
+// verification path accepts.
+func issuerDIDFromField(v interface{}) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		if t != "" {
+			return t, true
+		}
+	case map[string]interface{}:
+		if id, ok := t["id"].(string); ok && id != "" {
+			return id, true
+		}
+	}
+	return "", false
 }

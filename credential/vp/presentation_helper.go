@@ -3,9 +3,11 @@ package vp
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/bbs"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -13,19 +15,27 @@ import (
 
 // extractFieldFromMap returns the value at a dot-notation path in a
 // presentation's data map (e.g. "holder" or "verifiableCredential.0.id"), or
-// nil if any segment is missing or a non-map is traversed.
+// nil if any segment is missing or a segment can't be traversed. A numeric
+// segment indexes into an array (e.g. "0" selects the first element).
 func extractFieldFromMap(m PresentationData, path string) interface{} {
 	current := interface{}(map[string]interface{}(m))
 	for _, part := range strings.Split(path, ".") {
-		mm, ok := current.(map[string]interface{})
-		if !ok {
+		switch node := current.(type) {
+		case map[string]interface{}:
+			val, exists := node[part]
+			if !exists {
+				return nil
+			}
+			current = val
+		case []interface{}:
+			idx, err := strconv.Atoi(part)
+			if err != nil || idx < 0 || idx >= len(node) {
+				return nil
+			}
+			current = node[idx]
+		default:
 			return nil
 		}
-		val, exists := mm[part]
-		if !exists {
-			return nil
-		}
-		current = val
 	}
 	return current
 }
@@ -79,7 +89,7 @@ func checkExpiration(p PresentationData) error {
 
 // verifyCredentials verifies the signatures of a slice of Verifiable
 // Credentials, resolving DIDs through the caller-provided resolver.
-func verifyCredentials(jsonPresentation PresentationData, resolver verificationmethod.ResolverProvider) error {
+func verifyCredentials(jsonPresentation PresentationData, resolver verificationmethod.ResolverProvider, bbsEngine bbs.Engine) error {
 	contents, err := parsePresentationContents(jsonPresentation)
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
@@ -95,7 +105,7 @@ func verifyCredentials(jsonPresentation PresentationData, resolver verificationm
 		if v == nil {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
-		err := v.Verify(vc.WithResolver(resolver), vc.WithSchemaValidation())
+		err := v.Verify(vc.WithResolver(resolver), vc.WithSchemaValidation(), vc.WithBBSEngine(bbsEngine))
 		if err != nil {
 			return fmt.Errorf("failed to verify credential at index %d: %w", i, err)
 		}
@@ -255,16 +265,6 @@ func parseVerifiableCredentials(vp PresentationData, contents *PresentationConte
 	return nil
 }
 
-// parseProofs extracts the proof field from a Presentation.
-func parseProofs(vp PresentationData, contents *PresentationContents) error {
-	proofRaw := vp["proof"]
-	if proofRaw == nil {
-		return nil
-	}
-
-	return nil
-}
-
 // parsePresentationContents parses the Presentation into structured contents.
 func parsePresentationContents(vp PresentationData) (PresentationContents, error) {
 	var contents PresentationContents
@@ -275,7 +275,6 @@ func parsePresentationContents(vp PresentationData) (PresentationContents, error
 		parseHolder,
 		parseDates,
 		parseVerifiableCredentials,
-		parseProofs,
 	}
 
 	for _, parser := range parsers {

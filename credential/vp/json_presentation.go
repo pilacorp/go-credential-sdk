@@ -117,9 +117,7 @@ func (e *JSONPresentation) resolveSigningVMEntry(opts ...PresentationOpt) (*veri
 	return verificationmethod.ResolveSigningVM(context.Background(), holder, "authentication", pinned, options.resolver)
 }
 
-// resolveVerificationMethodURL returns the full verification method URL for
-// a presentation proof. See vc.resolveVerificationMethodURL for resolution
-// rules — the only difference is the default purpose (authentication).
+// GetSigningInput returns the canonicalized presentation bytes to be signed.
 //
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
@@ -172,7 +170,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
 	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(e.presentationData), options.resolver); err != nil {
+		if err := verifyCredentials(PresentationData(e.presentationData), options.resolver, options.bbsEngine); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}
@@ -187,6 +185,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
 			options.resolver,
 			options.proofVerificationMethod,
+			options.bbsEngine,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)

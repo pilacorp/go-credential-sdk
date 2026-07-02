@@ -1456,3 +1456,42 @@ func TestParseDatesInPresentation(t *testing.T) {
 		t.Error("Expected validUntil field in parsed presentation")
 	}
 }
+
+// TestVP_ExtractField_ArrayIndex verifies dot-notation paths can index into the
+// verifiableCredential array (e.g. "verifiableCredential.0.id"), and that
+// out-of-range or non-numeric segments return nil rather than panicking.
+func TestVP_ExtractField_ArrayIndex(t *testing.T) {
+	raw := []byte(`{
+		"@context": ["https://www.w3.org/ns/credentials/v2"],
+		"id": "urn:uuid:vp-extract-001",
+		"type": ["VerifiablePresentation"],
+		"holder": "did:example:holder",
+		"verifiableCredential": [
+			{"id": "urn:uuid:vc-1", "credentialSubject": {"name": "Alice"}},
+			{"id": "urn:uuid:vc-2"}
+		]
+	}`)
+
+	pres, err := vp.ParseJSONPresentation(raw)
+	if err != nil {
+		t.Fatalf("parse presentation: %v", err)
+	}
+
+	cases := []struct {
+		path string
+		want interface{}
+	}{
+		{"holder", "did:example:holder"},
+		{"verifiableCredential.0.id", "urn:uuid:vc-1"},
+		{"verifiableCredential.1.id", "urn:uuid:vc-2"},
+		{"verifiableCredential.0.credentialSubject.name", "Alice"},
+		{"verifiableCredential.5.id", nil}, // out of range
+		{"verifiableCredential.x.id", nil}, // non-numeric index
+		{"verifiableCredential.0.missing", nil},
+	}
+	for _, tc := range cases {
+		if got := pres.ExtractField(tc.path); got != tc.want {
+			t.Errorf("ExtractField(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}

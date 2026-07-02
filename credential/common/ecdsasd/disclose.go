@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sd"
 )
 
 type disclosureData struct {
@@ -28,7 +29,7 @@ func createDisclosureData(document map[string]interface{}, baseProofValue string
 
 	// 3-4. Canonicalize and group by mandatory, selective, combined pointers.
 	combined := append(append([]string{}, bp.MandatoryPointers...), selectivePointers...)
-	grouped, err := canonicalizeAndGroup(document, bp.HMACKey, map[string][]string{
+	grouped, err := sd.CanonicalizeAndGroup(document, bp.HMACKey, map[string][]string{
 		"mandatory": bp.MandatoryPointers,
 		"selective": selectivePointers,
 		"combined":  combined,
@@ -36,14 +37,14 @@ func createDisclosureData(document map[string]interface{}, baseProofValue string
 	if err != nil {
 		return nil, err
 	}
-	mandatoryGroup := grouped.groups["mandatory"]
-	selectiveGroup := grouped.groups["selective"]
-	combinedGroup := grouped.groups["combined"]
+	mandatoryGroup := grouped.Groups["mandatory"]
+	selectiveGroup := grouped.Groups["selective"]
+	combinedGroup := grouped.Groups["combined"]
 
 	// 5. Convert absolute mandatory indexes to relative indexes within combined.
 	var mandatoryIndexes []int
-	for rel, abs := range sortedIndexes(combinedGroup.matching) {
-		if _, ok := mandatoryGroup.matching[abs]; ok {
+	for rel, abs := range sd.SortedIndexes(combinedGroup.Matching) {
+		if _, ok := mandatoryGroup.Matching[abs]; ok {
 			mandatoryIndexes = append(mandatoryIndexes, rel)
 		}
 	}
@@ -54,20 +55,20 @@ func createDisclosureData(document map[string]interface{}, baseProofValue string
 	index := 0
 	for _, sig := range bp.Signatures {
 		for {
-			if _, ok := mandatoryGroup.matching[index]; ok {
+			if _, ok := mandatoryGroup.Matching[index]; ok {
 				index++
 				continue
 			}
 			break
 		}
-		if _, ok := selectiveGroup.matching[index]; ok {
+		if _, ok := selectiveGroup.Matching[index]; ok {
 			filtered = append(filtered, sig)
 		}
 		index++
 	}
 
 	// 7. Reveal document.
-	revealDoc, err := selectJsonLd(document, combined)
+	revealDoc, err := sd.SelectJSONLD(document, combined)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +78,7 @@ func createDisclosureData(document map[string]interface{}, baseProofValue string
 
 	// 8. Canonicalize the combined group's deskolemized N-Quads to get the
 	//    canonical labels the verifier will see.
-	_, rawIDMap, err := processor.CanonicalizeNQuadsWithIdMap(combinedGroup.deskolemizedNQuads)
+	_, rawIDMap, err := processor.CanonicalizeNQuadsWithIdMap(combinedGroup.DeskolemizedNQuads)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +88,7 @@ func createDisclosureData(document map[string]interface{}, baseProofValue string
 	for inputLabel, c14n := range rawIDMap {
 		in := strings.TrimPrefix(inputLabel, "_:")
 		verifier := strings.TrimPrefix(c14n, "_:")
-		verifierLabelMap[verifier] = grouped.labelMap[in]
+		verifierLabelMap[verifier] = grouped.LabelMap[in]
 	}
 
 	return &disclosureData{

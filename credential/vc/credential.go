@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/bbs"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
@@ -107,6 +108,8 @@ type credentialOptions struct {
 	loadedSchemaLoader      SchemaLoaderFunc
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
+	bbsEngine              bbs.Engine
+	bbsPresentationHeader   []byte
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -226,6 +229,21 @@ func WithSchemaLoader(loader SchemaLoaderFunc) CredentialOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.resolver = resolver
+	}
+}
+
+// WithBBSEngine sets the bbs-2023 engine used for derive/verify flows.
+func WithBBSEngine(engine bbs.Engine) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.bbsEngine = engine
+	}
+}
+
+// WithBBSPresentationHeader sets the optional presentation header used when
+// deriving a bbs-2023 disclosure proof.
+func WithBBSPresentationHeader(header []byte) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.bbsPresentationHeader = append([]byte{}, header...)
 	}
 }
 

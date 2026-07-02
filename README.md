@@ -17,6 +17,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
   - [Usage](#vc-usage)
   - [SD-JWT (Selective Disclosure)](#sd-jwt-selective-disclosure)
   - [ecdsa-sd-2023 (Selective Disclosure for JSON-LD)](#ecdsa-sd-2023)
+  - [bbs-2023 (BBS Selective Disclosure for JSON-LD)](#bbs-2023)
   - [Example](#vc-example)
 - [Verifiable Presentation (VP) Package](#verifiable-presentation-vp-package)
   - [Features](#vp-features)
@@ -144,6 +145,7 @@ credential type:
 | `JSONCredential` / `JSONPresentation` | secp256k1 | `ecdsa-rdfc-2019` |
 | `JSONCredential` / `JSONPresentation` | RSA | `JsonWebSignature2020` |
 | `ECDSASDCredential` | P-256 | `ecdsa-sd-2023` (selective disclosure) |
+| `BBSCredential` | BLS12-381 G2 | `bbs-2023` (selective disclosure, unlinkable) |
 | `JWTCredential` / `JWTPresentation` | secp256k1 | `ES256K` (JWT) |
 
 Built-in providers: `NewDefaultProvider(hex)` (secp256k1); `NewP256Provider` /
@@ -266,7 +268,7 @@ Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(u
 Supported Proof:
 
 - type: DataIntegrityProof
-  - cryptosuite: ecdsa-rdfc-2019 (standard signing), ecdsa-sd-2023 (selective disclosure for JSON-LD — see below)
+  - cryptosuite: ecdsa-rdfc-2019 (standard signing), ecdsa-sd-2023 (selective disclosure for JSON-LD — see below), bbs-2023 (BBS selective disclosure, unlinkable — see below)
 - type: JsonWebSignature2020 (RSA, detached JWS — see above)
 
 ### <a name="sd-jwt-selective-disclosure"></a>SD-JWT (Selective Disclosure)
@@ -474,6 +476,105 @@ cred.ExtractField("credentialSubject.email") // -> nil
 | **Issuer** | `vc.ParseECDSASDCredential(json)` → `AddProofByProvider(signer, mandatoryPaths, ...)` → `Serialize()` → base VC |
 | **Holder** | `vc.ParseECDSASDCredential(baseVC)` → `Derive(selectivePaths)` → `Serialize()` → derived VC |
 | **Verifier** | `vc.ParseCredential(derivedVC)` → `Verify(vc.WithResolver(...))` → revealed claims only |
+
+### <a name="bbs-2023"></a>bbs-2023 (BBS Selective Disclosure for JSON-LD)
+
+Alongside `ecdsa-sd-2023`, the SDK implements **`bbs-2023`** — the W3C
+[Data Integrity BBS Cryptosuite](https://www.w3.org/TR/vc-di-bbs/) for JSON-LD
+selective disclosure using **BBS signatures over BLS12-381 (G2 keys)**. Unlike
+`ecdsa-sd-2023`, BBS produces a single multi-message signature and the Holder's
+derived proofs are **unlinkable** — a verifier cannot tell whether two
+presentations came from the same credential. The issuer's public key is
+published as a `Multikey` verification method (`publicKeyMultibase`, multicodec
+`0xeb01`), resolvable from a `did:key`.
+
+The implementation is **byte-exact conformant** with the W3C VC-DI-BBS test
+vectors (Appendix A.1 + A.2): the canonical N-Quads, blank-node label map,
+`proofHash`/`mandatoryHash`, BBS signature, and `proofValue` (CBOR + base64url
+multibase) all reproduce the published vectors. It also passes the official
+[`w3c/vc-di-bbs-test-suite`](https://github.com/w3c/vc-di-bbs-test-suite)
+issuer + verifier conformance tests (VC 2.0).
+
+> **Prerequisite:** BBS uses a Rust `zkryptium` bridge for BLS12-381 crypto
+> (`credential/common/bbs/zkryptium-bridge`). Build it once before issuing,
+> deriving, or verifying `bbs-2023` proofs.
+
+**Roles** match `ecdsa-sd-2023`: the issuer declares **mandatory** paths (always
+disclosed); the holder derives a credential revealing a chosen subset; the
+verifier checks the derived proof against the issuer's public key.
+
+#### Issuer: creating a base credential
+
+```go
+import "github.com/pilacorp/go-credential-sdk/credential/common/bbs"
+
+// BBS signs with a BLS12-381 G2 key.
+issuerSigner, _ := bbs.NewZKryptiumSignerFromPrivateKeyHex(blsPrivateKeyHex)
+
+cred, _ := vc.ParseBBSCredential(credentialJSON)
+err := cred.AddProofByProvider(
+    issuerSigner,
+    []string{"issuer", "validFrom", "credentialSubject.id"}, // mandatory paths
+    vc.WithVerificationMethodKey("key-1"),
+    vc.WithResolver(resolver),
+)
+baseVC, _ := cred.Serialize()
+```
+
+#### Holder: deriving a selective-disclosure credential
+
+```go
+engine := bbs.NewZKryptiumEngine()
+base, _ := vc.ParseBBSCredential(baseVCBytes)
+
+derived, _ := base.Derive(
+    []string{"credentialSubject.name", "credentialSubject.dob"},
+    vc.WithBBSEngine(engine),
+    // optional holder binding:
+    // vc.WithBBSPresentationHeader([]byte("holder-nonce")),
+)
+derivedVC, _ := derived.Serialize()
+```
+
+#### Verifier: verifying a derived credential
+
+```go
+cred, _ := vc.ParseBBSCredential(derivedVCBytes)
+err := cred.Verify(vc.WithResolver(resolver), vc.WithBBSEngine(bbs.NewZKryptiumEngine()))
+```
+
+**Notes:**
+
+- **Keys:** BLS12-381 in the G2 group. The verification method is a `Multikey`
+  with `publicKeyMultibase` (multicodec `0xeb01`, 96-byte compressed key).
+- **Proof format:** `type: DataIntegrityProof`, `cryptosuite: bbs-2023`. The
+  `proofValue` is a multibase-base64url CBOR structure with a base (`0xd95d02`)
+  or derived (`0xd95d03`) header.
+- **Engine required for derive/verify:** pass `vc.WithBBSEngine(bbs.NewZKryptiumEngine())`.
+- **Unlinkability:** each `Derive` yields a fresh, unlinkable proof; an optional
+  presentation header (`vc.WithBBSPresentationHeader`) binds a proof to a context.
+- The optional BBS features (anonymous holder binding, pseudonyms) are **not**
+  implemented — only the baseline `bbs-2023` suite.
+
+#### Summary
+
+| Role | Action |
+|------|--------|
+| **Issuer** | `vc.ParseBBSCredential(json)` → `AddProofByProvider(signer, mandatoryPaths, ...)` → `Serialize()` → base VC |
+| **Holder** | `vc.ParseBBSCredential(baseVC)` → `Derive(selectivePaths, vc.WithBBSEngine(...))` → `Serialize()` → derived VC |
+| **Verifier** | `vc.ParseBBSCredential(derivedVC)` → `Verify(vc.WithResolver(...), vc.WithBBSEngine(...))` → revealed claims only |
+
+#### Conformance test servers
+
+Two minimal VC API servers drive the official W3C interop suites against this SDK:
+
+- [`examples/w3c-vc-api-bbs`](credential/examples/w3c-vc-api-bbs) — `bbs-2023`,
+  for [`vc-di-bbs-test-suite`](https://github.com/w3c/vc-di-bbs-test-suite).
+- [`examples/w3c-vc-api-ecdsa`](credential/examples/w3c-vc-api-ecdsa) —
+  `ecdsa-sd-2023`, for [`vc-di-ecdsa-test-suite`](https://github.com/w3c/vc-di-ecdsa-test-suite).
+
+Each exposes `/credentials/issue`, `/credentials/derive`, `/credentials/verify`
+and prints a ready-to-paste `localConfig.cjs`; see each server's README to run.
 
 ## <a name="vc-example"></a>Example
 
