@@ -48,6 +48,9 @@ type Credential interface {
 	// - For embedded credentials: returns the JSON object with proof
 	Serialize() (interface{}, error)
 
+	// Hash returns the SHA-256 hash (hex-encoded) of the full credential, including proof/signature.
+	Hash() (string, error)
+
 	GetContents() ([]byte, error)
 
 	GetType() string
