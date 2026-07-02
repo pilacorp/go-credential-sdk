@@ -9,6 +9,13 @@ import (
 // holds the given purpose ("authentication" or "assertionMethod") and has
 // the highest sequential `#key-N` index in the relationship array.
 func SelectLatestActiveVMForPurpose(doc *DIDDocument, purpose string) (*VerificationMethodEntry, error) {
+	return SelectLatestActiveVMForPurposeAndType(doc, purpose, "")
+}
+
+// SelectLatestActiveVMForPurposeAndType is like SelectLatestActiveVMForPurpose
+// but additionally filters by VM type (e.g. "JsonWebKey2020"). Empty vmType
+// disables the filter.
+func SelectLatestActiveVMForPurposeAndType(doc *DIDDocument, purpose, vmType string) (*VerificationMethodEntry, error) {
 	if doc == nil {
 		return nil, fmt.Errorf("did document is nil")
 	}
@@ -34,6 +41,9 @@ func SelectLatestActiveVMForPurpose(doc *DIDDocument, purpose string) (*Verifica
 		if vm.Revoked != nil {
 			continue
 		}
+		if vmType != "" && vm.Type != vmType {
+			continue
+		}
 		if !idInPurposeArray(vm.ID, doc.ID, purposeArr) {
 			continue
 		}
@@ -48,6 +58,9 @@ func SelectLatestActiveVMForPurpose(doc *DIDDocument, purpose string) (*Verifica
 	}
 
 	if bestVM == nil {
+		if vmType != "" {
+			return nil, fmt.Errorf("no active verification method of type '%s' for purpose '%s' on DID '%s'", vmType, purpose, doc.ID)
+		}
 		return nil, fmt.Errorf("no active verification method for purpose '%s' on DID '%s'", purpose, doc.ID)
 	}
 	return bestVM, nil

@@ -192,12 +192,16 @@ func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	return j.AddProofByProvider(defaultSigner, opts...)
 }
 
-func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error {
-	if signerProvider == nil {
+func (j *JWTCredential) AddProofByProvider(provider any, opts ...CredentialOpt) error {
+	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
+	sp, ok := provider.(signer.SignerProvider)
+	if !ok {
+		return fmt.Errorf("JWT credential requires signer.SignerProvider, got %T", provider)
+	}
 
-	jwtSigner := jwt.NewJWTSigner(signerProvider)
+	jwtSigner := jwt.NewJWTSigner(sp)
 	signature, err := jwtSigner.SignString(j.signingInput)
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)

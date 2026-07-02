@@ -10,7 +10,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
-	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -37,8 +36,10 @@ type Credential interface {
 	// AddCustomProof attaches a caller-provided proof/signature (legacy API).
 	AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error
 
-	// AddProofByProvider signs using a signer provider (Vault/HSM/local).
-	AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error
+	// AddProofByProvider signs using a signer provider. Accepts either
+	// signer.SignerProvider (ECDSA path) or signer.JWSSignerProvider (JWS path).
+	// Routing is decided at runtime; passing an unrelated type returns an error.
+	AddProofByProvider(provider any, opts ...CredentialOpt) error
 
 	// Verify verifies the credential
 	Verify(opts ...CredentialOpt) error
