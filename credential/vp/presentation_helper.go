@@ -56,8 +56,10 @@ func checkExpiration(p PresentationData) error {
 	return nil
 }
 
-// verifyCredentials verifies the signatures of a slice of Verifiable Credentials.
-func verifyCredentials(jsonPresentation PresentationData) error {
+// verifyCredentials verifies each Verifiable Credential inside the presentation
+// using the provided opts. When opts is empty, defaults to schema + proof +
+// expiration + revocation.
+func verifyCredentials(jsonPresentation PresentationData, opts ...vc.CredentialOpt) error {
 	contents, err := parsePresentationContents(jsonPresentation)
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
@@ -69,13 +71,20 @@ func verifyCredentials(jsonPresentation PresentationData) error {
 		return fmt.Errorf("credential input is nil")
 	}
 
+	if len(opts) == 0 {
+		opts = []vc.CredentialOpt{
+			vc.WithSchemaValidation(),
+			vc.WithVerifyProof(),
+			vc.WithCheckExpiration(),
+			vc.WithCheckRevocation(),
+		}
+	}
+
 	for i, v := range vcs {
 		if v == nil {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
-		// Verify the credential using the new interface
-		err := v.Verify(vc.WithSchemaValidation())
-		if err != nil {
+		if err := v.Verify(opts...); err != nil {
 			return fmt.Errorf("failed to verify credential at index %d: %w", i, err)
 		}
 	}
