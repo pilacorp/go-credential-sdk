@@ -33,6 +33,9 @@ type Credential interface {
 	// Serialize returns the JWT string (JWT) or the JSON object with proof (JSON).
 	Serialize() (any, error)
 
+	// Hash returns the SHA-256 hash (hex-encoded) of the full credential, including proof/signature.
+	Hash() (string, error)
+
 	GetContents() ([]byte, error)
 
 	GetType() string

@@ -2,7 +2,9 @@ package vc
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -263,6 +265,30 @@ func (j *JWTCredential) Serialize() (any, error) {
 	sb.WriteString("~")
 
 	return sb.String(), nil
+}
+
+// Hash returns the SHA-256 hash (hex-encoded) of the full serialized JWT string
+// (header.payload.signature, plus disclosures for SD-JWT). No canonicalization is
+// needed: the serialized JWT is a fixed string, so the hash is deterministic.
+// The credential must be signed before hashing.
+func (j *JWTCredential) Hash() (string, error) {
+	if j.signature == "" {
+		return "", fmt.Errorf("credential must be signed before hashing")
+	}
+
+	serialized, err := j.Serialize()
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize credential: %w", err)
+	}
+
+	jwtStr, ok := serialized.(string)
+	if !ok {
+		return "", fmt.Errorf("unexpected serialized credential type %T", serialized)
+	}
+
+	hash := sha256.Sum256([]byte(jwtStr))
+
+	return hex.EncodeToString(hash[:]), nil
 }
 
 func (j *JWTCredential) GetContents() ([]byte, error) {

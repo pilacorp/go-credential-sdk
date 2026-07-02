@@ -83,4 +83,6 @@ func (e *ECDSASDCredential) GetContents() ([]byte, error) { return e.base.GetCon
 
 func (e *ECDSASDCredential) GetType() string { return e.base.GetType() }
 
+func (e *ECDSASDCredential) Hash() (string, error) { return e.base.Hash() }
+
 func (e *ECDSASDCredential) ExtractField(path string) any { return e.base.ExtractField(path) }

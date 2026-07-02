@@ -89,6 +89,27 @@ func (m *JSONMap) Canonicalize() ([]byte, error) {
 	return processor.ComputeDigest(canonicalDoc)
 }
 
+// CanonicalizeFull canonicalizes the full JSONMap, including the proof field,
+// and returns its SHA-256 digest. Unlike Canonicalize, nothing is excluded.
+func (m *JSONMap) CanonicalizeFull() ([]byte, error) {
+	encoded, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal JSONMap: %w", err)
+	}
+
+	var doc map[string]interface{}
+	if err := json.Unmarshal(encoded, &doc); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSONMap: %w", err)
+	}
+
+	canonicalDoc, err := processor.CanonicalizeDocument(doc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
+	}
+
+	return processor.ComputeDigest(canonicalDoc)
+}
+
 // AddECDSAProof adds an ECDSA proof to the JSONMap. verificationMethod must
 // be a full DID URL (caller's responsibility to resolve/normalize).
 func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string) error {

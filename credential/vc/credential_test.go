@@ -1,7 +1,9 @@
 package vc
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -1820,3 +1822,195 @@ func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T
 	assert.Contains(t, err.Error(), "schema is empty")
 }
 
+
+func TestJSONCredentialHash_RequiresProof(t *testing.T) {
+	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
+	cred, err := NewJSONCredential(contents, WithVerificationMethodKey("key-1"))
+	assert.NoError(t, err)
+
+	_, err = cred.Hash()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "must have proof")
+}
+
+func TestJSONCredentialHash_Deterministic(t *testing.T) {
+	cred := newSignedJSONCredential(t)
+
+	h1, err := cred.Hash()
+	assert.NoError(t, err)
+	h2, err := cred.Hash()
+	assert.NoError(t, err)
+
+	assert.Equal(t, h1, h2, "hash must be deterministic")
+	assert.Len(t, h1, 64, "SHA-256 hex must be 64 chars")
+	_, err = hex.DecodeString(h1)
+	assert.NoError(t, err, "hash must be valid hex")
+}
+
+func TestJSONCredentialHash_StableAcrossSerializeParseRoundTrip(t *testing.T) {
+	cred := newSignedJSONCredential(t)
+
+	h1, err := cred.Hash()
+	assert.NoError(t, err)
+
+	serialized, err := cred.Serialize()
+	assert.NoError(t, err)
+	raw, err := json.Marshal(serialized)
+	assert.NoError(t, err)
+
+	parsed, err := ParseJSONCredential(raw)
+	assert.NoError(t, err)
+
+	h2, err := parsed.Hash()
+	assert.NoError(t, err)
+
+	assert.Equal(t, h1, h2, "hash must survive serialize/parse round trip")
+}
+
+func TestJSONCredentialHash_IndependentOfKeyOrder(t *testing.T) {
+	jsonA := []byte(`{
+		"@context": ["https://www.w3.org/ns/credentials/v2"],
+		"id": "urn:uuid:1234",
+		"type": ["VerifiableCredential"],
+		"issuer": "did:example:issuer",
+		"validFrom": "2025-08-05T10:00:00Z",
+		"credentialSubject": {"id": "did:example:subject1", "name": "John Doe"},
+		"proof": {"type": "EcdsaSecp256k1Signature2019", "created": "2025-08-05T10:00:00Z", "proofPurpose": "assertionMethod", "verificationMethod": "did:example:issuer#key-1", "proofValue": "abc123"}
+	}`)
+	// Same content, different key order.
+	jsonB := []byte(`{
+		"proof": {"proofValue": "abc123", "verificationMethod": "did:example:issuer#key-1", "proofPurpose": "assertionMethod", "created": "2025-08-05T10:00:00Z", "type": "EcdsaSecp256k1Signature2019"},
+		"credentialSubject": {"name": "John Doe", "id": "did:example:subject1"},
+		"validFrom": "2025-08-05T10:00:00Z",
+		"issuer": "did:example:issuer",
+		"type": ["VerifiableCredential"],
+		"id": "urn:uuid:1234",
+		"@context": ["https://www.w3.org/ns/credentials/v2"]
+	}`)
+
+	credA, err := ParseJSONCredential(jsonA)
+	assert.NoError(t, err)
+	credB, err := ParseJSONCredential(jsonB)
+	assert.NoError(t, err)
+
+	hA, err := credA.Hash()
+	assert.NoError(t, err)
+	hB, err := credB.Hash()
+	assert.NoError(t, err)
+
+	assert.Equal(t, hA, hB, "hash must be independent of JSON key order")
+}
+
+func TestJSONCredentialHash_IncludesProof(t *testing.T) {
+	cred := newSignedJSONCredential(t)
+
+	h1, err := cred.Hash()
+	assert.NoError(t, err)
+
+	// Same credential with a tampered proofValue must hash differently.
+	serialized, err := cred.Serialize()
+	assert.NoError(t, err)
+	m, ok := serialized.(map[string]interface{})
+	assert.True(t, ok)
+
+	proof, ok := m["proof"].(map[string]interface{})
+	assert.True(t, ok, "expected proof to be a map, got %T", m["proof"])
+	proof["proofValue"] = "deadbeef"
+
+	raw, err := json.Marshal(m)
+	assert.NoError(t, err)
+	tampered, err := ParseJSONCredential(raw)
+	assert.NoError(t, err)
+
+	h2, err := tampered.Hash()
+	assert.NoError(t, err)
+
+	assert.NotEqual(t, h1, h2, "hash must change when proof changes")
+}
+
+func TestJWTCredentialHash_MatchesSerializedString(t *testing.T) {
+	cred := newSignedJWTCredential(t)
+
+	serialized, err := cred.Serialize()
+	assert.NoError(t, err)
+	jwtStr, ok := serialized.(string)
+	assert.True(t, ok)
+
+	expected := sha256.Sum256([]byte(jwtStr))
+
+	h, err := cred.Hash()
+	assert.NoError(t, err)
+	assert.Equal(t, hex.EncodeToString(expected[:]), h)
+}
+
+func TestJWTCredentialHash_StableAcrossSerializeParseRoundTrip(t *testing.T) {
+	cred := newSignedJWTCredential(t)
+
+	h1, err := cred.Hash()
+	assert.NoError(t, err)
+
+	serialized, err := cred.Serialize()
+	assert.NoError(t, err)
+
+	parsed, err := ParseJWTCredential(serialized.(string))
+	assert.NoError(t, err)
+
+	h2, err := parsed.Hash()
+	assert.NoError(t, err)
+
+	assert.Equal(t, h1, h2, "hash must survive serialize/parse round trip")
+}
+
+func TestJWTCredentialHash_RequiresSignature(t *testing.T) {
+	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
+	cred, err := NewJWTCredential(contents, WithVerificationMethodKey("key-1"))
+	assert.NoError(t, err)
+
+	// Unsigned: must error.
+	_, err = cred.Hash()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "must be signed")
+
+	// Signed: must succeed.
+	err = cred.AddProofByProvider(newTestSigner(t))
+	assert.NoError(t, err)
+
+	h, err := cred.Hash()
+	assert.NoError(t, err)
+	assert.Len(t, h, 64)
+}
+
+func newTestSigner(t *testing.T) *signer.DefaultProvider {
+	t.Helper()
+	s, err := signer.NewDefaultProvider(testIssuerPrivateKey)
+	if err != nil {
+		t.Fatalf("NewDefaultProvider failed: %v", err)
+	}
+	return s
+}
+
+func newSignedJSONCredential(t *testing.T) Credential {
+	t.Helper()
+	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
+	cred, err := NewJSONCredential(contents, WithVerificationMethodKey("key-1"))
+	if err != nil {
+		t.Fatalf("NewJSONCredential failed: %v", err)
+	}
+	if err := cred.AddProofByProvider(newTestSigner(t)); err != nil {
+		t.Fatalf("AddProofByProvider failed: %v", err)
+	}
+	return cred
+}
+
+func newSignedJWTCredential(t *testing.T) Credential {
+	t.Helper()
+	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
+	cred, err := NewJWTCredential(contents, WithVerificationMethodKey("key-1"))
+	if err != nil {
+		t.Fatalf("NewJWTCredential failed: %v", err)
+	}
+	if err := cred.AddProofByProvider(newTestSigner(t)); err != nil {
+		t.Fatalf("AddProofByProvider failed: %v", err)
+	}
+	return cred
+}
