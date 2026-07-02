@@ -2,6 +2,7 @@ package vc
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -125,6 +126,21 @@ func (e *JSONCredential) Serialize() (interface{}, error) {
 	}
 
 	return (*jsonmap.JSONMap)(&e.credentialData).ToMap()
+}
+
+// Hash returns the SHA-256 hash (hex-encoded) of the JSON-LD canonicalized (URDNA2015)
+// full credential, including the proof field. The credential must have proof before hashing.
+func (e *JSONCredential) Hash() (string, error) {
+	if e.credentialData["proof"] == nil {
+		return "", fmt.Errorf("credential must have proof before hashing")
+	}
+
+	digest, err := (*jsonmap.JSONMap)(&e.credentialData).CanonicalizeFull()
+	if err != nil {
+		return "", fmt.Errorf("failed to canonicalize credential: %w", err)
+	}
+
+	return hex.EncodeToString(digest), nil
 }
 
 func (e *JSONCredential) GetContents() ([]byte, error) {

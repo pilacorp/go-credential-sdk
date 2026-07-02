@@ -48,6 +48,11 @@ type Credential interface {
 	// - For embedded credentials: returns the JSON object with proof
 	Serialize() (interface{}, error)
 
+	// Hash returns the SHA-256 hash (hex-encoded) of the full credential, including proof/signature.
+	// - For JWT credentials: hashes the full serialized JWT string (header.payload.signature, plus disclosures for SD-JWT)
+	// - For JSON credentials: hashes the JSON-LD canonicalized (URDNA2015) full credential, including the proof field
+	Hash() (string, error)
+
 	GetContents() ([]byte, error)
 
 	GetType() string
