@@ -54,13 +54,6 @@ func TestJWTSigner_SignString_Returns64BytesSignature(t *testing.T) {
 	}
 }
 
-func TestJWTSigner_SignString_InvalidSignatureLength(t *testing.T) {
-	j := NewJWTSigner(&testSigner{sig: make([]byte, 63)})
-	if _, err := j.SignString("header.payload"); err == nil {
-		t.Fatalf("expected error for invalid signature length")
-	}
-}
-
 func TestJWTSigner_SignString_Provider64ByteSignatureVerifies(t *testing.T) {
 	privHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	priv, err := crypto.HexToECDSA(privHex)

@@ -7,9 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
-	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
@@ -29,29 +27,18 @@ func Init(baseURL string) {
 }
 
 type Presentation interface {
-	// AddProof signs using a local private key (legacy API).
-	AddProof(priv string, opts ...PresentationOpt) error
-
-	// GetSigningInput returns the signing bytes for external signing (legacy API).
-	GetSigningInput() ([]byte, error)
-	// AddCustomProof attaches a caller-provided proof/signature (legacy API).
-	AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error
-
-	// AddProofByProvider signs using a signer provider (Vault/HSM/local).
-	AddProofByProvider(signerProvider signer.SignerProvider, opts ...PresentationOpt) error
-
 	Verify(opts ...PresentationOpt) error
 
-	// Serialize returns the presentation in its native format
-	// - For JWT presentations: returns the JWT string
-	// - For embedded presentations: returns the JSON object with proof
-	Serialize() (interface{}, error)
+	// Serialize returns the presentation in its native format:
+	// the JWT string (JWT) or the JSON object with proof (JSON).
+	Serialize() (any, error)
 
 	GetContents() ([]byte, error)
 
 	GetType() string
 
-	executeOptions(opts ...PresentationOpt) error
+	// ExtractField returns a field by dot-notation path, or nil if absent.
+	ExtractField(path string) any
 }
 
 // PresentationData represents presentation data in JSON format (suitable for both JWT and JSON presentations).
@@ -59,13 +46,13 @@ type PresentationData jsonmap.JSONMap
 
 // PresentationContents represents the structured contents of a Presentation.
 type PresentationContents struct {
-	Context               []interface{}
-	ID                    string
-	Types                 []string
-	Holder                string
-	ValidFrom             time.Time // Issuance date
-	ValidUntil            time.Time // Expiration date
-	VerifiableCredentials []vc.Credential
+	Context               []interface{}   `json:"context,omitempty"`
+	ID                    string          `json:"id,omitempty"`
+	Types                 []string        `json:"type,omitempty"`
+	Holder                string          `json:"holder,omitempty"`
+	ValidFrom             time.Time       `json:"validFrom,omitempty"`  // Issuance date
+	ValidUntil            time.Time       `json:"validUntil,omitempty"` // Expiration date
+	VerifiableCredentials []vc.Credential `json:"verifiableCredential,omitempty"`
 }
 
 // PresentationOpt configures presentation processing options.
@@ -73,12 +60,22 @@ type PresentationOpt func(*presentationOptions)
 
 // presentationOptions holds configuration for presentation processing.
 type presentationOptions struct {
-	isValidateVC          bool
-	isVerifyProof         bool
-	isCheckExpiration     bool
-	didBaseURL            string
-	verificationMethodKey string
-	resolver              verificationmethod.ResolverProvider
+	isValidateVC            bool
+	isVerifyProof           bool
+	isCheckExpiration       bool
+	didBaseURL              string
+	verificationMethodKey   string
+	resolver                verificationmethod.ResolverProvider
+	proofVerificationMethod string
+}
+
+// WithProofVerificationMethod restricts proof verification to the single proof
+// bound to the given verification method URL. By default all proofs in the set
+// must verify; with this option only the selected proof is checked.
+func WithProofVerificationMethod(vm string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.proofVerificationMethod = vm
+	}
 }
 
 // WithVCValidation enables validation for credentials in the presentation.
@@ -98,6 +95,10 @@ func WithBaseURL(baseURL string) PresentationOpt {
 // WithVerificationMethodKey sets the verification method fragment used when
 // signing — e.g. "key-2". When omitted, the SDK resolves the holder DID and
 // picks the latest active VM in the authentication relationship array.
+//
+// The cryptosuite is chosen from the bound VM's key type. If the DID holds
+// keys of DIFFERENT types, you MUST pin the VM here, otherwise the latest
+// active VM is used and may not match your signer.
 func WithVerificationMethodKey(key string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.verificationMethodKey = key

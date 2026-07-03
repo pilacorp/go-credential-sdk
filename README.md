@@ -16,6 +16,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
   - [Features](#vc-features)
   - [Usage](#vc-usage)
   - [SD-JWT (Selective Disclosure)](#sd-jwt-selective-disclosure)
+  - [ecdsa-sd-2023 (Selective Disclosure for JSON-LD)](#ecdsa-sd-2023)
   - [Example](#vc-example)
 - [Verifiable Presentation (VP) Package](#verifiable-presentation-vp-package)
   - [Features](#vp-features)
@@ -125,15 +126,92 @@ if email != nil {
 
 ### Adding Proofs/Signatures
 
-The SDK signs via a pluggable signer provider (Vault/HSM/local).
+The SDK signs via a single pluggable signer provider — anything that can sign a
+digest (local key, Vault, HSM, KMS):
 
 ```go
-signer, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+type SignerProvider interface {
+    Sign(digest []byte) ([]byte, error)
+}
+```
+
+The cryptosuite is chosen from the **key type of the bound verification method**
+(read from the resolved DID document at signing time), together with the
+credential type:
+
+| Credential / method | VM key type | Cryptosuite |
+|---|---|---|
+| `JSONCredential` / `JSONPresentation` | secp256k1 | `ecdsa-rdfc-2019` |
+| `JSONCredential` / `JSONPresentation` | RSA | `JsonWebSignature2020` |
+| `ECDSASDCredential` | P-256 | `ecdsa-sd-2023` (selective disclosure) |
+| `JWTCredential` / `JWTPresentation` | secp256k1 | `ES256K` (JWT) |
+
+Built-in providers: `NewDefaultProvider(hex)` (secp256k1); `NewP256Provider` /
+`NewP256ProviderFromHex` / `NewP256Func` (P-256); `NewRSAProvider(key, alg...)` /
+`NewRSAFunc(fn, alg)` (RSA).
+
+> **A resolver is required when signing a JSON VC/VP**, even when the VM is
+> pinned — the SDK reads the VM key type from the DID document to pick the
+> cryptosuite. Pass `vc.WithResolver(...)` (a default HTTP resolver is used
+> otherwise).
+
+```go
+prov, err := signer.NewDefaultProvider(privateKeyHex) // secp256k1, local/dev
 if err != nil { /* handle */ }
 
-// Add cryptographic proof (works for both JSON and JWT)
-err = credential.AddProof(signer)
+cred, _ := vc.ParseJSONCredential(rawJSON)
+err = cred.AddProofByProvider(prov, vc.WithResolver(resolver)) // → ecdsa-rdfc-2019
 ```
+
+#### JsonWebSignature2020 (RSA) for JSON-LD credentials
+
+Sign a JSON-LD credential with an RSA key. The issuer DID must expose a
+`JsonWebKey2020` verification method with an RSA `publicKeyJwk`. The JOSE
+algorithm (RS256/384/512, PS256/384/512; default RS256) is declared by the
+provider and written to the JWS header.
+
+```go
+// Local key (dev). alg defaults to "RS256".
+rsaProvider, err := signer.NewRSAProvider(rsaPrivateKey)          // RS256
+rsaProvider, err = signer.NewRSAProvider(rsaPrivateKey, "PS256")  // or PS256, RS384, ...
+
+// Or HSM/KMS callback — the key stays remote. signFn receives the digest
+// (already hashed with alg's SHA) and returns the raw RSA signature.
+rsaProvider, err = signer.NewRSAFunc(func(digest []byte) ([]byte, error) {
+    return hsm.SignRSA(digest)
+}, "PS256")
+
+cred, _ := vc.ParseJSONCredential(rawJSON)
+err = cred.AddProofByProvider(rsaProvider, vc.WithResolver(resolver)) // → JsonWebSignature2020
+```
+
+> **Pin the VM on mixed-key DIDs.** The suite comes from the bound VM's key type,
+> NOT from the provider. If the issuer DID holds keys of different types (e.g. a
+> secp256k1 and an RSA key), pin the right one with
+> `vc.WithVerificationMethodKey("key-2")`; otherwise the latest active VM is used
+> and a mismatched signer is rejected at signing time.
+
+For a complete, runnable issuer → holder → derive → present → verify flow, see
+[`examples/ecdsasd`](examples/ecdsasd).
+
+#### Multiple proofs (proof set)
+
+Calling `AddProofByProvider` more than once appends to a **proof set** — the
+credential keeps every proof instead of replacing it. Each proof is independent
+(it signs the unsecured document), so you can mix cryptosuites, e.g. one
+`ecdsa-rdfc-2019` proof and one `JsonWebSignature2020` proof under different
+verification methods:
+
+```go
+cred, _ := vc.ParseJSONCredential(rawJSON)
+cred.AddProofByProvider(ecdsaSigner, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)) // ecdsa-rdfc-2019
+cred.AddProofByProvider(rsaProvider, vc.WithVerificationMethodKey("key-2"), vc.WithResolver(resolver)) // JsonWebSignature2020
+```
+
+On `Verify`, **every** proof must pass (AND), each checked against the DID
+document resolved from its own `verificationMethod`. (Note: `ecdsa-sd-2023`
+rewrites the document body and is always a single proof — it cannot be combined
+into a proof set.)
 
 ### Available Options
 
@@ -188,7 +266,8 @@ Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(u
 Supported Proof:
 
 - type: DataIntegrityProof
-- cryptosuite: ecdsa-rdfc-2019,
+  - cryptosuite: ecdsa-rdfc-2019 (standard signing), ecdsa-sd-2023 (selective disclosure for JSON-LD — see below)
+- type: JsonWebSignature2020 (RSA, detached JWS — see above)
 
 ### <a name="sd-jwt-selective-disclosure"></a>SD-JWT (Selective Disclosure)
 
@@ -270,73 +349,25 @@ cred, err := vc.NewJWTCredential(contents,
 
 #### Holder: Presenting an SD-JWT
 
-The Holder receives the full SD-JWT string from the Issuer. Use the **sdjwt** package to parse it, inspect disclosures, and build a new SD-JWT presentation with only selected disclosures:
+The Holder parses the SD-JWT into a credential, inspects what is disclosable, and presents only a chosen subset — keeping the issuer's signature intact:
 
 ```go
-import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
-
-// Parse the SD-JWT
-parsed, err := sdjwt.Parse(sdJWTString)
+cred, err := vc.ParseJWTCredential(sdJWTString)
 if err != nil { ... }
 
-// Access decoded disclosures (includes salt, field name, value)
-for _, dec := range parsed.DecodedDisclosures {
-    fmt.Printf("Field: %s, Value: %v\n", dec.FieldName, dec.Value)
+// Inspect available disclosures (field name, value, salt)
+discs, _ := cred.DecodedDisclosures()
+for _, d := range discs {
+    fmt.Printf("Field: %s, Value: %v\n", d.FieldName, d.Value)
 }
 
-// Build presentation with selected disclosures
-presentation := sdjwt.BuildSDJWTPresentation(parsed.BaseJWT, selectedDisclosures)
+// Present only the chosen disclosure strings (keeps the issuer signature)
+presented, _ := cred.Present(selectedDisclosures)
+out, _ := presented.Serialize() // SD-JWT string to send to the Verifier
 ```
 
 - **Present the full SD-JWT** — pass the original string to the Verifier (all disclosures).
-- **Present a subset** — use `sdjwt.BuildSDJWTPresentation(baseJWT, selectedDisclosures)` to build a new SD-JWT string with only the chosen disclosures, then send that to the Verifier.
-
-#### Issuer: Adding selective disclosures to an existing SD-JWT
-
-An issuer may need to add more selective disclosures to an existing SD-JWT credential (e.g., adding new fields that were not originally disclosed). Since SD-JWT uses random salts, the signature must be recreated after adding disclosures.
-
-**Important:** When adding disclosures to an existing SD-JWT, you must rebuild ALL disclosures (existing + new) because salt values change each time disclosures are generated.
-
-```go
-// 1. Parse the existing SD-JWT
-cred, err := vc.ParseCredential([]byte(existingSDJWT))
-if err != nil {
-    log.Fatal(err)
-}
-
-// 2. Add new selective disclosure paths
-// Note: All existing disclosures will be rebuilt + new ones added
-	newCred, err := cred.AddSelectiveDisclosures([]string{
-	    "credentialSubject.phone",
-	    "credentialSubject.address",
-	})
-	if err != nil {
-	    log.Fatal(err)
-	}
-
-	// 3. Re-sign the credential with issuer's private key
-	issuerSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
-	if err != nil {
-	    log.Fatal(err)
-	}
-	err = newCred.AddProof(issuerSigner)
-	if err != nil {
-	    log.Fatal(err)
-	}
-
-// 4. Serialize to get the new SD-JWT with additional disclosures
-newSDJWT, err := newCred.Serialize()
-if err != nil {
-    log.Fatal(err)
-}
-fmt.Printf("New SD-JWT with additional disclosures:\n%s\n", newSDJWT)
-```
-
-**Key points:**
-- The new credential retains any previously disclosed fields
-- New paths are added to the disclosure set
-- The signature must be regenerated using `AddProof()` after adding disclosures
-- This operation only works with JWT credentials; JSON credentials do not support selective disclosures
+- **Present a subset** — `cred.Present(selectedDisclosures)` builds a new SD-JWT with only the chosen disclosures. (`sdjwt.BuildSDJWTPresentation` is the lower-level equivalent.)
 
 #### Verifier: Parsing and verifying an SD-JWT
 
@@ -364,43 +395,85 @@ contents, _ := cred.GetContents()
   - Hash algorithm support
 - **No Key Binding:** SDK does not expose/verify Key Binding JWT (KB-JWT). The parser may skip the final JWT-like segment (if preceded by `~`) as holder binding, but does not verify it.
 
-#### Advanced: Manual SD-JWT Processing
-
-For more control, use the **sdjwt** package directly:
-
-```go
-import "github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
-
-// Build disclosures manually (Issuer)
-result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
-    VC:             vcMap,
-    SelectivePaths: selectivePaths,
-    HashAlgorithm:  "sha-384",
-    Shuffle:        true,
-    Decoys: []sdjwt.DecoyConfig{
-        {Path: "", Count: 2},
-        {Path: "credentialSubject", Count: 3},
-    },
-})
-// result.ProcessedVC - VC with fields replaced by digests
-// result.Disclosures - Disclosure strings
-// result.SDAlg       - Hash algorithm used
-// Holder metadata: use sdjwt.Parse() -> ParsedSDJWT.DecodedDisclosures
-
-// Reconstruct with validation (Verifier)
-config := &sdjwt.ValidationConfig{
-    RequireHashAlgorithmMatch:    true,
-}
-reconstructed, err := sdjwt.Reconstruct(vcMap, disclosures, config)
-```
-
 #### Summary
 
 | Role | Action |
 |------|--------|
 | **Issuer** | `vc.NewJWTCredential(contents, vc.WithSDSelectivePaths(paths))` → `AddProof` → `Serialize()` → SD-JWT string |
-| **Holder** | `sdjwt.Parse(sdJWT)` → use `parsed.Disclosures` / `parsed.DecodedDisclosures` → `sdjwt.BuildSDJWTPresentation(baseJWT, selectedDisclosures)` |
+| **Holder** | `vc.ParseJWTCredential(sdJWT)` → `DecodedDisclosures()` → `Present(selectedDisclosures)` → `Serialize()` |
 | **Verifier** | `vc.ParseCredential(raw, vc.WithVerifyProof(), ...)` → use returned `Credential` (disclosed claims only) |
+
+### <a name="ecdsa-sd-2023"></a>ecdsa-sd-2023 (Selective Disclosure for JSON-LD)
+
+While **SD-JWT** (above) provides selective disclosure for **JWT** credentials, the SDK also supports **`ecdsa-sd-2023`** — selective disclosure for **JSON-LD / Data Integrity** credentials. It follows the W3C [Data Integrity ECDSA Cryptosuites](https://www.w3.org/TR/vc-di-ecdsa/) `ecdsa-sd-2023` mechanism, signing with **P-256 (secp256r1)** as mandated by the spec — both the issuer base signature and the per-statement ephemeral key are P-256. The issuer's P-256 key is published as a `JsonWebKey2020` verification method (`publicKeyJwk`, `crv: P-256`) in its DID document. The implementation is **byte-exact conformant** with the W3C worked example — the canonical N-Quads, HMAC label map, `proofValue` (CBOR + base64url multibase), and base58btc `Multikey` encoding all match the published vectors — so proofs interoperate with conformant `ecdsa-sd-2023` verifiers, not just other instances of this SDK.
+
+**How it differs from SD-JWT:** SD-JWT uses salted-hash disclosures on a JWT; `ecdsa-sd-2023` produces a JSON-LD `DataIntegrityProof` and works by RDF-canonicalizing the credential into individual statements, signing each non-mandatory statement with an ephemeral key, and letting the Holder derive a proof that reveals only a chosen subset.
+
+**Roles:**
+
+- **Issuer**: Signs the credential and declares which claims are **mandatory** (always disclosed). Every other claim becomes selectively disclosable. Output is a *base proof* (cryptosuite `ecdsa-sd-2023`).
+- **Holder**: Derives a new credential that reveals the mandatory claims plus a chosen subset; hidden claims are removed from the credential entirely.
+- **Verifier**: Verifies the derived proof using the issuer's public key resolved from its DID document.
+
+#### Issuer: creating a base credential
+
+```go
+// ecdsa-sd-2023 signs with P-256. Provide a P-256 key (in-memory, hex, or HSM):
+issuerSigner, _ := signer.NewP256Provider(issuerP256PrivateKey)  // *ecdsa.PrivateKey
+// or: signer.NewP256ProviderFromHex(hexScalar)
+// or: signer.NewP256Func(func(digest []byte) ([]byte, error) { return hsm.SignP256(digest) })
+
+cred, _ := vc.ParseECDSASDCredential(credentialJSON)
+
+// Mandatory paths are always disclosed; everything else is selectable.
+err := cred.AddProofByProvider(
+    issuerSigner,
+    []string{"issuer", "validFrom", "credentialSubject.id"}, // mandatory paths
+    vc.WithVerificationMethodKey("key-1"),
+    vc.WithResolver(resolver), // or rely on vc.Init(baseURL)
+)
+baseVC, _ := cred.Serialize()
+```
+
+#### Holder: deriving a selective-disclosure credential
+
+```go
+base, _ := vc.ParseECDSASDCredential(baseVCBytes)
+
+// Reveal only name + dob (plus the issuer's mandatory claims); hide the rest.
+derived, _ := base.Derive([]string{
+    "credentialSubject.name",
+    "credentialSubject.dob",
+})
+derivedVC, _ := derived.Serialize()
+```
+
+#### Verifier: verifying a derived credential
+
+```go
+cred, _ := vc.ParseJSONCredential(derivedVCBytes)
+if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+    // invalid / tampered
+}
+// Hidden claims are absent:
+cred.ExtractField("credentialSubject.email") // -> nil
+```
+
+**Notes:**
+
+- **Paths** use dot-notation (`"credentialSubject.name"`), the same style as SD-JWT.
+- **Keys:** P-256 (secp256r1). The issuer's verification method must be a `JsonWebKey2020` with a `publicKeyJwk` (`kty: EC`, `crv: P-256`). The per-statement ephemeral key embedded in the proof is also P-256.
+- **Proof format:** `type: DataIntegrityProof`, `cryptosuite: ecdsa-sd-2023`. The `proofValue` is a multibase-base64url CBOR structure with a base (`0xd95d00`) or derived (`0xd95d01`) header.
+- **Blank nodes:** handled via the spec's HMAC blank-node label map. Internal `urn:bnid:` skolemization is only a canonicalization aid and does **not** appear in the issued or derived credential body.
+- A runnable end-to-end example (issue → derive → verify → VP, fully offline) is in [`examples/ecdsasd`](examples/ecdsasd/main.go). See also [`docs/ecdsa-sd-2023.md`](docs/ecdsa-sd-2023.md) for design details.
+
+#### Summary
+
+| Role | Action |
+|------|--------|
+| **Issuer** | `vc.ParseECDSASDCredential(json)` → `AddProofByProvider(signer, mandatoryPaths, ...)` → `Serialize()` → base VC |
+| **Holder** | `vc.ParseECDSASDCredential(baseVC)` → `Derive(selectivePaths)` → `Serialize()` → derived VC |
+| **Verifier** | `vc.ParseCredential(derivedVC)` → `Verify(vc.WithResolver(...))` → revealed claims only |
 
 ## <a name="vc-example"></a>Example
 
@@ -886,10 +959,6 @@ sdJwtCred, err := vc.NewJWTCredential(contents, vc.WithSDSelectivePaths([]string
 // Parse credentials (works for JSON, JWT, or SD-JWT)
 cred, err := vc.ParseCredential(data)
 cred, err := vc.ParseCredentialWithValidation(data)
-
-// Add selective disclosures to existing SD-JWT (JWT only)
-// Note: Signature must be recreated after adding disclosures
-newCred, err := cred.AddSelectiveDisclosures([]string{"credentialSubject.phone"})
 
 	// Add proof and verify
 	issuerSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only

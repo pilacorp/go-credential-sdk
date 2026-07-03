@@ -27,7 +27,9 @@ type JWTCredential struct {
 	disclosures  []string       // Optional SD-JWT disclosures (when issuing/holding SD-JWT)
 }
 
-func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential, error) {
+var _ Credential = (*JWTCredential)(nil)
+
+func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCredential, error) {
 	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
@@ -77,7 +79,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 
 	kid := options.verificationMethodKey
 	if kid == "" {
-		kid, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), vcc.Issuer, "assertionMethod", options.resolver)
+		kid, err = verificationmethod.ResolveVerificationMethodURLForKey(context.Background(), vcc.Issuer, "assertionMethod", verificationmethod.KeySecp256k1, options.resolver)
 		if err != nil {
 			return nil, fmt.Errorf("resolve verification method: %w", err)
 		}
@@ -115,7 +117,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (Credential
 	return e, e.executeOptions(opts...)
 }
 
-func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error) {
+func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, error) {
 	rawJWT = strings.TrimSpace(strings.Trim(rawJWT, "\""))
 
 	var issuerJWT string
@@ -184,6 +186,7 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (Credential, error
 	return e, e.executeOptions(opts...)
 }
 
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTCredential) AddProof(priv string, opts ...CredentialOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -212,10 +215,12 @@ func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider,
 	return nil
 }
 
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTCredential) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -238,7 +243,7 @@ func (j *JWTCredential) Verify(opts ...CredentialOpt) error {
 	return j.executeOptions(opts...)
 }
 
-func (j *JWTCredential) Serialize() (interface{}, error) {
+func (j *JWTCredential) Serialize() (any, error) {
 	base := j.signingInput
 	if j.signature != "" || len(j.disclosures) > 0 {
 		base = base + "." + j.signature
@@ -294,179 +299,28 @@ func (j *JWTCredential) GetType() string {
 	return "JWT"
 }
 
-func (j *JWTCredential) ExtractField(path string) interface{} {
+func (j *JWTCredential) ExtractField(path string) any {
 	if j.payloadData == nil {
 		return nil
 	}
 	return extractFieldFromMap(j.payloadData, path)
 }
 
-func (j *JWTCredential) AddSelectiveDisclosures(selectivePaths []string) (Credential, error) {
-	if len(selectivePaths) == 0 {
-		return nil, fmt.Errorf("selective paths cannot be empty")
-	}
-
-	payload, header, err := j.extractPayload()
-	if err != nil {
-		return nil, err
-	}
-
-	vcMap, ok := payload["vc"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("vc claim not found in payload")
-	}
-
-	allPaths := selectivePaths
-	if len(j.disclosures) > 0 {
-		// Reconstruct to get original data with all fields
-		original, err := sdjwt.Reconstruct(vcMap, j.disclosures, true)
-		if err != nil {
-			return nil, fmt.Errorf("failed to reconstruct: %w", err)
-		}
-		// Get existing paths from comparison
-		existing := findDisclosedPaths(original, vcMap)
-		allPaths = append(existing, selectivePaths...)
-		vcMap = original // Use original data for building disclosures
-	}
-
-	result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
-		VC:             vcMap,
-		SelectivePaths: unique(allPaths),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to build disclosures: %w", err)
-	}
-	return j.buildCredential(payload, header, result.ProcessedVC, result.Disclosures)
+// DecodedDisclosures returns the credential's disclosures decoded (field name,
+// value, salt) so a Holder can choose which to present.
+func (j *JWTCredential) DecodedDisclosures() ([]sdjwt.DecodedDisclosure, error) {
+	return sdjwt.DecodeDisclosures(j.disclosures)
 }
 
-func (j *JWTCredential) extractPayload() (map[string]interface{}, string, error) {
-	parts := strings.Split(j.signingInput, ".")
-	if len(parts) != 2 {
-		return nil, "", fmt.Errorf("invalid signing input format")
+// Present returns a new SD-JWT credential revealing only selectedDisclosures
+// (a subset of the disclosure strings), keeping the issuer's signature. Holders
+// use it to disclose a subset to a Verifier.
+func (j *JWTCredential) Present(selectedDisclosures []string) (Credential, error) {
+	if j.signature == "" {
+		return nil, fmt.Errorf("cannot present an unsigned credential")
 	}
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to decode payload: %w", err)
-	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
-		return nil, "", fmt.Errorf("failed to unmarshal payload: %w", err)
-	}
-	return payload, parts[0], nil
-}
-
-func (j *JWTCredential) buildCredential(payload map[string]interface{}, header string, vc map[string]interface{}, disc []string) (*JWTCredential, error) {
-	// Replace vc claim while preserving all other payload claims (iss, sub, exp, iat, nbf, jti, etc.)
-	payload["vc"] = vc
-
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
-	encoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
-	return &JWTCredential{
-		signingInput: header + "." + encoded,
-		payloadData:  CredentialData(vc),
-		disclosures:  disc,
-	}, nil
-}
-
-func unique(paths []string) []string {
-	seen := make(map[string]bool)
-	var result []string
-	for _, p := range paths {
-		if !seen[p] {
-			seen[p] = true
-			result = append(result, p)
-		}
-	}
-	return result
-}
-
-func findDisclosedPaths(original, processed map[string]interface{}) []string {
-	var paths []string
-	for key := range original {
-		if key == "_sd" || key == "_sd_alg" {
-			continue
-		}
-		origVal := original[key]
-		procVal, exists := processed[key]
-		if !exists {
-			continue
-		}
-		origMap, origOk := origVal.(map[string]interface{})
-		procMap, procOk := procVal.(map[string]interface{})
-		if origOk && procOk {
-			nestedPaths := compareObjects(origMap, procMap, key)
-			paths = append(paths, nestedPaths...)
-		}
-	}
-	return paths
-}
-
-func compareObjects(orig, proc map[string]interface{}, prefix string) []string {
-	var paths []string
-	for key, origVal := range orig {
-		if key == "_sd" || key == "_sd_alg" {
-			continue
-		}
-		procVal, exists := proc[key]
-		if !exists {
-			paths = append(paths, prefix+"."+key)
-			continue
-		}
-		if nestedOrig, ok := origVal.(map[string]interface{}); ok {
-			if nestedProc, ok := procVal.(map[string]interface{}); ok {
-				nestedPaths := compareObjects(nestedOrig, nestedProc, prefix+"."+key)
-				paths = append(paths, nestedPaths...)
-			}
-		}
-		if arrOrig, ok := origVal.([]interface{}); ok {
-			if arrProc, ok := procVal.([]interface{}); ok {
-				arrPaths := compareArrays(arrOrig, arrProc, prefix+"."+key)
-				paths = append(paths, arrPaths...)
-			}
-		}
-	}
-	return paths
-}
-
-func compareArrays(orig, proc []interface{}, prefix string) []string {
-	var paths []string
-	// Use proc length to handle cases where proc is longer (due to decoy insertion)
-	// or shorter (due to selective disclosure removing elements)
-	maxLen := len(proc)
-	if len(orig) > maxLen {
-		maxLen = len(orig)
-	}
-
-	for i := 0; i < maxLen; i++ {
-		if i >= len(proc) {
-			// proc is shorter - remaining orig elements were selectively disclosed
-			paths = append(paths, fmt.Sprintf("%s[%d]", prefix, i))
-			continue
-		}
-		if i >= len(orig) {
-			// proc is longer - extra elements in proc are disclosed (decoys or revealed values)
-			paths = append(paths, fmt.Sprintf("%s[%d]", prefix, i))
-			continue
-		}
-		origElem := orig[i]
-		procElem := proc[i]
-		if procMap, ok := procElem.(map[string]interface{}); ok {
-			if _, hasDots := procMap["..."]; hasDots {
-				paths = append(paths, fmt.Sprintf("%s[%d]", prefix, i))
-				continue
-			}
-		}
-		if nestedOrig, ok := origElem.(map[string]interface{}); ok {
-			if nestedProc, ok := procElem.(map[string]interface{}); ok {
-				nestedPaths := compareObjects(nestedOrig, nestedProc, fmt.Sprintf("%s[%d]", prefix, i))
-				paths = append(paths, nestedPaths...)
-			}
-		}
-	}
-	return paths
+	issuerJWT := j.signingInput + "." + j.signature
+	return ParseJWTCredential(sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures))
 }
 
 func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {

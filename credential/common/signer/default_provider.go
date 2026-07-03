@@ -41,9 +41,5 @@ func (s *DefaultProvider) Sign(hashPayload []byte) ([]byte, error) {
 		return nil, fmt.Errorf("failed to sign payload: %w", err)
 	}
 
-	if err := ValidateSignatureLength(signature); err != nil {
-		return nil, err
-	}
-
 	return signature, nil
 }

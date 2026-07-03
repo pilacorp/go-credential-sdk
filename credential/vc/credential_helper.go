@@ -637,3 +637,23 @@ func convertToArray(value interface{}) []interface{} {
 	}
 	return []interface{}{value}
 }
+
+// dotPathsToPointers converts dot-notation paths ("credentialSubject.name")
+// into JSON Pointers ("/credentialSubject/name", RFC 6901) for the ecdsa-sd
+// primitives, escaping "~" and "/" within segments.
+func dotPathsToPointers(paths []string) []string {
+	esc := strings.NewReplacer("~", "~0", "/", "~1")
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		var b strings.Builder
+		for _, seg := range strings.Split(p, ".") {
+			b.WriteByte('/')
+			b.WriteString(esc.Replace(seg))
+		}
+		out = append(out, b.String())
+	}
+	return out
+}

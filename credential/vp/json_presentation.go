@@ -16,7 +16,9 @@ type JSONPresentation struct {
 	verificationMethodKey string
 }
 
-func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (Presentation, error) {
+var _ Presentation = (*JSONPresentation)(nil)
+
+func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JSONPresentation, error) {
 	m, err := serializePresentationContents(&vpc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
@@ -29,7 +31,7 @@ func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (Pre
 	return e, e.executeOptions(opts...)
 }
 
-func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (Presentation, error) {
+func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (*JSONPresentation, error) {
 	if len(rawJSON) == 0 {
 		return nil, fmt.Errorf("JSON string is empty")
 	}
@@ -48,6 +50,7 @@ func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (Presentatio
 	return e, e.executeOptions(opts...)
 }
 
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -56,48 +59,74 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 	return e.AddProofByProvider(defaultSigner, opts...)
 }
 
-func (e *JSONPresentation) AddProofByProvider(signerProvider signer.SignerProvider, opts ...PresentationOpt) error {
-	if signerProvider == nil {
+// AddProofByProvider signs the presentation. The cryptosuite is chosen from the
+// bound verification method's key type: secp256k1 → ecdsa-rdfc-2019, P-256 →
+// JsonWebSignature2020 (ES256), RSA → JsonWebSignature2020 (alg via
+// AlgorithmProvider, default RS256). The VM is the pinned one
+// (WithVerificationMethodKey) or the latest active authentication VM.
+//
+// A resolver is REQUIRED at signing time — the SDK reads the VM's key type from
+// the resolved DID document to pick the cryptosuite, even when the VM is pinned.
+func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, opts ...PresentationOpt) error {
+	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
-	err := e.executeOptions(opts...)
+	if err := e.executeOptions(opts...); err != nil {
+		return err
+	}
+
+	vm, vmURL, err := e.resolveSigningVMEntry(opts...)
 	if err != nil {
 		return err
 	}
 
+	kind, ok := verificationmethod.VMKeyKind(vm)
+	if !ok {
+		return fmt.Errorf("verification method %q has an unrecognized key type", vmURL)
+	}
+
+	switch kind {
+	case verificationmethod.KeySecp256k1:
+		return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(provider, vmURL, "authentication")
+	case verificationmethod.KeyRSA, verificationmethod.KeyP256:
+		// P-256 signs the presentation via JsonWebSignature2020 (ES256); RSA via
+		// RS/PS. Same LD-proof path as JSONCredential, purpose "authentication".
+		return (*jsonmap.JSONMap)(&e.presentationData).AddJWSProof(provider, vmURL, "authentication")
+	default:
+		return fmt.Errorf("verification method %q key kind %v is not supported for presentations (secp256k1, P-256, or RSA)", vmURL, kind)
+	}
+}
+
+// resolveSigningVMEntry resolves the verification method to sign with (pinned
+// kid > latest active authentication VM) and returns the entry so the caller
+// can read its key type and choose the cryptosuite.
+func (e *JSONPresentation) resolveSigningVMEntry(opts ...PresentationOpt) (*verificationmethod.VerificationMethodEntry, string, error) {
 	holder, ok := e.presentationData["holder"].(string)
 	if !ok || holder == "" {
-		return fmt.Errorf("holder is missing or invalid")
+		return nil, "", fmt.Errorf("holder is missing or invalid")
 	}
 
 	options := getOptions(opts...)
 
-	// Precedence: per-call opt > constructor pin > resolve via DID
-	verificationMethodKey := e.verificationMethodKey
+	pinned := e.verificationMethodKey
 	if options.verificationMethodKey != "" {
-		verificationMethodKey = options.verificationMethodKey
+		pinned = options.verificationMethodKey
 	}
 
-	if verificationMethodKey == "" {
-		verificationMethodKey, err = verificationmethod.ResolveVerificationMethodURL(context.Background(), holder, "authentication", options.resolver)
-		if err != nil {
-			return fmt.Errorf("resolve verification method: %w", err)
-		}
-	} else {
-		verificationMethodKey = verificationmethod.NormalizeVerificationMethodURL(holder, verificationMethodKey)
-	}
-
-	return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(signerProvider, verificationMethodKey, "authentication")
+	return verificationmethod.ResolveSigningVM(context.Background(), holder, "authentication", pinned, options.resolver)
 }
 
 // resolveVerificationMethodURL returns the full verification method URL for
 // a presentation proof. See vc.resolveVerificationMethodURL for resolution
 // rules — the only difference is the default purpose (authentication).
+//
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
 }
 
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -135,11 +164,15 @@ func (e *JSONPresentation) GetType() string {
 	return "JSON"
 }
 
+func (e *JSONPresentation) ExtractField(path string) interface{} {
+	return extractFieldFromMap(e.presentationData, path)
+}
+
 func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
 	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(e.presentationData)); err != nil {
+		if err := verifyCredentials(PresentationData(e.presentationData), options.resolver); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}
@@ -153,6 +186,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	if options.isVerifyProof {
 		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
 			options.resolver,
+			options.proofVerificationMethod,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)

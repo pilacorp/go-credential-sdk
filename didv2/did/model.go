@@ -69,12 +69,18 @@ type DIDDocument struct {
 type VerificationMethod struct {
 	// Id is the unique identifier of this verification method (e.g., "did:nda:0x...#key-1").
 	Id string `json:"id"`
-	// Type specifies the cryptographic suite (e.g., "EcdsaSecp256k1VerificationKey2019").
+	// Type specifies the cryptographic suite (e.g., "EcdsaSecp256k1VerificationKey2019",
+	// "JsonWebKey2020").
 	Type string `json:"type"`
 	// Controller is the DID that controls this verification method.
 	Controller string `json:"controller"`
 	// PublicKeyHex is the hex-encoded public key (compressed format).
+	// Mutually exclusive with PublicKeyJwk.
 	PublicKeyHex string `json:"publicKeyHex,omitempty"`
+	// PublicKeyJwk is the JWK representation of the public key, used for
+	// non-secp256k1 keys (e.g. RSA CA keys with Type="JsonWebKey2020").
+	// Mutually exclusive with PublicKeyHex.
+	PublicKeyJwk map[string]any `json:"publicKeyJwk,omitempty"`
 	// Revoked, when present, marks the moment this verification method was
 	// retired. Verifiers reject signatures whose proof.created is on or
 	// after this timestamp. Empty for active keys.

@@ -7,10 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
-	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -28,25 +26,12 @@ func Init(baseURL string) {
 	}
 }
 
+// Credential is the consumer-facing contract: read, verify, and output. Signing
+// and selective disclosure live on the concrete credential types.
 type Credential interface {
-	// AddProof signs using a local private key (legacy API).
-	AddProof(priv string, opts ...CredentialOpt) error
-
-	// GetSigningInput returns the signing bytes for external signing (legacy API).
-	GetSigningInput() ([]byte, error)
-	// AddCustomProof attaches a caller-provided proof/signature (legacy API).
-	AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error
-
-	// AddProofByProvider signs using a signer provider (Vault/HSM/local).
-	AddProofByProvider(signerProvider signer.SignerProvider, opts ...CredentialOpt) error
-
-	// Verify verifies the credential
 	Verify(opts ...CredentialOpt) error
-
-	// Serialize returns the credential in its native format
-	// - For JWT credentials: returns the JWT string
-	// - For embedded credentials: returns the JSON object with proof
-	Serialize() (interface{}, error)
+	// Serialize returns the JWT string (JWT) or the JSON object with proof (JSON).
+	Serialize() (any, error)
 
 	// Hash returns the SHA-256 hash (hex-encoded) of the full credential, including proof/signature.
 	Hash() (string, error)
@@ -55,17 +40,8 @@ type Credential interface {
 
 	GetType() string
 
-	// AddSelectiveDisclosures adds selective disclosures to the credential.
-	// For JWT credentials: adds SD-JWT disclosures to the credential.
-	// For JSON credentials: returns an error (unsupported).
-	AddSelectiveDisclosures(selectivePaths []string) (Credential, error)
-
-	// ExtractField extracts a field value from the credential by dot-notation path.
-	// Returns nil if the field does not exist.
-	// Example paths: "name", "credentialSubject.name", "credentialSubject.address.city"
-	ExtractField(path string) interface{}
-
-	executeOptions(opts ...CredentialOpt) error
+	// ExtractField returns a field by dot-notation path, or nil if absent.
+	ExtractField(path string) any
 }
 
 // CredentialData represents credential data in JSON format (suitable for both JWT and JSON credentials).
@@ -117,19 +93,30 @@ type CredentialOpt func(*credentialOptions)
 
 // credentialOptions holds configuration for credential processing.
 type credentialOptions struct {
-	isValidateSchema      bool
-	isVerifyProof         bool
-	isCheckExpiration     bool
-	isCheckRevocation     bool
-	didBaseURL            string
-	verificationMethodKey string
-	sdDisclosures         []string
-	sdSelectivePaths      []string
-	sdAlg                 string
-	sdShuffle             bool
-	sdDecoys              []sdjwt.DecoyConfig
-	loadedSchemaLoader    SchemaLoaderFunc
-	resolver              verificationmethod.ResolverProvider
+	isValidateSchema        bool
+	isVerifyProof           bool
+	isCheckExpiration       bool
+	isCheckRevocation       bool
+	didBaseURL              string
+	verificationMethodKey   string
+	sdDisclosures           []string
+	sdSelectivePaths        []string
+	sdAlg                   string
+	sdShuffle               bool
+	sdDecoys                []sdjwt.DecoyConfig
+	loadedSchemaLoader      SchemaLoaderFunc
+	resolver                verificationmethod.ResolverProvider
+	proofVerificationMethod string
+}
+
+// WithProofVerificationMethod restricts proof verification to the single proof
+// bound to the given verification method URL (e.g. "did:example:issuer#key-2").
+// By default all proofs in the set must verify; with this option only the
+// selected proof is checked.
+func WithProofVerificationMethod(vm string) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.proofVerificationMethod = vm
+	}
 }
 
 // WithBaseURL sets the DID base URL for credential processing.
@@ -143,6 +130,11 @@ func WithBaseURL(baseURL string) CredentialOpt {
 // signing — e.g. "key-2". When omitted, the SDK resolves the issuer DID and
 // picks the latest active VM listed in the assertionMethod relationship
 // array (or authentication for VPs).
+//
+// The cryptosuite is chosen from the bound VM's key type. If the DID holds
+// keys of DIFFERENT types (e.g. secp256k1 and RSA), you MUST pin the VM here:
+// otherwise the latest active VM is used and its key type may not match your
+// signer, producing a proof that fails verification.
 func WithVerificationMethodKey(key string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.verificationMethodKey = key

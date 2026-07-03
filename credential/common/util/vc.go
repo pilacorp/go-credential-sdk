@@ -96,6 +96,9 @@ func SerializeProofs(proofs []dto.Proof) interface{} {
 		if proof.Cryptosuite != "" {
 			proofMap["cryptosuite"] = proof.Cryptosuite
 		}
+		if proof.JWS != "" {
+			proofMap["jws"] = proof.JWS
+		}
 		result[i] = proofMap
 	}
 	if len(result) == 1 {
