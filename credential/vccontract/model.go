@@ -12,15 +12,9 @@
 // already have the proof components (issuer address, tree index, leaf, and
 // sibling proof) — typically obtained from the authen-service proof API.
 //
-// Two verification strategies are offered. Both make an RPC call; they differ only
-// in WHERE the Merkle proof is folded:
-//
-//   - VerifyOnChain:      the contract folds and checks the proof (calls verifyVC).
-//   - VerifyByCompareRoot: only the root is read from the chain (getTreeRoot); the
-//     proof is folded locally in Go and compared against that root.
-//
-// Both must agree for a well-formed proof; exposing both lets callers cross-check
-// the contract against an independent local implementation.
+// Verification is done via VerifyVCHashOnChain, which calls the contract's
+// verifyVC(...) view function: the contract folds the Merkle proof up to the
+// stored root and returns the verdict.
 package vccontract
 
 import (

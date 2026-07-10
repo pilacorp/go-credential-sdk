@@ -14,42 +14,6 @@ func mkLeaf(b byte) [32]byte {
 	return l
 }
 
-func TestComputeRoot_SingleLeaf(t *testing.T) {
-	l := mkLeaf(0x11)
-	if got := computeRoot(l, nil); got != l {
-		t.Fatalf("single-leaf root must equal the leaf; got %x want %x", got, l)
-	}
-}
-
-// TestComputeRoot_KnownAnswer checks the fold against a precomputed keccak256
-// sorted-pair root for a 3-leaf tree (leaves 0x01.., 0x02.., 0x03..):
-//
-//	p01  = keccak256(sort(l0, l1))
-//	root = keccak256(sort(p01, l2))
-//
-// The expected root is a known-answer vector independent of this implementation.
-func TestComputeRoot_KnownAnswer(t *testing.T) {
-	l0, l1, l2 := mkLeaf(0x01), mkLeaf(0x02), mkLeaf(0x03)
-
-	const wantHex = "1d614fa3c8de62938b0948972494f9a3858575db69ce1d34c77926f30732c981"
-
-	// Proof for l0 is the ordered siblings [l1, l2].
-	got := computeRoot(l0, [][32]byte{l1, l2})
-
-	if hex.EncodeToString(got[:]) != wantHex {
-		t.Fatalf("computeRoot mismatch:\n got  %x\n want %s", got, wantHex)
-	}
-}
-
-func TestComputeRoot_OrderInsensitiveWithinPair(t *testing.T) {
-	// Because pairs are sorted before hashing, swapping the leaf and its sole
-	// sibling must yield the same parent.
-	a, b := mkLeaf(0xaa), mkLeaf(0xbb)
-	if computeRoot(a, [][32]byte{b}) != computeRoot(b, [][32]byte{a}) {
-		t.Fatal("sorted-pair hashing must be order-insensitive within a pair")
-	}
-}
-
 func TestHexToBytes32(t *testing.T) {
 	want := mkLeaf(0xcd)
 	hexStr := "0x" + hex.EncodeToString(want[:])
@@ -64,6 +28,24 @@ func TestHexToBytes32(t *testing.T) {
 
 	if _, err := hexToBytes32("0x1234"); err == nil {
 		t.Fatal("expected error for short hex input")
+	}
+}
+
+func TestParseProof(t *testing.T) {
+	a, b := mkLeaf(0x01), mkLeaf(0x02)
+	proof, err := parseProof([]string{
+		"0x" + hex.EncodeToString(a[:]),
+		"0x" + hex.EncodeToString(b[:]),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(proof) != 2 || proof[0] != a || proof[1] != b {
+		t.Fatalf("parseProof mismatch: %x", proof)
+	}
+
+	if _, err := parseProof([]string{"0xzz"}); err == nil {
+		t.Fatal("expected error for malformed proof element")
 	}
 }
 

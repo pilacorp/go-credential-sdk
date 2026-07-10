@@ -3,6 +3,7 @@ package vccontract
 import (
 	"context"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -87,18 +88,13 @@ func (v *CredentialRegistry) Close() {
 	}
 }
 
-// VerifyOnChain verifies the proof by delegating to the smart contract: the
-// Merkle-proof folding happens inside the contract (both this and VerifyByCompareRoot
-// still make an RPC call — the difference is only where the proof is folded).
+// VerifyVCHashOnChain checks whether a VC hash (the leaf) is anchored in the
+// issuer's on-chain Merkle tree.
 //
-// It calls the contract's verifyVC(issuer, treeIndex, leaf, proof) view function,
-// which walks the proof up to the stored root and returns the verdict. Because the
-// contract does the work, the result is exactly what the chain would accept.
-//
-// Returns true when the leaf is proven to be in the issuer's tree, false when the
-// proof does not validate (both with a nil error). A non-nil error means the call
+// Returns true when the leaf is proven to be in the tree, false when the proof
+// does not validate (both with a nil error). A non-nil error means the call
 // itself failed — malformed input, RPC failure, or the tree does not exist.
-func (v *CredentialRegistry) VerifyOnChain(ctx context.Context, req *VerifyRequest) (bool, error) {
+func (v *CredentialRegistry) VerifyVCHashOnChain(ctx context.Context, req *VerifyRequest) (bool, error) {
 	if err := req.Validate(); err != nil {
 		return false, err
 	}
@@ -134,40 +130,6 @@ func (v *CredentialRegistry) VerifyOnChain(ctx context.Context, req *VerifyReque
 	return ok, nil
 }
 
-// VerifyByCompareRoot verifies the proof client-side: the chain is used only to read the
-// anchored root, and the Merkle-proof folding happens locally in Go.
-//
-// It fetches the root via getTreeRoot(issuer, treeIndex), folds the leaf with the
-// proof siblings on the client (keccak256 over sorted pairs), and compares the
-// recomputed root against the on-chain root. Because the proof math runs here and
-// not in the contract, it is an independent cross-check of VerifyOnChain — if the
-// two ever disagree, something is wrong with the proof, the leaf, or the tree.
-//
-// Returns true when the recomputed root matches the on-chain root, false when it
-// does not (both with a nil error). A non-nil error means the read failed or the
-// tree does not exist.
-func (v *CredentialRegistry) VerifyByCompareRoot(ctx context.Context, req *VerifyRequest) (bool, error) {
-	if err := req.Validate(); err != nil {
-		return false, err
-	}
-
-	leaf, proof, err := decodeLeafAndProof(req)
-	if err != nil {
-		return false, err
-	}
-
-	root, err := v.GetTreeRoot(ctx, req.IssuerAddress, req.TreeIndex)
-	if err != nil {
-		return false, err
-	}
-
-	if root == ([32]byte{}) {
-		return false, fmt.Errorf("tree not found for issuer %s index %d", req.IssuerAddress, req.TreeIndex)
-	}
-
-	return computeRoot(leaf, proof) == root, nil
-}
-
 // GetTreeRoot returns the on-chain Merkle root for the given issuer and tree
 // index. A zero value means no such tree has been anchored.
 func (v *CredentialRegistry) GetTreeRoot(ctx context.Context, issuerAddress string, treeIndex uint64) ([32]byte, error) {
@@ -199,8 +161,8 @@ func (v *CredentialRegistry) GetTreeRoot(ctx context.Context, issuerAddress stri
 	return root, nil
 }
 
-// TreeExists reports whether the issuer has an anchored tree at the given index.
-func (v *CredentialRegistry) TreeExists(ctx context.Context, issuerAddress string, treeIndex uint64) (bool, error) {
+// HasTree reports whether the issuer has an anchored tree at the given index.
+func (v *CredentialRegistry) HasTree(ctx context.Context, issuerAddress string, treeIndex uint64) (bool, error) {
 	if !common.IsHexAddress(issuerAddress) {
 		return false, fmt.Errorf("invalid issuer address: %q", issuerAddress)
 	}
@@ -230,7 +192,7 @@ func (v *CredentialRegistry) TreeExists(ctx context.Context, issuerAddress strin
 }
 
 // decodeLeafAndProof converts the hex request fields into the byte forms the
-// contract call and local fold expect.
+// contract call expects.
 func decodeLeafAndProof(req *VerifyRequest) ([32]byte, [][32]byte, error) {
 	leaf, err := hexToBytes32(req.Leaf)
 	if err != nil {
@@ -243,4 +205,41 @@ func decodeLeafAndProof(req *VerifyRequest) ([32]byte, [][32]byte, error) {
 	}
 
 	return leaf, proof, nil
+}
+
+// hexToBytes32 decodes a hex string (with or without a "0x" prefix) into a
+// 32-byte array. It returns an error if the input is not valid hex or is not
+// exactly 32 bytes long.
+func hexToBytes32(s string) ([32]byte, error) {
+	s = strings.TrimPrefix(s, "0x")
+
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("invalid hex: %w", err)
+	}
+
+	if len(b) != 32 {
+		return [32]byte{}, fmt.Errorf("length must be 32 bytes, got %d", len(b))
+	}
+
+	var out [32]byte
+	copy(out[:], b)
+
+	return out, nil
+}
+
+// parseProof decodes each hex-encoded sibling into a 32-byte array.
+func parseProof(proof []string) ([][32]byte, error) {
+	out := make([][32]byte, len(proof))
+
+	for i, p := range proof {
+		b, err := hexToBytes32(p)
+		if err != nil {
+			return nil, fmt.Errorf("proof element %d: %w", i, err)
+		}
+
+		out[i] = b
+	}
+
+	return out, nil
 }

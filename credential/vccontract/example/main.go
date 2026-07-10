@@ -43,28 +43,12 @@ func main() {
 
 	ctx := context.Background()
 
-	// The on-chain root anchored for this issuer + tree index.
-	root, err := registry.GetTreeRoot(ctx, req.IssuerAddress, req.TreeIndex)
+	ok, err := registry.VerifyVCHashOnChain(ctx, req)
 	if err != nil {
-		log.Fatalf("GetTreeRoot failed: %v", err)
+		log.Fatalf("VerifyVCHashOnChain failed: %v", err)
 	}
-	fmt.Printf("on-chain root:           0x%x\n", root)
 
-	// Strategy 1: the contract folds and checks the proof.
-	okOnChain, err := registry.VerifyOnChain(ctx, req)
-	if err != nil {
-		log.Fatalf("VerifyOnChain failed: %v", err)
-	}
-	fmt.Printf("VerifyOnChain  (contract fold): %v\n", okOnChain)
-
-	// Strategy 2: read the root, fold the proof locally, and compare.
-	okByCompareRoot, err := registry.VerifyByCompareRoot(ctx, req)
-	if err != nil {
-		log.Fatalf("VerifyByCompareRoot failed: %v", err)
-	}
-	fmt.Printf("VerifyByCompareRoot (local fold):    %v\n", okByCompareRoot)
-
-	if okOnChain && okByCompareRoot {
+	if ok {
 		fmt.Println("VC hash is anchored on-chain ✓")
 	} else {
 		fmt.Println("VC hash is NOT anchored on-chain ✗")
