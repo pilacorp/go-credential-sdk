@@ -26,6 +26,10 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
   - [Features](#didcomm-features)
   - [Usage](#didcomm-usage)
   - [API](#didcomm-api)
+- [On-Chain VC Verification (vccontract) Package](#vccontract-package)
+  - [Features](#vccontract-features)
+  - [Usage](#vccontract-usage)
+  - [API](#vccontract-api)
 - [License](#license)
 
 ## Overview
@@ -33,6 +37,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
 - **Verifiable Credential (VC) Package**: Create, sign, serialize, and verify W3C Verifiable Credentials in Go.
 - **Verifiable Presentation (VP) Package**: Create, sign, serialize, and verify W3C Verifiable Presentations containing one or more VCs.
 - **DIDComm Package**: Cryptographic utilities for key derivation, message encryption, and decryption using DIDComm and JWE standards.
+- **On-Chain VC Verification (vccontract) Package**: Read-only client to verify that a VC hash is anchored on-chain in the Credential Registry smart contract (no private key, no gas).
 
 ## Prerequisites
 
@@ -906,6 +911,76 @@ func main() {
 
 - Replace `SenderPublicKey` and `SenderPrivateKey` with your actual key variables.
 - The package assumes you are familiar with DIDComm and JWE standards.
+
+---
+
+# <a name="vccontract-package"></a>On-Chain VC Verification (vccontract) Package
+
+`credential/vccontract` is a lightweight, **read-only** client for the Credential
+Registry smart contract. It lets a holder or any third party verify that a
+Verifiable Credential (VC) hash is anchored on-chain — without a private key and
+without spending gas (every call is an `eth_call`).
+
+The issuer service groups VC hashes per issuer into Merkle trees and publishes each
+tree's **root** on-chain (one root per `issuer` + `treeIndex`). A VC hash is a
+**leaf**; membership is proven with a Merkle **proof** (the ordered sibling
+hashes). The contract folds the proof up to the stored root, so this package only
+passes the proof through — it does not build trees or submit transactions.
+
+## <a name="vccontract-features"></a>Features
+
+- Verify a VC hash against its on-chain Merkle tree via the contract's `verifyVC`
+- Read helpers: fetch the anchored tree root, check whether a tree exists
+- Read-only: no private key, no gas, no transactions
+- Self-contained (only depends on `go-ethereum`); the contract ABI is embedded
+
+## <a name="vccontract-usage"></a>Usage
+
+You supply the proof components directly (this package does not call the
+authen-service API). They typically come from the authen-service proof endpoint
+`GetVCProofByHash` / `GetVCProofByID`.
+
+```go
+import "github.com/pilacorp/go-credential-sdk/credential/vccontract"
+
+registry, err := vccontract.NewCredentialRegistry(
+    "https://rpc-testnet-new.pila.vn",
+    "0x7F58Eb7eaEe52768970EC3796bdD146286EF82C6",
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer registry.Close() // reuse one registry across calls; Close on shutdown
+
+req := &vccontract.VerifyRequest{
+    IssuerAddress: "0x...Issuer",
+    TreeIndex:     0,
+    Leaf:          "0x...vcHash",           // 32-byte hex
+    Proof:         []string{"0x...", "0x..."}, // sibling hashes (empty for a single-leaf tree)
+}
+
+ok, err := registry.VerifyVCHashOnChain(context.Background(), req)
+if err != nil {
+    log.Fatal(err)
+}
+// ok == true  -> the VC hash is anchored on-chain
+```
+
+A `false` result (with a `nil` error) means the proof does not validate; a non-nil
+error means the call itself failed (bad input, RPC error, or the tree does not
+exist). A runnable example lives in [`credential/vccontract/example`](credential/vccontract/example).
+
+## <a name="vccontract-api"></a>API
+
+- `NewCredentialRegistry(rpcURL, contractAddress string) (*CredentialRegistry, error)` — connect to the chain (RPC connection required).
+- `(*CredentialRegistry) VerifyVCHashOnChain(ctx, *VerifyRequest) (bool, error)` — verify a VC hash against its on-chain tree.
+- `(*CredentialRegistry) GetTreeRoot(ctx, issuer string, treeIndex uint64) ([32]byte, error)` — read the anchored Merkle root (zero value = no such tree).
+- `(*CredentialRegistry) HasTree(ctx, issuer string, treeIndex uint64) (bool, error)` — whether the issuer has an anchored tree at that index.
+- `(*CredentialRegistry) Close()` — release the RPC connection.
+
+> Reuse a single `CredentialRegistry` across calls (it holds a live,
+> concurrency-safe RPC client) and `Close()` it on shutdown rather than creating
+> one per request.
 
 ---
 
