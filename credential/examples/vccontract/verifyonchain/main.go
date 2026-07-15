@@ -1,5 +1,5 @@
-// Command example demonstrates how a client verifies that a VC hash is anchored
-// on-chain using the vccontract.CredentialRegistry.
+// Command verifyonchain demonstrates how a client verifies that a VC hash is
+// anchored on-chain using the vccontract.CredentialRegistry.
 //
 // The proof components (issuer address, tree index, leaf, and sibling proof) are
 // assumed to already be in hand — for example, fetched from the authen-service
@@ -8,7 +8,7 @@
 //
 // Run:
 //
-//	go run ./credential/vccontract/example
+//	go run ./credential/examples/vccontract/verifyonchain
 package main
 
 import (
