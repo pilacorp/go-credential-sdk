@@ -1,7 +1,7 @@
 // Command verifybytx demonstrates how a client verifies that a VC hash is
 // anchored by a SPECIFIC transaction, using vccontract.CredentialRegistry.
 //
-// Unlike the sibling example (which checks the tree's current root via
+// Unlike the verifyonchain example (which checks the tree's current root via
 // verifyVC), this folds the Merkle proof locally against the root that a given
 // transaction recorded on-chain. Use it for an unsealed tree whose current root
 // has since been overwritten by a later anchoring: the proof and the tx hash
@@ -14,7 +14,7 @@
 //
 // Run:
 //
-//	go run ./credential/vccontract/example/verifybytx
+//	go run ./credential/examples/vccontract/verifybytx
 package main
 
 import (

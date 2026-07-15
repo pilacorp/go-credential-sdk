@@ -115,9 +115,9 @@ RPC client) and `Close()` it on shutdown rather than creating one per request.
 
 ## Examples
 
-Runnable examples against the testnet live under `example/`:
+Runnable examples against the testnet live under `credential/examples/vccontract/`:
 
 ```
-go run ./credential/vccontract/example            # verify against current root
-go run ./credential/vccontract/example/verifybytx # verify against a tx's anchored root
+go run ./credential/examples/vccontract/verifyonchain # verify against current root
+go run ./credential/examples/vccontract/verifybytx    # verify against a tx's anchored root
 ```

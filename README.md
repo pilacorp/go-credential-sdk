@@ -968,7 +968,7 @@ if err != nil {
 
 A `false` result (with a `nil` error) means the proof does not validate; a non-nil
 error means the call itself failed (bad input, RPC error, or the tree does not
-exist). A runnable example lives in [`credential/vccontract/example`](credential/vccontract/example).
+exist). A runnable example lives in [`credential/examples/vccontract/verifyonchain`](credential/examples/vccontract/verifyonchain).
 
 ## <a name="vccontract-api"></a>API
 
