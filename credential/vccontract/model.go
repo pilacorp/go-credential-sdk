@@ -7,14 +7,21 @@
 // that a specific VC hash is included in a given tree by supplying a Merkle proof.
 //
 // This package does NOT issue credentials, build trees, or submit transactions.
-// It only performs read-only (eth_call) verification against the chain, so it
-// never needs a private key and never spends gas. The caller is expected to
-// already have the proof components (issuer address, tree index, leaf, and
-// sibling proof) — typically obtained from the authen-service proof API.
+// It only performs read-only (eth_call and receipt reads) verification against the
+// chain, so it never needs a private key and never spends gas. The caller is
+// expected to already have the proof components (issuer address, tree index, leaf,
+// and sibling proof) — typically obtained from the authen-service proof API.
 //
-// Verification is done via VerifyVCHashOnChain, which calls the contract's
-// verifyVC(...) view function: the contract folds the Merkle proof up to the
-// stored root and returns the verdict.
+// Two verification paths are offered:
+//
+//   - VerifyVCHashOnChain calls the contract's verifyVC(...) view function against
+//     the tree's CURRENT root: the contract folds the Merkle proof up to the stored
+//     root and returns the verdict.
+//   - VerifyVCHashByTx folds the proof locally against the root that a SPECIFIC
+//     transaction anchored, read from that transaction's receipt logs. Use this for
+//     an unsealed tree whose current root has since been overwritten by a later
+//     anchoring — a proof taken at an earlier anchoring only matches the root
+//     recorded in that anchoring's transaction.
 package vccontract
 
 import (
@@ -62,6 +69,57 @@ func (r *VerifyRequest) Validate() error {
 		if err := validateHash32(p); err != nil {
 			return fmt.Errorf("invalid proof element at index %d: %w", i, err)
 		}
+	}
+
+	return nil
+}
+
+// VerifyByTxRequest holds the Merkle proof components plus the hash of the
+// transaction that anchored the tree root the proof was generated against.
+//
+// It carries the same fields as VerifyRequest with one addition, TxHash, which
+// pins verification to the root recorded by a specific anchoring rather than the
+// tree's current (possibly overwritten) root.
+type VerifyByTxRequest struct {
+	// IssuerAddress is the issuer's Ethereum address (0x...). It identifies which
+	// issuer's tree the leaf is expected to belong to.
+	IssuerAddress string
+	// TreeIndex is the index of the issuer's tree that anchors this leaf.
+	TreeIndex uint64
+	// Leaf is the VC hash to verify, as a 32-byte hex string (with or without "0x").
+	Leaf string
+	// Proof is the ordered list of sibling hashes (each a 32-byte hex string) that,
+	// folded with the leaf, reconstruct the tree root. It is empty for a
+	// single-leaf tree (in which case the root equals the leaf).
+	Proof []string
+	// TxHash is the hash (32-byte hex, with or without "0x") of the transaction
+	// that anchored the tree root this proof was generated against. The proof and
+	// the tx hash must come from the same anchoring.
+	TxHash string
+}
+
+// Validate checks that the request is well-formed before hitting the chain.
+func (r *VerifyByTxRequest) Validate() error {
+	if r == nil {
+		return errors.New("verify request is required")
+	}
+
+	if !common.IsHexAddress(r.IssuerAddress) {
+		return fmt.Errorf("invalid issuer address: %q", r.IssuerAddress)
+	}
+
+	if err := validateHash32(r.Leaf); err != nil {
+		return fmt.Errorf("invalid leaf: %w", err)
+	}
+
+	for i, p := range r.Proof {
+		if err := validateHash32(p); err != nil {
+			return fmt.Errorf("invalid proof element at index %d: %w", i, err)
+		}
+	}
+
+	if err := validateHash32(r.TxHash); err != nil {
+		return fmt.Errorf("invalid tx hash: %w", err)
 	}
 
 	return nil
