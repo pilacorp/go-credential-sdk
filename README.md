@@ -350,7 +350,7 @@ cred, err := vc.NewJWTCredential(contents,
 )
 ```
 
-**Alternative (advanced):** If you build disclosures yourself, use `vc.WithSDDisclosures(disclosures)` when creating the credential. The SDK will attach them when serializing to SD-JWT.
+**Alternative (advanced):** If you build disclosures yourself, use `vc.WithSDDisclosures(disclosures)` when creating the credential. The SDK will attach them when serializing to SD-JWT. Their digests must already be present in the credential contents (in an `_sd` array or as a `{"...": digest}` array placeholder), otherwise verification rejects them — see **Disclosure binding** below.
 
 #### Holder: Presenting an SD-JWT
 
@@ -393,11 +393,13 @@ contents, _ := cred.GetContents()
 ```
 
 - **Detection:** `vc.ParseCredential` accepts JSON credentials, plain JWTs, or SD-JWTs. SD-JWT is detected automatically (format: `...~...` with a valid JWT before the first `~`).
-- **Verification:** Signature and standard claims (`exp`, `nbf`, etc.) are verified on the issuer-signed JWT. Schema validation, if enabled, runs on the **reconstructed** payload (disclosed claims only).
+- **Verification:** The disclosures are split off at the first `~`, then the signature and standard claims (`exp`, `nbf`, etc.) are verified on the issuer-signed JWT. Schema validation, if enabled, runs on the **reconstructed** payload (disclosed claims only).
+- **Disclosure binding:** The issuer's signature covers the *digests*, not the disclosure strings, so anyone holding an SD-JWT can append extra disclosures without breaking the signature. Verification therefore rejects any disclosure whose digest — computed under the payload's `_sd_alg` — is absent from the signed payload, and rejects the same disclosure being presented twice. Decoy digests (digests with no disclosure) are unaffected.
 - **Validation:** The SDK validates:
   - Duplicate digest detection
   - Disclosure context validation (object vs array)
   - Hash algorithm support
+  - Every presented disclosure is bound to a digest the issuer signed
 - **No Key Binding:** SDK does not expose/verify Key Binding JWT (KB-JWT). The parser may skip the final JWT-like segment (if preceded by `~`) as holder binding, but does not verify it.
 
 #### Summary

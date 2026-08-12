@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -36,8 +37,15 @@ func NewJWTVerifier(
 	return v
 }
 
-// VerifyJWT verifies a JWT token
+// VerifyJWT verifies a JWT token. SD-JWTs are accepted too: the signature
+// covers only the issuer-signed JWT before the first '~', so the disclosures are
+// split off first and then checked against the digests in the signed payload.
 func (v *JWTVerifier) VerifyJWT(tokenString string) error {
+	tokenString, disclosures, err := splitSDJWT(tokenString)
+	if err != nil {
+		return err
+	}
+
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return fmt.Errorf("invalid JWT format")
@@ -106,6 +114,14 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return err
 	}
 
+	// The signature covers the digests only, so any accompanying disclosure has
+	// to be tied back to one of them before its claims can be trusted.
+	if len(disclosures) > 0 {
+		if err := verifyDisclosures(parts[1], disclosures); err != nil {
+			return err
+		}
+	}
+
 	// Strict-purpose check (always on): JWT VCs use proofPurpose =
 	// assertionMethod, JWT VPs use authentication. Detect from the JWT
 	// body's first claim.
@@ -120,6 +136,46 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	if err := strictPurposeCheck(doc, vm, purpose, issuedAt); err != nil {
 		return err
 	}
+	return nil
+}
+
+// splitSDJWT separates an SD-JWT into its issuer-signed JWT and the disclosures
+// appended after the first '~'. A plain JWT is returned unchanged with no
+// disclosures. A trailing Key Binding JWT, if present, is dropped by
+// sdjwt.Parse — this verifier does not verify key binding.
+func splitSDJWT(tokenString string) (string, []string, error) {
+	tokenString = strings.TrimSpace(strings.Trim(tokenString, "\""))
+
+	if !sdjwt.IsSDJWT(tokenString) {
+		return tokenString, nil, nil
+	}
+
+	parsed, err := sdjwt.Parse(tokenString)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid SD-JWT: %w", err)
+	}
+
+	return parsed.BaseJWT, parsed.Disclosures, nil
+}
+
+// verifyDisclosures checks the disclosures sent with an SD-JWT against the
+// digests inside the signed payload, so claims the issuer never committed to
+// cannot be smuggled in behind a valid signature.
+func verifyDisclosures(payloadB64 string, disclosures []string) error {
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return fmt.Errorf("invalid payload encoding: %w", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return fmt.Errorf("invalid payload JSON: %w", err)
+	}
+
+	if err := sdjwt.ValidateDisclosureDigests(payload, disclosures); err != nil {
+		return fmt.Errorf("invalid SD-JWT disclosure: %w", err)
+	}
+
 	return nil
 }
 
