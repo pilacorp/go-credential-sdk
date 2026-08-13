@@ -2014,3 +2014,103 @@ func newSignedJWTCredential(t *testing.T) Credential {
 	}
 	return cred
 }
+
+func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
+	baseContents := func() CredentialContents {
+		return CredentialContents{
+			Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+			ID:      "urn:uuid:1234",
+			Issuer:  "did:example:issuer",
+			Types:   []string{"VerifiableCredential"},
+			Subject: []Subject{{ID: "did:example:holder"}},
+		}
+	}
+
+	t.Run("omitted when empty", func(t *testing.T) {
+		vcc := baseContents()
+
+		out, err := serializeCredentialContents(&vcc)
+		assert.NoError(t, err)
+
+		_, present := out["termsOfUse"]
+		assert.False(t, present, "termsOfUse must be absent when no entries are set")
+	})
+
+	t.Run("single entry stays an array", func(t *testing.T) {
+		vcc := baseContents()
+		vcc.TermsOfUse = []TermsOfUse{{Type: "PresentationRequiredPolicy"}}
+
+		out, err := serializeCredentialContents(&vcc)
+		assert.NoError(t, err)
+
+		terms, ok := out["termsOfUse"].([]CredentialData)
+		assert.True(t, ok, "termsOfUse must serialize to an array, got %T", out["termsOfUse"])
+		assert.Len(t, terms, 1)
+		assert.Equal(t, CredentialData{"type": "PresentationRequiredPolicy"}, terms[0])
+	})
+
+	t.Run("optional id is carried through", func(t *testing.T) {
+		vcc := baseContents()
+		vcc.TermsOfUse = []TermsOfUse{{
+			ID:   "https://example.com/policies/credential/4",
+			Type: "IssuerPolicy",
+		}}
+
+		out, err := serializeCredentialContents(&vcc)
+		assert.NoError(t, err)
+
+		terms := out["termsOfUse"].([]CredentialData)
+		assert.Len(t, terms, 1)
+		assert.Equal(t, CredentialData{
+			"id":   "https://example.com/policies/credential/4",
+			"type": "IssuerPolicy",
+		}, terms[0])
+	})
+
+	t.Run("multiple entries keep their order", func(t *testing.T) {
+		vcc := baseContents()
+		vcc.TermsOfUse = []TermsOfUse{
+			{Type: "PresentationRequiredPolicy"},
+			{Type: "IssuerPolicy", ID: "https://example.com/policies/credential/4"},
+		}
+
+		out, err := serializeCredentialContents(&vcc)
+		assert.NoError(t, err)
+
+		terms := out["termsOfUse"].([]CredentialData)
+		assert.Len(t, terms, 2)
+		assert.Equal(t, "PresentationRequiredPolicy", terms[0]["type"])
+		assert.Equal(t, "IssuerPolicy", terms[1]["type"])
+	})
+
+	t.Run("missing type is rejected", func(t *testing.T) {
+		vcc := baseContents()
+		vcc.TermsOfUse = []TermsOfUse{
+			{Type: "PresentationRequiredPolicy"},
+			{ID: "https://example.com/policies/credential/4"},
+		}
+
+		_, err := serializeCredentialContents(&vcc)
+		assert.EqualError(t, err, "termsOfUse[1].type is required")
+	})
+
+	t.Run("survives a JWT build and parse round trip", func(t *testing.T) {
+		vcc := baseContents()
+		vcc.TermsOfUse = []TermsOfUse{{Type: "PresentationRequiredPolicy"}}
+
+		cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"))
+		assert.NoError(t, err)
+
+		contents, err := cred.GetContents()
+		assert.NoError(t, err)
+
+		var payload struct {
+			TermsOfUse []struct {
+				Type string `json:"type"`
+			} `json:"termsOfUse"`
+		}
+		assert.NoError(t, json.Unmarshal(contents, &payload))
+		assert.Len(t, payload.TermsOfUse, 1)
+		assert.Equal(t, "PresentationRequiredPolicy", payload.TermsOfUse[0].Type)
+	})
+}

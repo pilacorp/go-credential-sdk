@@ -99,6 +99,43 @@ To create a Verifiable Credential, you need:
 4. Add a cryptographic proof using `AddProof()` with a signer provider
 5. Serialize and verify the credential
 
+### Terms of Use
+
+`CredentialContents.TermsOfUse` maps to the W3C `termsOfUse` property, which lets an
+issuer state the conditions under which a credential may be used. `Type` is required,
+`ID` is optional:
+
+```go
+vcc := vc.CredentialContents{
+	// ... other contents ...
+	TermsOfUse: []vc.TermsOfUse{
+		{Type: "PresentationRequiredPolicy"},
+		{ID: "https://example.com/policies/credential/4", Type: "IssuerPolicy"},
+	},
+}
+```
+
+Produces:
+
+```json
+"termsOfUse": [
+  { "type": "PresentationRequiredPolicy" },
+  {
+    "id": "https://example.com/policies/credential/4",
+    "type": "IssuerPolicy"
+  }
+]
+```
+
+Unlike `credentialStatus` and `credentialSchema`, a single entry is **not** collapsed into
+a bare object — `termsOfUse` always serializes as an array. An entry with an empty `Type`
+is rejected with an error. The property is omitted entirely when the slice is empty.
+
+The spec does not define any concrete terms-of-use types; `IssuerPolicy` and `HolderPolicy`
+are illustrative. If your policy type needs a resolvable JSON-LD identity, define it in a
+custom `@context` entry (see the [Example](#vc-example) below) — otherwise it resolves
+against whatever `@vocab` your contexts happen to supply.
+
 ### Parsing a Verifiable Credential
 
 1. Use `vc.ParseCredential()` to parse both JSON and JWT credentials

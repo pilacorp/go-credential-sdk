@@ -88,6 +88,15 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 		vcJSON["credentialStatus"] = serializeStatuses(vcc.CredentialStatus)
 	}
 
+	if len(vcc.TermsOfUse) > 0 {
+		for i, term := range vcc.TermsOfUse {
+			if term.Type == "" {
+				return nil, fmt.Errorf("termsOfUse[%d].type is required", i)
+			}
+		}
+		vcJSON["termsOfUse"] = util.MapSlice(vcc.TermsOfUse, serializeTermsOfUse)
+	}
+
 	if !vcc.ValidFrom.IsZero() {
 		vcJSON["validFrom"] = vcc.ValidFrom.Format(time.RFC3339)
 	}
@@ -212,6 +221,18 @@ func serializeStatus(status Status) CredentialData {
 
 	if status.StatusListCredential != "" {
 		result["statusListCredential"] = status.StatusListCredential
+	}
+
+	return result
+}
+
+// serializeTermsOfUse converts a single TermsOfUse struct to a JSON object.
+// Type is required by the W3C data model, so it is always written.
+func serializeTermsOfUse(term TermsOfUse) CredentialData {
+	result := CredentialData{"type": term.Type}
+
+	if term.ID != "" {
+		result["id"] = term.ID
 	}
 
 	return result
