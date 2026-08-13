@@ -85,6 +85,11 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 	}
 
 	if len(vcc.CredentialStatus) > 0 {
+		for i, term := range vcc.CredentialStatus {
+			if term.Type == "" {
+				return nil, fmt.Errorf("credentialStatus[%d].type is required", i)
+			}
+		}
 		vcJSON["credentialStatus"] = serializeStatuses(vcc.CredentialStatus)
 	}
 
@@ -201,14 +206,10 @@ func serializeStatuses(statuses []Status) interface{} {
 
 // serializeStatus converts a single Status struct to a JSON object.
 func serializeStatus(status Status) CredentialData {
-	result := make(CredentialData)
+	result := CredentialData{"type": status.Type}
 
 	if status.ID != "" {
 		result["id"] = status.ID
-	}
-
-	if status.Type != "" {
-		result["type"] = status.Type
 	}
 
 	if status.StatusPurpose != "" {
