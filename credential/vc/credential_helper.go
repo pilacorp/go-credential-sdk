@@ -85,8 +85,8 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 	}
 
 	if len(vcc.CredentialStatus) > 0 {
-		for i, term := range vcc.CredentialStatus {
-			if term.Type == "" {
+		for i, status := range vcc.CredentialStatus {
+			if status.Type == "" {
 				return nil, fmt.Errorf("credentialStatus[%d].type is required", i)
 			}
 		}
