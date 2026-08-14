@@ -1,0 +1,84 @@
+package vcanchor
+
+const HashSchemeKeccak256SortedPairsNoLeafHashV1 = "keccak256-sorted-pairs-no-leaf-hash-v1"
+
+type BatchInput struct {
+	IssuerDID      string
+	ExternalTreeID string
+	VCHashes       []string
+}
+
+type Batch struct {
+	IssuerDID      string `json:"issuer_did"`
+	ExternalTreeID string `json:"external_tree_id"`
+	Root           string `json:"root"`
+	LeafCount      int    `json:"leaf_count"`
+	HashScheme     string `json:"hash_scheme"`
+	LeavesDigest   string `json:"leaves_digest"`
+
+	leavesByHash map[string]int
+	leaves       [][]byte
+}
+
+type SubmitRootRequest struct {
+	IssuerDID      string `json:"issuer_did"`
+	ExternalTreeID string `json:"external_tree_id"`
+	Root           string `json:"root"`
+	LeafCount      int    `json:"leaf_count"`
+	HashScheme     string `json:"hash_scheme"`
+	LeavesDigest   string `json:"leaves_digest"`
+}
+
+type SubmitRootResponse struct {
+	ID               int    `json:"id"`
+	IssuerDID        string `json:"issuer_did"`
+	ExternalTreeID   string `json:"external_tree_id"`
+	OnchainTreeIndex int    `json:"onchain_tree_index"`
+	Root             string `json:"root"`
+	LeafCount        int    `json:"leaf_count"`
+	HashScheme       string `json:"hash_scheme"`
+	LeavesDigest     string `json:"leaves_digest"`
+	TxHash           string `json:"tx_hash"`
+	Status           string `json:"status"`
+}
+
+type Receipt struct {
+	IssuerDID      string   `json:"issuer_did"`
+	ExternalTreeID string   `json:"external_tree_id"`
+	VCHash         string   `json:"vc_hash"`
+	LeafIndex      int      `json:"leaf_index"`
+	Root           string   `json:"root"`
+	Proof          []string `json:"proof"`
+	TxHash         string   `json:"tx_hash,omitempty"`
+	HashScheme     string   `json:"hash_scheme"`
+}
+
+type VerifyReceiptResponse struct {
+	Verified      bool   `json:"verified"`
+	Source        string `json:"source"`
+	ProofRequired bool   `json:"proof_required"`
+}
+
+type StoredBatch struct {
+	IssuerDID        string   `json:"issuer_did"`
+	ExternalTreeID   string   `json:"external_tree_id"`
+	Root             string   `json:"root"`
+	LeafCount        int      `json:"leaf_count"`
+	HashScheme       string   `json:"hash_scheme"`
+	LeavesDigest     string   `json:"leaves_digest"`
+	OrderedVCHashes  []string `json:"ordered_vc_hashes"`
+	TxHash           string   `json:"tx_hash,omitempty"`
+	Status           string   `json:"status"`
+	AnchoredAtUnix   int64    `json:"anchored_at_unix,omitempty"`
+	CreatedAtUnix    int64    `json:"created_at_unix"`
+	LastModifiedUnix int64    `json:"last_modified_unix"`
+}
+
+type Manifest struct {
+	IssuerDID      string `json:"issuer_did"`
+	ExternalTreeID string `json:"external_tree_id"`
+	Root           string `json:"root"`
+	LeafCount      int    `json:"leaf_count"`
+	HashScheme     string `json:"hash_scheme"`
+	LeavesDigest   string `json:"leaves_digest"`
+}
