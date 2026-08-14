@@ -2,7 +2,9 @@ package vcanchor
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 )
 
 type fakeSubmitter struct {
@@ -23,7 +25,7 @@ func (f *fakeSubmitter) SubmitRoot(ctx context.Context, req SubmitRootRequest) (
 
 func TestManagerPersistsBatchAndGeneratesReceiptFromStore(t *testing.T) {
 	ctx := context.Background()
-	store := newTestFileStore(t)
+	store := newTestStore()
 	submitter := &fakeSubmitter{txHash: "0xtx"}
 	manager := NewManager(store, submitter)
 
@@ -74,9 +76,9 @@ func TestManagerPersistsBatchAndGeneratesReceiptFromStore(t *testing.T) {
 	}
 }
 
-func TestFileStoreRejectsSameTreeWithDifferentDigest(t *testing.T) {
+func TestStoreRejectsSameTreeWithDifferentDigest(t *testing.T) {
 	ctx := context.Background()
-	store := newTestFileStore(t)
+	store := newTestStore()
 
 	first, err := batchToStoredBatch(mustBuildBatch(t, "app-tree-001", []string{
 		"0x0000000000000000000000000000000000000000000000000000000000000001",
@@ -99,9 +101,9 @@ func TestFileStoreRejectsSameTreeWithDifferentDigest(t *testing.T) {
 	}
 }
 
-func TestFileStoreRoundTrip(t *testing.T) {
+func TestStoreContractRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	store := newTestFileStore(t)
+	store := newTestStore()
 
 	batch := mustBuildBatch(t, "app-tree-001", []string{
 		"0x0000000000000000000000000000000000000000000000000000000000000001",
@@ -146,13 +148,79 @@ func mustBuildBatch(t *testing.T, externalTreeID string, hashes []string) *Batch
 	return batch
 }
 
-func newTestFileStore(t *testing.T) *FileStore {
-	t.Helper()
+type testStore struct {
+	batches map[string]StoredBatch
+}
 
-	store, err := NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewFileStore returned error: %v", err)
+func newTestStore() *testStore {
+	return &testStore{batches: make(map[string]StoredBatch)}
+}
+
+func (s *testStore) SaveBatch(ctx context.Context, batch StoredBatch) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
-	return store
+	now := time.Now().Unix()
+	if batch.CreatedAtUnix == 0 {
+		batch.CreatedAtUnix = now
+	}
+	batch.LastModifiedUnix = now
+	if batch.Status == "" {
+		batch.Status = "created"
+	}
+
+	key := batch.IssuerDID + "\x00" + batch.ExternalTreeID
+	if existing, ok := s.batches[key]; ok {
+		if !sameBatchContent(existing, batch) {
+			return ErrBatchConflict
+		}
+		return nil
+	}
+
+	s.batches[key] = cloneTestStoredBatch(batch)
+	return nil
+}
+
+func (s *testStore) GetBatch(ctx context.Context, issuerDID, externalTreeID string) (*StoredBatch, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	batch, ok := s.batches[issuerDID+"\x00"+externalTreeID]
+	if !ok {
+		return nil, ErrBatchNotFound
+	}
+
+	cloned := cloneTestStoredBatch(batch)
+	return &cloned, nil
+}
+
+func (s *testStore) MarkAnchored(ctx context.Context, issuerDID, externalTreeID, txHash string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if txHash == "" {
+		return fmt.Errorf("tx_hash is required")
+	}
+
+	key := issuerDID + "\x00" + externalTreeID
+	batch, ok := s.batches[key]
+	if !ok {
+		return ErrBatchNotFound
+	}
+
+	now := time.Now().Unix()
+	batch.TxHash = txHash
+	batch.Status = "anchored"
+	batch.AnchoredAtUnix = now
+	batch.LastModifiedUnix = now
+	s.batches[key] = batch
+
+	return nil
+}
+
+func cloneTestStoredBatch(batch StoredBatch) StoredBatch {
+	batch.OrderedVCHashes = append([]string(nil), batch.OrderedVCHashes...)
+	return batch
 }

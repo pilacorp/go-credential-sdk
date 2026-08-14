@@ -62,7 +62,7 @@ NewManager(store Store, submitter RootSubmitter) *Manager
 Authen Service client APIs:
 
 ```go
-NewServiceClient(baseURL, apiKey string, opts ...ClientOption) *ServiceClient
+NewServiceClient(baseURL, issuerDID string, opts ...ClientOption) *ServiceClient
 (*ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error)
 (*ServiceClient) VerifyReceipt(ctx context.Context, receipt Receipt) (*VerifyReceiptResponse, error)
 ```
@@ -80,9 +80,10 @@ type Store interface {
 }
 ```
 
-Provided store:
+Provided storage backend:
 
-- `FileStore`: JSON file store for simple production or integration testing.
+- None. Applications must implement `Store` using their own database or object
+  storage.
 
 Stored data includes:
 
@@ -187,5 +188,5 @@ Covered behavior:
 - reject duplicate VC hashes
 - persist batch and generate receipt from store
 - reject same external tree ID with different content
-- file store save/load/mark-anchored round trip
+- store contract save/load/mark-anchored round trip through test-only fake store
 - Authen Service client submit-root and receipt verification payloads

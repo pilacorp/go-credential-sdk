@@ -11,20 +11,18 @@ import (
 func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 	t.Parallel()
 
-	var gotHeader string
-	var gotAPIKey string
+	var gotIssuerHeader string
 	var gotBody map[string]any
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/external/merkle-roots" {
+		if r.URL.Path != "/api/v1/credentials/external/merkle-roots" {
 			t.Fatalf("got path %s", r.URL.Path)
 		}
 		if r.Method != http.MethodPost {
 			t.Fatalf("got method %s", r.Method)
 		}
 
-		gotHeader = r.Header.Get("x-issuer-did")
-		gotAPIKey = r.Header.Get("x-api-key")
+		gotIssuerHeader = r.Header.Get("x-issuer-did")
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("Decode body returned error: %v", err)
 		}
@@ -48,7 +46,7 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := NewServiceClient(server.URL, "api-key-1")
+	client := NewServiceClient(server.URL, "did:pila:testnet:0xissuer")
 	resp, err := client.SubmitRoot(context.Background(), SubmitRootRequest{
 		IssuerDID:      "did:pila:testnet:0xissuer",
 		ExternalTreeID: "tree-1",
@@ -61,11 +59,8 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 		t.Fatalf("SubmitRoot returned error: %v", err)
 	}
 
-	if gotHeader != "did:pila:testnet:0xissuer" {
-		t.Fatalf("got x-issuer-did %q", gotHeader)
-	}
-	if gotAPIKey != "api-key-1" {
-		t.Fatalf("got x-api-key %q", gotAPIKey)
+	if gotIssuerHeader != "did:pila:testnet:0xissuer" {
+		t.Fatalf("got x-issuer-did %q", gotIssuerHeader)
 	}
 	if gotBody["external_tree_id"] != "tree-1" {
 		t.Fatalf("got external_tree_id %v", gotBody["external_tree_id"])
@@ -83,7 +78,7 @@ func TestServiceClientVerifyReceiptSendsFullReceiptPayload(t *testing.T) {
 
 	var gotBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/external/verify-receipt" {
+		if r.URL.Path != "/api/v1/credentials/external/verify-receipt" {
 			t.Fatalf("got path %s", r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
@@ -128,7 +123,7 @@ func TestServiceClientVerifyReceiptAcceptsCacheResponse(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/external/verify-receipt" {
+		if r.URL.Path != "/api/v1/credentials/external/verify-receipt" {
 			t.Fatalf("got path %s", r.URL.Path)
 		}
 

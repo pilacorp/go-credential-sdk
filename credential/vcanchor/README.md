@@ -39,12 +39,10 @@ prevents the common failure where the application builds a root in memory,
 submits it, then loses the ordered leaf list before it can issue receipts.
 
 ```go
-store, err := vcanchor.NewFileStore("./vc-anchor-store")
-if err != nil {
-	panic(err)
-}
-
-client := vcanchor.NewServiceClient("https://authen.example.com", "issuer-api-key")
+// Implement vcanchor.Store in your application using your database or object
+// storage. The SDK intentionally does not ship a storage backend.
+store := yourapp.NewVCAnchorStore(db)
+client := vcanchor.NewServiceClient("https://authen.example.com", "did:pila:testnet:0xissuer")
 manager := vcanchor.NewManager(store, client)
 
 batch, err := manager.CreateBatch(ctx, vcanchor.BatchInput{
@@ -82,7 +80,7 @@ err := manager.ValidateStoredBatch(ctx, "did:pila:testnet:0xissuer", "app-tree-0
 endpoint:
 
 ```go
-client := vcanchor.NewServiceClient("https://authen.example.com", "issuer-api-key")
+client := vcanchor.NewServiceClient("https://authen.example.com", "did:pila:testnet:0xissuer")
 
 receipt, err := manager.GenerateReceipt(ctx, issuerDID, externalTreeID, vcHash)
 if err != nil {
@@ -98,10 +96,10 @@ if err != nil {
 _ = verified
 ```
 
-`SubmitRoot` sends `issuer_did` as the `x-issuer-did` header because Authen
-Service reads the issuer from metadata for root submission. `VerifyReceipt`
-sends `issuer_did` in the JSON body because the verify endpoint is
-public/read-style.
+`ServiceClient` sends the configured issuer DID as the `x-issuer-did` header
+because Authen Service reads the issuer from metadata for root submission.
+`VerifyReceipt` also sends `issuer_did` in the JSON body because the verify
+endpoint is public/read-style.
 
 ## Low-level usage
 
@@ -179,7 +177,7 @@ integrating application must preserve enough data to regenerate receipts:
 - `leaves_digest`
 - `tx_hash` after anchoring
 
-`FileStore` is a simple production-friendly starting point. For higher volume,
-implement `Store` on top of your own database or object storage. Do not hard
+Implement `Store` on top of your own database or object storage. Do not hard
 delete anchored batches unless every holder already has a receipt and your
-retention policy accepts that trade-off.
+retention policy accepts that trade-off. The SDK does not provide memory or file
+stores because those choices are application-specific persistence concerns.

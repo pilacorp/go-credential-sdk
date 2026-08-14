@@ -31,7 +31,8 @@ Already available:
 - `VerifyReceiptLocal` verifies `vc_hash + proof -> root`.
 - `Manager` enforces safe order: create batch, persist batch, submit root, mark anchored, generate receipt.
 - `Store` lets applications plug in their own durable storage.
-- `FileStore` covers local development and simple integration testing with persisted files.
+- No SDK storage backend is provided; applications implement `Store` using their
+  own database or object storage.
 
 Missing for end-to-end integrators:
 
@@ -245,7 +246,7 @@ SDK responsibility:
 - Consumes: `SubmitRootRequest`, `SubmitRootResponse`, `Receipt`
 - Produces:
   - `type ServiceClient struct`
-  - `func NewServiceClient(baseURL, apiKey string, opts ...ClientOption) *ServiceClient`
+  - `func NewServiceClient(baseURL, issuerDID string, opts ...ClientOption) *ServiceClient`
   - `func (c *ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error)`
   - `func (c *ServiceClient) VerifyReceipt(ctx context.Context, receipt Receipt) (*VerifyReceiptResponse, error)`
 
@@ -316,7 +317,8 @@ Steps:
 
 **Interfaces:**
 
-- Consumes: `vcanchor.Manager`, `vcanchor.ServiceClient`, `vcanchor.FileStore`
+- Consumes: `vcanchor.Manager`, `vcanchor.ServiceClient`, an application-owned
+  `vcanchor.Store` implementation
 - Produces: runnable example with create, submit, receipt, verify commands
 
 Steps:

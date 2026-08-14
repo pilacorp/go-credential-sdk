@@ -11,23 +11,23 @@ import (
 )
 
 const (
-	defaultSubmitRootPath    = "/api/v1/external/merkle-roots"
-	defaultVerifyReceiptPath = "/api/v1/external/verify-receipt"
+	defaultSubmitRootPath    = "/api/v1/credentials/external/merkle-roots"
+	defaultVerifyReceiptPath = "/api/v1/credentials/external/verify-receipt"
 )
 
 type ClientOption func(*ServiceClient)
 
 type ServiceClient struct {
 	baseURL       string
-	apiKey        string
+	issuerDID     string
 	authorization string
 	httpClient    *http.Client
 }
 
-func NewServiceClient(baseURL, apiKey string, opts ...ClientOption) *ServiceClient {
+func NewServiceClient(baseURL, issuerDID string, opts ...ClientOption) *ServiceClient {
 	client := &ServiceClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		apiKey:     apiKey,
+		issuerDID:  issuerDID,
 		httpClient: http.DefaultClient,
 	}
 	for _, opt := range opts {
@@ -98,8 +98,8 @@ func (c *ServiceClient) postJSON(ctx context.Context, path string, payload, out 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("x-api-key", c.apiKey)
+	if c.issuerDID != "" {
+		req.Header.Set("x-issuer-did", c.issuerDID)
 	}
 	if c.authorization != "" {
 		req.Header.Set("Authorization", c.authorization)
