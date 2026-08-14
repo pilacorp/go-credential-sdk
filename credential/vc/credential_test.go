@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
@@ -2112,5 +2114,100 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 		assert.NoError(t, json.Unmarshal(contents, &payload))
 		assert.Len(t, payload.TermsOfUse, 1)
 		assert.Equal(t, "PresentationRequiredPolicy", payload.TermsOfUse[0].Type)
+	})
+}
+
+func TestSerializeCredentialContents_CredentialStatusTypeRequired(t *testing.T) {
+	baseContents := func() CredentialContents {
+		return CredentialContents{
+			Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+			ID:      "urn:uuid:1234",
+			Issuer:  "did:example:issuer",
+			Types:   []string{"VerifiableCredential"},
+			Subject: []Subject{{ID: "did:example:holder"}},
+		}
+	}
+
+	t.Run("missing type is rejected", func(t *testing.T) {
+		vcc := baseContents()
+		vcc.CredentialStatus = []Status{
+			{ID: "https://example.com/status/0#0", Type: "BitstringStatusListEntry"},
+			{ID: "https://example.com/status/0#1", StatusPurpose: "revocation"},
+		}
+
+		_, err := serializeCredentialContents(&vcc)
+		assert.EqualError(t, err, "credentialStatus[1].type is required")
+	})
+
+	t.Run("type is always written", func(t *testing.T) {
+		vcc := baseContents()
+		vcc.CredentialStatus = []Status{{
+			ID:            "https://example.com/status/0#0",
+			Type:          "BitstringStatusListEntry",
+			StatusPurpose: "revocation",
+		}}
+
+		out, err := serializeCredentialContents(&vcc)
+		assert.NoError(t, err)
+
+		status, ok := out["credentialStatus"].(CredentialData)
+		assert.True(t, ok, "a single status collapses to an object, got %T", out["credentialStatus"])
+		assert.Equal(t, "BitstringStatusListEntry", status["type"])
+	})
+}
+
+// relativeIRIPattern matches an N-Quads IRI with no scheme — `<Foo>` rather than
+// `<https://example.com/Foo>`. Such IRIs are not valid absolute IRIs, and JSON-LD
+// processors are free to resolve them differently, which changes the canonical
+// form and therefore any signature computed over it.
+var relativeIRIPattern = regexp.MustCompile(`<[A-Za-z][A-Za-z0-9_-]*>`)
+
+func TestTermsOfUse_CanonicalizationProducesAbsoluteIRIs(t *testing.T) {
+	contentsWithContext := func(ctx []interface{}) map[string]interface{} {
+		vcc := CredentialContents{
+			Context: ctx,
+			ID:      "urn:uuid:1234",
+			Issuer:  "did:example:issuer",
+			Types:   []string{"VerifiableCredential"},
+			Subject: []Subject{{ID: "did:example:holder"}},
+			TermsOfUse: []TermsOfUse{
+				{Type: "PresentationRequiredPolicy"},
+			},
+		}
+
+		out, err := serializeCredentialContents(&vcc)
+		assert.NoError(t, err)
+
+		return normalizeCredentialData(out)
+	}
+
+	t.Run("a declared policy type canonicalizes to an absolute IRI", func(t *testing.T) {
+		doc := contentsWithContext([]interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			map[string]interface{}{"@vocab": "https://example.com/vocab#"},
+		})
+
+		nq, err := processor.CanonicalizeDocument(doc)
+		assert.NoError(t, err)
+
+		assert.Contains(t, string(nq), "<https://example.com/vocab#PresentationRequiredPolicy>")
+		assert.NotRegexp(t, relativeIRIPattern, string(nq),
+			"canonicalized n-quads must not contain relative IRIs")
+	})
+
+	t.Run("control: an undeclared policy type degrades to a relative IRI", func(t *testing.T) {
+		// This is the trap the README warns about. Asserting it explicitly keeps
+		// the invariant above meaningful: if a future context change silently
+		// started declaring the term, this test would catch that the two cases
+		// are no longer distinct.
+		doc := contentsWithContext([]interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+		})
+
+		nq, err := processor.CanonicalizeDocument(doc)
+		assert.NoError(t, err)
+
+		assert.Contains(t, string(nq), "<PresentationRequiredPolicy>")
+		assert.Regexp(t, relativeIRIPattern, string(nq))
 	})
 }

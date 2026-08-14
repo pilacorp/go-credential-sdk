@@ -136,6 +136,15 @@ func normalizeValue(v interface{}) interface{} {
 		return normalizeMap(map[string]interface{}(val))
 	case map[string]interface{}:
 		return normalizeMap(val)
+	case []CredentialData:
+		// util.MapSlice returns []CredentialData, which generic processors do not
+		// recognise: json-gold stringifies it into a literal instead of walking it
+		// as a list of nodes. Widen it to []interface{} so the entries survive.
+		out := make([]interface{}, len(val))
+		for i, e := range val {
+			out[i] = normalizeMap(map[string]interface{}(e))
+		}
+		return out
 	case []interface{}:
 		out := make([]interface{}, len(val))
 		for i, e := range val {
