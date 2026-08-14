@@ -58,6 +58,7 @@ type CredentialContents struct {
 	CredentialStatus []Status      `json:"credentialStatus,omitempty"` // Credential status entries
 	Subject          []Subject     `json:"subject,omitempty"`          // Credential subjects
 	Schemas          []Schema      `json:"schemas,omitempty"`          // Credential schemas
+	TermsOfUse       []TermsOfUse  `json:"termsOfUse,omitempty"`       // Terms of use policies
 }
 
 // Status represents the credentialStatus field as per W3C Verifiable Credentials.
@@ -79,6 +80,12 @@ type Subject struct {
 type Schema struct {
 	ID   string `json:"id,omitempty"`   // Schema identifier
 	Type string `json:"type,omitempty"` // Schema type
+}
+
+// TermsOfUse represents a termsOfUse entry as per W3C Verifiable Credentials.
+type TermsOfUse struct {
+	ID   string `json:"id,omitempty"` // Policy identifier
+	Type string `json:"type"`         // Policy type
 }
 
 // Decoy specifies where and how many decoy digests to add for SD-JWT privacy.

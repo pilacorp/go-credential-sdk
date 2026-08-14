@@ -85,7 +85,21 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 	}
 
 	if len(vcc.CredentialStatus) > 0 {
+		for i, status := range vcc.CredentialStatus {
+			if status.Type == "" {
+				return nil, fmt.Errorf("credentialStatus[%d].type is required", i)
+			}
+		}
 		vcJSON["credentialStatus"] = serializeStatuses(vcc.CredentialStatus)
+	}
+
+	if len(vcc.TermsOfUse) > 0 {
+		for i, term := range vcc.TermsOfUse {
+			if term.Type == "" {
+				return nil, fmt.Errorf("termsOfUse[%d].type is required", i)
+			}
+		}
+		vcJSON["termsOfUse"] = util.MapSlice(vcc.TermsOfUse, serializeTermsOfUse)
 	}
 
 	if !vcc.ValidFrom.IsZero() {
@@ -122,6 +136,15 @@ func normalizeValue(v interface{}) interface{} {
 		return normalizeMap(map[string]interface{}(val))
 	case map[string]interface{}:
 		return normalizeMap(val)
+	case []CredentialData:
+		// util.MapSlice returns []CredentialData, which generic processors do not
+		// recognise: json-gold stringifies it into a literal instead of walking it
+		// as a list of nodes. Widen it to []interface{} so the entries survive.
+		out := make([]interface{}, len(val))
+		for i, e := range val {
+			out[i] = normalizeMap(map[string]interface{}(e))
+		}
+		return out
 	case []interface{}:
 		out := make([]interface{}, len(val))
 		for i, e := range val {
@@ -192,14 +215,10 @@ func serializeStatuses(statuses []Status) interface{} {
 
 // serializeStatus converts a single Status struct to a JSON object.
 func serializeStatus(status Status) CredentialData {
-	result := make(CredentialData)
+	result := CredentialData{"type": status.Type}
 
 	if status.ID != "" {
 		result["id"] = status.ID
-	}
-
-	if status.Type != "" {
-		result["type"] = status.Type
 	}
 
 	if status.StatusPurpose != "" {
@@ -212,6 +231,18 @@ func serializeStatus(status Status) CredentialData {
 
 	if status.StatusListCredential != "" {
 		result["statusListCredential"] = status.StatusListCredential
+	}
+
+	return result
+}
+
+// serializeTermsOfUse converts a single TermsOfUse struct to a JSON object.
+// Type is required by the W3C data model, so it is always written.
+func serializeTermsOfUse(term TermsOfUse) CredentialData {
+	result := CredentialData{"type": term.Type}
+
+	if term.ID != "" {
+		result["id"] = term.ID
 	}
 
 	return result

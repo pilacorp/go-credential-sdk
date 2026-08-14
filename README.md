@@ -99,6 +99,74 @@ To create a Verifiable Credential, you need:
 4. Add a cryptographic proof using `AddProof()` with a signer provider
 5. Serialize and verify the credential
 
+### Terms of Use
+
+`CredentialContents.TermsOfUse` maps to the W3C `termsOfUse` property, which lets an
+issuer state the conditions under which a credential may be used. `Type` is required,
+`ID` is optional:
+
+```go
+vcc := vc.CredentialContents{
+	// ... other contents ...
+	TermsOfUse: []vc.TermsOfUse{
+		{Type: "PresentationRequiredPolicy"},
+		{ID: "https://example.com/policies/credential/4", Type: "IssuerPolicy"},
+	},
+}
+```
+
+Produces:
+
+```json
+"termsOfUse": [
+  { "type": "PresentationRequiredPolicy" },
+  {
+    "id": "https://example.com/policies/credential/4",
+    "type": "IssuerPolicy"
+  }
+]
+```
+
+Unlike `credentialStatus` and `credentialSchema`, a single entry is **not** collapsed into
+a bare object — `termsOfUse` always serializes as an array. An entry with an empty `Type`
+is rejected with an error. The property is omitted entirely when the slice is empty.
+
+The spec does not define any concrete terms-of-use types; `IssuerPolicy` and `HolderPolicy`
+are illustrative.
+
+#### Declaring your policy type
+
+Your policy type **must** be declared in `@context` — either through an `@vocab` mapping or
+by using an absolute IRI as the type. The base context
+`https://www.w3.org/ns/credentials/v2` defines the `termsOfUse` *property*, but it defines
+no policy types and carries **no `@vocab`**, so an undeclared type has nothing to resolve
+against:
+
+```
+// @context: ["https://www.w3.org/ns/credentials/v2"]
+_:c14n0 <...#type> <PresentationRequiredPolicy> .           // relative IRI — not a valid absolute IRI
+
+// @context: [..., {"@vocab": "https://ndadid.vn/ns#"}]
+_:c14n0 <...#type> <https://ndadid.vn/ns#PresentationRequiredPolicy> .
+```
+
+This is **mandatory** for the `ecdsa-rdfc-2019` and `ecdsa-sd-2023` proof suites, which sign
+over canonicalized RDF: a relative IRI is resolved differently by different JSON-LD
+processors, producing a different canonical form and therefore a different hash, so a
+third-party verifier can reject a credential this SDK considers valid. JWT credentials do
+not canonicalize and are unaffected — but a credential issued today may be re-issued under
+a Data Integrity proof later.
+
+#### Selective disclosure and `mandatoryPointers`
+
+Under `ecdsa-sd-2023`, pass `/termsOfUse` in the mandatory paths given to
+`AddProofByProvider`. The SDK adds nothing to that list on your behalf. If the policy is
+left selectively disclosable, a holder can derive a proof that omits `termsOfUse` entirely,
+and the verifier sees a well-formed, correctly signed credential carrying no policy — with
+no indication that anything was removed. This differs from `credentialStatus`: dropping
+status leaves the verifier aware it cannot check revocation, whereas dropping `termsOfUse`
+leaves it unaware there was ever a condition.
+
 ### Parsing a Verifiable Credential
 
 1. Use `vc.ParseCredential()` to parse both JSON and JWT credentials
