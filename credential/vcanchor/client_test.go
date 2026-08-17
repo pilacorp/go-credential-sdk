@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,7 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 	t.Parallel()
 
 	var gotIssuerHeader string
+	var gotAuthorization string
 	var gotBody map[string]any
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -23,6 +25,7 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 		}
 
 		gotIssuerHeader = r.Header.Get("x-issuer-did")
+		gotAuthorization = r.Header.Get("Authorization")
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("Decode body returned error: %v", err)
 		}
@@ -46,7 +49,7 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := NewServiceClient(server.URL, "did:pila:testnet:0xissuer")
+	client := NewServiceClient(server.URL, "did:pila:testnet:0xissuer", WithAuthorization("Bearer token"))
 	resp, err := client.SubmitRoot(context.Background(), SubmitRootRequest{
 		IssuerDID:      "did:pila:testnet:0xissuer",
 		ExternalTreeID: "tree-1",
@@ -62,6 +65,9 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 	if gotIssuerHeader != "did:pila:testnet:0xissuer" {
 		t.Fatalf("got x-issuer-did %q", gotIssuerHeader)
 	}
+	if gotAuthorization != "Bearer token" {
+		t.Fatalf("got Authorization %q", gotAuthorization)
+	}
 	if gotBody["external_tree_id"] != "tree-1" {
 		t.Fatalf("got external_tree_id %v", gotBody["external_tree_id"])
 	}
@@ -70,6 +76,35 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 	}
 	if resp.OnchainTreeIndex != 1000000001 {
 		t.Fatalf("got onchain tree index %d", resp.OnchainTreeIndex)
+	}
+}
+
+func TestServiceClientSubmitRootRejectsMismatchedIssuerDID(t *testing.T) {
+	t.Parallel()
+
+	requested := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = true
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewServiceClient(server.URL, "did:pila:testnet:0xclient")
+	_, err := client.SubmitRoot(context.Background(), SubmitRootRequest{
+		IssuerDID:      "did:pila:testnet:0xrequest",
+		ExternalTreeID: "tree-1",
+		Root:           "0xroot",
+		LeafCount:      2,
+		HashScheme:     HashSchemeKeccak256SortedPairsNoLeafHashV1,
+		LeavesDigest:   "0xdigest",
+	})
+	if err == nil {
+		t.Fatal("expected issuer mismatch error")
+	}
+	if !strings.Contains(err.Error(), "issuer_did does not match service client issuer") {
+		t.Fatalf("got error %q", err)
+	}
+	if requested {
+		t.Fatal("SubmitRoot must not send request when issuer DID mismatches")
 	}
 }
 

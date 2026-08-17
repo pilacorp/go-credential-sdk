@@ -2,6 +2,11 @@ package vcanchor
 
 const HashSchemeKeccak256SortedPairsNoLeafHashV1 = "keccak256-sorted-pairs-no-leaf-hash-v1"
 
+// MaxLeavesPerBatch caps how many VC hashes a single batch (one Merkle root)
+// may contain. It bounds the memory used while building the tree and generating
+// proofs. Split larger sets across multiple batches/roots.
+const MaxLeavesPerBatch = 10000
+
 type BatchInput struct {
 	IssuerDID      string
 	ExternalTreeID string
@@ -16,7 +21,7 @@ type Batch struct {
 	HashScheme     string `json:"hash_scheme"`
 	LeavesDigest   string `json:"leaves_digest"`
 
-	leavesByHash map[string]int
+	leavesByHash map[[32]byte]int
 	leaves       [][]byte
 }
 

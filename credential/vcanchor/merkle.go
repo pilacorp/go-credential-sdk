@@ -16,7 +16,9 @@ func merkleRoot(leaves [][]byte) ([]byte, error) {
 		return cloneBytes(leaves[0]), nil
 	}
 
-	level := cloneLeaves(leaves)
+	// The loop only reads level and writes into fresh "next" slices, so it never
+	// mutates the caller's leaves. Alias directly instead of cloning.
+	level := leaves
 	for len(level) > 1 {
 		next := make([][]byte, 0, (len(level)+1)/2)
 		for i := 0; i < len(level); i += 2 {
@@ -45,7 +47,9 @@ func merkleProof(leaves [][]byte, leafIndex int) ([][]byte, error) {
 
 	proof := make([][]byte, 0)
 	index := leafIndex
-	level := cloneLeaves(leaves)
+	// Aliased, not cloned: level is never mutated (see merkleRoot). Siblings that
+	// go into proof are copied via cloneBytes below, so proof stays independent.
+	level := leaves
 
 	for len(level) > 1 {
 		siblingIndex := index ^ 1
@@ -88,21 +92,18 @@ func mergeSorted(left, right []byte) []byte {
 }
 
 func digestLeaves(leaves [][]byte) []byte {
-	combined := make([]byte, 0, len(leaves)*32)
+	// Stream each leaf into the hasher instead of concatenating into one
+	// len(leaves)*32 buffer. This is byte-identical to Keccak256 over the
+	// concatenation but uses O(1) extra memory.
+	h := crypto.NewKeccakState()
 	for _, leaf := range leaves {
-		combined = append(combined, leaf...)
+		h.Write(leaf)
 	}
 
-	return crypto.Keccak256(combined)
-}
+	digest := make([]byte, 32)
+	h.Read(digest)
 
-func cloneLeaves(leaves [][]byte) [][]byte {
-	out := make([][]byte, len(leaves))
-	for i := range leaves {
-		out[i] = cloneBytes(leaves[i])
-	}
-
-	return out
+	return digest
 }
 
 func cloneBytes(in []byte) []byte {

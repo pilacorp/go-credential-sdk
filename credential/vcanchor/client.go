@@ -53,6 +53,11 @@ func WithAuthorization(authorization string) ClientOption {
 }
 
 func (c *ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error) {
+	issuerDID, err := c.submitRootIssuerDID(req.IssuerDID)
+	if err != nil {
+		return nil, err
+	}
+
 	var resp SubmitRootResponse
 	body := submitRootBody{
 		ExternalTreeID: req.ExternalTreeID,
@@ -62,12 +67,26 @@ func (c *ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (
 		LeavesDigest:   req.LeavesDigest,
 	}
 	if err := c.postJSON(ctx, defaultSubmitRootPath, body, &resp, map[string]string{
-		"x-issuer-did": req.IssuerDID,
+		"x-issuer-did": issuerDID,
 	}); err != nil {
 		return nil, err
 	}
 
 	return &resp, nil
+}
+
+func (c *ServiceClient) submitRootIssuerDID(reqIssuerDID string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("vcanchor: service client is nil")
+	}
+	if c.issuerDID != "" && reqIssuerDID != "" && c.issuerDID != reqIssuerDID {
+		return "", fmt.Errorf("vcanchor: issuer_did does not match service client issuer")
+	}
+	if c.issuerDID != "" {
+		return c.issuerDID, nil
+	}
+
+	return reqIssuerDID, nil
 }
 
 func (c *ServiceClient) VerifyReceipt(ctx context.Context, receipt Receipt) (*VerifyReceiptResponse, error) {

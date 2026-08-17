@@ -42,7 +42,11 @@ submits it, then loses the ordered leaf list before it can issue receipts.
 // Implement vcanchor.Store in your application using your database or object
 // storage. The SDK intentionally does not ship a storage backend.
 store := yourapp.NewVCAnchorStore(db)
-client := vcanchor.NewServiceClient("https://authen.example.com", "did:pila:testnet:0xissuer")
+client := vcanchor.NewServiceClient(
+	"https://authen.example.com",
+	"did:pila:testnet:0xissuer",
+	vcanchor.WithAuthorization("Bearer <accessible-credential>"),
+)
 manager := vcanchor.NewManager(store, client)
 
 batch, err := manager.CreateBatch(ctx, vcanchor.BatchInput{
@@ -80,7 +84,11 @@ err := manager.ValidateStoredBatch(ctx, "did:pila:testnet:0xissuer", "app-tree-0
 endpoint:
 
 ```go
-client := vcanchor.NewServiceClient("https://authen.example.com", "did:pila:testnet:0xissuer")
+client := vcanchor.NewServiceClient(
+	"https://authen.example.com",
+	"did:pila:testnet:0xissuer",
+	vcanchor.WithAuthorization("Bearer <accessible-credential>"),
+)
 
 receipt, err := manager.GenerateReceipt(ctx, issuerDID, externalTreeID, vcHash)
 if err != nil {
@@ -96,9 +104,10 @@ if err != nil {
 _ = verified
 ```
 
-`ServiceClient` sends the configured issuer DID as the `x-issuer-did` header
-because Authen Service reads the issuer from metadata for root submission.
-`VerifyReceipt` also sends `issuer_did` in the JSON body because the verify
+`SubmitRoot` must be called with an `Authorization` accessible credential when
+using the Authen Service proxy. The proxy authenticates that credential and
+derives `x-issuer-did` from the authenticated requester before forwarding the
+request. `VerifyReceipt` sends `issuer_did` in the JSON body because the verify
 endpoint is public/read-style.
 
 ## Low-level usage

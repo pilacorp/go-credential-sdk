@@ -14,20 +14,26 @@ func BuildBatch(input BatchInput) (*Batch, error) {
 	if len(input.VCHashes) == 0 {
 		return nil, fmt.Errorf("vc_hashes is required")
 	}
+	if len(input.VCHashes) > MaxLeavesPerBatch {
+		return nil, fmt.Errorf("too many vc_hashes: %d exceeds max %d per batch", len(input.VCHashes), MaxLeavesPerBatch)
+	}
 
 	leaves := make([][]byte, 0, len(input.VCHashes))
-	leavesByHash := make(map[string]int, len(input.VCHashes))
+	leavesByHash := make(map[[32]byte]int, len(input.VCHashes))
 
 	for _, hash := range input.VCHashes {
 		normalized, raw, err := normalizeHash32(hash)
 		if err != nil {
 			return nil, err
 		}
-		if _, exists := leavesByHash[normalized]; exists {
+
+		var key [32]byte
+		copy(key[:], raw)
+		if _, exists := leavesByHash[key]; exists {
 			return nil, fmt.Errorf("duplicate vc_hash %s", normalized)
 		}
 
-		leavesByHash[normalized] = len(leaves)
+		leavesByHash[key] = len(leaves)
 		leaves = append(leaves, raw)
 	}
 
@@ -72,12 +78,14 @@ func (b *Batch) Manifest() Manifest {
 }
 
 func (b *Batch) Receipt(vcHash, txHash string) (*Receipt, error) {
-	normalized, _, err := normalizeHash32(vcHash)
+	normalized, raw, err := normalizeHash32(vcHash)
 	if err != nil {
 		return nil, err
 	}
 
-	leafIndex, ok := b.leavesByHash[normalized]
+	var key [32]byte
+	copy(key[:], raw)
+	leafIndex, ok := b.leavesByHash[key]
 	if !ok {
 		return nil, fmt.Errorf("vc_hash %s is not in batch", normalized)
 	}
