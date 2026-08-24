@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"fmt"
+	"math/bits"
 
 	"github.com/ethereum/go-ethereum/crypto"
 )
@@ -111,4 +112,19 @@ func cloneBytes(in []byte) []byte {
 	copy(out, in)
 
 	return out
+}
+
+// proofLen returns how many siblings a leaf's proof carries in a tree of leafCount
+// leaves. Each level halves the node count (an odd trailing node pairs with itself),
+// so the tree height — and therefore every leaf's proof — is ceil(log2(leafCount)).
+//
+// This is what separates a leaf from an internal node: the scheme feeds leaves in
+// unhashed, so the two are indistinguishable to the fold, but an internal node sits
+// higher up and its proof is strictly shorter.
+func proofLen(leafCount int) int {
+	if leafCount <= 1 {
+		return 0
+	}
+
+	return bits.Len(uint(leafCount - 1))
 }

@@ -105,6 +105,7 @@ func (b *Batch) Receipt(vcHash, txHash string) (*Receipt, error) {
 		ExternalTreeID: b.ExternalTreeID,
 		VCHash:         normalized,
 		LeafIndex:      leafIndex,
+		LeafCount:      b.LeafCount,
 		Root:           b.Root,
 		Proof:          proofHex,
 		TxHash:         txHash,

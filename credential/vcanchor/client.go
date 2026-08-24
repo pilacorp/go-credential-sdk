@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const (
@@ -24,17 +25,27 @@ type ServiceClient struct {
 	httpClient    *http.Client
 }
 
+// defaultHTTPTimeout bounds a request when the caller sets no deadline of their own.
+// SubmitRoot waits for the service to sign and mine a transaction, so it is the kind
+// of call that can hang; http.DefaultClient has no timeout at all. Callers who want
+// different behaviour still have WithHTTPClient.
+const defaultHTTPTimeout = 30 * time.Second
+
+func newDefaultHTTPClient() *http.Client {
+	return &http.Client{Timeout: defaultHTTPTimeout}
+}
+
 func NewServiceClient(baseURL, issuerDID string, opts ...ClientOption) *ServiceClient {
 	client := &ServiceClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		issuerDID:  issuerDID,
-		httpClient: http.DefaultClient,
+		httpClient: newDefaultHTTPClient(),
 	}
 	for _, opt := range opts {
 		opt(client)
 	}
 	if client.httpClient == nil {
-		client.httpClient = http.DefaultClient
+		client.httpClient = newDefaultHTTPClient()
 	}
 
 	return client

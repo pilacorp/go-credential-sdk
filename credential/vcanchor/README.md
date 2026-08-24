@@ -162,6 +162,7 @@ func main() {
   "external_tree_id": "app-tree-001",
   "vc_hash": "0x...",
   "leaf_index": 0,
+  "leaf_count": 4,
   "root": "0x...",
   "proof": ["0x..."],
   "tx_hash": "0x...",
@@ -169,9 +170,16 @@ func main() {
 }
 ```
 
-`VerifyReceiptLocal` only checks that `vc_hash + proof` reconstructs `root`.
-Authen Service must still check that the root exists, belongs to the issuer and
-external tree, and was anchored on-chain by the recorded transaction.
+`VerifyReceiptLocal` checks that `vc_hash + proof` reconstructs `root`, and that
+the proof has exactly `ceil(log2(leaf_count))` siblings. The length check is not
+cosmetic: this scheme feeds leaves into the tree unhashed, so an internal node is
+indistinguishable from a leaf to the fold, and an internal node recomputed from any
+published receipt would otherwise verify as a VC hash. `leaf_count` is therefore
+required, and a receipt without it is rejected.
+
+Local verification stops there. Authen Service must still check that the root
+exists, belongs to the issuer and external tree, and was anchored on-chain by the
+recorded transaction.
 
 ## Storage responsibility
 

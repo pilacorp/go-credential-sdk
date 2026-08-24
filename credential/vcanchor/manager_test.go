@@ -9,17 +9,24 @@ import (
 
 type fakeSubmitter struct {
 	txHash string
+	status string
 	req    SubmitRootRequest
 }
 
 func (f *fakeSubmitter) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error) {
 	f.req = req
+
+	status := f.status
+	if status == "" {
+		status = StatusAnchored
+	}
+
 	return &SubmitRootResponse{
 		IssuerDID:      req.IssuerDID,
 		ExternalTreeID: req.ExternalTreeID,
 		Root:           req.Root,
 		TxHash:         f.txHash,
-		Status:         "anchored",
+		Status:         status,
 	}, nil
 }
 
@@ -223,4 +230,80 @@ func (s *testStore) MarkAnchored(ctx context.Context, issuerDID, externalTreeID,
 func cloneTestStoredBatch(batch StoredBatch) StoredBatch {
 	batch.OrderedVCHashes = append([]string(nil), batch.OrderedVCHashes...)
 	return batch
+}
+
+// The service records the hash it broadcast even for an attempt that never confirmed,
+// so an "anchoring" response can carry a stale tx hash. Marking the batch anchored on
+// the hash alone would let GenerateReceipt issue a receipt for a tx that anchored
+// nothing, which the verifier would then reject.
+func TestSubmitRootDoesNotMarkAnchoredWhenStatusIsNotAnchored(t *testing.T) {
+	hashes := []string{
+		"0x0000000000000000000000000000000000000000000000000000000000000001",
+		"0x0000000000000000000000000000000000000000000000000000000000000002",
+	}
+
+	for _, status := range []string{StatusPending, StatusAnchoring, StatusFailed} {
+		t.Run(status, func(t *testing.T) {
+			ctx := context.Background()
+			store := newTestStore()
+			manager := NewManager(store, &fakeSubmitter{txHash: "0xstaletx", status: status})
+
+			batch, err := manager.CreateBatch(ctx, BatchInput{
+				IssuerDID:      "did:pila:testnet:0xissuer",
+				ExternalTreeID: "app-tree-" + status,
+				VCHashes:       hashes,
+			})
+			if err != nil {
+				t.Fatalf("CreateBatch returned error: %v", err)
+			}
+
+			if _, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID); err != nil {
+				t.Fatalf("SubmitRoot returned error: %v", err)
+			}
+
+			stored, err := store.GetBatch(ctx, batch.IssuerDID, batch.ExternalTreeID)
+			if err != nil {
+				t.Fatalf("GetBatch returned error: %v", err)
+			}
+			if stored.TxHash != "" {
+				t.Fatalf("status %q must not anchor the batch, got tx hash %q", status, stored.TxHash)
+			}
+
+			// And no receipt may be issued off the back of it.
+			if _, err := manager.GenerateReceipt(ctx, batch.IssuerDID, batch.ExternalTreeID, hashes[0]); err == nil {
+				t.Fatalf("status %q: GenerateReceipt must fail while the batch is not anchored", status)
+			}
+		})
+	}
+}
+
+// The happy path must still anchor.
+func TestSubmitRootMarksAnchoredWhenStatusIsAnchored(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	manager := NewManager(store, &fakeSubmitter{txHash: "0xtx", status: StatusAnchored})
+
+	batch, err := manager.CreateBatch(ctx, BatchInput{
+		IssuerDID:      "did:pila:testnet:0xissuer",
+		ExternalTreeID: "app-tree-anchored",
+		VCHashes: []string{
+			"0x0000000000000000000000000000000000000000000000000000000000000001",
+			"0x0000000000000000000000000000000000000000000000000000000000000002",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateBatch returned error: %v", err)
+	}
+
+	if _, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID); err != nil {
+		t.Fatalf("SubmitRoot returned error: %v", err)
+	}
+
+	stored, err := store.GetBatch(ctx, batch.IssuerDID, batch.ExternalTreeID)
+	if err != nil {
+		t.Fatalf("GetBatch returned error: %v", err)
+	}
+	if stored.TxHash != "0xtx" {
+		t.Fatalf("anchored batch should carry the tx hash, got %q", stored.TxHash)
+	}
 }

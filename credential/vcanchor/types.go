@@ -2,6 +2,16 @@ package vcanchor
 
 const HashSchemeKeccak256SortedPairsNoLeafHashV1 = "keccak256-sorted-pairs-no-leaf-hash-v1"
 
+// Anchoring states reported by the service for a submitted root. Only StatusAnchored
+// means the root is on chain; the others are in-flight or terminal-failed, and a
+// tx_hash may accompany any of them — a failed attempt keeps the hash it broadcast.
+const (
+	StatusPending   = "pending"
+	StatusAnchoring = "anchoring"
+	StatusAnchored  = "anchored"
+	StatusFailed    = "failed"
+)
+
 // MaxLeavesPerBatch caps how many VC hashes a single batch (one Merkle root)
 // may contain. It bounds the memory used while building the tree and generating
 // proofs. Split larger sets across multiple batches/roots.
@@ -52,6 +62,7 @@ type Receipt struct {
 	ExternalTreeID string   `json:"external_tree_id"`
 	VCHash         string   `json:"vc_hash"`
 	LeafIndex      int      `json:"leaf_index"`
+	LeafCount      int      `json:"leaf_count"`
 	Root           string   `json:"root"`
 	Proof          []string `json:"proof"`
 	TxHash         string   `json:"tx_hash,omitempty"`

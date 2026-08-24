@@ -66,7 +66,11 @@ func (m *Manager) SubmitRoot(ctx context.Context, issuerDID, externalTreeID stri
 	if err != nil {
 		return nil, err
 	}
-	if resp != nil && resp.TxHash != "" {
+	// A tx hash alone does not mean the root is anchored: the service records the hash
+	// it broadcast even when confirmation failed, and a later claim can carry that
+	// stale hash into an "anchoring" response. Marking on the hash would let
+	// GenerateReceipt hand out a receipt pointing at a tx that anchored nothing.
+	if resp != nil && resp.Status == StatusAnchored && resp.TxHash != "" {
 		if err := m.store.MarkAnchored(ctx, issuerDID, externalTreeID, resp.TxHash); err != nil {
 			return nil, err
 		}
@@ -88,7 +92,7 @@ func (m *Manager) GenerateReceipt(ctx context.Context, issuerDID, externalTreeID
 		return nil, fmt.Errorf("batch %s is not anchored", externalTreeID)
 	}
 
-	// ponytail: proof generation rebuilds the batch from ordered hashes; for
+	// TODO: proof generation rebuilds the batch from ordered hashes; for
 	// multi-million-leaf trees, replace this with persisted tree levels.
 	batch, err := BuildBatch(BatchInput{
 		IssuerDID:      stored.IssuerDID,
