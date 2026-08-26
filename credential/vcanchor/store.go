@@ -27,7 +27,10 @@ func (b StoredBatch) Manifest() Manifest {
 	}
 }
 
-func sameBatchContent(a, b StoredBatch) bool {
+// SameBatchContent reports whether two stored batches describe the same tree. A
+// Store uses it in SaveBatch to tell a retry of the same batch (return nil) from a
+// genuine collision on the same key (return ErrBatchConflict).
+func SameBatchContent(a, b StoredBatch) bool {
 	return a.IssuerDID == b.IssuerDID &&
 		a.ExternalTreeID == b.ExternalTreeID &&
 		a.Root == b.Root &&

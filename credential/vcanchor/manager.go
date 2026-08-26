@@ -46,12 +46,15 @@ func (m *Manager) SubmitRoot(ctx context.Context, issuerDID, externalTreeID stri
 	if m.submitter == nil {
 		return nil, fmt.Errorf("root submitter is required")
 	}
-	if err := m.ValidateStoredBatch(ctx, issuerDID, externalTreeID); err != nil {
-		return nil, err
-	}
 
 	stored, err := m.store.GetBatch(ctx, issuerDID, externalTreeID)
 	if err != nil {
+		return nil, err
+	}
+	// Validate the snapshot we are about to submit. Reading once for the check and
+	// again for the payload would let a concurrent writer land different content in
+	// between, so the root we send would be one nobody validated.
+	if err := validateStoredBatch(*stored); err != nil {
 		return nil, err
 	}
 
@@ -65,6 +68,13 @@ func (m *Manager) SubmitRoot(ctx context.Context, issuerDID, externalTreeID stri
 	})
 	if err != nil {
 		return nil, err
+	}
+	// The service ignores our x-issuer-did header and anchors under the DID it
+	// authenticated. When the two differ it writes the row under its own DID while we
+	// would build receipts under ours, and every later verify would miss the row and
+	// return verified: false with nothing to explain why.
+	if resp != nil && resp.IssuerDID != "" && resp.IssuerDID != stored.IssuerDID {
+		return nil, fmt.Errorf("vcanchor: service anchored under %s, not %s", resp.IssuerDID, stored.IssuerDID)
 	}
 	// A tx hash alone does not mean the root is anchored: the service records the hash
 	// it broadcast even when confirmation failed, and a later claim can carry that
@@ -119,6 +129,13 @@ func (m *Manager) ValidateStoredBatch(ctx context.Context, issuerDID, externalTr
 		return err
 	}
 
+	return validateStoredBatch(*stored)
+}
+
+// validateStoredBatch rebuilds the tree from the stored hash list and checks it still
+// produces the four fields the store claims, catching a store that dropped, reordered
+// or rewrote leaves.
+func validateStoredBatch(stored StoredBatch) error {
 	batch, err := BuildBatch(BatchInput{
 		IssuerDID:      stored.IssuerDID,
 		ExternalTreeID: stored.ExternalTreeID,
@@ -128,7 +145,7 @@ func (m *Manager) ValidateStoredBatch(ctx context.Context, issuerDID, externalTr
 		return err
 	}
 
-	return ensureBatchMatchesStored(batch, *stored)
+	return ensureBatchMatchesStored(batch, stored)
 }
 
 func ensureBatchMatchesStored(batch *Batch, stored StoredBatch) error {

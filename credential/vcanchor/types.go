@@ -2,9 +2,11 @@ package vcanchor
 
 const HashSchemeKeccak256SortedPairsNoLeafHashV1 = "keccak256-sorted-pairs-no-leaf-hash-v1"
 
-// Anchoring states reported by the service for a submitted root. Only StatusAnchored
-// means the root is on chain; the others are in-flight or terminal-failed, and a
-// tx_hash may accompany any of them — a failed attempt keeps the hash it broadcast.
+// Values of SubmitRootResponse.Status, the anchoring state the service reports for a
+// submitted root. Only StatusAnchored means the root is on chain; the others are
+// in-flight or terminal-failed, and a tx_hash may accompany any of them — a failed
+// attempt keeps the hash it broadcast. StoredBatch.Status is a different field with a
+// different domain; see its doc.
 const (
 	StatusPending   = "pending"
 	StatusAnchoring = "anchoring"
@@ -76,18 +78,22 @@ type VerifyReceiptResponse struct {
 }
 
 type StoredBatch struct {
-	IssuerDID        string   `json:"issuer_did"`
-	ExternalTreeID   string   `json:"external_tree_id"`
-	Root             string   `json:"root"`
-	LeafCount        int      `json:"leaf_count"`
-	HashScheme       string   `json:"hash_scheme"`
-	LeavesDigest     string   `json:"leaves_digest"`
-	OrderedVCHashes  []string `json:"ordered_vc_hashes"`
-	TxHash           string   `json:"tx_hash,omitempty"`
-	Status           string   `json:"status"`
-	AnchoredAtUnix   int64    `json:"anchored_at_unix,omitempty"`
-	CreatedAtUnix    int64    `json:"created_at_unix"`
-	LastModifiedUnix int64    `json:"last_modified_unix"`
+	IssuerDID       string   `json:"issuer_did"`
+	ExternalTreeID  string   `json:"external_tree_id"`
+	Root            string   `json:"root"`
+	LeafCount       int      `json:"leaf_count"`
+	HashScheme      string   `json:"hash_scheme"`
+	LeavesDigest    string   `json:"leaves_digest"`
+	OrderedVCHashes []string `json:"ordered_vc_hashes"`
+	TxHash          string   `json:"tx_hash,omitempty"`
+	// Status is the batch's local lifecycle state, not the service's: "created" when
+	// the SDK first hands the batch to the Store, then whatever the Store writes in
+	// MarkAnchored. It is not drawn from the StatusPending..StatusFailed set above,
+	// which describes SubmitRootResponse.Status.
+	Status           string `json:"status"`
+	AnchoredAtUnix   int64  `json:"anchored_at_unix,omitempty"`
+	CreatedAtUnix    int64  `json:"created_at_unix"`
+	LastModifiedUnix int64  `json:"last_modified_unix"`
 }
 
 type Manifest struct {

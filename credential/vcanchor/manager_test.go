@@ -8,9 +8,10 @@ import (
 )
 
 type fakeSubmitter struct {
-	txHash string
-	status string
-	req    SubmitRootRequest
+	txHash    string
+	status    string
+	issuerDID string
+	req       SubmitRootRequest
 }
 
 func (f *fakeSubmitter) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error) {
@@ -21,8 +22,13 @@ func (f *fakeSubmitter) SubmitRoot(ctx context.Context, req SubmitRootRequest) (
 		status = StatusAnchored
 	}
 
+	issuerDID := f.issuerDID
+	if issuerDID == "" {
+		issuerDID = req.IssuerDID
+	}
+
 	return &SubmitRootResponse{
-		IssuerDID:      req.IssuerDID,
+		IssuerDID:      issuerDID,
 		ExternalTreeID: req.ExternalTreeID,
 		Root:           req.Root,
 		TxHash:         f.txHash,
@@ -74,7 +80,7 @@ func TestManagerPersistsBatchAndGeneratesReceiptFromStore(t *testing.T) {
 		t.Fatalf("receipt should use anchored tx hash, got %s", receipt.TxHash)
 	}
 
-	verified, err := VerifyReceiptLocal(*receipt)
+	verified, err := VerifyReceiptLocal(*receipt, len(hashes))
 	if err != nil {
 		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
 	}
@@ -156,7 +162,8 @@ func mustBuildBatch(t *testing.T, externalTreeID string, hashes []string) *Batch
 }
 
 type testStore struct {
-	batches map[string]StoredBatch
+	batches  map[string]StoredBatch
+	getCalls int
 }
 
 func newTestStore() *testStore {
@@ -179,7 +186,7 @@ func (s *testStore) SaveBatch(ctx context.Context, batch StoredBatch) error {
 
 	key := batch.IssuerDID + "\x00" + batch.ExternalTreeID
 	if existing, ok := s.batches[key]; ok {
-		if !sameBatchContent(existing, batch) {
+		if !SameBatchContent(existing, batch) {
 			return ErrBatchConflict
 		}
 		return nil
@@ -190,6 +197,7 @@ func (s *testStore) SaveBatch(ctx context.Context, batch StoredBatch) error {
 }
 
 func (s *testStore) GetBatch(ctx context.Context, issuerDID, externalTreeID string) (*StoredBatch, error) {
+	s.getCalls++
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -305,5 +313,67 @@ func TestSubmitRootMarksAnchoredWhenStatusIsAnchored(t *testing.T) {
 	}
 	if stored.TxHash != "0xtx" {
 		t.Fatalf("anchored batch should carry the tx hash, got %q", stored.TxHash)
+	}
+}
+
+// SubmitRoot must validate and submit the same snapshot. Two reads would leave a
+// window for a concurrent writer to swap the content after the check passed.
+func TestSubmitRootReadsTheBatchOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	manager := NewManager(store, &fakeSubmitter{txHash: "0xtx"})
+
+	batch, err := manager.CreateBatch(ctx, BatchInput{
+		IssuerDID:      "did:pila:testnet:0xissuer",
+		ExternalTreeID: "app-tree-once",
+		VCHashes: []string{
+			"0x0000000000000000000000000000000000000000000000000000000000000001",
+			"0x0000000000000000000000000000000000000000000000000000000000000002",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateBatch returned error: %v", err)
+	}
+
+	store.getCalls = 0
+	if _, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID); err != nil {
+		t.Fatalf("SubmitRoot returned error: %v", err)
+	}
+	if store.getCalls != 1 {
+		t.Fatalf("SubmitRoot read the batch %d times, want 1", store.getCalls)
+	}
+}
+
+// The service anchors under the DID it authenticated, ignoring our header. A row
+// written under a different DID makes every later verify miss it, so the mismatch has
+// to surface at submit time rather than as an unexplained verified: false.
+func TestSubmitRootRejectsDifferentIssuerDIDInResponse(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	submitter := &fakeSubmitter{txHash: "0xtx", issuerDID: "did:pila:testnet:0xsomeoneelse"}
+	manager := NewManager(store, submitter)
+
+	batch, err := manager.CreateBatch(ctx, BatchInput{
+		IssuerDID:      "did:pila:testnet:0xissuer",
+		ExternalTreeID: "app-tree-did",
+		VCHashes: []string{
+			"0x0000000000000000000000000000000000000000000000000000000000000001",
+			"0x0000000000000000000000000000000000000000000000000000000000000002",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateBatch returned error: %v", err)
+	}
+
+	if _, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID); err == nil {
+		t.Fatal("a root anchored under a different issuer DID must be rejected")
+	}
+
+	stored, err := store.GetBatch(ctx, batch.IssuerDID, batch.ExternalTreeID)
+	if err != nil {
+		t.Fatalf("GetBatch returned error: %v", err)
+	}
+	if stored.TxHash != "" {
+		t.Fatalf("the batch must not be marked anchored, got tx hash %q", stored.TxHash)
 	}
 }

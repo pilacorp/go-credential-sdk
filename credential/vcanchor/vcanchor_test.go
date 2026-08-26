@@ -1,6 +1,7 @@
 package vcanchor
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -43,7 +44,7 @@ func TestBuildBatchGeneratesVerifiableReceipt(t *testing.T) {
 		t.Fatalf("unexpected proof length: got %d want 2", len(receipt.Proof))
 	}
 
-	verified, err := VerifyReceiptLocal(*receipt)
+	verified, err := VerifyReceiptLocal(*receipt, len(hashes))
 	if err != nil {
 		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestVerifyReceiptLocalRejectsTamperedLeaf(t *testing.T) {
 
 	receipt.VCHash = "0x0000000000000000000000000000000000000000000000000000000000000009"
 
-	verified, err := VerifyReceiptLocal(*receipt)
+	verified, err := VerifyReceiptLocal(*receipt, 3)
 	if err != nil {
 		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
 	}
@@ -147,7 +148,7 @@ func TestReceiptCarriesLeafCountAndVerifies(t *testing.T) {
 		t.Fatalf("receipt leaf_count = %d, want %d", receipt.LeafCount, len(hashes))
 	}
 
-	ok, err := VerifyReceiptLocal(*receipt)
+	ok, err := VerifyReceiptLocal(*receipt, len(hashes))
 	if err != nil {
 		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
 	}
@@ -215,12 +216,29 @@ func TestVerifyReceiptLocalRejectsInternalNodeAsLeaf(t *testing.T) {
 		t.Fatal("test setup: the internal node does not fold to the root")
 	}
 
-	ok, err := VerifyReceiptLocal(forged)
-	if err != nil {
-		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
-	}
-	if ok {
-		t.Fatal("an internal node must not verify as a VC hash")
+	// The attacker controls every field of the receipt, so run both moves they have.
+	for _, tc := range []struct {
+		name      string
+		leafCount int
+	}{
+		// Leaving the real count in place: the proof is now one sibling short.
+		{name: "declared count untouched", leafCount: len(hashes)},
+		// Shrinking the count so ceil(log2(n)) matches the short proof. Only checking
+		// the length against the anchored count catches this one.
+		{name: "declared count lowered to fit", leafCount: len(hashes) / 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempt := forged
+			attempt.LeafCount = tc.leafCount
+
+			ok, err := VerifyReceiptLocal(attempt, len(hashes))
+			if err != nil {
+				t.Fatalf("VerifyReceiptLocal returned error: %v", err)
+			}
+			if ok {
+				t.Fatal("an internal node must not verify as a VC hash")
+			}
+		})
 	}
 }
 
@@ -231,7 +249,42 @@ func TestVerifyReceiptLocalRejectsReceiptWithoutLeafCount(t *testing.T) {
 		HashScheme: HashSchemeKeccak256SortedPairsNoLeafHashV1,
 	}
 
-	if _, err := VerifyReceiptLocal(receipt); err == nil {
-		t.Fatal("a receipt without leaf_count must be rejected")
+	// No anchored count to check against: the caller has nothing to verify with, which
+	// is a caller bug rather than a bad receipt, so it is an error and not a false.
+	if _, err := VerifyReceiptLocal(receipt, 0); err == nil {
+		t.Fatal("verification without an anchored leaf_count must error")
+	}
+
+	ok, err := VerifyReceiptLocal(receipt, 1)
+	if err != nil {
+		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
+	}
+	if ok {
+		t.Fatal("a receipt whose leaf_count is missing must not verify")
+	}
+}
+
+// MaxLeavesPerBatch bounds the memory a single tree can take. Nothing else enforces
+// it, so a batch one leaf over the cap must be refused at build time.
+func TestBuildBatchRejectsMoreThanMaxLeaves(t *testing.T) {
+	hashes := make([]string, MaxLeavesPerBatch+1)
+	for i := range hashes {
+		hashes[i] = fmt.Sprintf("0x%064x", i+1)
+	}
+
+	if _, err := BuildBatch(BatchInput{
+		IssuerDID:      "did:pila:testnet:0xissuer",
+		ExternalTreeID: "app-tree-oversized",
+		VCHashes:       hashes,
+	}); err == nil {
+		t.Fatalf("a batch of %d leaves must be rejected", len(hashes))
+	}
+
+	if _, err := BuildBatch(BatchInput{
+		IssuerDID:      "did:pila:testnet:0xissuer",
+		ExternalTreeID: "app-tree-at-cap",
+		VCHashes:       hashes[:MaxLeavesPerBatch],
+	}); err != nil {
+		t.Fatalf("a batch of exactly %d leaves must build: %v", MaxLeavesPerBatch, err)
 	}
 }

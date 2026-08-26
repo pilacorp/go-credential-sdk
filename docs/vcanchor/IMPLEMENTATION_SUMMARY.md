@@ -46,7 +46,7 @@ BuildBatch(input BatchInput) (*Batch, error)
 (*Batch) RootRequest() SubmitRootRequest
 (*Batch) Manifest() Manifest
 (*Batch) Receipt(vcHash, txHash string) (*Receipt, error)
-VerifyReceiptLocal(receipt Receipt) (bool, error)
+VerifyReceiptLocal(receipt Receipt, anchoredLeafCount int) (bool, error)
 ```
 
 Recommended high-level APIs:

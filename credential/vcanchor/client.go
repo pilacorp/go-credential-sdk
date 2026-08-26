@@ -25,11 +25,16 @@ type ServiceClient struct {
 	httpClient    *http.Client
 }
 
-// defaultHTTPTimeout bounds a request when the caller sets no deadline of their own.
-// SubmitRoot waits for the service to sign and mine a transaction, so it is the kind
-// of call that can hang; http.DefaultClient has no timeout at all. Callers who want
-// different behaviour still have WithHTTPClient.
-const defaultHTTPTimeout = 30 * time.Second
+// defaultHTTPTimeout bounds a request when the caller sets no deadline of their own,
+// because http.DefaultClient has none at all.
+//
+// It must sit above the service's own wait: SubmitRoot is synchronous through mining,
+// and authen-service waits up to 2 minutes for the tx to be mined before it answers
+// (defaultMineTimeout). Giving up first is worse than waiting — the tx still lands and
+// the service still records it as anchored, but the SDK sees an error, skips
+// MarkAnchored, and GenerateReceipt then reports a batch that is in fact anchored as
+// unanchored. Callers who want different behaviour still have WithHTTPClient.
+const defaultHTTPTimeout = 150 * time.Second
 
 func newDefaultHTTPClient() *http.Client {
 	return &http.Client{Timeout: defaultHTTPTimeout}

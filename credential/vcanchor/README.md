@@ -146,7 +146,8 @@ func main() {
 		panic(err)
 	}
 
-	verified, err := vcanchor.VerifyReceiptLocal(*receipt)
+	// leaf_count must come from the anchored root record, not from the receipt.
+	verified, err := vcanchor.VerifyReceiptLocal(*receipt, batch.LeafCount)
 	if err != nil {
 		panic(err)
 	}
@@ -174,8 +175,20 @@ func main() {
 the proof has exactly `ceil(log2(leaf_count))` siblings. The length check is not
 cosmetic: this scheme feeds leaves into the tree unhashed, so an internal node is
 indistinguishable from a leaf to the fold, and an internal node recomputed from any
-published receipt would otherwise verify as a VC hash. `leaf_count` is therefore
-required, and a receipt without it is rejected.
+published receipt would otherwise verify as a VC hash.
+
+The `leaf_count` it measures against is the second argument, and it must come from
+the anchored root record — on-chain, or from Authen Service. Passing
+`receipt.LeafCount` defeats the check: the receipt is the thing under test, and a
+sender who lowers its declared count to match a short proof would pass. The receipt's
+own `leaf_count` is compared against the anchored one and a mismatch is rejected.
+
+`SubmitRoot` is synchronous all the way through mining: Authen Service waits for the
+transaction to be mined before it answers, up to 2 minutes, which is why the default
+HTTP timeout sits above that. If a call does time out, the transaction usually still
+lands and the service still records the root as anchored — call `SubmitRoot` again for
+the same batch and it returns the anchored row, which marks the batch locally and
+heals the receipt path.
 
 Local verification stops there. Authen Service must still check that the root
 exists, belongs to the issuer and external tree, and was anchored on-chain by the
