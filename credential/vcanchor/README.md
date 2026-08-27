@@ -29,7 +29,7 @@ application creates VC
 -> Authen Service anchors root on-chain and returns tx_hash
 -> SDK generates receipt for each VC hash
 -> holder keeps VC + receipt
--> verifier checks receipt locally or through Authen Service
+-> verifier checks receipt locally
 ```
 
 ## Recommended usage
@@ -80,8 +80,7 @@ err := manager.ValidateStoredBatch(ctx, "did:pila:testnet:0xissuer", "app-tree-0
 ## Authen Service client
 
 `ServiceClient` implements `RootSubmitter`, so it can be passed directly to
-`Manager`. It also submits receipts to the single Authen Service verify
-endpoint:
+`Manager`:
 
 ```go
 client := vcanchor.NewServiceClient(
@@ -90,25 +89,16 @@ client := vcanchor.NewServiceClient(
 	vcanchor.WithAuthorization("Bearer <accessible-credential>"),
 )
 
-receipt, err := manager.GenerateReceipt(ctx, issuerDID, externalTreeID, vcHash)
+_, err := manager.SubmitRoot(ctx, issuerDID, externalTreeID)
 if err != nil {
 	panic(err)
 }
-
-// Authen Service checks its verified cache first. If the VC hash is not cached,
-// it verifies this full receipt proof and stores the verified result.
-verified, err := client.VerifyReceipt(ctx, *receipt)
-if err != nil {
-	panic(err)
-}
-_ = verified
 ```
 
 `SubmitRoot` must be called with an `Authorization` accessible credential when
 using the Authen Service proxy. The proxy authenticates that credential and
 derives `x-issuer-did` from the authenticated requester before forwarding the
-request. `VerifyReceipt` sends `issuer_did` in the JSON body because the verify
-endpoint is public/read-style.
+request.
 
 ## Low-level usage
 
@@ -190,9 +180,9 @@ lands and the service still records the root as anchored — call `SubmitRoot` a
 the same batch and it returns the anchored row, which marks the batch locally and
 heals the receipt path.
 
-Local verification stops there. Authen Service must still check that the root
-exists, belongs to the issuer and external tree, and was anchored on-chain by the
-recorded transaction.
+Local verification stops there. The SDK no longer calls an Authen Service
+verify-receipt API; applications that need server-side verification should use a
+dedicated verifier flow outside `ServiceClient`.
 
 ## Storage responsibility
 

@@ -11,10 +11,7 @@ import (
 	"time"
 )
 
-const (
-	defaultSubmitRootPath    = "/api/v1/credentials/external/merkle-roots"
-	defaultVerifyReceiptPath = "/api/v1/credentials/external/verify-receipt"
-)
+const defaultSubmitRootPath = "/api/v1/credentials/external/merkle-roots"
 
 type ClientOption func(*ServiceClient)
 
@@ -103,15 +100,6 @@ func (c *ServiceClient) submitRootIssuerDID(reqIssuerDID string) (string, error)
 	}
 
 	return reqIssuerDID, nil
-}
-
-func (c *ServiceClient) VerifyReceipt(ctx context.Context, receipt Receipt) (*VerifyReceiptResponse, error) {
-	var resp VerifyReceiptResponse
-	if err := c.postJSON(ctx, defaultVerifyReceiptPath, receipt, &resp, nil); err != nil {
-		return nil, err
-	}
-
-	return &resp, nil
 }
 
 func (c *ServiceClient) postJSON(ctx context.Context, path string, payload, out any, headers map[string]string) error {

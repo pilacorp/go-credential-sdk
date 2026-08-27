@@ -40,11 +40,11 @@ Missing for end-to-end integrators:
 - Production store examples for SQL/object storage.
 - End-to-end sample application.
 - Operational checklist for retention, retry, idempotency, monitoring, and disaster recovery.
-- Verification guide covering full receipt submission with service-side cache-first behavior.
+- Verification guide covering local receipt proof checks.
 
 Recently added:
 
-- Authen Service HTTP client for submit-root and receipt proof verification.
+- Authen Service HTTP client for submit-root.
 
 ---
 
@@ -59,7 +59,7 @@ An application should only need to implement these business-level decisions:
 
 The SDK should provide these building blocks:
 
-- `Client`: calls Authen Service submit-root and verify-receipt APIs.
+- `Client`: calls Authen Service submit-root API.
 - `Manager`: orchestrates create/submit/receipt flow.
 - `Store`: durable storage contract.
 - `Worker`: optional batching loop for high-throughput apps.
@@ -192,39 +192,15 @@ Application responsibility:
 - Store receipt with VC, return it to holder, or expose a receipt API.
 - Keep ordered leaves or enough tree data to regenerate receipts.
 
-### 6. Verify
+### 6. Verify Locally
 
-Applications submit a full receipt. Authen Service checks its verified cache
-first; if the VC hash is already cached it returns immediately, otherwise it
-verifies the proof and stores the verified result.
-
-```json
-{
-  "issuer_did": "did:pila:...",
-  "external_tree_id": "issuer-2026-08-14-000001",
-  "vc_hash": "0x...",
-  "leaf_index": 42,
-  "root": "0x...",
-  "proof": ["0x..."],
-  "tx_hash": "0x...",
-  "hash_scheme": "keccak256-sorted-pairs-no-leaf-hash-v1"
-}
-```
-
-Authen Service response:
-
-```json
-{
-  "verified": true,
-  "source": "proof",
-  "proof_required": false
-}
-```
+Applications verify the receipt proof locally against the anchored root metadata
+they trust for the batch. The SDK no longer submits receipts to an Authen Service
+verify-receipt API.
 
 SDK responsibility:
 
-- Provide `VerifyWithService(ctx, receipt)` for proof submission.
-- Provide `VerifyLocal(receipt)` for offline proof/root reconstruction only.
+- Provide `VerifyReceiptLocal(receipt, anchoredLeafCount)` for offline proof/root reconstruction.
 - Make docs explicit that local verification does not prove the root is anchored.
 
 ---
@@ -248,13 +224,11 @@ SDK responsibility:
   - `type ServiceClient struct`
   - `func NewServiceClient(baseURL, issuerDID string, opts ...ClientOption) *ServiceClient`
   - `func (c *ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error)`
-  - `func (c *ServiceClient) VerifyReceipt(ctx context.Context, receipt Receipt) (*VerifyReceiptResponse, error)`
+  - no service-side receipt verification method; callers use `VerifyReceiptLocal` for proof checks.
 
 Steps:
 
 - [x] Write failing tests using `httptest.Server` for submit-root JSON request/response.
-- [x] Write failing tests for verify receipt request.
-- [x] Write failing tests for verify proof submission using `Receipt`.
 - [x] Implement minimal HTTP client with context-aware requests.
 - [x] Add API key header support without hardcoding auth policy into core Merkle logic.
 - [x] Run `go test ./credential/vcanchor`.

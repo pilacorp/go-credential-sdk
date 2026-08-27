@@ -64,7 +64,6 @@ Authen Service client APIs:
 ```go
 NewServiceClient(baseURL, issuerDID string, opts ...ClientOption) *ServiceClient
 (*ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error)
-(*ServiceClient) VerifyReceipt(ctx context.Context, receipt Receipt) (*VerifyReceiptResponse, error)
 ```
 
 ## Persistence

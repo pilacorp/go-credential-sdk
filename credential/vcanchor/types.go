@@ -71,12 +71,6 @@ type Receipt struct {
 	HashScheme     string   `json:"hash_scheme"`
 }
 
-type VerifyReceiptResponse struct {
-	Verified      bool   `json:"verified"`
-	Source        string `json:"source"`
-	ProofRequired bool   `json:"proof_required"`
-}
-
 type StoredBatch struct {
 	IssuerDID       string   `json:"issuer_did"`
 	ExternalTreeID  string   `json:"external_tree_id"`
