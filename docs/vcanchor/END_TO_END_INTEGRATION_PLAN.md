@@ -91,7 +91,7 @@ Application appends `vc_hash` into a pending batch for one issuer.
 SDK responsibility:
 
 - Keep ordered hash list deterministic.
-- Track `issuer_did`, `external_tree_id`, `leaf_count`, `leaves_digest`, and status.
+- Track `issuer_did`, `external_tree_id` (local key), `root`, `leaf_count`, `leaves_digest`, and status.
 - Refuse mutation after the batch is sealed/anchored.
 
 Application responsibility:
@@ -129,7 +129,6 @@ SDK client sends:
 
 ```json
 {
-  "external_tree_id": "issuer-2026-08-14-000001",
   "root": "0x...",
   "leaf_count": 10000,
   "hash_scheme": "keccak256-sorted-pairs-no-leaf-hash-v1",
@@ -137,29 +136,32 @@ SDK client sends:
 }
 ```
 
+No batch identifier goes on the wire: the service identifies a tree by `issuer_did +
+root + leaf_count`. `external_tree_id` stays an SDK-local key for the Store.
+
 Authen Service returns:
 
 ```json
 {
   "id": 123,
   "issuer_did": "did:pila:...",
-  "external_tree_id": "issuer-2026-08-14-000001",
-  "onchain_tree_index": 1000000001,
+  "onchain_tree_index": 12,
   "root": "0x...",
   "leaf_count": 10000,
-  "hash_scheme": "keccak256-sorted-pairs-no-leaf-hash-v1",
-  "leaves_digest": "0x...",
-  "tx_hash": "0x...",
-  "status": "anchored"
+  "tx_hash": "",
+  "status": "pending",
+  "anchored_at": ""
 }
 ```
+
+Anchoring is asynchronous: a first submit answers `pending` with an empty `tx_hash`,
+and resubmitting the same tree polls it until `status` is `anchored`.
 
 SDK responsibility:
 
 - Implement idempotent submit.
 - Retry transient network/server errors.
-- Treat same `external_tree_id + same root metadata` as safe retry.
-- Treat same `external_tree_id + different root metadata` as a hard error.
+- Treat a resubmit of the same tree as a poll, not a second anchor.
 - Persist `tx_hash` before generating receipts.
 
 ### 5. Generate Receipt
@@ -322,7 +324,7 @@ Content required:
 - [ ] Explain trust model: Authen Service anchors and verifies roots; application must preserve leaf/proof availability.
 - [ ] Explain retention rule: never hard-delete anchored ordered leaves unless every holder already has receipt and the business accepts no future regeneration.
 - [ ] Explain crash-safe sequence: persist leaves before submit, persist `tx_hash` before receipt generation.
-- [ ] Explain retry policy: retry submit-root only with same `external_tree_id` and same root metadata.
+- [ ] Explain retry policy: resubmitting the same root and leaf_count is a poll; a different root is a different tree.
 - [ ] Explain batch sizing: count-based for high traffic, time-based/manual flush for low traffic.
 - [ ] Explain verification path: application submits full receipt; service cache-hit returns `source=cache`, cache-miss verifies proof and returns `source=proof`.
 - [ ] Explain monitoring: pending batches, failed submits, anchored batches without receipts, cache miss rate.

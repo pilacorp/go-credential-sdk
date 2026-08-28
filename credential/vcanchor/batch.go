@@ -57,12 +57,11 @@ func BuildBatch(input BatchInput) (*Batch, error) {
 
 func (b *Batch) RootRequest() SubmitRootRequest {
 	return SubmitRootRequest{
-		IssuerDID:      b.IssuerDID,
-		ExternalTreeID: b.ExternalTreeID,
-		Root:           b.Root,
-		LeafCount:      b.LeafCount,
-		HashScheme:     b.HashScheme,
-		LeavesDigest:   b.LeavesDigest,
+		IssuerDID:    b.IssuerDID,
+		Root:         b.Root,
+		LeafCount:    b.LeafCount,
+		HashScheme:   b.HashScheme,
+		LeavesDigest: b.LeavesDigest,
 	}
 }
 

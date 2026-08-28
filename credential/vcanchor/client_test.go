@@ -37,26 +37,23 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"id": 7,
 			"issuer_did": "did:pila:testnet:0xissuer",
-			"external_tree_id": "tree-1",
-			"onchain_tree_index": 1000000001,
+			"onchain_tree_index": 12,
 			"root": "0xroot",
 			"leaf_count": 2,
-			"hash_scheme": "keccak256-sorted-pairs-no-leaf-hash-v1",
-			"leaves_digest": "0xdigest",
 			"tx_hash": "0xtx",
-			"status": "anchored"
+			"status": "anchored",
+			"anchored_at": "2026-08-28T03:04:05Z"
 		}`))
 	}))
 	t.Cleanup(server.Close)
 
 	client := NewServiceClient(server.URL, "did:pila:testnet:0xissuer", WithAuthorization("Bearer token"))
 	resp, err := client.SubmitRoot(context.Background(), SubmitRootRequest{
-		IssuerDID:      "did:pila:testnet:0xissuer",
-		ExternalTreeID: "tree-1",
-		Root:           "0xroot",
-		LeafCount:      2,
-		HashScheme:     HashSchemeKeccak256SortedPairsNoLeafHashV1,
-		LeavesDigest:   "0xdigest",
+		IssuerDID:    "did:pila:testnet:0xissuer",
+		Root:         "0xroot",
+		LeafCount:    2,
+		HashScheme:   HashSchemeKeccak256SortedPairsNoLeafHashV1,
+		LeavesDigest: "0xdigest",
 	})
 	if err != nil {
 		t.Fatalf("SubmitRoot returned error: %v", err)
@@ -68,14 +65,22 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 	if gotAuthorization != "Bearer token" {
 		t.Fatalf("got Authorization %q", gotAuthorization)
 	}
-	if gotBody["external_tree_id"] != "tree-1" {
-		t.Fatalf("got external_tree_id %v", gotBody["external_tree_id"])
+	// The service identifies a tree by its content, so no batch id may leak onto the
+	// wire — sending one would look like a key the service honours.
+	if _, ok := gotBody["external_tree_id"]; ok {
+		t.Fatalf("request body carried external_tree_id: %v", gotBody)
+	}
+	if gotBody["root"] != "0xroot" || gotBody["leaf_count"] != float64(2) {
+		t.Fatalf("got body %v", gotBody)
 	}
 	if resp.TxHash != "0xtx" {
 		t.Fatalf("got tx hash %q", resp.TxHash)
 	}
-	if resp.OnchainTreeIndex != 1000000001 {
+	if resp.OnchainTreeIndex != 12 {
 		t.Fatalf("got onchain tree index %d", resp.OnchainTreeIndex)
+	}
+	if resp.AnchoredAt != "2026-08-28T03:04:05Z" {
+		t.Fatalf("got anchored_at %q", resp.AnchoredAt)
 	}
 }
 
@@ -90,12 +95,11 @@ func TestServiceClientSubmitRootRejectsMismatchedIssuerDID(t *testing.T) {
 
 	client := NewServiceClient(server.URL, "did:pila:testnet:0xclient")
 	_, err := client.SubmitRoot(context.Background(), SubmitRootRequest{
-		IssuerDID:      "did:pila:testnet:0xrequest",
-		ExternalTreeID: "tree-1",
-		Root:           "0xroot",
-		LeafCount:      2,
-		HashScheme:     HashSchemeKeccak256SortedPairsNoLeafHashV1,
-		LeavesDigest:   "0xdigest",
+		IssuerDID:    "did:pila:testnet:0xrequest",
+		Root:         "0xroot",
+		LeafCount:    2,
+		HashScheme:   HashSchemeKeccak256SortedPairsNoLeafHashV1,
+		LeavesDigest: "0xdigest",
 	})
 	if err == nil {
 		t.Fatal("expected issuer mismatch error")

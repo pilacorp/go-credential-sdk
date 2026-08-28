@@ -28,11 +28,10 @@ func (f *fakeSubmitter) SubmitRoot(ctx context.Context, req SubmitRootRequest) (
 	}
 
 	return &SubmitRootResponse{
-		IssuerDID:      issuerDID,
-		ExternalTreeID: req.ExternalTreeID,
-		Root:           req.Root,
-		TxHash:         f.txHash,
-		Status:         status,
+		IssuerDID: issuerDID,
+		Root:      req.Root,
+		TxHash:    f.txHash,
+		Status:    status,
 	}, nil
 }
 

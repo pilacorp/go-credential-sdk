@@ -35,26 +35,28 @@ type Batch struct {
 	leaves       [][]byte
 }
 
+// SubmitRootRequest carries no batch identifier: the service identifies a tree by what
+// it commits to — issuer, root and leaf count — so submitting the same tree twice is a
+// poll rather than a second anchor. ExternalTreeID stays an SDK-local key for the
+// Store; it never goes on the wire.
 type SubmitRootRequest struct {
-	IssuerDID      string `json:"issuer_did"`
-	ExternalTreeID string `json:"external_tree_id"`
-	Root           string `json:"root"`
-	LeafCount      int    `json:"leaf_count"`
-	HashScheme     string `json:"hash_scheme"`
-	LeavesDigest   string `json:"leaves_digest"`
+	IssuerDID    string `json:"issuer_did"`
+	Root         string `json:"root"`
+	LeafCount    int    `json:"leaf_count"`
+	HashScheme   string `json:"hash_scheme"`
+	LeavesDigest string `json:"leaves_digest"`
 }
 
 type SubmitRootResponse struct {
 	ID               int    `json:"id"`
 	IssuerDID        string `json:"issuer_did"`
-	ExternalTreeID   string `json:"external_tree_id"`
 	OnchainTreeIndex int    `json:"onchain_tree_index"`
 	Root             string `json:"root"`
 	LeafCount        int    `json:"leaf_count"`
-	HashScheme       string `json:"hash_scheme"`
-	LeavesDigest     string `json:"leaves_digest"`
 	TxHash           string `json:"tx_hash"`
 	Status           string `json:"status"`
+	// AnchoredAt is RFC 3339, and empty while the root is pending.
+	AnchoredAt string `json:"anchored_at"`
 }
 
 type Receipt struct {

@@ -197,7 +197,13 @@ a mismatch is rejected.
 returns immediately with status `pending` and an empty `tx_hash`. Poll by calling
 `SubmitRoot` again for the same batch: resubmitting does not queue the root a second
 time, and once the root is on chain the call returns status `anchored` with the
-`tx_hash`, marks the batch locally and unlocks the receipt path.
+`tx_hash` and `anchored_at`, marks the batch locally and unlocks the receipt path.
+
+The service identifies a tree by what it commits to — `issuer_did`, `root` and
+`leaf_count` — so no batch identifier is sent. `external_tree_id` is an SDK-local key:
+it names the batch in your `Store` and appears on receipts, and never goes on the wire.
+Two batches of the same issuer with identical leaves are therefore the same tree to the
+service, anchored once, no matter what you called them locally.
 
 Local verification stops there. The SDK no longer calls an Authen Service
 verify-receipt API; applications that need server-side verification should use a

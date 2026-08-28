@@ -79,12 +79,11 @@ func (m *Manager) SubmitRoot(ctx context.Context, issuerDID, externalTreeID stri
 	}
 
 	resp, err := m.submitter.SubmitRoot(ctx, SubmitRootRequest{
-		IssuerDID:      stored.IssuerDID,
-		ExternalTreeID: stored.ExternalTreeID,
-		Root:           stored.Root,
-		LeafCount:      stored.LeafCount,
-		HashScheme:     stored.HashScheme,
-		LeavesDigest:   stored.LeavesDigest,
+		IssuerDID:    stored.IssuerDID,
+		Root:         stored.Root,
+		LeafCount:    stored.LeafCount,
+		HashScheme:   stored.HashScheme,
+		LeavesDigest: stored.LeavesDigest,
 	})
 	if err != nil {
 		return nil, err
