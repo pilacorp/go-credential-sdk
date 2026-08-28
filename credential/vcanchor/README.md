@@ -25,8 +25,9 @@ Rules:
 application creates VC
 -> application computes vc_hash
 -> SDK builds Merkle batch
--> application submits root to Authen Service
--> Authen Service anchors root on-chain and returns tx_hash
+-> application submits root to Authen Service (returns pending)
+-> Authen Service anchors root on-chain asynchronously
+-> application resubmits the same batch until it returns anchored + tx_hash
 -> SDK generates receipt for each VC hash
 -> holder keeps VC + receipt
 -> verifier checks receipt locally
@@ -58,11 +59,17 @@ if err != nil {
 	panic(err)
 }
 
-// Submits the persisted root and marks the stored batch anchored when tx_hash
-// is returned by Authen Service.
-_, err = manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID)
+// Submits the persisted root. Anchoring is asynchronous, so this first call
+// returns status "pending" with an empty tx_hash. Call it again for the same
+// batch until it returns status "anchored"; that call marks the stored batch
+// anchored and is what makes GenerateReceipt work.
+resp, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID)
 if err != nil {
 	panic(err)
+}
+if resp.Status != vcanchor.StatusAnchored {
+	// not anchored yet — poll later, then generate receipts
+	return
 }
 
 receipt, err := manager.GenerateReceipt(ctx, batch.IssuerDID, batch.ExternalTreeID, hashes[0])
@@ -136,8 +143,14 @@ func main() {
 		panic(err)
 	}
 
-	// leaf_count must come from the anchored root record, not from the receipt.
-	verified, err := vcanchor.VerifyReceiptLocal(*receipt, batch.LeafCount)
+	// A verifier holds only the receipt. Both the root and the leaf_count it checks
+	// against must come from the anchored record — read on chain by tx_hash, or from
+	// the SubmitRoot response — never from the batch or receipt under test. Shown
+	// here as anchoredRoot/anchoredLeafCount, which this issuing-side example
+	// happens to know.
+	anchoredRoot, anchoredLeafCount := batch.Root, batch.LeafCount
+
+	verified, err := vcanchor.VerifyReceiptLocal(*receipt, anchoredRoot, anchoredLeafCount)
 	if err != nil {
 		panic(err)
 	}
@@ -161,24 +174,30 @@ func main() {
 }
 ```
 
-`VerifyReceiptLocal` checks that `vc_hash + proof` reconstructs `root`, and that
-the proof has exactly `ceil(log2(leaf_count))` siblings. The length check is not
-cosmetic: this scheme feeds leaves into the tree unhashed, so an internal node is
+`VerifyReceiptLocal` checks that `vc_hash + proof` folds to the **anchored** root,
+and that the proof has exactly `ceil(log2(leaf_count))` siblings. The length check is
+not cosmetic: this scheme feeds leaves into the tree unhashed, so an internal node is
 indistinguishable from a leaf to the fold, and an internal node recomputed from any
 published receipt would otherwise verify as a VC hash.
 
-The `leaf_count` it measures against is the second argument, and it must come from
-the anchored root record — on-chain, or from Authen Service. Passing
-`receipt.LeafCount` defeats the check: the receipt is the thing under test, and a
-sender who lowers its declared count to match a short proof would pass. The receipt's
-own `leaf_count` is compared against the anchored one and a mismatch is rejected.
+Both the root and the `leaf_count` it measures against are arguments, and both must
+come from the anchored root record — on-chain, or from Authen Service — never from
+the receipt. The receipt is the thing under test:
 
-`SubmitRoot` is synchronous all the way through mining: Authen Service waits for the
-transaction to be mined before it answers, up to 2 minutes, which is why the default
-HTTP timeout sits above that. If a call does time out, the transaction usually still
-lands and the service still records the root as anchored — call `SubmitRoot` again for
-the same batch and it returns the anchored row, which marks the batch locally and
-heals the receipt path.
+- folding to `receipt.Root` alone proves nothing. A forger builds their own tree over
+  their own leaves, and every receipt cut from it is internally consistent. The
+  anchored root is what ties the proof to something the issuer committed on chain.
+- passing `receipt.LeafCount` defeats the length check: a sender who lowers its
+  declared count to match a short proof would pass.
+
+The receipt's own `root` and `leaf_count` are compared against the anchored ones and
+a mismatch is rejected.
+
+`SubmitRoot` is asynchronous. It records the root, queues it for anchoring and
+returns immediately with status `pending` and an empty `tx_hash`. Poll by calling
+`SubmitRoot` again for the same batch: resubmitting does not queue the root a second
+time, and once the root is on chain the call returns status `anchored` with the
+`tx_hash`, marks the batch locally and unlocks the receipt path.
 
 Local verification stops there. The SDK no longer calls an Authen Service
 verify-receipt API; applications that need server-side verification should use a

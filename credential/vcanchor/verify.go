@@ -2,14 +2,17 @@ package vcanchor
 
 import "fmt"
 
-// VerifyReceiptLocal checks that receipt's vc_hash and proof fold to its root, and
-// that the proof is the right length for a leaf.
+// VerifyReceiptLocal checks that receipt's vc_hash and proof fold to the anchored
+// root, and that the proof is the right length for a leaf.
 //
-// anchoredLeafCount must come from the anchored root record — on chain, or from Authen
-// Service — never from the receipt. The receipt is the thing under test: were the
-// length check measured against receipt.LeafCount, a sender could simply declare a
-// smaller count to match a short proof lifted from higher up the tree.
-func VerifyReceiptLocal(receipt Receipt, anchoredLeafCount int) (bool, error) {
+// anchoredRoot and anchoredLeafCount must both come from the anchored root record —
+// on chain, or from Authen Service — never from the receipt. The receipt is the thing
+// under test. Folding to receipt.Root alone proves nothing: a forger builds their own
+// tree over their own leaves and every receipt cut from it is internally consistent.
+// The root is what ties the proof to something the issuer committed on chain. The leaf
+// count matters for the same reason — measured against receipt.LeafCount, a sender
+// could declare a smaller count to match a short proof lifted from higher up the tree.
+func VerifyReceiptLocal(receipt Receipt, anchoredRoot string, anchoredLeafCount int) (bool, error) {
 	if receipt.HashScheme != HashSchemeKeccak256SortedPairsNoLeafHashV1 {
 		return false, fmt.Errorf("unsupported hash_scheme %q", receipt.HashScheme)
 	}
@@ -18,9 +21,18 @@ func VerifyReceiptLocal(receipt Receipt, anchoredLeafCount int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	_, root, err := normalizeHash32(receipt.Root)
+	normalizedReceiptRoot, _, err := normalizeHash32(receipt.Root)
 	if err != nil {
 		return false, err
+	}
+	normalizedAnchoredRoot, root, err := normalizeHash32(anchoredRoot)
+	if err != nil {
+		return false, fmt.Errorf("invalid anchored root: %w", err)
+	}
+	// Fold against the anchored root, and reject a receipt that claims a different one
+	// rather than quietly verifying it against the value the caller supplied.
+	if normalizedReceiptRoot != normalizedAnchoredRoot {
+		return false, nil
 	}
 
 	// Without this the offline path is weaker than the server's: an internal node

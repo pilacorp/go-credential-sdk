@@ -46,7 +46,7 @@ BuildBatch(input BatchInput) (*Batch, error)
 (*Batch) RootRequest() SubmitRootRequest
 (*Batch) Manifest() Manifest
 (*Batch) Receipt(vcHash, txHash string) (*Receipt, error)
-VerifyReceiptLocal(receipt Receipt, anchoredLeafCount int) (bool, error)
+VerifyReceiptLocal(receipt Receipt, anchoredRoot string, anchoredLeafCount int) (bool, error)
 ```
 
 Recommended high-level APIs:
@@ -151,8 +151,11 @@ Receipt format:
 `VerifyReceiptLocal` proves only:
 
 ```text
-vc_hash + proof reconstructs root
+vc_hash + proof reconstructs the anchored root passed in
 ```
+
+The caller supplies that root (and leaf_count) from the anchored record — on chain or
+from Authen Service. The receipt's own values are compared against them, never trusted.
 
 Authen Service must still verify:
 

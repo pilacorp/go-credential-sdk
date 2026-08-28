@@ -80,7 +80,7 @@ func TestManagerPersistsBatchAndGeneratesReceiptFromStore(t *testing.T) {
 		t.Fatalf("receipt should use anchored tx hash, got %s", receipt.TxHash)
 	}
 
-	verified, err := VerifyReceiptLocal(*receipt, len(hashes))
+	verified, err := VerifyReceiptLocal(*receipt, batch.Root, len(hashes))
 	if err != nil {
 		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
 	}
@@ -240,17 +240,18 @@ func cloneTestStoredBatch(batch StoredBatch) StoredBatch {
 	return batch
 }
 
-// The service records the hash it broadcast even for an attempt that never confirmed,
-// so an "anchoring" response can carry a stale tx hash. Marking the batch anchored on
-// the hash alone would let GenerateReceipt issue a receipt for a tx that anchored
-// nothing, which the verifier would then reject.
+// Anchoring is asynchronous, so a response can carry a tx hash while the root is not
+// on chain. Marking the batch anchored on the hash alone would let GenerateReceipt
+// issue a receipt for a tx that anchored nothing, which the verifier would then reject.
 func TestSubmitRootDoesNotMarkAnchoredWhenStatusIsNotAnchored(t *testing.T) {
 	hashes := []string{
 		"0x0000000000000000000000000000000000000000000000000000000000000001",
 		"0x0000000000000000000000000000000000000000000000000000000000000002",
 	}
 
-	for _, status := range []string{StatusPending, StatusAnchoring, StatusFailed} {
+	// "anchoring" and "failed" are not values this SDK defines; they stand in for
+	// anything a service may report that is not StatusAnchored.
+	for _, status := range []string{StatusPending, "anchoring", "failed"} {
 		t.Run(status, func(t *testing.T) {
 			ctx := context.Background()
 			store := newTestStore()

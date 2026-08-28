@@ -25,13 +25,10 @@ type ServiceClient struct {
 // defaultHTTPTimeout bounds a request when the caller sets no deadline of their own,
 // because http.DefaultClient has none at all.
 //
-// It must sit above the service's own wait: SubmitRoot is synchronous through mining,
-// and authen-service waits up to 2 minutes for the tx to be mined before it answers
-// (defaultMineTimeout). Giving up first is worse than waiting — the tx still lands and
-// the service still records it as anchored, but the SDK sees an error, skips
-// MarkAnchored, and GenerateReceipt then reports a batch that is in fact anchored as
-// unanchored. Callers who want different behaviour still have WithHTTPClient.
-const defaultHTTPTimeout = 150 * time.Second
+// SubmitRoot no longer waits for mining: the service records the root, queues it for
+// anchoring and answers, so this only has to cover a normal API round trip. Callers
+// who want different behaviour still have WithHTTPClient.
+const defaultHTTPTimeout = 30 * time.Second
 
 func newDefaultHTTPClient() *http.Client {
 	return &http.Client{Timeout: defaultHTTPTimeout}
@@ -65,6 +62,11 @@ func WithAuthorization(authorization string) ClientOption {
 	}
 }
 
+// SubmitRoot hands a root to the service for anchoring. It returns as soon as the
+// root is recorded, so a first submit answers StatusPending with an empty TxHash;
+// anchoring happens asynchronously. Call it again with the same batch to poll — the
+// service returns the recorded root, and StatusAnchored with a TxHash once it is on
+// chain. Resubmitting does not queue the root twice.
 func (c *ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error) {
 	issuerDID, err := c.submitRootIssuerDID(req.IssuerDID)
 	if err != nil {

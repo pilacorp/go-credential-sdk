@@ -3,15 +3,13 @@ package vcanchor
 const HashSchemeKeccak256SortedPairsNoLeafHashV1 = "keccak256-sorted-pairs-no-leaf-hash-v1"
 
 // Values of SubmitRootResponse.Status, the anchoring state the service reports for a
-// submitted root. Only StatusAnchored means the root is on chain; the others are
-// in-flight or terminal-failed, and a tx_hash may accompany any of them — a failed
-// attempt keeps the hash it broadcast. StoredBatch.Status is a different field with a
+// submitted root. Anchoring is asynchronous: a root is StatusPending from the first
+// submit until it lands on chain, and only StatusAnchored carries a tx hash. Treat any
+// other value as not anchored. StoredBatch.Status is a different field with a
 // different domain; see its doc.
 const (
-	StatusPending   = "pending"
-	StatusAnchoring = "anchoring"
-	StatusAnchored  = "anchored"
-	StatusFailed    = "failed"
+	StatusPending  = "pending"
+	StatusAnchored = "anchored"
 )
 
 // MaxLeavesPerBatch caps how many VC hashes a single batch (one Merkle root)
@@ -82,7 +80,7 @@ type StoredBatch struct {
 	TxHash          string   `json:"tx_hash,omitempty"`
 	// Status is the batch's local lifecycle state, not the service's: "created" when
 	// the SDK first hands the batch to the Store, then whatever the Store writes in
-	// MarkAnchored. It is not drawn from the StatusPending..StatusFailed set above,
+	// MarkAnchored. It is not drawn from the StatusPending/StatusAnchored set above,
 	// which describes SubmitRootResponse.Status.
 	Status           string `json:"status"`
 	AnchoredAtUnix   int64  `json:"anchored_at_unix,omitempty"`

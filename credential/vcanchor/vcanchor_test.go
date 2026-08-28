@@ -44,7 +44,7 @@ func TestBuildBatchGeneratesVerifiableReceipt(t *testing.T) {
 		t.Fatalf("unexpected proof length: got %d want 2", len(receipt.Proof))
 	}
 
-	verified, err := VerifyReceiptLocal(*receipt, len(hashes))
+	verified, err := VerifyReceiptLocal(*receipt, batch.Root, len(hashes))
 	if err != nil {
 		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestVerifyReceiptLocalRejectsTamperedLeaf(t *testing.T) {
 
 	receipt.VCHash = "0x0000000000000000000000000000000000000000000000000000000000000009"
 
-	verified, err := VerifyReceiptLocal(*receipt, 3)
+	verified, err := VerifyReceiptLocal(*receipt, batch.Root, 3)
 	if err != nil {
 		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestReceiptCarriesLeafCountAndVerifies(t *testing.T) {
 		t.Fatalf("receipt leaf_count = %d, want %d", receipt.LeafCount, len(hashes))
 	}
 
-	ok, err := VerifyReceiptLocal(*receipt, len(hashes))
+	ok, err := VerifyReceiptLocal(*receipt, batch.Root, len(hashes))
 	if err != nil {
 		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestVerifyReceiptLocalRejectsInternalNodeAsLeaf(t *testing.T) {
 			attempt := forged
 			attempt.LeafCount = tc.leafCount
 
-			ok, err := VerifyReceiptLocal(attempt, len(hashes))
+			ok, err := VerifyReceiptLocal(attempt, batch.Root, len(hashes))
 			if err != nil {
 				t.Fatalf("VerifyReceiptLocal returned error: %v", err)
 			}
@@ -251,11 +251,11 @@ func TestVerifyReceiptLocalRejectsReceiptWithoutLeafCount(t *testing.T) {
 
 	// No anchored count to check against: the caller has nothing to verify with, which
 	// is a caller bug rather than a bad receipt, so it is an error and not a false.
-	if _, err := VerifyReceiptLocal(receipt, 0); err == nil {
+	if _, err := VerifyReceiptLocal(receipt, receipt.Root, 0); err == nil {
 		t.Fatal("verification without an anchored leaf_count must error")
 	}
 
-	ok, err := VerifyReceiptLocal(receipt, 1)
+	ok, err := VerifyReceiptLocal(receipt, receipt.Root, 1)
 	if err != nil {
 		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
 	}
@@ -286,5 +286,69 @@ func TestBuildBatchRejectsMoreThanMaxLeaves(t *testing.T) {
 		VCHashes:       hashes[:MaxLeavesPerBatch],
 	}); err != nil {
 		t.Fatalf("a batch of exactly %d leaves must build: %v", MaxLeavesPerBatch, err)
+	}
+}
+
+// A receipt is only evidence when it folds to the root the issuer anchored. A forger
+// who builds their own tree over their own leaves produces receipts that are perfectly
+// self-consistent — same hash scheme, same leaf count, right proof length — so
+// checking the proof against receipt.Root alone would verify every one of them.
+func TestVerifyReceiptLocalRejectsReceiptFromAForeignTree(t *testing.T) {
+	hashes := []string{
+		"0x0000000000000000000000000000000000000000000000000000000000000001",
+		"0x0000000000000000000000000000000000000000000000000000000000000002",
+		"0x0000000000000000000000000000000000000000000000000000000000000003",
+		"0x0000000000000000000000000000000000000000000000000000000000000004",
+	}
+
+	anchored, err := BuildBatch(BatchInput{
+		IssuerDID:      "did:pila:testnet:0xissuer",
+		ExternalTreeID: "app-tree-real",
+		VCHashes:       hashes,
+	})
+	if err != nil {
+		t.Fatalf("BuildBatch returned error: %v", err)
+	}
+
+	// Same shape, entirely different leaves: the forged tree has its own root.
+	forgedHashes := []string{
+		"0x00000000000000000000000000000000000000000000000000000000000000f1",
+		"0x00000000000000000000000000000000000000000000000000000000000000f2",
+		"0x00000000000000000000000000000000000000000000000000000000000000f3",
+		"0x00000000000000000000000000000000000000000000000000000000000000f4",
+	}
+
+	forged, err := BuildBatch(BatchInput{
+		IssuerDID:      "did:pila:testnet:0xissuer",
+		ExternalTreeID: "app-tree-forged",
+		VCHashes:       forgedHashes,
+	})
+	if err != nil {
+		t.Fatalf("BuildBatch returned error: %v", err)
+	}
+
+	receipt, err := forged.Receipt(forgedHashes[0], "0xtx")
+	if err != nil {
+		t.Fatalf("Receipt returned error: %v", err)
+	}
+
+	// Self-consistent: it verifies against its own root.
+	if ok, err := VerifyReceiptLocal(*receipt, forged.Root, len(forgedHashes)); err != nil || !ok {
+		t.Fatalf("forged receipt should be self-consistent, got ok=%v err=%v", ok, err)
+	}
+
+	ok, err := VerifyReceiptLocal(*receipt, anchored.Root, len(hashes))
+	if err != nil {
+		t.Fatalf("VerifyReceiptLocal returned error: %v", err)
+	}
+	if ok {
+		t.Fatal("a receipt from a tree the issuer never anchored must not verify")
+	}
+
+	// And a receipt that simply lies about which root it belongs to.
+	lying := *receipt
+	lying.Root = anchored.Root
+	if ok, err := VerifyReceiptLocal(lying, anchored.Root, len(hashes)); err != nil || ok {
+		t.Fatalf("a proof that does not fold to the anchored root must not verify, got ok=%v err=%v", ok, err)
 	}
 }

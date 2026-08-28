@@ -28,7 +28,7 @@ Already available:
 - `BuildBatch` builds a deterministic Merkle batch from ordered VC hashes.
 - `Batch.RootRequest` creates the payload needed by Authen Service root submission.
 - `Batch.Receipt` generates a Merkle receipt after `tx_hash` is known.
-- `VerifyReceiptLocal` verifies `vc_hash + proof -> root`.
+- `VerifyReceiptLocal` verifies `vc_hash + proof -> anchored root`.
 - `Manager` enforces safe order: create batch, persist batch, submit root, mark anchored, generate receipt.
 - `Store` lets applications plug in their own durable storage.
 - No SDK storage backend is provided; applications implement `Store` using their
@@ -200,7 +200,7 @@ verify-receipt API.
 
 SDK responsibility:
 
-- Provide `VerifyReceiptLocal(receipt, anchoredLeafCount)` for offline proof/root reconstruction.
+- Provide `VerifyReceiptLocal(receipt, anchoredRoot, anchoredLeafCount)` for offline proof/root reconstruction.
 - Make docs explicit that local verification does not prove the root is anchored.
 
 ---

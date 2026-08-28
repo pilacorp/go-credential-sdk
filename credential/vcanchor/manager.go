@@ -39,6 +39,26 @@ func (m *Manager) CreateBatch(ctx context.Context, input BatchInput) (*Batch, er
 	return batch, nil
 }
 
+// getBatch reads a batch through the application's Store. Store is an extension point
+// the SDK does not control, so a (nil, nil) return — a miss reported as success — has
+// to become an error here rather than a nil dereference deeper in.
+func (m *Manager) getBatch(ctx context.Context, issuerDID, externalTreeID string) (*StoredBatch, error) {
+	stored, err := m.store.GetBatch(ctx, issuerDID, externalTreeID)
+	if err != nil {
+		return nil, err
+	}
+	if stored == nil {
+		return nil, fmt.Errorf("vcanchor: store returned no batch for %s/%s: %w", issuerDID, externalTreeID, ErrBatchNotFound)
+	}
+
+	return stored, nil
+}
+
+// SubmitRoot submits the stored batch's root and, once the service reports it
+// anchored, marks the batch anchored in the Store. Anchoring is asynchronous: the
+// first call returns StatusPending with no tx hash and marks nothing. Call it again
+// with the same batch to poll until it returns StatusAnchored, which is also when
+// GenerateReceipt starts working.
 func (m *Manager) SubmitRoot(ctx context.Context, issuerDID, externalTreeID string) (*SubmitRootResponse, error) {
 	if m.store == nil {
 		return nil, fmt.Errorf("store is required")
@@ -47,7 +67,7 @@ func (m *Manager) SubmitRoot(ctx context.Context, issuerDID, externalTreeID stri
 		return nil, fmt.Errorf("root submitter is required")
 	}
 
-	stored, err := m.store.GetBatch(ctx, issuerDID, externalTreeID)
+	stored, err := m.getBatch(ctx, issuerDID, externalTreeID)
 	if err != nil {
 		return nil, err
 	}
@@ -69,18 +89,24 @@ func (m *Manager) SubmitRoot(ctx context.Context, issuerDID, externalTreeID stri
 	if err != nil {
 		return nil, err
 	}
+	// Callers read resp.Status straight off the return value, so a submitter that
+	// answers (nil, nil) must not travel any further than this.
+	if resp == nil {
+		return nil, fmt.Errorf("vcanchor: root submitter returned no response")
+	}
 	// The service ignores our x-issuer-did header and anchors under the DID it
 	// authenticated. When the two differ it writes the row under its own DID while we
 	// would build receipts under ours, and every later verify would miss the row and
 	// return verified: false with nothing to explain why.
-	if resp != nil && resp.IssuerDID != "" && resp.IssuerDID != stored.IssuerDID {
+	if resp.IssuerDID != "" && resp.IssuerDID != stored.IssuerDID {
 		return nil, fmt.Errorf("vcanchor: service anchored under %s, not %s", resp.IssuerDID, stored.IssuerDID)
 	}
-	// A tx hash alone does not mean the root is anchored: the service records the hash
-	// it broadcast even when confirmation failed, and a later claim can carry that
-	// stale hash into an "anchoring" response. Marking on the hash would let
-	// GenerateReceipt hand out a receipt pointing at a tx that anchored nothing.
-	if resp != nil && resp.Status == StatusAnchored && resp.TxHash != "" {
+	// Anchoring is asynchronous, so the first submit answers pending with no tx hash
+	// and the batch is only marked once a later submit reports it anchored. Marking on
+	// the hash alone would also accept the hash an older service records for a
+	// broadcast whose confirmation failed, letting GenerateReceipt hand out a receipt
+	// pointing at a tx that anchored nothing.
+	if resp.Status == StatusAnchored && resp.TxHash != "" {
 		if err := m.store.MarkAnchored(ctx, issuerDID, externalTreeID, resp.TxHash); err != nil {
 			return nil, err
 		}
@@ -94,7 +120,7 @@ func (m *Manager) GenerateReceipt(ctx context.Context, issuerDID, externalTreeID
 		return nil, fmt.Errorf("store is required")
 	}
 
-	stored, err := m.store.GetBatch(ctx, issuerDID, externalTreeID)
+	stored, err := m.getBatch(ctx, issuerDID, externalTreeID)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +150,7 @@ func (m *Manager) ValidateStoredBatch(ctx context.Context, issuerDID, externalTr
 		return fmt.Errorf("store is required")
 	}
 
-	stored, err := m.store.GetBatch(ctx, issuerDID, externalTreeID)
+	stored, err := m.getBatch(ctx, issuerDID, externalTreeID)
 	if err != nil {
 		return err
 	}
