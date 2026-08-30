@@ -49,11 +49,9 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 
 	client := NewServiceClient(server.URL, "did:pila:testnet:0xissuer", WithAuthorization("Bearer token"))
 	resp, err := client.SubmitRoot(context.Background(), SubmitRootRequest{
-		IssuerDID:    "did:pila:testnet:0xissuer",
-		Root:         "0xroot",
-		LeafCount:    2,
-		HashScheme:   HashSchemeKeccak256SortedPairsNoLeafHashV1,
-		LeavesDigest: "0xdigest",
+		IssuerDID: "did:pila:testnet:0xissuer",
+		Root:      "0xroot",
+		LeafCount: 2,
 	})
 	if err != nil {
 		t.Fatalf("SubmitRoot returned error: %v", err)
@@ -65,10 +63,13 @@ func TestServiceClientSubmitRootUsesIssuerHeaderAndRequestBody(t *testing.T) {
 	if gotAuthorization != "Bearer token" {
 		t.Fatalf("got Authorization %q", gotAuthorization)
 	}
-	// The service identifies a tree by its content, so no batch id may leak onto the
-	// wire — sending one would look like a key the service honours.
-	if _, ok := gotBody["external_tree_id"]; ok {
-		t.Fatalf("request body carried external_tree_id: %v", gotBody)
+	// The service identifies a tree by its content and folds nothing, so nothing but
+	// that content may leak onto the wire — a field the service does not act on reads
+	// like one it honours.
+	for _, unexpected := range []string{"external_tree_id", "hash_scheme", "leaves_digest"} {
+		if _, ok := gotBody[unexpected]; ok {
+			t.Fatalf("request body carried %s: %v", unexpected, gotBody)
+		}
 	}
 	if gotBody["root"] != "0xroot" || gotBody["leaf_count"] != float64(2) {
 		t.Fatalf("got body %v", gotBody)
@@ -95,11 +96,9 @@ func TestServiceClientSubmitRootRejectsMismatchedIssuerDID(t *testing.T) {
 
 	client := NewServiceClient(server.URL, "did:pila:testnet:0xclient")
 	_, err := client.SubmitRoot(context.Background(), SubmitRootRequest{
-		IssuerDID:    "did:pila:testnet:0xrequest",
-		Root:         "0xroot",
-		LeafCount:    2,
-		HashScheme:   HashSchemeKeccak256SortedPairsNoLeafHashV1,
-		LeavesDigest: "0xdigest",
+		IssuerDID: "did:pila:testnet:0xrequest",
+		Root:      "0xroot",
+		LeafCount: 2,
 	})
 	if err == nil {
 		t.Fatal("expected issuer mismatch error")

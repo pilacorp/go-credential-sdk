@@ -35,16 +35,16 @@ type Batch struct {
 	leaves       [][]byte
 }
 
-// SubmitRootRequest carries no batch identifier: the service identifies a tree by what
-// it commits to — issuer, root and leaf count — so submitting the same tree twice is a
-// poll rather than a second anchor. ExternalTreeID stays an SDK-local key for the
-// Store; it never goes on the wire.
+// SubmitRootRequest is everything the service needs, which is less than a batch knows.
+// It carries no batch identifier: the service identifies a tree by what it commits to —
+// issuer, root and leaf count — so submitting the same tree twice is a poll rather than
+// a second anchor. It carries no hash_scheme or leaves_digest either: the service
+// anchors an opaque root and folds nothing, so it has nothing to check them against.
+// All three stay SDK-local, on Batch and StoredBatch, where verification uses them.
 type SubmitRootRequest struct {
-	IssuerDID    string `json:"issuer_did"`
-	Root         string `json:"root"`
-	LeafCount    int    `json:"leaf_count"`
-	HashScheme   string `json:"hash_scheme"`
-	LeavesDigest string `json:"leaves_digest"`
+	IssuerDID string `json:"issuer_did"`
+	Root      string `json:"root"`
+	LeafCount int    `json:"leaf_count"`
 }
 
 type SubmitRootResponse struct {

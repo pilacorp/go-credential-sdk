@@ -75,10 +75,8 @@ func (c *ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (
 
 	var resp SubmitRootResponse
 	body := submitRootBody{
-		Root:         req.Root,
-		LeafCount:    req.LeafCount,
-		HashScheme:   req.HashScheme,
-		LeavesDigest: req.LeavesDigest,
+		Root:      req.Root,
+		LeafCount: req.LeafCount,
 	}
 	if err := c.postJSON(ctx, defaultSubmitRootPath, body, &resp, map[string]string{
 		"x-issuer-did": issuerDID,
@@ -149,8 +147,6 @@ func (c *ServiceClient) postJSON(ctx context.Context, path string, payload, out 
 }
 
 type submitRootBody struct {
-	Root         string `json:"root"`
-	LeafCount    int    `json:"leaf_count"`
-	HashScheme   string `json:"hash_scheme"`
-	LeavesDigest string `json:"leaves_digest"`
+	Root      string `json:"root"`
+	LeafCount int    `json:"leaf_count"`
 }
