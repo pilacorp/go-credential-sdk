@@ -16,17 +16,6 @@ type Store interface {
 	MarkAnchored(ctx context.Context, issuerDID, externalTreeID, txHash string) error
 }
 
-func (b StoredBatch) Manifest() Manifest {
-	return Manifest{
-		IssuerDID:      b.IssuerDID,
-		ExternalTreeID: b.ExternalTreeID,
-		Root:           b.Root,
-		LeafCount:      b.LeafCount,
-		HashScheme:     b.HashScheme,
-		LeavesDigest:   b.LeavesDigest,
-	}
-}
-
 // SameBatchContent reports whether two stored batches describe the same tree. A
 // Store uses it in SaveBatch to tell a retry of the same batch (return nil) from a
 // genuine collision on the same key (return ErrBatchConflict).

@@ -30,7 +30,7 @@ Rules:
 application creates VC
 -> application computes vc_hash
 -> SDK builds Merkle batch
--> application submits batch.Manifest() to Authen Service (its own client)
+-> application submits {root, leaf_count} to Authen Service (its own client)
 -> Authen Service anchors root on-chain asynchronously
 -> application polls its own call, then reports tx_hash via MarkAnchored
 -> SDK generates receipt for each VC hash
@@ -59,10 +59,11 @@ if err != nil {
 	panic(err)
 }
 
-// Hand the root to Authen Service with your own client. batch.Manifest() is
-// exactly what that call needs. Anchoring is asynchronous, so the first answer
-// is "pending" with an empty tx_hash.
-txHash, err := yourapp.AnchorRoot(ctx, batch.Manifest())
+// Hand the root to Authen Service with your own client. The submission is
+// {root, leaf_count}; the issuer comes from the credential you authenticate
+// with. Anchoring is asynchronous, so the first answer is "pending" with an
+// empty tx_hash.
+txHash, err := yourapp.AnchorRoot(ctx, batch.Root, batch.LeafCount)
 if err != nil {
 	panic(err)
 }
@@ -116,9 +117,9 @@ func main() {
 		panic(err)
 	}
 
-	// Send this payload to Authen Service with your own client.
-	manifest := batch.Manifest()
-	fmt.Println(manifest.Root)
+	// Send this payload to Authen Service with your own client: the root and the
+	// number of leaves it commits to, and nothing else.
+	fmt.Println(batch.Root, batch.LeafCount)
 
 	// Use the tx_hash returned by Authen Service after root anchoring.
 	receipt, err := batch.Receipt(hashes[0], "0xtxhash")
@@ -183,8 +184,12 @@ the root anchored. Until then `GenerateReceipt` refuses to issue anything, which
 the behaviour you want — a receipt naming no transaction proves nothing.
 
 The service identifies a tree by what it commits to — `issuer_did`, `root` and
-`leaf_count` — so no batch identifier is sent. `external_tree_id` is an SDK-local key:
-it names the batch in your `Store` and appears on receipts, and never goes on the wire.
+`leaf_count` — so no batch identifier is sent, and `issuer_did` is taken from the
+credential you authenticate with rather than from the body. The submission is therefore
+`{root, leaf_count}` and nothing more: `external_tree_id`, `hash_scheme` and
+`leaves_digest` stay local, and the service reserves those field numbers permanently.
+`external_tree_id` is an SDK-local key: it names the batch in your `Store` and appears
+on receipts, and never goes on the wire.
 Two batches of the same issuer with identical leaves are therefore the same tree to the
 service, anchored once, no matter what you called them locally.
 

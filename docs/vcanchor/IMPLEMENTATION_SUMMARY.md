@@ -43,7 +43,6 @@ Low-level APIs:
 
 ```go
 BuildBatch(input BatchInput) (*Batch, error)
-(*Batch) Manifest() Manifest
 (*Batch) Receipt(vcHash, txHash string) (*Receipt, error)
 VerifyReceiptLocal(receipt Receipt, anchoredRoot string, anchoredLeafCount int) (bool, error)
 ```
@@ -59,9 +58,9 @@ NewManager(store Store) *Manager
 ```
 
 There is no Authen Service client here. Anchoring is an internal-service call, so the
-application makes it with its own client, using `Batch.Manifest()` as the payload, and
-reports the transaction back through `MarkAnchored`. This package makes no network
-calls.
+application makes it with its own client — submitting `{root, leaf_count}` from the
+batch, with the issuer taken from the credential it authenticates with — and reports the
+transaction back through `MarkAnchored`. This package makes no network calls.
 
 ## Persistence
 
@@ -113,7 +112,7 @@ The manager enforces this order:
 ```text
 CreateBatch
 -> persist StoredBatch
--> application anchors batch.Manifest() through its own client
+-> application anchors {root, leaf_count} through its own client
 -> MarkAnchored(tx_hash)
 -> GenerateReceipt from persisted data
 ```

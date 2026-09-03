@@ -4,7 +4,10 @@ const HashSchemeKeccak256SortedPairsNoLeafHashV1 = "keccak256-sorted-pairs-no-le
 
 // MaxLeavesPerBatch caps how many VC hashes a single batch (one Merkle root)
 // may contain. It bounds the memory used while building the tree and generating
-// proofs. Split larger sets across multiple batches/roots.
+// proofs, and it is also the cap Authen Service enforces on a submitted root
+// (EXTERNAL_MERKLE_MAX_LEAF_COUNT, default 10000). Raising it here alone only moves
+// the rejection from BuildBatch to submit time — the service has to be raised too.
+// Split larger sets across multiple batches/roots.
 const MaxLeavesPerBatch = 10000
 
 type BatchInput struct {
@@ -48,17 +51,9 @@ type StoredBatch struct {
 	TxHash          string   `json:"tx_hash,omitempty"`
 	// Status is the batch's local lifecycle state, not the service's: "created" when
 	// the SDK first hands the batch to the Store, then whatever the Store writes in
+	// MarkAnchored.
 	Status           string `json:"status"`
 	AnchoredAtUnix   int64  `json:"anchored_at_unix,omitempty"`
 	CreatedAtUnix    int64  `json:"created_at_unix"`
 	LastModifiedUnix int64  `json:"last_modified_unix"`
-}
-
-type Manifest struct {
-	IssuerDID      string `json:"issuer_did"`
-	ExternalTreeID string `json:"external_tree_id"`
-	Root           string `json:"root"`
-	LeafCount      int    `json:"leaf_count"`
-	HashScheme     string `json:"hash_scheme"`
-	LeavesDigest   string `json:"leaves_digest"`
 }

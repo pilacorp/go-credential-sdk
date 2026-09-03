@@ -55,17 +55,6 @@ func BuildBatch(input BatchInput) (*Batch, error) {
 	}, nil
 }
 
-func (b *Batch) Manifest() Manifest {
-	return Manifest{
-		IssuerDID:      b.IssuerDID,
-		ExternalTreeID: b.ExternalTreeID,
-		Root:           b.Root,
-		LeafCount:      b.LeafCount,
-		HashScheme:     b.HashScheme,
-		LeavesDigest:   b.LeavesDigest,
-	}
-}
-
 func (b *Batch) Receipt(vcHash, txHash string) (*Receipt, error) {
 	normalized, raw, err := normalizeHash32(vcHash)
 	if err != nil {

@@ -26,7 +26,7 @@ The current SDK is a correct foundation, not yet a full integration kit.
 Already available:
 
 - `BuildBatch` builds a deterministic Merkle batch from ordered VC hashes.
-- `Batch.Manifest` creates the payload needed by Authen Service root submission; the application makes that call itself, the SDK does not.
+- `Batch.Root` and `Batch.LeafCount` are the whole root-submission payload; the application makes that call itself, the SDK does not.
 - `Batch.Receipt` generates a Merkle receipt after `tx_hash` is known.
 - `VerifyReceiptLocal` verifies `vc_hash + proof -> anchored root`.
 - `Manager` enforces safe order: create batch, persist batch, submit root, mark anchored, generate receipt.
@@ -215,7 +215,7 @@ SDK responsibility:
 
 - Modify: `credential/vcanchor/types.go`
 - Create: `credential/vcanchor/client.go`
-**Status:** Dropped. The anchoring API is internal to Authen Service, while this SDK is public and shared, so no HTTP client ships here. Applications call the API with their own client using `Batch.Manifest()` and report the transaction back through `Manager.MarkAnchored`.
+**Status:** Dropped. The anchoring API is internal to Authen Service, while this SDK is public and shared, so no HTTP client ships here. Applications call the API with their own client, submitting `{root, leaf_count}`, and report the transaction back through `Manager.MarkAnchored`.
 
 ### Task 2: Add Production Batch Worker
 
@@ -232,7 +232,7 @@ SDK responsibility:
   - `type WorkerConfig struct`
   - `func NewWorker(manager *Manager, cfg WorkerConfig) *Worker`
   - `func (w *Worker) Add(ctx context.Context, issuerDID, vcHash string) (*QueuedLeaf, error)`
-  - `func (w *Worker) Flush(ctx context.Context, issuerDID string) (*Manifest, error)`
+  - `func (w *Worker) Flush(ctx context.Context, issuerDID string) (*Batch, error)`
 
 Steps:
 
