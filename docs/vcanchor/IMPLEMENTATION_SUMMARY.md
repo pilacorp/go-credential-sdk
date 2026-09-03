@@ -43,7 +43,6 @@ Low-level APIs:
 
 ```go
 BuildBatch(input BatchInput) (*Batch, error)
-(*Batch) RootRequest() SubmitRootRequest
 (*Batch) Manifest() Manifest
 (*Batch) Receipt(vcHash, txHash string) (*Receipt, error)
 VerifyReceiptLocal(receipt Receipt, anchoredRoot string, anchoredLeafCount int) (bool, error)
@@ -52,19 +51,17 @@ VerifyReceiptLocal(receipt Receipt, anchoredRoot string, anchoredLeafCount int) 
 Recommended high-level APIs:
 
 ```go
-NewManager(store Store, submitter RootSubmitter) *Manager
+NewManager(store Store) *Manager
 (*Manager) CreateBatch(ctx, input) (*Batch, error)
-(*Manager) SubmitRoot(ctx, issuerDID, externalTreeID) (*SubmitRootResponse, error)
+(*Manager) MarkAnchored(ctx, issuerDID, externalTreeID, txHash) error
 (*Manager) GenerateReceipt(ctx, issuerDID, externalTreeID, vcHash) (*Receipt, error)
 (*Manager) ValidateStoredBatch(ctx, issuerDID, externalTreeID) error
 ```
 
-Authen Service client APIs:
-
-```go
-NewServiceClient(baseURL, issuerDID string, opts ...ClientOption) *ServiceClient
-(*ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error)
-```
+There is no Authen Service client here. Anchoring is an internal-service call, so the
+application makes it with its own client, using `Batch.Manifest()` as the payload, and
+reports the transaction back through `MarkAnchored`. This package makes no network
+calls.
 
 ## Persistence
 
@@ -116,7 +113,7 @@ The manager enforces this order:
 ```text
 CreateBatch
 -> persist StoredBatch
--> SubmitRoot
+-> application anchors batch.Manifest() through its own client
 -> MarkAnchored(tx_hash)
 -> GenerateReceipt from persisted data
 ```
@@ -171,8 +168,9 @@ Authen Service must still verify:
 - `GenerateReceipt` currently rebuilds proof from ordered hashes. This is simple
   and correct, but for multi-million-leaf trees a production store should persist
   tree levels or chunk nodes to avoid rebuilding large trees on every receipt.
-- `ServiceClient` wraps the current Authen Service HTTP API. Integrators with
-  custom gateways can still implement `RootSubmitter` themselves.
+- Anchoring is not implemented here. The Authen Service API is internal while this SDK
+  is public, so the transport stays on the application side and this package keeps to
+  what is verifiable offline.
 
 ## Tests Added
 

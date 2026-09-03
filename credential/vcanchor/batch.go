@@ -55,14 +55,6 @@ func BuildBatch(input BatchInput) (*Batch, error) {
 	}, nil
 }
 
-func (b *Batch) RootRequest() SubmitRootRequest {
-	return SubmitRootRequest{
-		IssuerDID: b.IssuerDID,
-		Root:      b.Root,
-		LeafCount: b.LeafCount,
-	}
-}
-
 func (b *Batch) Manifest() Manifest {
 	return Manifest{
 		IssuerDID:      b.IssuerDID,

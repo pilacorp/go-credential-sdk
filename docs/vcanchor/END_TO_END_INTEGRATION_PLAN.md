@@ -26,7 +26,7 @@ The current SDK is a correct foundation, not yet a full integration kit.
 Already available:
 
 - `BuildBatch` builds a deterministic Merkle batch from ordered VC hashes.
-- `Batch.RootRequest` creates the payload needed by Authen Service root submission.
+- `Batch.Manifest` creates the payload needed by Authen Service root submission; the application makes that call itself, the SDK does not.
 - `Batch.Receipt` generates a Merkle receipt after `tx_hash` is known.
 - `VerifyReceiptLocal` verifies `vc_hash + proof -> anchored root`.
 - `Manager` enforces safe order: create batch, persist batch, submit root, mark anchored, generate receipt.
@@ -215,25 +215,7 @@ SDK responsibility:
 
 - Modify: `credential/vcanchor/types.go`
 - Create: `credential/vcanchor/client.go`
-- Test: `credential/vcanchor/client_test.go`
-
-**Status:** Implemented.
-
-**Interfaces:**
-
-- Consumes: `SubmitRootRequest`, `SubmitRootResponse`, `Receipt`
-- Produces:
-  - `type ServiceClient struct`
-  - `func NewServiceClient(baseURL, issuerDID string, opts ...ClientOption) *ServiceClient`
-  - `func (c *ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error)`
-  - no service-side receipt verification method; callers use `VerifyReceiptLocal` for proof checks.
-
-Steps:
-
-- [x] Write failing tests using `httptest.Server` for submit-root JSON request/response.
-- [x] Implement minimal HTTP client with context-aware requests.
-- [x] Add API key header support without hardcoding auth policy into core Merkle logic.
-- [x] Run `go test ./credential/vcanchor`.
+**Status:** Dropped. The anchoring API is internal to Authen Service, while this SDK is public and shared, so no HTTP client ships here. Applications call the API with their own client using `Batch.Manifest()` and report the transaction back through `Manager.MarkAnchored`.
 
 ### Task 2: Add Production Batch Worker
 
@@ -244,13 +226,13 @@ Steps:
 
 **Interfaces:**
 
-- Consumes: `Manager`, `Store`, `RootSubmitter`
+- Consumes: `Manager`, `Store`
 - Produces:
   - `type Worker struct`
   - `type WorkerConfig struct`
   - `func NewWorker(manager *Manager, cfg WorkerConfig) *Worker`
   - `func (w *Worker) Add(ctx context.Context, issuerDID, vcHash string) (*QueuedLeaf, error)`
-  - `func (w *Worker) Flush(ctx context.Context, issuerDID string) (*SubmitRootResponse, error)`
+  - `func (w *Worker) Flush(ctx context.Context, issuerDID string) (*Manifest, error)`
 
 Steps:
 
@@ -293,7 +275,7 @@ Steps:
 
 **Interfaces:**
 
-- Consumes: `vcanchor.Manager`, `vcanchor.ServiceClient`, an application-owned
+- Consumes: `vcanchor.Manager`, an application-owned
   `vcanchor.Store` implementation
 - Produces: runnable example with create, submit, receipt, verify commands
 
@@ -390,8 +372,7 @@ The SDK should own these decisions:
 The integration is complete when a new application team can do this without reading Authen Service internals:
 
 1. Install SDK.
-2. Configure `ServiceClient`.
-3. Configure a `Store`.
+2. Configure a `Store`.
 4. Add VC hashes to batches.
 5. Submit roots.
 6. Generate receipts.

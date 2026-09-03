@@ -1,8 +1,13 @@
 # VC Anchor
 
-`vcanchor` helps applications build their own Merkle tree for VC hashes, submit
-the root to Authen Service for on-chain anchoring, and issue receipts that prove
-one VC hash belongs to an anchored root.
+`vcanchor` helps applications build their own Merkle tree for VC hashes, keep it, and
+issue receipts that prove one VC hash belongs to an anchored root.
+
+The anchoring call itself is not in here. Handing a root to Authen Service is an
+internal-service concern, so the application makes that call with its own client and
+reports the resulting transaction back through `MarkAnchored`. Everything this package
+does — building trees, storing them, generating receipts, verifying them — is local and
+needs no network.
 
 The package intentionally hides the Merkle details from integrators. The hash
 scheme is fixed:
@@ -25,9 +30,9 @@ Rules:
 application creates VC
 -> application computes vc_hash
 -> SDK builds Merkle batch
--> application submits root to Authen Service (returns pending)
+-> application submits batch.Manifest() to Authen Service (its own client)
 -> Authen Service anchors root on-chain asynchronously
--> application polls RootStatus until it returns anchored + tx_hash
+-> application polls its own call, then reports tx_hash via MarkAnchored
 -> SDK generates receipt for each VC hash
 -> holder keeps VC + receipt
 -> verifier checks receipt locally
@@ -43,12 +48,7 @@ submits it, then loses the ordered leaf list before it can issue receipts.
 // Implement vcanchor.Store in your application using your database or object
 // storage. The SDK intentionally does not ship a storage backend.
 store := yourapp.NewVCAnchorStore(db)
-client := vcanchor.NewServiceClient(
-	"https://authen.example.com",
-	"did:pila:testnet:0xissuer",
-	vcanchor.WithAuthorization("Bearer <accessible-credential>"),
-)
-manager := vcanchor.NewManager(store, client)
+manager := vcanchor.NewManager(store)
 
 batch, err := manager.CreateBatch(ctx, vcanchor.BatchInput{
 	IssuerDID:      "did:pila:testnet:0xissuer",
@@ -59,22 +59,23 @@ if err != nil {
 	panic(err)
 }
 
-// Submits the persisted root. Anchoring is asynchronous, so this first call
-// returns status "pending" with an empty tx_hash. Call it again for the same
-// batch until it returns status "anchored"; that call marks the stored batch
-// anchored and is what makes GenerateReceipt work.
-if _, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID); err != nil {
-	panic(err)
-}
-
-// Later, from anywhere — including a separate worker holding only read permission.
-resp, err := manager.RootStatus(ctx, batch.IssuerDID, batch.ExternalTreeID)
+// Hand the root to Authen Service with your own client. batch.Manifest() is
+// exactly what that call needs. Anchoring is asynchronous, so the first answer
+// is "pending" with an empty tx_hash.
+txHash, err := yourapp.AnchorRoot(ctx, batch.Manifest())
 if err != nil {
 	panic(err)
 }
-if resp.Status != vcanchor.StatusAnchored {
-	// not anchored yet — poll again later, then generate receipts
+if txHash == "" {
+	// not anchored yet — poll your own call again later
 	return
+}
+
+// Reporting the transaction is what unlocks receipts. Only pass a hash the
+// service reported as anchored: a hash from a broadcast whose confirmation
+// failed would produce receipts pointing at a transaction that anchored nothing.
+if err := manager.MarkAnchored(ctx, batch.IssuerDID, batch.ExternalTreeID, txHash); err != nil {
+	panic(err)
 }
 
 receipt, err := manager.GenerateReceipt(ctx, batch.IssuerDID, batch.ExternalTreeID, hashes[0])
@@ -88,29 +89,6 @@ The manager can also validate local storage at startup or on a schedule:
 ```go
 err := manager.ValidateStoredBatch(ctx, "did:pila:testnet:0xissuer", "app-tree-001")
 ```
-
-## Authen Service client
-
-`ServiceClient` implements `RootSubmitter`, so it can be passed directly to
-`Manager`:
-
-```go
-client := vcanchor.NewServiceClient(
-	"https://authen.example.com",
-	"did:pila:testnet:0xissuer",
-	vcanchor.WithAuthorization("Bearer <accessible-credential>"),
-)
-
-_, err := manager.SubmitRoot(ctx, issuerDID, externalTreeID)
-if err != nil {
-	panic(err)
-}
-```
-
-`SubmitRoot` must be called with an `Authorization` accessible credential when
-using the Authen Service proxy. The proxy authenticates that credential and
-derives `x-issuer-did` from the authenticated requester before forwarding the
-request.
 
 ## Low-level usage
 
@@ -138,9 +116,9 @@ func main() {
 		panic(err)
 	}
 
-	// Send this payload to Authen Service SubmitExternalMerkleRoot.
-	rootReq := batch.RootRequest()
-	fmt.Println(rootReq.Root)
+	// Send this payload to Authen Service with your own client.
+	manifest := batch.Manifest()
+	fmt.Println(manifest.Root)
 
 	// Use the tx_hash returned by Authen Service after root anchoring.
 	receipt, err := batch.Receipt(hashes[0], "0xtxhash")
@@ -150,7 +128,7 @@ func main() {
 
 	// A verifier holds only the receipt. Both the root and the leaf_count it checks
 	// against must come from the anchored record — read on chain by tx_hash, or from
-	// the SubmitRoot response — never from the batch or receipt under test. Shown
+	// what Authen Service reported — never from the batch or receipt under test. Shown
 	// here as anchoredRoot/anchoredLeafCount, which this issuing-side example
 	// happens to know.
 	anchoredRoot, anchoredLeafCount := batch.Root, batch.LeafCount
@@ -198,17 +176,11 @@ the receipt. The receipt is the thing under test:
 The receipt's own `root` and `leaf_count` are compared against the anchored ones and
 a mismatch is rejected.
 
-`SubmitRoot` is asynchronous. It records the root, queues it for anchoring and
-returns immediately with status `pending` and an empty `tx_hash`. Poll with
-`RootStatus`, which reads the same row over `GET` and marks the batch locally once the
-service reports it on chain.
-
-Poll with `RootStatus`, not `SubmitRoot`. Resubmitting does return the same row — the
-key is the tree's content, so it cannot anchor twice — but it is a write: it needs
-`Credential:Create` rather than `Credential:Get`, and it would create the row if the
-submitting worker had not got that far yet. An application that runs a submitting
-worker and a watching worker wants those to be different calls with different
-credentials.
+Anchoring is asynchronous on the service side: submitting a root records it and
+answers `pending`, and the transaction hash only appears once it is on chain. Poll
+with whatever read call your service exposes, and call `MarkAnchored` when it reports
+the root anchored. Until then `GenerateReceipt` refuses to issue anything, which is
+the behaviour you want — a receipt naming no transaction proves nothing.
 
 The service identifies a tree by what it commits to — `issuer_did`, `root` and
 `leaf_count` — so no batch identifier is sent. `external_tree_id` is an SDK-local key:
@@ -216,9 +188,9 @@ it names the batch in your `Store` and appears on receipts, and never goes on th
 Two batches of the same issuer with identical leaves are therefore the same tree to the
 service, anchored once, no matter what you called them locally.
 
-Local verification stops there. The SDK no longer calls an Authen Service
-verify-receipt API; applications that need server-side verification should use a
-dedicated verifier flow outside `ServiceClient`.
+Local verification stops there, and it is all this package does. The SDK makes no
+network calls at all; applications that need server-side verification should use their
+own client against Authen Service.
 
 ## Storage responsibility
 

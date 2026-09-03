@@ -7,52 +7,10 @@ import (
 	"time"
 )
 
-type fakeSubmitter struct {
-	txHash      string
-	status      string
-	issuerDID   string
-	req         SubmitRootRequest
-	submitCalls int
-	getCalls    int
-}
-
-func (f *fakeSubmitter) GetRoot(_ context.Context, issuerDID, root string, leafCount int) (*SubmitRootResponse, error) {
-	f.getCalls++
-
-	return f.response(SubmitRootRequest{IssuerDID: issuerDID, Root: root, LeafCount: leafCount}), nil
-}
-
-func (f *fakeSubmitter) response(req SubmitRootRequest) *SubmitRootResponse {
-	status := f.status
-	if status == "" {
-		status = StatusAnchored
-	}
-
-	issuerDID := f.issuerDID
-	if issuerDID == "" {
-		issuerDID = req.IssuerDID
-	}
-
-	return &SubmitRootResponse{
-		IssuerDID: issuerDID,
-		Root:      req.Root,
-		TxHash:    f.txHash,
-		Status:    status,
-	}
-}
-
-func (f *fakeSubmitter) SubmitRoot(_ context.Context, req SubmitRootRequest) (*SubmitRootResponse, error) {
-	f.req = req
-	f.submitCalls++
-
-	return f.response(req), nil
-}
-
 func TestManagerPersistsBatchAndGeneratesReceiptFromStore(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
-	submitter := &fakeSubmitter{txHash: "0xtx"}
-	manager := NewManager(store, submitter)
+	manager := NewManager(store)
 
 	hashes := []string{
 		"0x0000000000000000000000000000000000000000000000000000000000000001",
@@ -73,15 +31,10 @@ func TestManagerPersistsBatchAndGeneratesReceiptFromStore(t *testing.T) {
 		t.Fatalf("ValidateStoredBatch returned error: %v", err)
 	}
 
-	resp, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID)
-	if err != nil {
-		t.Fatalf("SubmitRoot returned error: %v", err)
-	}
-	if resp.TxHash != "0xtx" {
-		t.Fatalf("unexpected tx hash: %s", resp.TxHash)
-	}
-	if submitter.req.Root != batch.Root {
-		t.Fatalf("submitted root mismatch: got %s want %s", submitter.req.Root, batch.Root)
+	// The application anchors the root through its own call to Authen Service and
+	// reports the transaction back here; the SDK never makes that call itself.
+	if err := manager.MarkAnchored(ctx, batch.IssuerDID, batch.ExternalTreeID, "0xtx"); err != nil {
+		t.Fatalf("MarkAnchored returned error: %v", err)
 	}
 
 	receipt, err := manager.GenerateReceipt(ctx, batch.IssuerDID, batch.ExternalTreeID, hashes[1])
@@ -208,19 +161,9 @@ func (s *testStore) SaveBatch(ctx context.Context, batch StoredBatch) error {
 	return nil
 }
 
-func (s *testStore) GetBatch(ctx context.Context, issuerDID, externalTreeID string) (*StoredBatch, error) {
-	s.getCalls++
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	batch, ok := s.batches[issuerDID+"\x00"+externalTreeID]
-	if !ok {
-		return nil, ErrBatchNotFound
-	}
-
-	cloned := cloneTestStoredBatch(batch)
-	return &cloned, nil
+func cloneTestStoredBatch(batch StoredBatch) StoredBatch {
+	batch.OrderedVCHashes = append([]string(nil), batch.OrderedVCHashes...)
+	return batch
 }
 
 func (s *testStore) MarkAnchored(ctx context.Context, issuerDID, externalTreeID, txHash string) error {
@@ -247,220 +190,61 @@ func (s *testStore) MarkAnchored(ctx context.Context, issuerDID, externalTreeID,
 	return nil
 }
 
-func cloneTestStoredBatch(batch StoredBatch) StoredBatch {
-	batch.OrderedVCHashes = append([]string(nil), batch.OrderedVCHashes...)
-	return batch
+func (s *testStore) GetBatch(ctx context.Context, issuerDID, externalTreeID string) (*StoredBatch, error) {
+	s.getCalls++
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	batch, ok := s.batches[issuerDID+"\x00"+externalTreeID]
+	if !ok {
+		return nil, ErrBatchNotFound
+	}
+
+	cloned := cloneTestStoredBatch(batch)
+	return &cloned, nil
 }
 
-// Anchoring is asynchronous, so a response can carry a tx hash while the root is not
-// on chain. Marking the batch anchored on the hash alone would let GenerateReceipt
-// issue a receipt for a tx that anchored nothing, which the verifier would then reject.
-func TestSubmitRootDoesNotMarkAnchoredWhenStatusIsNotAnchored(t *testing.T) {
+// Receipts must not exist before the root is on chain, and MarkAnchored is the only
+// thing that opens that door.
+func TestGenerateReceiptRequiresMarkAnchored(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	manager := NewManager(store)
+
 	hashes := []string{
 		"0x0000000000000000000000000000000000000000000000000000000000000001",
 		"0x0000000000000000000000000000000000000000000000000000000000000002",
 	}
 
-	// "anchoring" and "failed" are not values this SDK defines; they stand in for
-	// anything a service may report that is not StatusAnchored.
-	for _, status := range []string{StatusPending, "anchoring", "failed"} {
-		t.Run(status, func(t *testing.T) {
-			ctx := context.Background()
-			store := newTestStore()
-			manager := NewManager(store, &fakeSubmitter{txHash: "0xstaletx", status: status})
-
-			batch, err := manager.CreateBatch(ctx, BatchInput{
-				IssuerDID:      "did:pila:testnet:0xissuer",
-				ExternalTreeID: "app-tree-" + status,
-				VCHashes:       hashes,
-			})
-			if err != nil {
-				t.Fatalf("CreateBatch returned error: %v", err)
-			}
-
-			if _, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID); err != nil {
-				t.Fatalf("SubmitRoot returned error: %v", err)
-			}
-
-			stored, err := store.GetBatch(ctx, batch.IssuerDID, batch.ExternalTreeID)
-			if err != nil {
-				t.Fatalf("GetBatch returned error: %v", err)
-			}
-			if stored.TxHash != "" {
-				t.Fatalf("status %q must not anchor the batch, got tx hash %q", status, stored.TxHash)
-			}
-
-			// And no receipt may be issued off the back of it.
-			if _, err := manager.GenerateReceipt(ctx, batch.IssuerDID, batch.ExternalTreeID, hashes[0]); err == nil {
-				t.Fatalf("status %q: GenerateReceipt must fail while the batch is not anchored", status)
-			}
-		})
-	}
-}
-
-// The happy path must still anchor.
-func TestSubmitRootMarksAnchoredWhenStatusIsAnchored(t *testing.T) {
-	ctx := context.Background()
-	store := newTestStore()
-	manager := NewManager(store, &fakeSubmitter{txHash: "0xtx", status: StatusAnchored})
-
 	batch, err := manager.CreateBatch(ctx, BatchInput{
 		IssuerDID:      "did:pila:testnet:0xissuer",
-		ExternalTreeID: "app-tree-anchored",
-		VCHashes: []string{
-			"0x0000000000000000000000000000000000000000000000000000000000000001",
-			"0x0000000000000000000000000000000000000000000000000000000000000002",
-		},
+		ExternalTreeID: "app-tree-unanchored",
+		VCHashes:       hashes,
 	})
 	if err != nil {
 		t.Fatalf("CreateBatch returned error: %v", err)
 	}
 
-	if _, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID); err != nil {
-		t.Fatalf("SubmitRoot returned error: %v", err)
+	if _, err := manager.GenerateReceipt(ctx, batch.IssuerDID, batch.ExternalTreeID, hashes[0]); err == nil {
+		t.Fatal("an unanchored batch must not produce a receipt")
 	}
 
-	stored, err := store.GetBatch(ctx, batch.IssuerDID, batch.ExternalTreeID)
+	// An empty hash is not an anchoring: taking it would unlock receipts pointing at
+	// no transaction at all.
+	if err := manager.MarkAnchored(ctx, batch.IssuerDID, batch.ExternalTreeID, ""); err == nil {
+		t.Fatal("MarkAnchored must reject an empty tx hash")
+	}
+
+	if err := manager.MarkAnchored(ctx, batch.IssuerDID, batch.ExternalTreeID, "0xtx"); err != nil {
+		t.Fatalf("MarkAnchored returned error: %v", err)
+	}
+
+	receipt, err := manager.GenerateReceipt(ctx, batch.IssuerDID, batch.ExternalTreeID, hashes[0])
 	if err != nil {
-		t.Fatalf("GetBatch returned error: %v", err)
+		t.Fatalf("GenerateReceipt returned error: %v", err)
 	}
-	if stored.TxHash != "0xtx" {
-		t.Fatalf("anchored batch should carry the tx hash, got %q", stored.TxHash)
-	}
-}
-
-// SubmitRoot must validate and submit the same snapshot. Two reads would leave a
-// window for a concurrent writer to swap the content after the check passed.
-func TestSubmitRootReadsTheBatchOnce(t *testing.T) {
-	ctx := context.Background()
-	store := newTestStore()
-	manager := NewManager(store, &fakeSubmitter{txHash: "0xtx"})
-
-	batch, err := manager.CreateBatch(ctx, BatchInput{
-		IssuerDID:      "did:pila:testnet:0xissuer",
-		ExternalTreeID: "app-tree-once",
-		VCHashes: []string{
-			"0x0000000000000000000000000000000000000000000000000000000000000001",
-			"0x0000000000000000000000000000000000000000000000000000000000000002",
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateBatch returned error: %v", err)
-	}
-
-	store.getCalls = 0
-	if _, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID); err != nil {
-		t.Fatalf("SubmitRoot returned error: %v", err)
-	}
-	if store.getCalls != 1 {
-		t.Fatalf("SubmitRoot read the batch %d times, want 1", store.getCalls)
-	}
-}
-
-// The service anchors under the DID it authenticated, ignoring our header. A row
-// written under a different DID makes every later verify miss it, so the mismatch has
-// to surface at submit time rather than as an unexplained verified: false.
-func TestSubmitRootRejectsDifferentIssuerDIDInResponse(t *testing.T) {
-	ctx := context.Background()
-	store := newTestStore()
-	submitter := &fakeSubmitter{txHash: "0xtx", issuerDID: "did:pila:testnet:0xsomeoneelse"}
-	manager := NewManager(store, submitter)
-
-	batch, err := manager.CreateBatch(ctx, BatchInput{
-		IssuerDID:      "did:pila:testnet:0xissuer",
-		ExternalTreeID: "app-tree-did",
-		VCHashes: []string{
-			"0x0000000000000000000000000000000000000000000000000000000000000001",
-			"0x0000000000000000000000000000000000000000000000000000000000000002",
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateBatch returned error: %v", err)
-	}
-
-	if _, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID); err == nil {
-		t.Fatal("a root anchored under a different issuer DID must be rejected")
-	}
-
-	stored, err := store.GetBatch(ctx, batch.IssuerDID, batch.ExternalTreeID)
-	if err != nil {
-		t.Fatalf("GetBatch returned error: %v", err)
-	}
-	if stored.TxHash != "" {
-		t.Fatalf("the batch must not be marked anchored, got tx hash %q", stored.TxHash)
-	}
-}
-
-// A polling worker must not be able to anchor. RootStatus reads, marks the batch when
-// the service says it is on chain, and never reaches SubmitRoot.
-func TestRootStatusPollsWithoutSubmitting(t *testing.T) {
-	ctx := context.Background()
-	store := newTestStore()
-	submitter := &fakeSubmitter{txHash: "0xtx", status: StatusAnchored}
-	manager := NewManager(store, submitter)
-
-	batch, err := manager.CreateBatch(ctx, BatchInput{
-		IssuerDID:      "did:pila:testnet:0xissuer",
-		ExternalTreeID: "app-tree-status",
-		VCHashes: []string{
-			"0x0000000000000000000000000000000000000000000000000000000000000001",
-			"0x0000000000000000000000000000000000000000000000000000000000000002",
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateBatch returned error: %v", err)
-	}
-
-	resp, err := manager.RootStatus(ctx, batch.IssuerDID, batch.ExternalTreeID)
-	if err != nil {
-		t.Fatalf("RootStatus returned error: %v", err)
-	}
-	if submitter.submitCalls != 0 {
-		t.Fatalf("SubmitRoot was called %d times; polling must never submit", submitter.submitCalls)
-	}
-	if submitter.getCalls != 1 {
-		t.Fatalf("GetRoot was called %d times, want 1", submitter.getCalls)
-	}
-	if resp.Status != StatusAnchored {
-		t.Fatalf("status = %q", resp.Status)
-	}
-
-	stored, err := store.GetBatch(ctx, batch.IssuerDID, batch.ExternalTreeID)
-	if err != nil {
-		t.Fatalf("GetBatch returned error: %v", err)
-	}
-	if stored.TxHash != "0xtx" {
-		t.Fatalf("tx hash = %q, want the batch marked anchored from the poll", stored.TxHash)
-	}
-}
-
-// While it is still pending the poll marks nothing, so GenerateReceipt stays closed.
-func TestRootStatusMarksNothingWhilePending(t *testing.T) {
-	ctx := context.Background()
-	store := newTestStore()
-	manager := NewManager(store, &fakeSubmitter{status: StatusPending})
-
-	batch, err := manager.CreateBatch(ctx, BatchInput{
-		IssuerDID:      "did:pila:testnet:0xissuer",
-		ExternalTreeID: "app-tree-pending",
-		VCHashes: []string{
-			"0x0000000000000000000000000000000000000000000000000000000000000001",
-			"0x0000000000000000000000000000000000000000000000000000000000000002",
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateBatch returned error: %v", err)
-	}
-
-	if _, err := manager.RootStatus(ctx, batch.IssuerDID, batch.ExternalTreeID); err != nil {
-		t.Fatalf("RootStatus returned error: %v", err)
-	}
-
-	stored, err := store.GetBatch(ctx, batch.IssuerDID, batch.ExternalTreeID)
-	if err != nil {
-		t.Fatalf("GetBatch returned error: %v", err)
-	}
-	if stored.TxHash != "" {
-		t.Fatalf("tx hash = %q, want the batch left unanchored", stored.TxHash)
+	if receipt.TxHash != "0xtx" {
+		t.Fatalf("receipt tx hash = %q", receipt.TxHash)
 	}
 }
