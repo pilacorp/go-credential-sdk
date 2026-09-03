@@ -27,7 +27,7 @@ application creates VC
 -> SDK builds Merkle batch
 -> application submits root to Authen Service (returns pending)
 -> Authen Service anchors root on-chain asynchronously
--> application resubmits the same batch until it returns anchored + tx_hash
+-> application polls RootStatus until it returns anchored + tx_hash
 -> SDK generates receipt for each VC hash
 -> holder keeps VC + receipt
 -> verifier checks receipt locally
@@ -63,12 +63,17 @@ if err != nil {
 // returns status "pending" with an empty tx_hash. Call it again for the same
 // batch until it returns status "anchored"; that call marks the stored batch
 // anchored and is what makes GenerateReceipt work.
-resp, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID)
+if _, err := manager.SubmitRoot(ctx, batch.IssuerDID, batch.ExternalTreeID); err != nil {
+	panic(err)
+}
+
+// Later, from anywhere — including a separate worker holding only read permission.
+resp, err := manager.RootStatus(ctx, batch.IssuerDID, batch.ExternalTreeID)
 if err != nil {
 	panic(err)
 }
 if resp.Status != vcanchor.StatusAnchored {
-	// not anchored yet — poll later, then generate receipts
+	// not anchored yet — poll again later, then generate receipts
 	return
 }
 
@@ -194,10 +199,16 @@ The receipt's own `root` and `leaf_count` are compared against the anchored ones
 a mismatch is rejected.
 
 `SubmitRoot` is asynchronous. It records the root, queues it for anchoring and
-returns immediately with status `pending` and an empty `tx_hash`. Poll by calling
-`SubmitRoot` again for the same batch: resubmitting does not queue the root a second
-time, and once the root is on chain the call returns status `anchored` with the
-`tx_hash` and `anchored_at`, marks the batch locally and unlocks the receipt path.
+returns immediately with status `pending` and an empty `tx_hash`. Poll with
+`RootStatus`, which reads the same row over `GET` and marks the batch locally once the
+service reports it on chain.
+
+Poll with `RootStatus`, not `SubmitRoot`. Resubmitting does return the same row — the
+key is the tree's content, so it cannot anchor twice — but it is a write: it needs
+`Credential:Create` rather than `Credential:Get`, and it would create the row if the
+submitting worker had not got that far yet. An application that runs a submitting
+worker and a watching worker wants those to be different calls with different
+credentials.
 
 The service identifies a tree by what it commits to — `issuer_did`, `root` and
 `leaf_count` — so no batch identifier is sent. `external_tree_id` is an SDK-local key:

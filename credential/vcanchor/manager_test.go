@@ -8,15 +8,21 @@ import (
 )
 
 type fakeSubmitter struct {
-	txHash    string
-	status    string
-	issuerDID string
-	req       SubmitRootRequest
+	txHash      string
+	status      string
+	issuerDID   string
+	req         SubmitRootRequest
+	submitCalls int
+	getCalls    int
 }
 
-func (f *fakeSubmitter) SubmitRoot(ctx context.Context, req SubmitRootRequest) (*SubmitRootResponse, error) {
-	f.req = req
+func (f *fakeSubmitter) GetRoot(_ context.Context, issuerDID, root string, leafCount int) (*SubmitRootResponse, error) {
+	f.getCalls++
 
+	return f.response(SubmitRootRequest{IssuerDID: issuerDID, Root: root, LeafCount: leafCount}), nil
+}
+
+func (f *fakeSubmitter) response(req SubmitRootRequest) *SubmitRootResponse {
 	status := f.status
 	if status == "" {
 		status = StatusAnchored
@@ -32,7 +38,14 @@ func (f *fakeSubmitter) SubmitRoot(ctx context.Context, req SubmitRootRequest) (
 		Root:      req.Root,
 		TxHash:    f.txHash,
 		Status:    status,
-	}, nil
+	}
+}
+
+func (f *fakeSubmitter) SubmitRoot(_ context.Context, req SubmitRootRequest) (*SubmitRootResponse, error) {
+	f.req = req
+	f.submitCalls++
+
+	return f.response(req), nil
 }
 
 func TestManagerPersistsBatchAndGeneratesReceiptFromStore(t *testing.T) {
@@ -375,5 +388,79 @@ func TestSubmitRootRejectsDifferentIssuerDIDInResponse(t *testing.T) {
 	}
 	if stored.TxHash != "" {
 		t.Fatalf("the batch must not be marked anchored, got tx hash %q", stored.TxHash)
+	}
+}
+
+// A polling worker must not be able to anchor. RootStatus reads, marks the batch when
+// the service says it is on chain, and never reaches SubmitRoot.
+func TestRootStatusPollsWithoutSubmitting(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	submitter := &fakeSubmitter{txHash: "0xtx", status: StatusAnchored}
+	manager := NewManager(store, submitter)
+
+	batch, err := manager.CreateBatch(ctx, BatchInput{
+		IssuerDID:      "did:pila:testnet:0xissuer",
+		ExternalTreeID: "app-tree-status",
+		VCHashes: []string{
+			"0x0000000000000000000000000000000000000000000000000000000000000001",
+			"0x0000000000000000000000000000000000000000000000000000000000000002",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateBatch returned error: %v", err)
+	}
+
+	resp, err := manager.RootStatus(ctx, batch.IssuerDID, batch.ExternalTreeID)
+	if err != nil {
+		t.Fatalf("RootStatus returned error: %v", err)
+	}
+	if submitter.submitCalls != 0 {
+		t.Fatalf("SubmitRoot was called %d times; polling must never submit", submitter.submitCalls)
+	}
+	if submitter.getCalls != 1 {
+		t.Fatalf("GetRoot was called %d times, want 1", submitter.getCalls)
+	}
+	if resp.Status != StatusAnchored {
+		t.Fatalf("status = %q", resp.Status)
+	}
+
+	stored, err := store.GetBatch(ctx, batch.IssuerDID, batch.ExternalTreeID)
+	if err != nil {
+		t.Fatalf("GetBatch returned error: %v", err)
+	}
+	if stored.TxHash != "0xtx" {
+		t.Fatalf("tx hash = %q, want the batch marked anchored from the poll", stored.TxHash)
+	}
+}
+
+// While it is still pending the poll marks nothing, so GenerateReceipt stays closed.
+func TestRootStatusMarksNothingWhilePending(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	manager := NewManager(store, &fakeSubmitter{status: StatusPending})
+
+	batch, err := manager.CreateBatch(ctx, BatchInput{
+		IssuerDID:      "did:pila:testnet:0xissuer",
+		ExternalTreeID: "app-tree-pending",
+		VCHashes: []string{
+			"0x0000000000000000000000000000000000000000000000000000000000000001",
+			"0x0000000000000000000000000000000000000000000000000000000000000002",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateBatch returned error: %v", err)
+	}
+
+	if _, err := manager.RootStatus(ctx, batch.IssuerDID, batch.ExternalTreeID); err != nil {
+		t.Fatalf("RootStatus returned error: %v", err)
+	}
+
+	stored, err := store.GetBatch(ctx, batch.IssuerDID, batch.ExternalTreeID)
+	if err != nil {
+		t.Fatalf("GetBatch returned error: %v", err)
+	}
+	if stored.TxHash != "" {
+		t.Fatalf("tx hash = %q, want the batch left unanchored", stored.TxHash)
 	}
 }

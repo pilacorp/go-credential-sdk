@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
-const defaultSubmitRootPath = "/api/v1/credentials/external/merkle-roots"
+const defaultSubmitRootPath = "/api/v1/credentials/merkle-roots"
 
 type ClientOption func(*ServiceClient)
 
@@ -87,6 +89,28 @@ func (c *ServiceClient) SubmitRoot(ctx context.Context, req SubmitRootRequest) (
 	return &resp, nil
 }
 
+// GetRoot reads a submitted root's anchoring state without submitting anything. This
+// is the call to poll with: it needs only read permission, and a tree that was never
+// submitted comes back as an error rather than being submitted as a side effect.
+func (c *ServiceClient) GetRoot(ctx context.Context, issuerDID, root string, leafCount int) (*SubmitRootResponse, error) {
+	resolvedIssuerDID, err := c.submitRootIssuerDID(issuerDID)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp SubmitRootResponse
+	if err := c.getJSON(ctx, defaultSubmitRootPath, url.Values{
+		"root":       {root},
+		"leaf_count": {strconv.Itoa(leafCount)},
+	}, &resp, map[string]string{
+		"x-issuer-did": resolvedIssuerDID,
+	}); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
 func (c *ServiceClient) submitRootIssuerDID(reqIssuerDID string) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("vcanchor: service client is nil")
@@ -102,6 +126,23 @@ func (c *ServiceClient) submitRootIssuerDID(reqIssuerDID string) (string, error)
 }
 
 func (c *ServiceClient) postJSON(ctx context.Context, path string, payload, out any, headers map[string]string) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	return c.doJSON(ctx, http.MethodPost, path, bytes.NewReader(raw), out, headers)
+}
+
+func (c *ServiceClient) getJSON(ctx context.Context, path string, query url.Values, out any, headers map[string]string) error {
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+
+	return c.doJSON(ctx, http.MethodGet, path, nil, out, headers)
+}
+
+func (c *ServiceClient) doJSON(ctx context.Context, method, path string, body io.Reader, out any, headers map[string]string) error {
 	if c == nil {
 		return fmt.Errorf("vcanchor: service client is nil")
 	}
@@ -109,16 +150,13 @@ func (c *ServiceClient) postJSON(ctx context.Context, path string, payload, out 
 		return fmt.Errorf("vcanchor: base url is required")
 	}
 
-	raw, err := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(raw))
-	if err != nil {
-		return err
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if c.issuerDID != "" {
 		req.Header.Set("x-issuer-did", c.issuerDID)
