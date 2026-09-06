@@ -2,6 +2,7 @@ package jsonmap
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -126,6 +127,10 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 		return fmt.Errorf("jsonmap: proof purpose is required")
 	}
 
+	// The proof config is canonicalized against the document's @context, which
+	// must define the Data Integrity terms (VC 1.1 contexts don't).
+	m.ensureDataIntegrityContext()
+
 	proof := &dto.Proof{
 		Type:               DataIntegrityProof,
 		Created:            time.Now().UTC().Format(time.RFC3339),
@@ -134,16 +139,15 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 		Cryptosuite:        ECDSARDFC2019,
 	}
 
-	signData, err := m.Canonicalize()
+	hashData, err := m.ecdsaHashData(proof)
 	if err != nil {
-		return fmt.Errorf("jsonmap: failed to canonicalize JSONMap: %w", err)
+		return fmt.Errorf("jsonmap: failed to build hash data: %w", err)
 	}
+	// Section 3.2.6 signs hashData with ECDSA/SHA-256; hashing explicitly here
+	// matches SignerProvider's 32-byte input.
+	signDigest := sha256.Sum256(hashData)
 
-	if len(signData) != 32 {
-		return fmt.Errorf("jsonmap: invalid signing digest length: got %d, want 32", len(signData))
-	}
-
-	signature, err := signerProvider.Sign(signData)
+	signature, err := signerProvider.Sign(signDigest[:])
 	if err != nil {
 		return fmt.Errorf("jsonmap: failed to sign digest: %w", err)
 	}
@@ -152,7 +156,8 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 	if l := len(signature); l != 64 && l != 65 {
 		return fmt.Errorf("jsonmap: ecdsa-rdfc-2019 expects a 64/65-byte secp256k1 signature but the signer returned %d bytes; the signer does not match the verification method — pin the right VM with WithVerificationMethodKey", l)
 	}
-	proof.ProofValue = hex.EncodeToString(signature)
+	// Section 3.2.1 step 6: multibase base58btc.
+	proof.ProofValue = verificationmethod.EncodeMultibaseKey(signature)
 	m.appendProof(*proof)
 
 	return nil
@@ -281,14 +286,127 @@ func didFromVMURL(vm string) string {
 	return vm
 }
 
-// verifyECDSA verifies an ECDSA-signed JSONMap.
+// verifyECDSA verifies an ECDSA-signed JSONMap. A "z" prefix selects the
+// spec-conformant path, anything else the legacy hex path.
 func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) {
+	if strings.HasPrefix(proof.ProofValue, multibaseBase58BTCPrefix) {
+		return m.verifyECDSASpecConformant(publicKey, proof)
+	}
+
 	doc, err := m.Canonicalize()
 	if err != nil {
 		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
 	}
 
 	return crypto.ECDSAVerifySignature(publicKey, proof.ProofValue, doc)
+}
+
+// ===== ecdsa-rdfc-2019 (Data Integrity ECDSA Cryptosuites v1.0, section 3.2) =====
+
+// multibaseBase58BTCPrefix is base58btc's multibase code, and the discriminator
+// against legacy hex proofValues (whose alphabet has no "z").
+const multibaseBase58BTCPrefix = "z"
+
+// hashCanonicalNative returns the SHA-256 digest of doc's canonical N-Quads.
+// Unlike Canonicalize it keeps JSON number types (xsd:integer / xsd:double
+// instead of xsd:string), so the signature commits to them. The id map is
+// discarded; only selective disclosure needs it.
+func hashCanonicalNative(doc map[string]interface{}) ([]byte, error) {
+	nquads, _, err := processor.CanonicalizeWithIdMap(doc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
+	}
+
+	// An empty dataset would make the signature commit to nothing.
+	canonical := []byte(strings.Join(nquads, ""))
+	if len(canonical) == 0 {
+		return nil, fmt.Errorf("canonicalization produced no N-Quads; the document has no @context or no JSON-LD terms")
+	}
+
+	return processor.ComputeDigest(canonical)
+}
+
+// canonicalizeNative is the datatype-preserving counterpart of Canonicalize,
+// returning the transformedDocumentHash of section 3.2.4 step 1.
+func (m *JSONMap) canonicalizeNative() ([]byte, error) {
+	doc, err := m.bodyWithoutProof()
+	if err != nil {
+		return nil, err
+	}
+
+	return hashCanonicalNative(doc)
+}
+
+// ecdsaProofConfig builds the proof configuration of section 3.2.5: the proof
+// options without proofValue, plus the document's @context. Fields come from
+// proofConfigMapFor so both cryptosuites hash the same option set.
+func (m *JSONMap) ecdsaProofConfig(proof *dto.Proof) (map[string]interface{}, error) {
+	if proof == nil {
+		return nil, fmt.Errorf("proof is nil")
+	}
+
+	ctx, ok := (*m)["@context"]
+	if !ok || ctx == nil {
+		return nil, fmt.Errorf("document is missing the @context needed to canonicalize the proof configuration")
+	}
+
+	cfg := JSONMap(proofConfigMapFor(*proof))
+	cfg["@context"] = ctx
+
+	// Round-trip through JSON: normalizes @context to plain JSON types and
+	// copies it, leaving the document's own untouched.
+	out, err := cfg.ToMap()
+	if err != nil {
+		return nil, fmt.Errorf("failed to normalize proof configuration: %w", err)
+	}
+
+	return out, nil
+}
+
+// ecdsaHashData builds the 64-byte hashData of section 3.2.4,
+// proofConfigHash || transformedDocumentHash, for both signing and verifying.
+func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
+	cfg, err := m.ecdsaProofConfig(proof)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build proof configuration: %w", err)
+	}
+
+	// Step 2.
+	proofConfigHash, err := hashCanonicalNative(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash proof configuration: %w", err)
+	}
+
+	// Step 1.
+	transformedDocumentHash, err := m.canonicalizeNative()
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash document: %w", err)
+	}
+
+	// Step 3.
+	hashData := make([]byte, 0, len(proofConfigHash)+len(transformedDocumentHash))
+	hashData = append(hashData, proofConfigHash...)
+	hashData = append(hashData, transformedDocumentHash...)
+
+	return hashData, nil
+}
+
+// verifyECDSASpecConformant verifies a multibase base58btc proofValue,
+// rebuilding hashData exactly as the signer did.
+func (m *JSONMap) verifyECDSASpecConformant(publicKey string, proof *dto.Proof) (bool, error) {
+	signature, err := verificationmethod.DecodeMultibaseKey(proof.ProofValue)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode multibase proofValue: %w", err)
+	}
+
+	hashData, err := m.ecdsaHashData(proof)
+	if err != nil {
+		return false, fmt.Errorf("failed to build hash data: %w", err)
+	}
+	digest := sha256.Sum256(hashData)
+
+	// ECDSAVerifySignature checks the 64/65-byte length itself.
+	return crypto.ECDSAVerifySignature(publicKey, hex.EncodeToString(signature), digest[:])
 }
 
 func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
