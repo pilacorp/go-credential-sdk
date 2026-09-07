@@ -29,6 +29,10 @@ const (
 	DataIntegrityProof          string = "DataIntegrityProof"
 	ECDSARDFC2019               string = "ecdsa-rdfc-2019"
 	ECDSASECPKEY                string = "EcdsaSecp256k1VerificationKey2019"
+
+	// multibaseBase58BTCPrefix is base58btc's multibase code, and the
+	// discriminator against legacy hex proofValues (whose alphabet has no "z").
+	multibaseBase58BTCPrefix string = "z"
 )
 
 // ToJSON serializes the JSONMap to JSON.
@@ -303,15 +307,11 @@ func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) 
 
 // ===== ecdsa-rdfc-2019 (Data Integrity ECDSA Cryptosuites v1.0, section 3.2) =====
 
-// multibaseBase58BTCPrefix is base58btc's multibase code, and the discriminator
-// against legacy hex proofValues (whose alphabet has no "z").
-const multibaseBase58BTCPrefix = "z"
-
-// hashCanonicalNative returns the SHA-256 digest of doc's canonical N-Quads.
+// canonicalizeNative returns doc's canonical N-Quads as a single byte string.
 // Unlike Canonicalize it keeps JSON number types (xsd:integer / xsd:double
-// instead of xsd:string), so the signature commits to them. The id map is
-// discarded; only selective disclosure needs it.
-func hashCanonicalNative(doc map[string]interface{}) ([]byte, error) {
+// instead of xsd:string), so a signature over the result commits to them. The
+// blank-node id map is discarded; only selective disclosure needs it.
+func canonicalizeNative(doc map[string]interface{}) ([]byte, error) {
 	nquads, _, err := processor.CanonicalizeWithIdMap(doc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
@@ -323,18 +323,7 @@ func hashCanonicalNative(doc map[string]interface{}) ([]byte, error) {
 		return nil, fmt.Errorf("canonicalization produced no N-Quads; the document has no @context or no JSON-LD terms")
 	}
 
-	return processor.ComputeDigest(canonical)
-}
-
-// canonicalizeNative is the datatype-preserving counterpart of Canonicalize,
-// returning the transformedDocumentHash of section 3.2.4 step 1.
-func (m *JSONMap) canonicalizeNative() ([]byte, error) {
-	doc, err := m.bodyWithoutProof()
-	if err != nil {
-		return nil, err
-	}
-
-	return hashCanonicalNative(doc)
+	return canonical, nil
 }
 
 // ecdsaProofConfig builds the proof configuration of section 3.2.5: the proof
@@ -363,6 +352,18 @@ func (m *JSONMap) ecdsaProofConfig(proof *dto.Proof) (map[string]interface{}, er
 	return out, nil
 }
 
+// concatHashData joins the two section 3.2.4 digests into the 64-byte hashData
+// of step 3: the proof configuration first, then the transformed document.
+// Swapping the order still round-trips against this SDK but breaks every other
+// implementation, so the order lives in one place.
+func concatHashData(proofConfigHash, transformedDocumentHash [sha256.Size]byte) []byte {
+	hashData := make([]byte, 0, len(proofConfigHash)+len(transformedDocumentHash))
+	hashData = append(hashData, proofConfigHash[:]...)
+	hashData = append(hashData, transformedDocumentHash[:]...)
+
+	return hashData
+}
+
 // ecdsaHashData builds the 64-byte hashData of section 3.2.4,
 // proofConfigHash || transformedDocumentHash, for both signing and verifying.
 func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
@@ -370,25 +371,22 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build proof configuration: %w", err)
 	}
-
-	// Step 2.
-	proofConfigHash, err := hashCanonicalNative(cfg)
+	cfgCanonical, err := canonicalizeNative(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to hash proof configuration: %w", err)
+		return nil, fmt.Errorf("failed to canonicalize proof configuration: %w", err)
 	}
 
-	// Step 1.
-	transformedDocumentHash, err := m.canonicalizeNative()
+	body, err := m.bodyWithoutProof()
 	if err != nil {
-		return nil, fmt.Errorf("failed to hash document: %w", err)
+		return nil, fmt.Errorf("failed to copy document body: %w", err)
+	}
+	bodyCanonical, err := canonicalizeNative(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
 	}
 
-	// Step 3.
-	hashData := make([]byte, 0, len(proofConfigHash)+len(transformedDocumentHash))
-	hashData = append(hashData, proofConfigHash...)
-	hashData = append(hashData, transformedDocumentHash...)
-
-	return hashData, nil
+	// Steps 2, 1 and 3.
+	return concatHashData(sha256.Sum256(cfgCanonical), sha256.Sum256(bodyCanonical)), nil
 }
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,

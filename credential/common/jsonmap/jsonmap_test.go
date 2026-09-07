@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -214,19 +216,27 @@ func TestJSONMap_VerifyECDSA_RejectsTamperedBody(t *testing.T) {
 
 // The signature now commits to the JSON type of numeric claims: 30 and "30" no
 // longer hash to the same bytes.
+func nativeBodyHash(t *testing.T, m JSONMap) []byte {
+	t.Helper()
+	body, err := m.bodyWithoutProof()
+	if err != nil {
+		t.Fatalf("bodyWithoutProof: %v", err)
+	}
+	canonical, err := canonicalizeNative(body)
+	if err != nil {
+		t.Fatalf("canonicalizeNative: %v", err)
+	}
+	h := sha256.Sum256(canonical)
+	return h[:]
+}
+
 func TestJSONMap_CanonicalizeNative_CommitsToNumericType(t *testing.T) {
 	numeric := testCredential()
 	stringy := testCredential()
 	stringy["credentialSubject"].(map[string]interface{})["age"] = "30"
 
-	numericHash, err := numeric.canonicalizeNative()
-	if err != nil {
-		t.Fatalf("canonicalizeNative(numeric): %v", err)
-	}
-	stringHash, err := stringy.canonicalizeNative()
-	if err != nil {
-		t.Fatalf("canonicalizeNative(string): %v", err)
-	}
+	numericHash := nativeBodyHash(t, numeric)
+	stringHash := nativeBodyHash(t, stringy)
 	if hex.EncodeToString(numericHash) == hex.EncodeToString(stringHash) {
 		t.Fatalf(`"age": 30 and "age": "30" produced the same digest`)
 	}
@@ -256,16 +266,16 @@ func TestJSONMap_CanonicalizeNative_MatchesExpectedNQuads(t *testing.T) {
 `
 
 	m := testCredential()
-	got, err := m.canonicalizeNative()
+	body, err := m.bodyWithoutProof()
+	if err != nil {
+		t.Fatalf("bodyWithoutProof: %v", err)
+	}
+	got, err := canonicalizeNative(body)
 	if err != nil {
 		t.Fatalf("canonicalizeNative: %v", err)
 	}
-	want := sha256.Sum256([]byte(wantNQuads))
-	if hex.EncodeToString(got) != hex.EncodeToString(want[:]) {
-		body, _ := m.bodyWithoutProof()
-		nq, _, cErr := processor.CanonicalizeWithIdMap(body)
-		t.Fatalf("transformedDocumentHash mismatch\n got: %s\nwant: %s\nactual N-Quads (%v):\n%s",
-			hex.EncodeToString(got), hex.EncodeToString(want[:]), cErr, strings.Join(nq, ""))
+	if string(got) != wantNQuads {
+		t.Fatalf("canonical N-Quads mismatch\n got:\n%s\nwant:\n%s", got, wantNQuads)
 	}
 }
 
@@ -298,10 +308,7 @@ _:c14n0 <https://w3id.org/security#verificationMethod> <did:example:issuer#key-1
 		t.Fatalf("hashData length = %d, want 64", len(hashData))
 	}
 
-	docHash, err := m.canonicalizeNative()
-	if err != nil {
-		t.Fatalf("canonicalizeNative: %v", err)
-	}
+	docHash := nativeBodyHash(t, m)
 	if hex.EncodeToString(hashData[32:]) != hex.EncodeToString(docHash) {
 		t.Fatalf("hashData[32:] is not transformedDocumentHash")
 	}
@@ -353,5 +360,334 @@ func TestJSONMap_VerifyECDSA_RejectsMalformedMultibaseProofValue(t *testing.T) {
 				t.Fatalf("expected an error for proofValue %q", proofValue)
 			}
 		})
+	}
+}
+
+// ===== proof configuration (section 3.2.5) =====
+
+const proofConfigTestContext = "https://www.w3.org/ns/credentials/v2"
+
+func testProof() *dto.Proof {
+	return &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+	}
+}
+
+// TestECDSAProofConfig_ContainsExactlyTheSignedOptions pins the option set that
+// ends up in the signature. Adding or removing a key here changes hashData, so
+// this test failing means every previously issued credential stops verifying —
+// update it only alongside a deliberate spec change.
+func TestJSONMap_ECDSAProofConfig_ContainsExactlyTheSignedOptions(t *testing.T) {
+	m := JSONMap{"@context": proofConfigTestContext}
+
+	cfg, err := m.ecdsaProofConfig(testProof())
+	if err != nil {
+		t.Fatalf("ecdsaProofConfig: %v", err)
+	}
+
+	gotKeys := make([]string, 0, len(cfg))
+	for k := range cfg {
+		gotKeys = append(gotKeys, k)
+	}
+	sort.Strings(gotKeys)
+
+	wantKeys := []string{"@context", "created", "cryptosuite", "proofPurpose", "type", "verificationMethod"}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Errorf("keys = %v, want %v", gotKeys, wantKeys)
+	}
+
+	want := map[string]interface{}{
+		"type":               DataIntegrityProof,
+		"created":            "2024-01-01T00:00:00Z",
+		"verificationMethod": "did:example:issuer#key-1",
+		"proofPurpose":       "assertionMethod",
+		"cryptosuite":        ECDSARDFC2019,
+		"@context":           proofConfigTestContext,
+	}
+	if !reflect.DeepEqual(cfg, want) {
+		t.Errorf("cfg = %#v, want %#v", cfg, want)
+	}
+}
+
+// TestECDSAProofConfig_ExcludesProofValue guards section 3.2.5: the signature
+// cannot cover itself, so proofValue must never reach the proof config.
+func TestJSONMap_ECDSAProofConfig_ExcludesProofValue(t *testing.T) {
+	m := JSONMap{"@context": proofConfigTestContext}
+
+	proof := testProof()
+	proof.ProofValue = "zSignatureThatMustNotBeHashed"
+	proof.JWS = "header..signature"
+
+	cfg, err := m.ecdsaProofConfig(proof)
+	if err != nil {
+		t.Fatalf("ecdsaProofConfig: %v", err)
+	}
+
+	for _, k := range []string{"proofValue", "jws"} {
+		if _, present := cfg[k]; present {
+			t.Errorf("%q must not appear in the proof config: %#v", k, cfg)
+		}
+	}
+}
+
+// TestECDSAProofConfig_RequiresContext covers the guard that keeps a document
+// without @context from hashing to sha256("") — the proof options only expand
+// into N-Quads when a context defines their terms.
+func TestJSONMap_ECDSAProofConfig_RequiresContext(t *testing.T) {
+	tests := []struct {
+		name string
+		doc  JSONMap
+	}{
+		{"key absent", JSONMap{}},
+		{"explicit nil", JSONMap{"@context": nil}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := tc.doc.ecdsaProofConfig(testProof()); err == nil {
+				t.Fatal("expected an error for a document without @context, got nil")
+			}
+		})
+	}
+}
+
+func TestJSONMap_ECDSAProofConfig_RejectsNilProof(t *testing.T) {
+	m := JSONMap{"@context": proofConfigTestContext}
+
+	if _, err := m.ecdsaProofConfig(nil); err == nil {
+		t.Fatal("expected an error for a nil proof, got nil")
+	}
+}
+
+// TestECDSAProofConfig_DoesNotAliasTheDocument pins the reason for the ToMap
+// round trip: the config is handed to json-gold, and a write through the shared
+// @context would corrupt the credential that is about to be signed.
+func TestJSONMap_ECDSAProofConfig_DoesNotAliasTheDocument(t *testing.T) {
+	const original = proofConfigTestContext
+	m := JSONMap{"@context": []interface{}{original}}
+
+	cfg, err := m.ecdsaProofConfig(testProof())
+	if err != nil {
+		t.Fatalf("ecdsaProofConfig: %v", err)
+	}
+
+	cfg["@context"].([]interface{})[0] = "https://attacker.example/context"
+
+	if got := m["@context"].([]interface{})[0]; got != original {
+		t.Errorf("writing to the config changed the document's @context: got %q, want %q", got, original)
+	}
+}
+
+// TestECDSAProofConfig_NormalizesContextTypes covers the other half of the round
+// trip: json-gold only understands the types encoding/json produces, and rejects
+// a []string @context with "invalid local context".
+func TestJSONMap_ECDSAProofConfig_NormalizesContextTypes(t *testing.T) {
+	m := JSONMap{"@context": []string{proofConfigTestContext}}
+
+	cfg, err := m.ecdsaProofConfig(testProof())
+	if err != nil {
+		t.Fatalf("ecdsaProofConfig: %v", err)
+	}
+
+	got, ok := cfg["@context"].([]interface{})
+	if !ok {
+		t.Fatalf("@context = %T, want []interface{}", cfg["@context"])
+	}
+	if len(got) != 1 || got[0] != proofConfigTestContext {
+		t.Errorf("@context = %#v, want [%q]", got, proofConfigTestContext)
+	}
+}
+
+// TestECDSAProofConfig_MatchesSDOptionSet pins the shared-source guarantee in the
+// doc comment: both cryptosuites hash the same option set because both read it
+// from proofConfigMapFor. A divergence here means an ecdsa-sd-2023 proof and an
+// ecdsa-rdfc-2019 proof no longer commit to the same options.
+func TestJSONMap_ECDSAProofConfig_MatchesSDOptionSet(t *testing.T) {
+	m := JSONMap{"@context": proofConfigTestContext}
+	proof := testProof()
+
+	cfg, err := m.ecdsaProofConfig(proof)
+	if err != nil {
+		t.Fatalf("ecdsaProofConfig: %v", err)
+	}
+	delete(cfg, "@context") // the SD path attaches the context further down
+
+	if want := proofConfigMapFor(*proof); !reflect.DeepEqual(cfg, want) {
+		t.Errorf("proof config = %#v, want the shared option set %#v", cfg, want)
+	}
+}
+
+// ===== @context preparation =====
+
+const (
+	testContextV1 = "https://www.w3.org/2018/credentials/v1"
+	testContextV2 = "https://www.w3.org/ns/credentials/v2"
+)
+
+// TestEnsureDataIntegrityContext covers every shape of @context the signing
+// path can encounter. The Data Integrity terms must end up defined exactly
+// once: the proof config is canonicalized against this @context, so a missing
+// term drops the proof options from the hash and a duplicate changes nothing
+// but bloats the credential.
+func TestJSONMap_EnsureDataIntegrityContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		context interface{} // nil means the key is absent entirely
+		setKey  bool
+		want    interface{}
+	}{
+		{
+			name:   "absent key gets the data integrity context",
+			setKey: false,
+			want:   []interface{}{dataIntegrityV2Context},
+		},
+		{
+			name:    "explicit nil is treated as absent",
+			context: nil,
+			setKey:  true,
+			want:    []interface{}{dataIntegrityV2Context},
+		},
+		{
+			name:    "string credentials v2 already covers it",
+			context: testContextV2,
+			setKey:  true,
+			want:    testContextV2,
+		},
+		{
+			name:    "string data integrity context already covers it",
+			context: dataIntegrityV2Context,
+			setKey:  true,
+			want:    dataIntegrityV2Context,
+		},
+		{
+			name:    "uncovered string is promoted to a slice",
+			context: testContextV1,
+			setKey:  true,
+			want:    []interface{}{testContextV1, dataIntegrityV2Context},
+		},
+		{
+			name:    "slice containing credentials v2 is left alone",
+			context: []interface{}{testContextV2},
+			setKey:  true,
+			want:    []interface{}{testContextV2},
+		},
+		{
+			name:    "slice containing the data integrity context is left alone",
+			context: []interface{}{testContextV1, dataIntegrityV2Context},
+			setKey:  true,
+			want:    []interface{}{testContextV1, dataIntegrityV2Context},
+		},
+		{
+			name:    "uncovered slice gets the context appended last",
+			context: []interface{}{testContextV1},
+			setKey:  true,
+			want:    []interface{}{testContextV1, dataIntegrityV2Context},
+		},
+		{
+			name:    "empty slice gets the context",
+			context: []interface{}{},
+			setKey:  true,
+			want:    []interface{}{dataIntegrityV2Context},
+		},
+		{
+			name:    "inline context object is preserved and the context appended",
+			context: []interface{}{testContextV1, map[string]interface{}{"foo": "https://example.com/foo"}},
+			setKey:  true,
+			want: []interface{}{
+				testContextV1,
+				map[string]interface{}{"foo": "https://example.com/foo"},
+				dataIntegrityV2Context,
+			},
+		},
+		{
+			name:    "non-string entries do not satisfy the coverage check",
+			context: []interface{}{float64(42)},
+			setKey:  true,
+			want:    []interface{}{float64(42), dataIntegrityV2Context},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := JSONMap{}
+			if tc.setKey {
+				m["@context"] = tc.context
+			}
+
+			m.ensureDataIntegrityContext()
+
+			if got := m["@context"]; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("@context = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEnsureDataIntegrityContext_Idempotent guards the signing path: a
+// credential can be re-signed (or carry a second proof), and each pass must not
+// append another copy of the context.
+func TestJSONMap_EnsureDataIntegrityContext_Idempotent(t *testing.T) {
+	for _, start := range []interface{}{
+		nil,
+		testContextV1,
+		testContextV2,
+		[]interface{}{testContextV1},
+		[]interface{}{testContextV2},
+	} {
+		m := JSONMap{"@context": start}
+
+		m.ensureDataIntegrityContext()
+		afterFirst := m["@context"]
+
+		m.ensureDataIntegrityContext()
+		afterSecond := m["@context"]
+
+		if !reflect.DeepEqual(afterFirst, afterSecond) {
+			t.Errorf("start %#v: second call changed @context: %#v -> %#v", start, afterFirst, afterSecond)
+		}
+	}
+}
+
+// TestEnsureDataIntegrityContext_DoesNotWriteThroughSharedBacking pins the
+// reason the slice branch copies before appending: appending straight onto the
+// caller's slice would write into spare capacity it still shares with another
+// slice, corrupting a document the caller never handed over.
+func TestJSONMap_EnsureDataIntegrityContext_DoesNotWriteThroughSharedBacking(t *testing.T) {
+	const sentinel = "https://example.com/untouched"
+
+	shared := []interface{}{testContextV1, sentinel}
+	m := JSONMap{"@context": shared[:1]} // len 1, cap 2 — spare slot holds sentinel
+
+	m.ensureDataIntegrityContext()
+
+	if shared[1] != sentinel {
+		t.Errorf("spare capacity was overwritten: shared[1] = %#v, want %q", shared[1], sentinel)
+	}
+	want := []interface{}{testContextV1, dataIntegrityV2Context}
+	if got := m["@context"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("@context = %#v, want %#v", got, want)
+	}
+}
+
+// TestEnsureDataIntegrityContext_UnhandledTypesAreLeftAlone documents the
+// current gap: the type switch handles nil, string and []interface{} only, so a
+// bare inline object or a []string @context passes through untouched and the
+// Data Integrity terms are never added.
+func TestJSONMap_EnsureDataIntegrityContext_UnhandledTypesAreLeftAlone(t *testing.T) {
+	for _, ctx := range []interface{}{
+		map[string]interface{}{"foo": "https://example.com/foo"},
+		[]string{testContextV1},
+	} {
+		m := JSONMap{"@context": ctx}
+
+		m.ensureDataIntegrityContext()
+
+		if got := m["@context"]; !reflect.DeepEqual(got, ctx) {
+			t.Errorf("@context = %#v, want it unchanged as %#v", got, ctx)
+		}
 	}
 }

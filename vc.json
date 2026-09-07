@@ -15,10 +15,10 @@
     "id": "urn:uuid:0f7c2d1e-3b4a-4c5d-8e9f-0a1b2c3d4e5f",
     "issuer": "did:example:issuer",
     "proof": {
-      "created": "2026-09-06T17:21:00Z",
+      "created": "2026-09-07T10:48:57Z",
       "cryptosuite": "ecdsa-rdfc-2019",
       "proofPurpose": "assertionMethod",
-      "proofValue": "z2CtKmPEF127CqvhYkiUdSiEUk2PDrV3HzRBgrNiDJ8jtp3nzsXAtozjsEgJo5pTewjR2NZPwSquSq8SzLk8KGij8",
+      "proofValue": "z28Reo5o81NwysKV1KaRqT1xP3g4GkPg9GwhmvbfBXjXS736HwmCdnZGCmkEeATh5yeF7CWYpPHhkvpcZgZaVunqa",
       "type": "DataIntegrityProof",
       "verificationMethod": "did:example:issuer#key-1"
     },
