@@ -3,6 +3,7 @@ package jsonmap
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -222,7 +223,7 @@ func nativeBodyHash(t *testing.T, m JSONMap) []byte {
 	if err != nil {
 		t.Fatalf("bodyWithoutProof: %v", err)
 	}
-	canonical, err := canonicalizeNative(body)
+	canonical, err := processor.CanonicalizeNative(body)
 	if err != nil {
 		t.Fatalf("canonicalizeNative: %v", err)
 	}
@@ -270,7 +271,7 @@ func TestJSONMap_CanonicalizeNative_MatchesExpectedNQuads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bodyWithoutProof: %v", err)
 	}
-	got, err := canonicalizeNative(body)
+	got, err := processor.CanonicalizeNative(body)
 	if err != nil {
 		t.Fatalf("canonicalizeNative: %v", err)
 	}
@@ -689,5 +690,594 @@ func TestJSONMap_EnsureDataIntegrityContext_UnhandledTypesAreLeftAlone(t *testin
 		if got := m["@context"]; !reflect.DeepEqual(got, ctx) {
 			t.Errorf("@context = %#v, want it unchanged as %#v", got, ctx)
 		}
+	}
+}
+
+// ===== canonicalizeNative: JSON input to canonical N-Quads =====
+
+// TestCanonicalizeNative checks each JSON document against the exact canonical
+// N-Quads it must produce. Some cases are lossy on purpose: numbers past 2^53
+// round, 2.0 and 2 collapse, null and empty arrays vanish, and arrays lose
+// their order, duplicates and nesting.
+func TestCanonicalizeNative(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string // input JSON document
+		want string // expected canonical N-Quads
+	}{
+		{
+			name: "positive integer",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": 42
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "42"^^<http://www.w3.org/2001/XMLSchema#integer> .
+`,
+		},
+		{
+			name: "negative integer",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": -7
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "-7"^^<http://www.w3.org/2001/XMLSchema#integer> .
+`,
+		},
+		{
+			name: "zero",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": 0
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "0"^^<http://www.w3.org/2001/XMLSchema#integer> .
+`,
+		},
+		{
+			name: "integer beyond float64 precision",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": 9007199254740993
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "9007199254740992"^^<http://www.w3.org/2001/XMLSchema#integer> .
+`,
+		},
+		{
+			name: "positive float",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": 3.14
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "3.14E0"^^<http://www.w3.org/2001/XMLSchema#double> .
+`,
+		},
+		{
+			name: "negative float",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": -0.5
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "-5.0E-1"^^<http://www.w3.org/2001/XMLSchema#double> .
+`,
+		},
+		{
+			name: "tiny float",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": 0.000001
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "1.0E-6"^^<http://www.w3.org/2001/XMLSchema#double> .
+`,
+		},
+		{
+			name: "huge float",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": 1e308
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "1.0E308"^^<http://www.w3.org/2001/XMLSchema#double> .
+`,
+		},
+		{
+			name: "float with a whole value",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": 2.0
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "2"^^<http://www.w3.org/2001/XMLSchema#integer> .
+`,
+		},
+		{
+			name: "exponent with a whole value",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": 1.0e10
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "10000000000"^^<http://www.w3.org/2001/XMLSchema#integer> .
+`,
+		},
+		{
+			name: "string",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": "hello"
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "hello" .
+`,
+		},
+		{
+			name: "empty string",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": ""
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "" .
+`,
+		},
+		{
+			name: "numeric string",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": "42"
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "42" .
+`,
+		},
+		{
+			name: "string with surrounding spaces",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": "  padded  "
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "  padded  " .
+`,
+		},
+		{
+			name: "unicode string",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": "xin chào 🌍"
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "xin chào 🌍" .
+`,
+		},
+		{
+			name: "string needing escapes",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": "a\"b\\c\nd\te"
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "a\"b\\c\nd\te" .
+`,
+		},
+		{
+			name: "boolean true",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": true
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "true"^^<http://www.w3.org/2001/XMLSchema#boolean> .
+`,
+		},
+		{
+			name: "boolean false",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": false
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "false"^^<http://www.w3.org/2001/XMLSchema#boolean> .
+`,
+		},
+		{
+			name: "null is dropped",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"kept": "x",
+			"value": null
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#kept> "x" .
+`,
+		},
+		{
+			name: "empty array is dropped",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"kept": "x",
+			"value": []
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#kept> "x" .
+`,
+		},
+		{
+			name: "array of mixed types",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": [1, 2.5, -3, "x", true, null]
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "-3"^^<http://www.w3.org/2001/XMLSchema#integer> .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "1"^^<http://www.w3.org/2001/XMLSchema#integer> .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "2.5E0"^^<http://www.w3.org/2001/XMLSchema#double> .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "true"^^<http://www.w3.org/2001/XMLSchema#boolean> .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "x" .
+`,
+		},
+		{
+			name: "array in descending order",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": ["c", "b", "a"]
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "a" .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "b" .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "c" .
+`,
+		},
+		{
+			name: "array in ascending order",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": ["a", "b", "c"]
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "a" .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "b" .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "c" .
+`,
+		},
+		{
+			name: "array with duplicates",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": ["a", "a", "b"]
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "a" .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "b" .
+`,
+		},
+		{
+			name: "nested array is flattened",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": [[1, 2], [3]]
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "1"^^<http://www.w3.org/2001/XMLSchema#integer> .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "2"^^<http://www.w3.org/2001/XMLSchema#integer> .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> "3"^^<http://www.w3.org/2001/XMLSchema#integer> .
+`,
+		},
+		{
+			name: "nested object becomes a blank node",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": {"n": 1, "inner": {"leaf": "deep"}}
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> _:c14n0 .
+_:c14n0 <https://www.w3.org/ns/credentials/examples#inner> _:c14n1 .
+_:c14n0 <https://www.w3.org/ns/credentials/examples#n> "1"^^<http://www.w3.org/2001/XMLSchema#integer> .
+_:c14n1 <https://www.w3.org/ns/credentials/examples#leaf> "deep" .
+`,
+		},
+		{
+			name: "nested object with an id",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": {"id": "did:example:inner", "leaf": "deep"}
+		}`,
+			want: `<did:example:inner> <https://www.w3.org/ns/credentials/examples#leaf> "deep" .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> <did:example:inner> .
+`,
+		},
+		{
+			name: "array of objects",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": [{"a": 1}, {"a": 2}]
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> _:c14n0 .
+<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> _:c14n1 .
+_:c14n0 <https://www.w3.org/ns/credentials/examples#a> "1"^^<http://www.w3.org/2001/XMLSchema#integer> .
+_:c14n1 <https://www.w3.org/ns/credentials/examples#a> "2"^^<http://www.w3.org/2001/XMLSchema#integer> .
+`,
+		},
+		{
+			name: "deeply nested mixed types",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject",
+			"value": {"deep": {"deeper": [true, "x", 1.5]}}
+		}`,
+			want: `<urn:uuid:subject> <https://www.w3.org/ns/credentials/examples#value> _:c14n0 .
+_:c14n0 <https://www.w3.org/ns/credentials/examples#deep> _:c14n1 .
+_:c14n1 <https://www.w3.org/ns/credentials/examples#deeper> "1.5E0"^^<http://www.w3.org/2001/XMLSchema#double> .
+_:c14n1 <https://www.w3.org/ns/credentials/examples#deeper> "true"^^<http://www.w3.org/2001/XMLSchema#boolean> .
+_:c14n1 <https://www.w3.org/ns/credentials/examples#deeper> "x" .
+`,
+		},
+		{
+			name: "every type in one credential",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:0f7c2d1e",
+			"type": ["VerifiableCredential"],
+			"issuer": "did:example:issuer",
+			"validFrom": "2024-01-01T00:00:00Z",
+			"credentialSubject": {
+				"id": "did:example:subject",
+				"anInteger": 30,
+				"aNegative": -12,
+				"aFloat": 1.75,
+				"aString": "Alice",
+				"aBool": true,
+				"aNull": null,
+				"aList": ["x", 2],
+				"anObject": {"nested": "value"}
+			}
+		}`,
+			want: `<did:example:subject> <https://www.w3.org/ns/credentials/examples#aBool> "true"^^<http://www.w3.org/2001/XMLSchema#boolean> .
+<did:example:subject> <https://www.w3.org/ns/credentials/examples#aFloat> "1.75E0"^^<http://www.w3.org/2001/XMLSchema#double> .
+<did:example:subject> <https://www.w3.org/ns/credentials/examples#aList> "2"^^<http://www.w3.org/2001/XMLSchema#integer> .
+<did:example:subject> <https://www.w3.org/ns/credentials/examples#aList> "x" .
+<did:example:subject> <https://www.w3.org/ns/credentials/examples#aNegative> "-12"^^<http://www.w3.org/2001/XMLSchema#integer> .
+<did:example:subject> <https://www.w3.org/ns/credentials/examples#aString> "Alice" .
+<did:example:subject> <https://www.w3.org/ns/credentials/examples#anInteger> "30"^^<http://www.w3.org/2001/XMLSchema#integer> .
+<did:example:subject> <https://www.w3.org/ns/credentials/examples#anObject> _:c14n0 .
+<urn:uuid:0f7c2d1e> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://www.w3.org/2018/credentials#VerifiableCredential> .
+<urn:uuid:0f7c2d1e> <https://www.w3.org/2018/credentials#credentialSubject> <did:example:subject> .
+<urn:uuid:0f7c2d1e> <https://www.w3.org/2018/credentials#issuer> <did:example:issuer> .
+<urn:uuid:0f7c2d1e> <https://www.w3.org/2018/credentials#validFrom> "2024-01-01T00:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
+_:c14n0 <https://www.w3.org/ns/credentials/examples#nested> "value" .
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.doc), &doc); err != nil {
+				t.Fatalf("test document is not valid JSON: %v", err)
+			}
+			got, err := processor.CanonicalizeNative(doc)
+			if err != nil {
+				t.Fatalf("canonicalizeNative: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("canonical N-Quads mismatch\n got:\n%s\nwant:\n%s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCanonicalizeNative_Errors covers documents that must produce no bytes.
+func TestCanonicalizeNative_Errors(t *testing.T) {
+	cases := []struct {
+		name    string
+		doc     string // input JSON document
+		wantErr string // substring the returned error must contain
+	}{
+		{
+			name:    "empty document",
+			doc:     `{}`,
+			wantErr: "canonicalization produced no N-Quads",
+		},
+		{
+			name: "context but no terms",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			]
+		}`,
+			wantErr: "canonicalization produced no N-Quads",
+		},
+		{
+			// An id alone states nothing about the subject.
+			name: "identifier only",
+			doc: `{
+			"@context": [
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2"
+			],
+			"id": "urn:uuid:subject"
+		}`,
+			wantErr: "canonicalization produced no N-Quads",
+		},
+		{
+			name: "no @context",
+			doc: `{
+			"id": "urn:uuid:subject",
+			"name": "Alice"
+		}`,
+			wantErr: "failed to canonicalize document",
+		},
+		{
+			// Safe mode rejects undefined terms. Dropping examples/v2 removes
+			// the @vocab catch-all that would otherwise absorb this one.
+			name: "term the context does not define",
+			doc: `{
+			"@context": ["https://www.w3.org/ns/credentials/v2"],
+			"id": "urn:uuid:subject",
+			"undefinedTerm": "x"
+		}`,
+			wantErr: "failed to canonicalize document",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.doc), &doc); err != nil {
+				t.Fatalf("test document is not valid JSON: %v", err)
+			}
+			got, err := processor.CanonicalizeNative(doc)
+			if err == nil {
+				t.Fatalf("expected an error, got canonical N-Quads:\n%s", got)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %q, want it to contain %q", err, tc.wantErr)
+			}
+			if len(got) != 0 {
+				t.Fatalf("expected no canonical bytes alongside the error, got %q", got)
+			}
+		})
+	}
+}
+
+// TestCanonicalizeNative_RejectsNonJSONInput covers the inputs that cannot be
+// written as JSON: a nil map, and Go types json.Unmarshal never produces.
+// Those panic inside the JSON-LD processor and come back as an error, so
+// callers must round-trip through JSON first, as bodyWithoutProof does.
+func TestCanonicalizeNative_RejectsNonJSONInput(t *testing.T) {
+	t.Run("nil document", func(t *testing.T) {
+		got, err := processor.CanonicalizeNative(nil)
+		if err == nil {
+			t.Fatalf("expected an error, got canonical N-Quads:\n%s", got)
+		}
+		if !strings.Contains(err.Error(), "document is nil") {
+			t.Fatalf("error = %q, want it to mention a nil document", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		value interface{}
+	}{
+		{"int", int(42)},
+		{"int64", int64(42)},
+		{"float32", float32(1.5)},
+		{"channel", make(chan int)},
+	} {
+		t.Run(tc.name+" value", func(t *testing.T) {
+			doc := map[string]interface{}{
+				"@context": []interface{}{
+					"https://www.w3.org/ns/credentials/v2",
+					"https://www.w3.org/ns/credentials/examples/v2",
+				},
+				"id":    "urn:uuid:subject",
+				"value": tc.value,
+			}
+			got, err := processor.CanonicalizeNative(doc)
+			if err == nil {
+				t.Fatalf("expected an error for a %s value, got:\n%s", tc.name, got)
+			}
+			if !strings.Contains(err.Error(), "failed to canonicalize document") {
+				t.Fatalf("error = %q, want it wrapped as a canonicalization failure", err)
+			}
+		})
 	}
 }

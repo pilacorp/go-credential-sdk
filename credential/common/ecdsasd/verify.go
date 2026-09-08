@@ -35,7 +35,7 @@ func verifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 	nonMandatory := orderedValues(mg.nonMatching)
 	mandatoryHash := hashMandatory(mg.matching)
 
-	proofHash, err := hashProofConfig(proofConfig, document["@context"])
+	proofHash, err := hashProofConfig(proofConfig)
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string
 	}
 
 	// Recompute hashes.
-	proofHash, err := hashProofConfig(proofConfig, revealDoc["@context"])
+	proofHash, err := hashProofConfig(proofConfig)
 	if err != nil {
 		return err
 	}

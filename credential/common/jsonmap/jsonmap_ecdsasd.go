@@ -89,9 +89,17 @@ func (m *JSONMap) AddECDSASDBaseProof(
 		return err
 	}
 
+	// Both cryptosuites build the proof configuration here, so an
+	// ecdsa-sd-2023 proof commits to the same option set an ecdsa-rdfc-2019
+	// proof does.
+	proofConfig, err := m.ecdsaProofConfig(&proof)
+	if err != nil {
+		return fmt.Errorf("jsonmap: failed to build proof configuration: %w", err)
+	}
+
 	proofValue, err := ecdsasd.CreateBaseProof(
 		docNoProof,
-		proofConfigMapFor(proof),
+		proofConfig,
 		mandatoryPointers,
 		signerProvider,
 	)
@@ -154,7 +162,12 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, err
 	}
 
-	if err := ecdsasd.VerifyProof(docNoProof, proofConfigMapFor(*proof), proof.ProofValue, pub); err != nil {
+	proofConfig, err := m.ecdsaProofConfig(proof)
+	if err != nil {
+		return false, fmt.Errorf("failed to build proof configuration: %w", err)
+	}
+
+	if err := ecdsasd.VerifyProof(docNoProof, proofConfig, proof.ProofValue, pub); err != nil {
 		return false, err
 	}
 	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {

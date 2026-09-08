@@ -307,25 +307,6 @@ func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) 
 
 // ===== ecdsa-rdfc-2019 (Data Integrity ECDSA Cryptosuites v1.0, section 3.2) =====
 
-// canonicalizeNative returns doc's canonical N-Quads as a single byte string.
-// Unlike Canonicalize it keeps JSON number types (xsd:integer / xsd:double
-// instead of xsd:string), so a signature over the result commits to them. The
-// blank-node id map is discarded; only selective disclosure needs it.
-func canonicalizeNative(doc map[string]interface{}) ([]byte, error) {
-	nquads, _, err := processor.CanonicalizeWithIdMap(doc)
-	if err != nil {
-		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
-	}
-
-	// An empty dataset would make the signature commit to nothing.
-	canonical := []byte(strings.Join(nquads, ""))
-	if len(canonical) == 0 {
-		return nil, fmt.Errorf("canonicalization produced no N-Quads; the document has no @context or no JSON-LD terms")
-	}
-
-	return canonical, nil
-}
-
 // ecdsaProofConfig builds the proof configuration of section 3.2.5: the proof
 // options without proofValue, plus the document's @context. Fields come from
 // proofConfigMapFor so both cryptosuites hash the same option set.
@@ -371,7 +352,7 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build proof configuration: %w", err)
 	}
-	cfgCanonical, err := canonicalizeNative(cfg)
+	cfgCanonical, err := processor.CanonicalizeNative(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize proof configuration: %w", err)
 	}
@@ -380,7 +361,7 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to copy document body: %w", err)
 	}
-	bodyCanonical, err := canonicalizeNative(body)
+	bodyCanonical, err := processor.CanonicalizeNative(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
 	}

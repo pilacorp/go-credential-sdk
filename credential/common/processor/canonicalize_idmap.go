@@ -32,6 +32,27 @@ func CanonicalizeWithIdMap(doc map[string]interface{}) (nquads []string, idMap m
 	return canonicalizeDatasetWithIdMap(dataset)
 }
 
+// CanonicalizeNative returns doc's canonical N-Quads as a single byte string.
+// Unlike CanonicalizeDocument it keeps JSON number types (xsd:integer /
+// xsd:double instead of xsd:string), so a signature over the result commits to
+// them, and it fails on undefined terms instead of silently returning nothing.
+// Both Data Integrity cryptosuites (ecdsa-rdfc-2019 and ecdsa-sd-2023) hash
+// their documents and proof configurations through here.
+func CanonicalizeNative(doc map[string]interface{}) ([]byte, error) {
+	nquads, _, err := CanonicalizeWithIdMap(doc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
+	}
+
+	// An empty dataset would make the signature commit to nothing.
+	canonical := []byte(strings.Join(nquads, ""))
+	if len(canonical) == 0 {
+		return nil, fmt.Errorf("canonicalization produced no N-Quads; the document has no @context or no JSON-LD terms")
+	}
+
+	return canonical, nil
+}
+
 // CanonicalizeNQuadsWithIdMap canonicalizes an N-Quads dataset (the form used
 // by the selective-disclosure label-replacement step).
 func CanonicalizeNQuadsWithIdMap(nquads []string) ([]string, map[string]string, error) {

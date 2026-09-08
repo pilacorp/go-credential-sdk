@@ -17,7 +17,7 @@ import (
 // ecdsa-sd-2023 createSignData + createBaseProofValue steps.
 func createBaseProof(document map[string]interface{}, proofConfig map[string]interface{}, mandatoryPointers []string, issuerSigner signer.SignerProvider) (string, error) {
 	// 1. proofHash over the proof configuration.
-	proofHash, err := hashProofConfig(proofConfig, document["@context"])
+	proofHash, err := hashProofConfig(proofConfig)
 	if err != nil {
 		return "", err
 	}

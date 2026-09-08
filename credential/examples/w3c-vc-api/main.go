@@ -78,13 +78,30 @@ func (didKeyResolver) ResolveDocument(_ context.Context, did string) (*vm.DIDDoc
 	return vm.NewDIDDocument(base, vm.NewP256VM(base, multibaseKey, pub)), nil
 }
 
+// Cryptosuites this server can issue with. Verification is not switched on this
+// value: VerifyProof dispatches on the proof's own cryptosuite, so one verifier
+// endpoint serves both.
+const (
+	suiteSD   = "ecdsa-sd-2023"
+	suiteRDFC = "ecdsa-rdfc-2019"
+)
+
 type server struct {
-	issuer   *signer.P256Provider
-	issuerVM string // did:key:z...#z...
-	resolver vm.ResolverProvider
+	issuer      *signer.P256Provider
+	issuerVM    string // did:key:z...#z...
+	resolver    vm.ResolverProvider
+	cryptosuite string // suiteSD or suiteRDFC — selects the issuance path
 }
 
 func main() {
+	cryptosuite := os.Getenv("CRYPTOSUITE")
+	if cryptosuite == "" {
+		cryptosuite = suiteSD
+	}
+	if cryptosuite != suiteSD && cryptosuite != suiteRDFC {
+		log.Fatalf("CRYPTOSUITE must be %q or %q, got %q", suiteSD, suiteRDFC, cryptosuite)
+	}
+
 	issuerHex := os.Getenv("ISSUER_P256_HEX")
 	generated := issuerHex == ""
 	if generated {
@@ -104,9 +121,10 @@ func main() {
 	issuerDID, multibaseKey := didKeyFromP256(prov.Public())
 
 	s := &server{
-		issuer:   prov,
-		issuerVM: issuerDID + "#" + multibaseKey,
-		resolver: didKeyResolver{},
+		issuer:      prov,
+		issuerVM:    issuerDID + "#" + multibaseKey,
+		resolver:    didKeyResolver{},
+		cryptosuite: cryptosuite,
 	}
 
 	port := os.Getenv("PORT")
@@ -118,7 +136,7 @@ func main() {
 	http.HandleFunc("/credentials/derive", s.handleDerive)
 	http.HandleFunc("/credentials/verify", s.handleVerify)
 
-	printStartupConfig(issuerDID, issuerHex, port, generated)
+	printStartupConfig(issuerDID, issuerHex, port, cryptosuite, generated)
 
 	log.Printf("listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
@@ -144,7 +162,16 @@ func (s *server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := (&m).AddECDSASDBaseProof(s.issuer, s.issuerVM, "assertionMethod", body.Options.MandatoryPointers); err != nil {
+	var err error
+	switch s.cryptosuite {
+	case suiteRDFC:
+		// ecdsa-rdfc-2019 signs the whole document; mandatoryPointers is a
+		// selective-disclosure notion and does not apply.
+		err = (&m).AddECDSAProof(s.issuer, s.issuerVM, "assertionMethod")
+	default:
+		err = (&m).AddECDSASDBaseProof(s.issuer, s.issuerVM, "assertionMethod", body.Options.MandatoryPointers)
+	}
+	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("issue: %w", err))
 		return
 	}
@@ -153,6 +180,12 @@ func (s *server) handleIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleDerive(w http.ResponseWriter, r *http.Request) {
+	if s.cryptosuite != suiteSD {
+		writeError(w, http.StatusBadRequest,
+			fmt.Errorf("derive requires a selective-disclosure cryptosuite; this server issues %s", s.cryptosuite))
+		return
+	}
+
 	var body struct {
 		VerifiableCredential json.RawMessage `json:"verifiableCredential"`
 		Options              struct {
@@ -224,8 +257,9 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]interface{}{"errors": []string{err.Error()}})
 }
 
-func printStartupConfig(issuerDID, issuerHex, port string, generated bool) {
-	fmt.Printf("\nissuer did:key : %s\n", issuerDID)
+func printStartupConfig(issuerDID, issuerHex, port, cryptosuite string, generated bool) {
+	fmt.Printf("\ncryptosuite    : %s\n", cryptosuite)
+	fmt.Printf("issuer did:key : %s\n", issuerDID)
 	if generated {
 		// Print the auto-generated key once so it can be captured, with a clear
 		// warning. When supplied via ISSUER_P256_HEX it is never echoed back.
@@ -233,32 +267,39 @@ func printStartupConfig(issuerDID, issuerHex, port string, generated bool) {
 		fmt.Printf("  ^ DEV-ONLY secret (issuer PRIVATE key, auto-generated). Set ISSUER_P256_HEX\n")
 		fmt.Printf("    to reuse it across restarts. Do not use in production or where stdout is logged.\n\n")
 	}
-	fmt.Printf("Paste into vc-di-ecdsa-test-suite/localConfig.cjs:\n\n")
-	fmt.Printf(`module.exports = {
-  settings: {},
-  implementations: [{
-    name: 'go-credential-sdk',
-    implementation: 'go-credential-sdk',
+	// The vcHolder entry only makes sense for a selective-disclosure suite,
+	// which is the only one with a /credentials/derive step.
+	vcHolders := ""
+	if cryptosuite == suiteSD {
+		vcHolders = fmt.Sprintf(`
+    vcHolders: [{
+      id: 'go-credential-sdk-%s',
+      endpoint: 'http://localhost:%s/credentials/derive',
+      supportedEcdsaKeyTypes: ['P-256'],
+      supports: {vc: ['2.0']},
+      tags: ['vcHolder'],
+    }],`, cryptosuite, port)
+	}
+
+	fmt.Printf("Paste into vc-di-ecdsa-test-suite/localConfig.cjs (one entry of `implementations`):\n\n")
+	fmt.Printf(`  {
+    name: 'go-credential-sdk-%s',
+    implementation: 'go-credential-sdk-%s',
     issuers: [{
       id: '%s',
       endpoint: 'http://localhost:%s/credentials/issue',
       supportedEcdsaKeyTypes: ['P-256'],
-      tags: ['ecdsa-sd-2023'],
+      supports: {vc: ['2.0']},
+      tags: ['%s'],
     }],
     verifiers: [{
-      id: 'go-credential-sdk',
+      id: 'go-credential-sdk-%s',
       endpoint: 'http://localhost:%s/credentials/verify',
       supportedEcdsaKeyTypes: ['P-256'],
-      tags: ['ecdsa-sd-2023'],
-    }],
-    vcHolders: [{
-      id: 'go-credential-sdk',
-      endpoint: 'http://localhost:%s/credentials/derive',
-      supportedEcdsaKeyTypes: ['P-256'],
-      tags: ['vcHolder'],
-    }],
-  }],
-};
-`, issuerDID, port, port, port)
+      supports: {vc: ['2.0']},
+      tags: ['%s'],
+    }],%s
+  },
+`, cryptosuite, cryptosuite, issuerDID, port, cryptosuite, cryptosuite, port, cryptosuite, vcHolders)
 	fmt.Println()
 }
