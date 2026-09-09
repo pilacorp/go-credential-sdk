@@ -1040,11 +1040,59 @@ exist). A runnable example lives in [`credential/examples/vccontract/verifyoncha
 
 ## <a name="vccontract-api"></a>API
 
-- `NewCredentialRegistry(rpcURL, contractAddress string) (*CredentialRegistry, error)` — connect to the chain (RPC connection required).
-- `(*CredentialRegistry) VerifyVCHashOnChain(ctx, *VerifyRequest) (bool, error)` — verify a VC hash against its on-chain tree.
+- `NewCredentialRegistry(rpcURL, contractAddress string, alsoTrust ...string) (*CredentialRegistry, error)` — connect to the chain (RPC connection required). `alsoTrust` names further deployments whose anchoring logs may be believed; see [Verifying by transaction](#vccontract-bytx).
+- `(*CredentialRegistry) VerifyVCHashByTx(ctx, *VerifyByTxRequest) (bool, error)` — verify against the root a specific transaction anchored. **Prefer this.**
+- `(*CredentialRegistry) GetAnchoredRoot(ctx, txHash common.Hash, issuer common.Address, treeIndex uint64) ([32]byte, error)` — read the root a transaction anchored, from any trusted contract.
+- `(*CredentialRegistry) GetAnchoredRootFromContract(ctx, txHash, issuer, treeIndex, contractAddress common.Address) ([32]byte, error)` — same, restricted to one contract.
+- `(*CredentialRegistry) VerifyVCHashOnChain(ctx, *VerifyRequest) (bool, error)` — verify a VC hash against its on-chain tree. Only works against a deployment that keeps roots in storage.
 - `(*CredentialRegistry) GetTreeRoot(ctx, issuer string, treeIndex uint64) ([32]byte, error)` — read the anchored Merkle root (zero value = no such tree).
 - `(*CredentialRegistry) HasTree(ctx, issuer string, treeIndex uint64) (bool, error)` — whether the issuer has an anchored tree at that index.
 - `(*CredentialRegistry) Close()` — release the RPC connection.
+
+Errors worth branching on: `ErrTxNotFound` (unknown or unmined), `ErrTxReverted`, `ErrRootNotAnchored`, `ErrUntrustedContract`.
+
+## <a name="vccontract-bytx"></a>Verifying by transaction
+
+`VerifyVCHashOnChain` asks the contract to fold the proof against the tree's
+**current** stored root. That is wrong for any tree still being added to: each new
+anchoring overwrites the stored root, so a proof taken earlier stops matching and
+a perfectly valid credential reports as invalid.
+
+`VerifyVCHashByTx` instead reads the root out of the logs of the transaction that
+anchored it, and folds the proof locally. Those logs are never overwritten, so
+the answer holds forever — and it needs no archive node.
+
+```go
+registry, err := vccontract.NewCredentialRegistry(
+    "https://rpc-testnet-new.pila.vn",
+    "0x...CurrentContract",
+    "0x...PreviousContract", // optional: keep older anchorings verifiable
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer registry.Close()
+
+ok, err := registry.VerifyVCHashByTx(context.Background(), &vccontract.VerifyByTxRequest{
+    IssuerAddress:   "0x...Issuer",
+    TreeIndex:       7,
+    Leaf:            "0x...vcHash",
+    Proof:           []string{"0x...", "0x..."},
+    TxHash:          "0x...",          // from the proof API — store it with the VC
+    ContractAddress: "0x...",          // optional; pins the lookup to one deployment
+})
+```
+
+> **`TxHash` is part of the proof, not metadata.** Store it alongside the VC: a
+> proof without it cannot be checked. If it is lost, the proof API can reissue it.
+
+Reading a root from a log means trusting whoever emitted it, and anyone can deploy
+a contract emitting these exact event signatures. The client therefore only
+believes logs from the addresses passed to `NewCredentialRegistry`. Setting
+`ContractAddress` narrows that further to the one deployment that anchored the
+proof; it must already be trusted, or the call returns `ErrUntrustedContract`.
+
+A runnable example lives in [`credential/examples/vccontract/verifybytx`](credential/examples/vccontract/verifybytx).
 
 > Reuse a single `CredentialRegistry` across calls (it holds a live,
 > concurrency-safe RPC client) and `Close()` it on shutdown rather than creating

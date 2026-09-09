@@ -14,14 +14,22 @@
 //
 // Two verification paths are offered:
 //
+//   - VerifyVCHashByTx folds the proof locally against the root that a SPECIFIC
+//     transaction anchored, read from that transaction's receipt logs. Prefer it.
+//     It is the only path that works once a contract keeps no root in storage,
+//     and the only one that stays correct for an unsealed tree, whose stored root
+//     is overwritten by every later anchoring — a proof taken at an earlier
+//     anchoring only matches the root recorded in that anchoring's transaction.
 //   - VerifyVCHashOnChain calls the contract's verifyVC(...) view function against
 //     the tree's CURRENT root: the contract folds the Merkle proof up to the stored
-//     root and returns the verdict.
-//   - VerifyVCHashByTx folds the proof locally against the root that a SPECIFIC
-//     transaction anchored, read from that transaction's receipt logs. Use this for
-//     an unsealed tree whose current root has since been overwritten by a later
-//     anchoring — a proof taken at an earlier anchoring only matches the root
-//     recorded in that anchoring's transaction.
+//     root and returns the verdict. It only works against a deployment that still
+//     keeps roots in storage, and it reports a valid proof as invalid whenever
+//     that root has since been overwritten.
+//
+// Reading a root from a log means trusting whoever emitted it, and anyone can
+// deploy a contract emitting these exact event signatures. This package
+// therefore only ever believes logs from the contract addresses it was
+// constructed with — see NewCredentialRegistry's alsoTrust.
 package vccontract
 
 import (
@@ -96,6 +104,17 @@ type VerifyByTxRequest struct {
 	// that anchored the tree root this proof was generated against. The proof and
 	// the tx hash must come from the same anchoring.
 	TxHash string
+	// ContractAddress is the Credential Registry deployment that anchored this
+	// proof, as reported by the proof API for that anchoring. Optional: when
+	// empty, any contract in the client's trusted set may supply the root.
+	//
+	// A tree that stays open across a contract migration is anchored first at one
+	// address and later at another, so the deployment belongs to the individual
+	// anchoring rather than to the tree — which is why it travels with the tx
+	// hash. Setting it is strictly safer: it stops a root anchored by a different
+	// deployment from satisfying the lookup. It must name an address the client
+	// was configured to trust, never a new one.
+	ContractAddress string
 }
 
 // Validate checks that the request is well-formed before hitting the chain.
@@ -120,6 +139,10 @@ func (r *VerifyByTxRequest) Validate() error {
 
 	if err := validateHash32(r.TxHash); err != nil {
 		return fmt.Errorf("invalid tx hash: %w", err)
+	}
+
+	if r.ContractAddress != "" && !common.IsHexAddress(r.ContractAddress) {
+		return fmt.Errorf("invalid contract address: %q", r.ContractAddress)
 	}
 
 	return nil
