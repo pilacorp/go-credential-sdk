@@ -19,6 +19,11 @@ func CanonicalizeWithIdMap(doc map[string]interface{}) (nquads []string, idMap m
 	if err != nil {
 		return nil, nil, fmt.Errorf("canonicalize: standardize: %w", err)
 	}
+	// Expanded only to reject input whose terms would be dropped; legacy
+	// credentials take the CanonicalizeDocument path instead.
+	if _, err := ExpandJSONLD(std); err != nil {
+		return nil, nil, err
+	}
 	opts := sdOptions()
 	opts.Format = ""
 	rdf, err := ld.NewJsonLdProcessor().ToRDF(std, opts)
@@ -39,7 +44,7 @@ func CanonicalizeWithIdMap(doc map[string]interface{}) (nquads []string, idMap m
 // Both Data Integrity cryptosuites (ecdsa-rdfc-2019 and ecdsa-sd-2023) hash
 // their documents and proof configurations through here.
 func CanonicalizeNative(doc map[string]interface{}) ([]byte, error) {
-	nquads, _, err := CanonicalizeWithIdMap(doc)
+	nquads, err := canonicalizeNQuads(doc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
 	}
@@ -51,6 +56,48 @@ func CanonicalizeNative(doc map[string]interface{}) ([]byte, error) {
 	}
 
 	return canonical, nil
+}
+
+// canonicalizeNQuads is CanonicalizeWithIdMap without the blank-node map, for
+// callers that only hash the result (ecdsa-rdfc-2019, proof configurations).
+func canonicalizeNQuads(doc map[string]interface{}) (nquads []string, err error) {
+	if doc == nil {
+		return nil, fmt.Errorf("canonicalize: document is nil")
+	}
+	defer recoverJSONLD(&err, "canonicalize")
+	std, err := standardizeForCanonicalization(doc)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize: standardize: %w", err)
+	}
+	// Expanded only to reject input whose terms would be dropped; legacy
+	// credentials take the CanonicalizeDocument path instead.
+	if _, err := ExpandJSONLD(std); err != nil {
+		return nil, err
+	}
+	// ToRDF rather than Normalize, which rebuilds options and drops SafeMode.
+	opts := sdOptions()
+	opts.Format = ""
+	rdf, err := ld.NewJsonLdProcessor().ToRDF(std, opts)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize: to rdf: %w", err)
+	}
+	dataset, ok := rdf.(*ld.RDFDataset)
+	if !ok {
+		return nil, fmt.Errorf("canonicalize: unexpected ToRDF type %T", rdf)
+	}
+
+	na := ld.NewNormalisationAlgorithm(ld.AlgorithmURDNA2015)
+	nopts := sdOptions()
+	nopts.Format = "application/n-quads"
+	res, err := na.Main(dataset, nopts)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize: normalize: %w", err)
+	}
+	nqStr, ok := res.(string)
+	if !ok {
+		return nil, fmt.Errorf("canonicalize: unexpected normalize type %T", res)
+	}
+	return splitNQuadsKeepNL(nqStr), nil
 }
 
 // CanonicalizeNQuadsWithIdMap canonicalizes an N-Quads dataset (the form used
@@ -112,6 +159,10 @@ func ExpandJSONLD(doc map[string]interface{}) (result []interface{}, err error) 
 	if err != nil {
 		return nil, fmt.Errorf("expand: %w", err)
 	}
+	// SafeMode above catches dropped properties; this catches dropped types.
+	if err := checkExpandedTypes(out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -170,6 +221,40 @@ func splitNQuadsKeepNL(s string) []string {
 	for _, p := range parts {
 		if strings.TrimSpace(p) != "" {
 			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// checkExpandedTypes reports `type` values RDF conversion would drop.
+func checkExpandedTypes(expanded interface{}) error {
+	if dropped := relativeTypes(expanded, nil); len(dropped) > 0 {
+		return fmt.Errorf("json-ld: type %q is not defined by @context and would be dropped, leaving it unsigned", dropped[0])
+	}
+	return nil
+}
+
+// relativeTypes collects @type values RDF conversion would drop: not a
+// keyword, blank node, or absolute IRI.
+func relativeTypes(v interface{}, out []string) []string {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for k, val := range t {
+			if k != "@type" {
+				out = relativeTypes(val, out)
+				continue
+			}
+			for _, tv := range ld.Arrayify(val) {
+				s, ok := tv.(string)
+				if !ok || strings.HasPrefix(s, "@") || strings.HasPrefix(s, "_:") || ld.IsAbsoluteIri(s) {
+					continue
+				}
+				out = append(out, s)
+			}
+		}
+	case []interface{}:
+		for _, e := range t {
+			out = relativeTypes(e, out)
 		}
 	}
 	return out

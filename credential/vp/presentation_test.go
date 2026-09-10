@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -22,6 +23,34 @@ func mustDefaultSigner(t *testing.T, privHex string) signer.SignerProvider {
 		t.Fatalf("NewDefaultProvider failed: %v", err)
 	}
 	return s
+}
+
+// signJSONVCSecp signs a JSON credential through jsonmap with the secp256k1 key
+// the testnet DID publishes. vc issues ecdsa-rdfc-2019 with a P-256 VM only, but
+// these presentations verify their embedded credentials against the live
+// resolver, which only knows the secp256k1 key.
+func signJSONVCSecp(t *testing.T, cred vc.Credential, did, privHex string) vc.Credential {
+	t.Helper()
+	raw, err := cred.GetContents()
+	if err != nil {
+		t.Fatalf("get contents: %v", err)
+	}
+	var m jsonmap.JSONMap
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal credential: %v", err)
+	}
+	if err := m.AddECDSAProof(mustDefaultSigner(t, privHex), did+"#key-1", "assertionMethod"); err != nil {
+		t.Fatalf("add ecdsa proof: %v", err)
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal signed credential: %v", err)
+	}
+	signed, err := vc.ParseJSONCredential(b)
+	if err != nil {
+		t.Fatalf("parse signed credential: %v", err)
+	}
+	return signed
 }
 
 func TestParsePresentation(t *testing.T) {
@@ -316,10 +345,7 @@ func TestAddECDSAProof(t *testing.T) {
 		t.Fatalf("Failed to create presentation: %v", err)
 	}
 
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
-	if err != nil {
-		t.Fatalf("Failed to add ECDSA proof: %v", err)
-	}
+	presentation = signVPLegacy(t, presentation, mustDefaultSigner(t, privateKeyHex), "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"+"#key-1", false)
 
 	// Get JSON from JSON presentation
 	embeddedPres := presentation
@@ -367,10 +393,7 @@ func TestVerifyECDSAPresentation(t *testing.T) {
 		t.Fatalf("Failed to create presentation: %v", err)
 	}
 
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
-	if err != nil {
-		t.Fatalf("Failed to add ECDSA proof: %v", err)
-	}
+	presentation = signVPLegacy(t, presentation, mustDefaultSigner(t, privateKeyHex), "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"+"#key-1", false)
 
 	// Verify the presentation directly without JSON serialization/parsing
 	// since the JSON round-trip might not preserve credential proofs correctly
@@ -382,7 +405,7 @@ func TestVerifyECDSAPresentation(t *testing.T) {
 
 // GenerateVCTest replicates the function from main.go to create test credentials.
 func GenerateVCTest(t *testing.T) []vc.Credential {
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	const privateKeyHex = "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
 	vcc := vc.CredentialContents{
@@ -445,13 +468,9 @@ func GenerateVCTest(t *testing.T) []vc.Credential {
 		return nil
 	}
 	// Add a JSON ECDSA proof
-	err = credential.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
-	if err != nil {
-		fmt.Printf("Failed to add JSON ECDSA proof: %v\n", err)
-		return nil
-	}
+	signed := signJSONVCSecp(t, credential, vcc.Issuer, privateKeyHex)
 
-	return []vc.Credential{credential, credential}
+	return []vc.Credential{signed, signed}
 }
 
 func TestCreatePresentationJWT(t *testing.T) {
@@ -576,10 +595,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 
 		// Add proof using AddProofByProvider method
-		err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
-		if err != nil {
-			t.Fatalf("Failed to add proof to JSON presentation: %v", err)
-		}
+		presentation = signVPLegacy(t, presentation, mustDefaultSigner(t, privateKeyHex), holderDID+"#key-1", false)
 
 		// Verify the presentation
 		err = presentation.Verify()
@@ -824,10 +840,7 @@ func TestJSONPresentationFlow(t *testing.T) {
 	}
 
 	// 2. Use AddProof to add proof to VP with issuer private key
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
-	if err != nil {
-		t.Fatalf("Failed to add proof to JSON presentation: %v", err)
-	}
+	presentation = signVPLegacy(t, presentation, mustDefaultSigner(t, privateKeyHex), holderDID+"#key-1", false)
 
 	// 3. Verify VP
 	err = presentation.Verify()
@@ -897,10 +910,7 @@ func TestCreateJSONPresentationOfTwoJSONCredentials(t *testing.T) {
 	}
 
 	// Add proof to the presentation
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
-	if err != nil {
-		t.Fatalf("Failed to add proof to JSON presentation: %v", err)
-	}
+	presentation = signVPLegacy(t, presentation, mustDefaultSigner(t, privateKeyHex), holderDID+"#key-1", false)
 
 	// Verify the presentation
 	err = presentation.Verify()
@@ -1063,10 +1073,7 @@ func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Cr
 
 	// Add proof to JSON credential
 	defaultSigner := mustDefaultSigner(t, privateKeyHex)
-	err = jsonVC.AddProofByProvider(defaultSigner)
-	if err != nil {
-		t.Fatalf("Failed to add proof to JSON credential: %v", err)
-	}
+	signedJSONVC := signJSONVCSecp(t, jsonVC, issuerDID, privateKeyHex)
 
 	// Create JWT credential
 	jwtVC, err := vc.NewJWTCredential(credentialContents)
@@ -1080,7 +1087,7 @@ func createTestCredentials(t *testing.T, issuerDID, privateKeyHex string) (vc.Cr
 		t.Fatalf("Failed to add proof to JWT credential: %v", err)
 	}
 
-	return jsonVC, jwtVC
+	return signedJSONVC, jwtVC
 }
 
 func TestJWTPresentationWithTimeFields(t *testing.T) {

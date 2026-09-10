@@ -2,6 +2,7 @@ package jsonmap
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -115,9 +116,30 @@ func (m *JSONMap) CanonicalizeFull() ([]byte, error) {
 	return processor.ComputeDigest(canonicalDoc)
 }
 
+// ProofOpt configures proof creation.
+type ProofOpt func(*proofOptions)
+
+type proofOptions struct {
+	vmPub *ecdsa.PublicKey
+}
+
+// WithVMPublicKey verifies the fresh signature against the key the verification
+// method publishes. Omit it to skip the check.
+func WithVMPublicKey(pub *ecdsa.PublicKey) ProofOpt {
+	return func(o *proofOptions) { o.vmPub = pub }
+}
+
+func newProofOptions(opts ...ProofOpt) *proofOptions {
+	o := &proofOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return o
+}
+
 // AddECDSAProof adds an ECDSA proof to the JSONMap. verificationMethod must
 // be a full DID URL (caller's responsibility to resolve/normalize).
-func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string) error {
+func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string, opts ...ProofOpt) error {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
@@ -155,10 +177,15 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 	if err != nil {
 		return fmt.Errorf("jsonmap: failed to sign digest: %w", err)
 	}
-	// Guard against a mis-routed non-secp256k1 signer bound to an ecdsa-rdfc-2019
-	// verification method: a secp256k1 ECDSA signature is 64 or 65 bytes.
+	// Guard against a mis-routed signer: a 256-bit ECDSA signature is 64 or 65 bytes.
 	if l := len(signature); l != 64 && l != 65 {
-		return fmt.Errorf("jsonmap: ecdsa-rdfc-2019 expects a 64/65-byte secp256k1 signature but the signer returned %d bytes; the signer does not match the verification method — pin the right VM with WithVerificationMethodKey", l)
+		return fmt.Errorf("jsonmap: ecdsa-rdfc-2019 expects a 64/65-byte signature but the signer returned %d bytes; the signer does not match the verification method — pin the right VM with WithVerificationMethodKey", l)
+	}
+	// Catch a signer bound to the wrong VM here, not at the verifier.
+	if vmPub := newProofOptions(opts...).vmPub; vmPub != nil {
+		if !crypto.VerifyECDSA(vmPub, signDigest[:], signature) {
+			return fmt.Errorf("jsonmap: the signature does not verify against verification method %q; the signer does not hold that key", verificationMethod)
+		}
 	}
 	// Section 3.2.1 step 6: multibase base58btc.
 	proof.ProofValue = verificationmethod.EncodeMultibaseKey(signature)
@@ -292,9 +319,9 @@ func didFromVMURL(vm string) string {
 
 // verifyECDSA verifies an ECDSA-signed JSONMap. A "z" prefix selects the
 // spec-conformant path, anything else the legacy hex path.
-func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, error) {
 	if strings.HasPrefix(proof.ProofValue, multibaseBase58BTCPrefix) {
-		return m.verifyECDSASpecConformant(publicKey, proof)
+		return m.verifyECDSASpecConformant(pub, proof)
 	}
 
 	doc, err := m.Canonicalize()
@@ -302,7 +329,7 @@ func (m *JSONMap) verifyECDSA(publicKey string, proof *dto.Proof) (bool, error) 
 		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
 	}
 
-	return crypto.ECDSAVerifySignature(publicKey, proof.ProofValue, doc)
+	return crypto.ECDSAVerifySignature(pub, proof.ProofValue, doc)
 }
 
 // ===== ecdsa-rdfc-2019 (Data Integrity ECDSA Cryptosuites v1.0, section 3.2) =====
@@ -372,7 +399,7 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,
 // rebuilding hashData exactly as the signer did.
-func (m *JSONMap) verifyECDSASpecConformant(publicKey string, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyECDSASpecConformant(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, error) {
 	signature, err := verificationmethod.DecodeMultibaseKey(proof.ProofValue)
 	if err != nil {
 		return false, fmt.Errorf("failed to decode multibase proofValue: %w", err)
@@ -385,7 +412,7 @@ func (m *JSONMap) verifyECDSASpecConformant(publicKey string, proof *dto.Proof) 
 	digest := sha256.Sum256(hashData)
 
 	// ECDSAVerifySignature checks the 64/65-byte length itself.
-	return crypto.ECDSAVerifySignature(publicKey, hex.EncodeToString(signature), digest[:])
+	return crypto.ECDSAVerifySignature(pub, hex.EncodeToString(signature), digest[:])
 }
 
 func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
@@ -397,12 +424,12 @@ func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
 	}
-	publicKey, err := publicKeyHexFromVM(vm)
+	pub, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
 		return false, err
 	}
 
-	ok, err := crypto.VerifyJwtProof((*map[string]interface{})(m), publicKey)
+	ok, err := crypto.VerifyJwtProof((*map[string]interface{})(m), pub)
 	if err != nil || !ok {
 		return ok, err
 	}
@@ -417,12 +444,12 @@ func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, 
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
 	}
-	publicKey, err := publicKeyHexFromVM(vm)
+	pub, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
 		return false, err
 	}
 
-	ok, err := m.verifyECDSA(publicKey, proof)
+	ok, err := m.verifyECDSA(pub, proof)
 	if err != nil || !ok {
 		return ok, err
 	}
@@ -655,28 +682,6 @@ func idInArray(vmID, docID string, arr []string) bool {
 		}
 	}
 	return false
-}
-
-// publicKeyHexFromVM extracts the hex public key from the VM, supporting
-// both publicKeyHex and publicKeyJwk encodings.
-func publicKeyHexFromVM(vm *verificationmethod.VerificationMethodEntry) (string, error) {
-	if vm == nil {
-		return "", fmt.Errorf("verification method is nil")
-	}
-	if vm.PublicKeyHex != "" {
-		return stripHexPrefix(vm.PublicKeyHex), nil
-	}
-	if vm.PublicKeyJwk != nil {
-		return verificationmethod.JWKToHex(vm.PublicKeyJwk)
-	}
-	return "", fmt.Errorf("verification method '%s' has no public key material", vm.ID)
-}
-
-func stripHexPrefix(s string) string {
-	if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
-		return s[2:]
-	}
-	return s
 }
 
 // jwtVerificationMethodURL returns the verification method URL for a JWT proof.

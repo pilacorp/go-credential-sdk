@@ -1,6 +1,7 @@
 package jsonmap
 
 import (
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -119,7 +120,7 @@ func TestJSONMap_AddECDSAProof_RejectsNonECDSASignature(t *testing.T) {
 
 const testPrivHex = "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318"
 
-func testKeyPair(t *testing.T) (signer.SignerProvider, string) {
+func testKeyPair(t *testing.T) (signer.SignerProvider, *ecdsa.PublicKey) {
 	t.Helper()
 	priv, err := ethcrypto.HexToECDSA(testPrivHex)
 	if err != nil {
@@ -129,11 +130,11 @@ func testKeyPair(t *testing.T) (signer.SignerProvider, string) {
 	if err != nil {
 		t.Fatalf("signer: %v", err)
 	}
-	return sp, hex.EncodeToString(ethcrypto.FromECDSAPub(&priv.PublicKey))
+	return sp, &priv.PublicKey
 }
 
 func TestJSONMap_AddECDSAProof_RoundTripsThroughSpecConformantBranch(t *testing.T) {
-	sp, pubHex := testKeyPair(t)
+	sp, pub := testKeyPair(t)
 	m := testCredential()
 
 	if err := (&m).AddECDSAProof(sp, "did:example:issuer#key-1", "assertionMethod"); err != nil {
@@ -148,7 +149,7 @@ func TestJSONMap_AddECDSAProof_RoundTripsThroughSpecConformantBranch(t *testing.
 		t.Fatalf("proofValue is not multibase base58btc: %s", proof.ProofValue)
 	}
 
-	ok, err := m.verifyECDSA(pubHex, &proof)
+	ok, err := m.verifyECDSA(pub, &proof)
 	if err != nil {
 		t.Fatalf("verifyECDSA error: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestJSONMap_AddECDSAProof_RoundTripsThroughSpecConformantBranch(t *testing.
 // proof.created matters most: strictPurposeCheck compares it to the key's
 // revocation timestamp.
 func TestJSONMap_VerifyECDSA_RejectsTamperedProofOptions(t *testing.T) {
-	sp, pubHex := testKeyPair(t)
+	sp, pub := testKeyPair(t)
 
 	for _, field := range []string{"created", "proofPurpose", "verificationMethod", "cryptosuite", "type"} {
 		t.Run(field, func(t *testing.T) {
@@ -187,7 +188,7 @@ func TestJSONMap_VerifyECDSA_RejectsTamperedProofOptions(t *testing.T) {
 				proof.Type = "SomeOtherProof"
 			}
 
-			ok, err := m.verifyECDSA(pubHex, &proof)
+			ok, err := m.verifyECDSA(pub, &proof)
 			if err == nil && ok {
 				t.Fatalf("tampered %s verified successfully", field)
 			}
@@ -197,7 +198,7 @@ func TestJSONMap_VerifyECDSA_RejectsTamperedProofOptions(t *testing.T) {
 
 // Editing the credential body must still invalidate the signature.
 func TestJSONMap_VerifyECDSA_RejectsTamperedBody(t *testing.T) {
-	sp, pubHex := testKeyPair(t)
+	sp, pub := testKeyPair(t)
 	m := testCredential()
 
 	if err := (&m).AddECDSAProof(sp, "did:example:issuer#key-1", "assertionMethod"); err != nil {
@@ -209,7 +210,7 @@ func TestJSONMap_VerifyECDSA_RejectsTamperedBody(t *testing.T) {
 	}
 	m["credentialSubject"].(map[string]interface{})["name"] = "Mallory"
 
-	ok, err := m.verifyECDSA(pubHex, &proof)
+	ok, err := m.verifyECDSA(pub, &proof)
 	if err == nil && ok {
 		t.Fatalf("tampered body verified successfully")
 	}
@@ -336,7 +337,7 @@ _:c14n0 <https://w3id.org/security#verificationMethod> <did:example:issuer#key-1
 // A "z" proofValue that carries no usable signature must error, not fall
 // through to the legacy branch.
 func TestJSONMap_VerifyECDSA_RejectsMalformedMultibaseProofValue(t *testing.T) {
-	_, pubHex := testKeyPair(t)
+	_, pub := testKeyPair(t)
 
 	cases := map[string]string{
 		// 0, O, I and l are not in the base58 alphabet.
@@ -357,7 +358,7 @@ func TestJSONMap_VerifyECDSA_RejectsMalformedMultibaseProofValue(t *testing.T) {
 				ProofValue:         proofValue,
 			}
 
-			if _, err := m.verifyECDSA(pubHex, proof); err == nil {
+			if _, err := m.verifyECDSA(pub, proof); err == nil {
 				t.Fatalf("expected an error for proofValue %q", proofValue)
 			}
 		})

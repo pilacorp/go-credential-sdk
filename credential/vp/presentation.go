@@ -58,6 +58,10 @@ type PresentationContents struct {
 // PresentationOpt configures presentation processing options.
 type PresentationOpt func(*presentationOptions)
 
+// defaultVerificationMethodKey is the kid signing falls back to when the caller
+// pins none.
+const defaultVerificationMethodKey = "key-1"
+
 // presentationOptions holds configuration for presentation processing.
 type presentationOptions struct {
 	isValidateVC            bool
@@ -101,6 +105,10 @@ func WithBaseURL(baseURL string) PresentationOpt {
 // active VM is used and may not match your signer.
 func WithVerificationMethodKey(key string) PresentationOpt {
 	return func(p *presentationOptions) {
+		// An empty key would wipe the default rather than pin anything.
+		if key == "" {
+			return
+		}
 		p.verificationMethodKey = key
 	}
 }
@@ -132,10 +140,9 @@ func getOptions(opts ...PresentationOpt) *presentationOptions {
 		isVerifyProof:     false,
 		isCheckExpiration: false,
 		didBaseURL:        config.BaseURL,
-		// verificationMethodKey is left empty so AddProof resolves the
-		// latest VM in the authentication array. Override with
-		// WithVerificationMethodKey to pin a specific kid.
-		verificationMethodKey: "",
+		// Sign with "<holder>#key-1" unless WithVerificationMethodKey pins
+		// another kid.
+		verificationMethodKey: defaultVerificationMethodKey,
 		resolver:              nil,
 	}
 

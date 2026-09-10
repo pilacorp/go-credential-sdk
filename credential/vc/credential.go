@@ -98,6 +98,10 @@ type SchemaLoaderFunc func(schemaID string) ([]byte, error)
 // CredentialOpt configures credential processing options.
 type CredentialOpt func(*credentialOptions)
 
+// defaultVerificationMethodKey is the kid signing falls back to when the caller
+// pins none.
+const defaultVerificationMethodKey = "key-1"
+
 // credentialOptions holds configuration for credential processing.
 type credentialOptions struct {
 	isValidateSchema        bool
@@ -144,6 +148,9 @@ func WithBaseURL(baseURL string) CredentialOpt {
 // signer, producing a proof that fails verification.
 func WithVerificationMethodKey(key string) CredentialOpt {
 	return func(c *credentialOptions) {
+		if key == "" {
+			return
+		}
 		c.verificationMethodKey = key
 	}
 }
@@ -239,16 +246,13 @@ func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 // getOptions returns the credential options.
 func getOptions(opts ...CredentialOpt) *credentialOptions {
 	options := &credentialOptions{
-		isValidateSchema:   false,
-		isVerifyProof:      false,
-		isCheckExpiration:  false,
-		isCheckRevocation:  false,
-		didBaseURL:         config.BaseURL,
-		loadedSchemaLoader: nil,
-		// verificationMethodKey is left empty so the signer/proof builder
-		// can resolve the latest VM in the assertionMethod array. Callers
-		// can override with WithVerificationMethodKey to pin a specific kid.
-		verificationMethodKey: "",
+		isValidateSchema:      false,
+		isVerifyProof:         false,
+		isCheckExpiration:     false,
+		isCheckRevocation:     false,
+		didBaseURL:            config.BaseURL,
+		loadedSchemaLoader:    nil,
+		verificationMethodKey: defaultVerificationMethodKey,
 		resolver:              nil,
 	}
 

@@ -5,7 +5,9 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
@@ -32,9 +34,8 @@ func mkCredentialJSON(issuerDID string) []byte {
     }`, issuerDID))
 }
 
-// TestVC_MultiKey_IssueVerify signs and verifies a plain JSON credential with
-// each supported issuer key type: secp256k1 (ecdsa-rdfc-2019), P-256
-// (JsonWebSignature2020/ES256) and RSA (JsonWebSignature2020/RS256).
+// TestVC_MultiKey_IssueVerify signs and verifies a plain JSON credential with a
+// P-256 issuer key (ecdsa-rdfc-2019), and checks secp256k1 and RSA are rejected.
 func TestVC_MultiKey_IssueVerify(t *testing.T) {
 	// A fixed secp256k1 scalar so the test is deterministic.
 	const secpPriv = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
@@ -53,21 +54,10 @@ func TestVC_MultiKey_IssueVerify(t *testing.T) {
 		did      string
 		provider func(t *testing.T) signer.SignerProvider
 		vm       vmpkg.VerificationMethodEntry
+		wantErr  string
 	}{
 		{
-			name: "secp256k1/ecdsa-rdfc-2019",
-			did:  "did:example:vc-secp",
-			provider: func(t *testing.T) signer.SignerProvider {
-				p, err := signer.NewDefaultProvider(secpPriv)
-				if err != nil {
-					t.Fatalf("secp provider: %v", err)
-				}
-				return p
-			},
-			vm: vmpkg.NewSecp256k1VM("did:example:vc-secp", "key-1", pubHex(t, secpPriv)),
-		},
-		{
-			name: "P-256/JsonWebSignature2020",
+			name: "P-256/ecdsa-rdfc-2019",
 			did:  "did:example:vc-p256",
 			provider: func(t *testing.T) signer.SignerProvider {
 				p, err := signer.NewP256Provider(p256Priv)
@@ -79,7 +69,7 @@ func TestVC_MultiKey_IssueVerify(t *testing.T) {
 			vm: vmpkg.NewP256VM("did:example:vc-p256", "key-1", &p256Priv.PublicKey),
 		},
 		{
-			name: "RSA/JsonWebSignature2020",
+			name: "RSA rejected",
 			did:  "did:example:vc-rsa",
 			provider: func(t *testing.T) signer.SignerProvider {
 				p, err := signer.NewRSAProvider(rsaKey)
@@ -88,7 +78,21 @@ func TestVC_MultiKey_IssueVerify(t *testing.T) {
 				}
 				return p
 			},
-			vm: vmpkg.NewRSAVM("did:example:vc-rsa", "key-1", &rsaKey.PublicKey),
+			vm:      vmpkg.NewRSAVM("did:example:vc-rsa", "key-1", &rsaKey.PublicKey),
+			wantErr: "unsupported key kind",
+		},
+		{
+			name: "secp256k1 rejected",
+			did:  "did:example:vc-secp",
+			provider: func(t *testing.T) signer.SignerProvider {
+				p, err := signer.NewDefaultProvider(secpPriv)
+				if err != nil {
+					t.Fatalf("secp provider: %v", err)
+				}
+				return p
+			},
+			vm:      vmpkg.NewSecp256k1VM("did:example:vc-secp", "key-1", pubHex(t, secpPriv)),
+			wantErr: "unsupported key kind",
 		},
 	}
 
@@ -100,11 +104,18 @@ func TestVC_MultiKey_IssueVerify(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse credential: %v", err)
 			}
-			if err := cred.AddProofByProvider(
+			err = cred.AddProofByProvider(
 				tc.provider(t),
 				vc.WithVerificationMethodKey("key-1"),
 				vc.WithResolver(resolver),
-			); err != nil {
+			)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("add proof err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("add proof: %v", err)
 			}
 			if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
@@ -117,10 +128,36 @@ func TestVC_MultiKey_IssueVerify(t *testing.T) {
 	}
 }
 
-// TestECDSASD_MultiKey_IssueDeriveVerify exercises ecdsa-sd-2023 with both the
-// standard P-256 issuer key and the secp256k1 issuer key (a non-standard
-// extension this SDK supports): issue a base proof, derive a selective
-// disclosure, and verify the derived proof end-to-end.
+// AddProof takes a raw P-256 scalar rather than a provider.
+func TestVC_AddProof_RawP256Key(t *testing.T) {
+	const did = "did:example:vc-raw-key"
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	d := make([]byte, 32)
+	priv.D.FillBytes(d)
+
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, vmpkg.NewP256VM(did, "key-1", &priv.PublicKey)))
+
+	cred, err := vc.ParseJSONCredential(mkCredentialJSON(did))
+	if err != nil {
+		t.Fatalf("parse credential: %v", err)
+	}
+	if err := cred.AddProof(hex.EncodeToString(d),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+	if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}
+
+// TestECDSASD_MultiKey_IssueDeriveVerify issues a base proof with a P-256 issuer
+// key, derives a selective disclosure and verifies it end-to-end, and checks a
+// secp256k1 issuer key is rejected.
 func TestECDSASD_MultiKey_IssueDeriveVerify(t *testing.T) {
 	const secpPriv = "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318"
 
@@ -134,6 +171,7 @@ func TestECDSASD_MultiKey_IssueDeriveVerify(t *testing.T) {
 		did      string
 		provider func(t *testing.T) signer.SignerProvider
 		vm       vmpkg.VerificationMethodEntry
+		wantErr  string
 	}{
 		{
 			name: "P-256 issuer (standard)",
@@ -148,7 +186,7 @@ func TestECDSASD_MultiKey_IssueDeriveVerify(t *testing.T) {
 			vm: vmpkg.NewP256VM("did:example:sd-p256", "key-1", &p256Priv.PublicKey),
 		},
 		{
-			name: "secp256k1 issuer (extension)",
+			name: "secp256k1 issuer rejected",
 			did:  "did:example:sd-secp",
 			provider: func(t *testing.T) signer.SignerProvider {
 				p, err := signer.NewDefaultProvider(secpPriv)
@@ -157,7 +195,8 @@ func TestECDSASD_MultiKey_IssueDeriveVerify(t *testing.T) {
 				}
 				return p
 			},
-			vm: vmpkg.NewSecp256k1VM("did:example:sd-secp", "key-1", pubHex(t, secpPriv)),
+			vm:      vmpkg.NewSecp256k1VM("did:example:sd-secp", "key-1", pubHex(t, secpPriv)),
+			wantErr: "unsupported key kind",
 		},
 	}
 
@@ -169,12 +208,19 @@ func TestECDSASD_MultiKey_IssueDeriveVerify(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse base: %v", err)
 			}
-			if err := base.AddProofByProvider(
+			err = base.AddProofByProvider(
 				tc.provider(t),
 				[]string{"issuer", "validFrom", "credentialSubject.id"},
 				vc.WithVerificationMethodKey("key-1"),
 				vc.WithResolver(resolver),
-			); err != nil {
+			)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("add base proof err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("add base proof: %v", err)
 			}
 			if err := base.Verify(vc.WithResolver(resolver)); err != nil {

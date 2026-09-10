@@ -27,6 +27,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vm "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
 // p256MulticodecPrefix is varint(0x1200) — the multicodec for a p256-pub key.
@@ -156,27 +157,52 @@ func (s *server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var m jsonmap.JSONMap
-	if err := json.Unmarshal(body.Credential, &m); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("parse credential: %w", err))
-		return
-	}
-
-	var err error
+	var (
+		signed any
+		err    error
+	)
 	switch s.cryptosuite {
 	case suiteRDFC:
-		// ecdsa-rdfc-2019 signs the whole document; mandatoryPointers is a
-		// selective-disclosure notion and does not apply.
-		err = (&m).AddECDSAProof(s.issuer, s.issuerVM, "assertionMethod")
+		signed, err = s.issueRDFC(body.Credential)
 	default:
-		err = (&m).AddECDSASDBaseProof(s.issuer, s.issuerVM, "assertionMethod", body.Options.MandatoryPointers)
+		signed, err = s.issueSD(body.Credential, body.Options.MandatoryPointers)
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("issue: %w", err))
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"verifiableCredential": m})
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"verifiableCredential": signed})
+}
+
+// issueRDFC signs through the vc package, so the suite exercises the public API.
+// mandatoryPointers is a selective-disclosure notion and does not apply here.
+func (s *server) issueRDFC(raw json.RawMessage) (any, error) {
+	cred, err := vc.ParseJSONCredential(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := cred.AddProofByProvider(s.issuer,
+		vc.WithVerificationMethodKey(s.issuerVM), vc.WithResolver(s.resolver)); err != nil {
+		return nil, err
+	}
+	return cred.Serialize()
+}
+
+// issueSD parses through vc for its data-model checks but signs on jsonmap:
+// vc.ECDSASDCredential takes dot paths while the suite sends JSON Pointers.
+func (s *server) issueSD(raw json.RawMessage, mandatoryPointers []string) (any, error) {
+	if _, err := vc.ParseJSONCredential(raw); err != nil {
+		return nil, err
+	}
+	var m jsonmap.JSONMap
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("parse credential: %w", err)
+	}
+	if err := (&m).AddECDSASDBaseProof(s.issuer, s.issuerVM, "assertionMethod", mandatoryPointers); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func (s *server) handleDerive(w http.ResponseWriter, r *http.Request) {
@@ -221,15 +247,15 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var m jsonmap.JSONMap
-	if err := json.Unmarshal(body.VerifiableCredential, &m); err != nil {
+	// Through vc so the suite exercises the public API; Verify dispatches on the
+	// proof's own cryptosuite, so one endpoint serves rdfc and sd alike.
+	cred, err := vc.ParseJSONCredential(body.VerifiableCredential)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("parse verifiableCredential: %w", err))
 		return
 	}
-
-	ok, err := (&m).VerifyProof(s.resolver, "")
-	if err != nil || !ok {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("verification failed: %v", err))
+	if err := cred.Verify(vc.WithResolver(s.resolver)); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("verification failed: %w", err))
 		return
 	}
 

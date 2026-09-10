@@ -63,9 +63,13 @@ func run() error {
 	}
 
 	// verify.mjs needs the public key to check the proof.
+	publicKeyMultibase, err := verificationmethod.EncodePubMultibase(signerProvider.Public())
+	if err != nil {
+		return fmt.Errorf("encode public key: %w", err)
+	}
 	output, err := json.MarshalIndent(map[string]interface{}{
 		"credential":         credential,
-		"publicKeyMultibase": verificationmethod.EncodeP256PubMultibase(signerProvider.Public()),
+		"publicKeyMultibase": publicKeyMultibase,
 	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode output: %w", err)

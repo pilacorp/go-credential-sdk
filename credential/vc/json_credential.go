@@ -14,8 +14,7 @@ import (
 )
 
 type JSONCredential struct {
-	credentialData        CredentialData
-	verificationMethodKey string
+	credentialData CredentialData
 }
 
 var _ Credential = (*JSONCredential)(nil)
@@ -25,12 +24,12 @@ func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (*JSONCred
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}
-
-	options := getOptions(opts...)
+	if err := requireCredentialProperties(m); err != nil {
+		return nil, err
+	}
 
 	e := &JSONCredential{
-		credentialData:        m,
-		verificationMethodKey: options.verificationMethodKey,
+		credentialData: m,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -49,29 +48,62 @@ func ParseJSONCredential(rawJSON []byte, opts ...CredentialOpt) (*JSONCredential
 	if err := json.Unmarshal(rawJSON, &m); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal credential: %w", err)
 	}
+	if err := requireCredentialProperties(m); err != nil {
+		return nil, err
+	}
 
 	e := &JSONCredential{credentialData: m}
 
 	return e, e.executeOptions(opts...)
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
-func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
-	defaultSigner, err := signer.NewDefaultProvider(priv)
-	if err != nil {
-		return fmt.Errorf("failed to create default signer: %w", err)
+// Required on every credential by VC Data Model 2.0 §4.3, §4.5, §4.7, §4.8.
+var requiredCredentialProperties = []string{"@context", "type", "issuer", "credentialSubject"}
+
+// requireCredentialProperties checks presence only; value rules like the v2
+// @context URL would reject the VC 1.1 documents this SDK still signs.
+func requireCredentialProperties(m CredentialData) error {
+	for _, p := range requiredCredentialProperties {
+		if isEmptyValue(m[p]) {
+			return fmt.Errorf("credential is missing %s", p)
+		}
 	}
-	return e.AddProofByProvider(defaultSigner, opts...)
+	return nil
 }
 
-// AddProofByProvider signs with a provider. The cryptosuite is chosen from the
-// bound verification method's key type: secp256k1 → ecdsa-rdfc-2019, RSA →
-// JsonWebSignature2020 (alg via AlgorithmProvider, default RS256). The VM is the
-// pinned one (WithVerificationMethodKey) or the latest active assertionMethod VM.
+// isEmptyValue treats absent, null, "" and empty arrays/objects alike.
+func isEmptyValue(v interface{}) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return t == ""
+	case []interface{}:
+		return len(t) == 0
+	case map[string]interface{}:
+		return len(t) == 0
+	}
+	return false
+}
+
+// AddProof signs with a raw P-256 private key (hex scalar).
 //
-// A resolver is REQUIRED at signing time — the SDK reads the VM's key type from
-// the resolved DID document to pick the cryptosuite, even when the VM is pinned.
-// Provide one with WithResolver (a default HTTP resolver is used otherwise).
+// Deprecated: prefer AddProofByProvider, which keeps the key outside the SDK.
+func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
+	p256Signer, err := signer.NewP256ProviderFromHex(priv)
+	if err != nil {
+		return fmt.Errorf("failed to create P-256 signer: %w", err)
+	}
+	return e.AddProofByProvider(p256Signer, opts...)
+}
+
+// AddProofByProvider signs with a provider, producing an ecdsa-rdfc-2019 proof
+// bound to "<issuer>#key-1" unless WithVerificationMethodKey pins another kid.
+// The VM must hold a P-256 key — secp256k1 and RSA are rejected.
+//
+// A resolver is REQUIRED at signing time: the SDK reads the VM's key type from
+// the resolved DID document. Provide one with WithResolver (a default HTTP
+// resolver is used otherwise).
 func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts ...CredentialOpt) error {
 	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
@@ -92,15 +124,30 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 	}
 
 	switch kind {
-	case verificationmethod.KeySecp256k1:
-		return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(provider, vmURL, "assertionMethod")
-	case verificationmethod.KeyRSA, verificationmethod.KeyP256:
-		// P-256 signs a plain JSON VC via JsonWebSignature2020 (ES256); RSA via
-		// RS/PS. (For P-256 selective disclosure use ECDSASDCredential instead.)
-		return (*jsonmap.JSONMap)(&e.credentialData).AddJWSProof(provider, vmURL, "assertionMethod")
+	case verificationmethod.KeyP256:
+		vmPub, err := verificationmethod.ECPubFromVM(vm)
+		if err != nil {
+			return fmt.Errorf("verification method %q: %w", vmURL, err)
+		}
+		return (*jsonmap.JSONMap)(&e.credentialData).AddECDSAProof(
+			provider, vmURL, "assertionMethod", jsonmap.WithVMPublicKey(vmPub))
 	default:
 		return fmt.Errorf("unsupported key kind %v for JSON credential", kind)
 	}
+}
+
+// resolveSigningVMEntry resolves the verification method to sign with and
+// returns the entry so the caller can read its key type and choose the
+// cryptosuite. Shared with ECDSASDCredential.
+func (e *JSONCredential) resolveSigningVMEntry(opts ...CredentialOpt) (*verificationmethod.VerificationMethodEntry, string, error) {
+	issuer, ok := jsonmap.DIDFromField(e.credentialData["issuer"])
+	if !ok {
+		return nil, "", fmt.Errorf("issuer is missing or invalid")
+	}
+
+	options := getOptions(opts...)
+
+	return verificationmethod.ResolveSigningVM(context.Background(), issuer, "assertionMethod", options.verificationMethodKey, options.resolver)
 }
 
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
@@ -222,49 +269,4 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	return nil
-}
-
-// resolveSigningVMEntry resolves the verification method to sign with (pinned
-// kid > latest active assertionMethod VM) and returns the entry so the caller
-// can read its key type and choose the cryptosuite.
-func (e *JSONCredential) resolveSigningVMEntry(opts ...CredentialOpt) (*verificationmethod.VerificationMethodEntry, string, error) {
-	issuer, ok := jsonmap.DIDFromField(e.credentialData["issuer"])
-	if !ok {
-		return nil, "", fmt.Errorf("issuer is missing or invalid")
-	}
-
-	options := getOptions(opts...)
-
-	pinned := e.verificationMethodKey
-	if options.verificationMethodKey != "" {
-		pinned = options.verificationMethodKey
-	}
-
-	return verificationmethod.ResolveSigningVM(context.Background(), issuer, "assertionMethod", pinned, options.resolver)
-}
-
-// resolveSigningVM picks the verification method URL: per-call option >
-// constructor pin > resolve the latest active VM whose key matches kind (so the
-// resolved VM is compatible with the signer's cryptosuite).
-func (e *JSONCredential) resolveSigningVM(kind verificationmethod.KeyKind, opts ...CredentialOpt) (string, error) {
-	issuer, ok := jsonmap.DIDFromField(e.credentialData["issuer"])
-	if !ok {
-		return "", fmt.Errorf("issuer is missing or invalid")
-	}
-
-	options := getOptions(opts...)
-
-	verificationMethodKey := e.verificationMethodKey
-	if options.verificationMethodKey != "" {
-		verificationMethodKey = options.verificationMethodKey
-	}
-
-	if verificationMethodKey == "" {
-		vmURL, err := verificationmethod.ResolveVerificationMethodURLForKey(context.Background(), issuer, "assertionMethod", kind, options.resolver)
-		if err != nil {
-			return "", fmt.Errorf("resolve verification method: %w", err)
-		}
-		return vmURL, nil
-	}
-	return verificationmethod.NormalizeVerificationMethodURL(issuer, verificationMethodKey), nil
 }

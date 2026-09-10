@@ -1,7 +1,6 @@
 package jsonmap
 
 import (
-	"crypto/ecdsa"
 	"fmt"
 	"time"
 
@@ -55,6 +54,7 @@ func (m *JSONMap) AddECDSASDBaseProof(
 	signerProvider signer.SignerProvider,
 	verificationMethod, proofPurpose string,
 	mandatoryPointers []string,
+	opts ...ProofOpt,
 ) error {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
@@ -67,9 +67,6 @@ func (m *JSONMap) AddECDSASDBaseProof(
 	}
 	if proofPurpose == "" {
 		return fmt.Errorf("jsonmap: proof purpose is required")
-	}
-	if cs, ok := (*m)["credentialSubject"]; !ok || cs == nil {
-		return fmt.Errorf("jsonmap: credential is missing credentialSubject")
 	}
 
 	// Ensure the proof's data-integrity terms are defined in @context (VC 1.1
@@ -102,6 +99,7 @@ func (m *JSONMap) AddECDSASDBaseProof(
 		proofConfig,
 		mandatoryPointers,
 		signerProvider,
+		newProofOptions(opts...).vmPub,
 	)
 	if err != nil {
 		return fmt.Errorf("jsonmap: create ecdsa-sd base proof: %w", err)
@@ -150,9 +148,8 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
 	}
 	// ecdsa-sd-2023 standardizes on P-256; this SDK also accepts a secp256k1
-	// issuer key as a non-standard extension. Pick the resolver explicitly from
-	// the verification method's curve.
-	pub, err := ecdsasdIssuerPub(vm)
+	// issuer key as a non-standard extension.
+	pub, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
 		return false, err
 	}
@@ -212,19 +209,4 @@ func (m *JSONMap) bodyWithoutProof() (map[string]interface{}, error) {
 // setSingleProof sets proof to a single proof object.
 func (m *JSONMap) setSingleProof(p dto.Proof) {
 	(*m)[proofField] = util.SerializeProofs([]dto.Proof{p})
-}
-
-// ecdsasdIssuerPub resolves the issuer public key for an ecdsa-sd-2023 proof,
-// dispatching on the verification method's curve. A secp256k1 VM (EC secp256k1
-// JWK or publicKeyHex) is the non-standard extension; everything else is the
-// standard P-256 path (P-256 JWK or publicKeyMultibase Multikey).
-func ecdsasdIssuerPub(vm *verificationmethod.VerificationMethodEntry) (*ecdsa.PublicKey, error) {
-	if verificationmethod.VMIsSecp256k1(vm) {
-		hexKey, err := verificationmethod.PublicKeyHexFromVM(vm)
-		if err != nil {
-			return nil, err
-		}
-		return verificationmethod.Secp256k1PubFromHex(hexKey)
-	}
-	return verificationmethod.P256PubFromVM(vm)
 }

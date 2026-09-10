@@ -134,3 +134,68 @@ func TestCanonicalizeDocument_DefinedTermsSurvive(t *testing.T) {
 		t.Errorf("native path should accept a fully defined document, got: %v", err)
 	}
 }
+
+// Every property defined; one `type` value is a term no @context maps.
+func docWithUndefinedType() map[string]interface{} {
+	return map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiableCredential", "UndefinedType"},
+		"issuer":   "did:example:issuer",
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:subject",
+		},
+	}
+}
+
+// Pins json-gold's own behaviour, so it calls ToRDF rather than this package's
+// wrappers. If the second half fails, SafeMode grew to cover types and
+// the type check can go.
+func TestSafeModeCoversPropertiesNotTypes(t *testing.T) {
+	opts := sdOptions()
+	opts.Format = ""
+	proc := ld.NewJsonLdProcessor()
+
+	if _, err := proc.ToRDF(docWithUndefinedTerm(), opts); err == nil {
+		t.Error("undefined property: expected SafeMode to raise, got nil")
+	}
+	if _, err := proc.ToRDF(docWithUndefinedType(), opts); err != nil {
+		t.Errorf("undefined type: SafeMode now raises (%v) — the type check is redundant", err)
+	}
+}
+
+func TestExpandJSONLD_RejectsDroppedTerms(t *testing.T) {
+	t.Run("undefined type", func(t *testing.T) {
+		_, err := ExpandJSONLD(docWithUndefinedType())
+		if err == nil {
+			t.Fatal("expected an error for a type outside @context, got nil")
+		}
+		if !strings.Contains(err.Error(), "UndefinedType") {
+			t.Errorf("error should name the offending type, got: %v", err)
+		}
+	})
+
+	t.Run("undefined property", func(t *testing.T) {
+		if _, err := ExpandJSONLD(docWithUndefinedTerm()); err == nil {
+			t.Fatal("expected an error for a property outside @context, got nil")
+		}
+	})
+
+	t.Run("all terms defined", func(t *testing.T) {
+		doc := docWithUndefinedType()
+		doc["type"] = []interface{}{"VerifiableCredential"}
+		if _, err := ExpandJSONLD(doc); err != nil {
+			t.Errorf("expected a fully defined document to pass, got: %v", err)
+		}
+	})
+
+	t.Run("vocab defines everything", func(t *testing.T) {
+		doc := docWithUndefinedType()
+		doc["@context"] = []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			map[string]interface{}{"@vocab": "https://example.org/vocab#"},
+		}
+		if _, err := ExpandJSONLD(doc); err != nil {
+			t.Errorf("@vocab maps the term, expected no error, got: %v", err)
+		}
+	})
+}

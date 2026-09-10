@@ -2,19 +2,22 @@ package crypto
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/crypto"
 	"strings"
+
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
-func VerifyJwtProof(req *map[string]interface{}, publicKeyHex string) (bool, error) {
+func VerifyJwtProof(req *map[string]interface{}, pub *ecdsa.PublicKey) (bool, error) {
 	jwtToken, ok := (*req)["proof"].(map[string]interface{})["jwt"].(string)
 	if jwtToken == "" || !ok {
 		return false, fmt.Errorf("JWT token is missing")
+	}
+	if pub == nil {
+		return false, fmt.Errorf("public key is nil")
 	}
 
 	signature, message, err := getSignatureAndMessage(jwtToken)
@@ -22,26 +25,8 @@ func VerifyJwtProof(req *map[string]interface{}, publicKeyHex string) (bool, err
 		return false, fmt.Errorf("failed to extract signature and message from JWT: %w", err)
 	}
 
-	if !strings.HasPrefix(publicKeyHex, "0x") {
-		publicKeyHex = "0x" + publicKeyHex
-	}
-	pubBytes, err := keyToBytes(publicKeyHex)
-	if err != nil {
-		return false, fmt.Errorf("failed to convert public key to bytes: %w", err)
-	}
-
-	verified := verifySignature(pubBytes, message, signature)
-
-	return verified, nil
-}
-
-// KeyToBytes converts a hex string with prefix 0x to a byte array.
-func keyToBytes(key string) ([]byte, error) {
-	if !strings.HasPrefix(key, "0x") {
-		return nil, errors.New("key is not in hex format")
-	}
-
-	return hex.DecodeString(key[2:])
+	// verifySignature compares against the compressed form.
+	return verifySignature(crypto.CompressPubkey(pub), message, signature), nil
 }
 
 func getSignatureAndMessage(jwtToken string) ([]byte, []byte, error) {

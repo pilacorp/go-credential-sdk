@@ -507,10 +507,12 @@ func parseStringField(obj CredentialData, fieldName string) (string, error) {
 func validateCredential(m CredentialData, opts *credentialOptions) error {
 	copyMap := util.ShallowCopyObj(m)
 
-	requiredKeys := []string{"type", "credentialSchema", "credentialSubject"}
+	// credentialSchema is optional per VC Data Model 2.0 §4.11, but this path
+	// exists to validate against it, so here it is required.
+	requiredKeys := append([]string{"credentialSchema"}, requiredCredentialProperties...)
 	var schemaList []interface{}
 	for _, key := range requiredKeys {
-		if _, exists := copyMap[key]; !exists {
+		if isEmptyValue(copyMap[key]) {
 			return fmt.Errorf("%s is required", key)
 		}
 		if key == "credentialSchema" {

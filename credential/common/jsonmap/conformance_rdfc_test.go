@@ -100,7 +100,7 @@ func rdfcIssuerPub(t *testing.T) *ecdsa.PublicKey {
 	if err := json.Unmarshal(rdfcRead(t, "p256KeyPair.json"), &kp); err != nil {
 		t.Fatalf("parse p256KeyPair.json: %v", err)
 	}
-	_, pub, err := verificationmethod.DecodeP256PubMultibase(kp.PublicKeyMultibase)
+	pub, err := verificationmethod.ECPubFromMultibase(kp.PublicKeyMultibase)
 	if err != nil {
 		t.Fatalf("decode issuer public key: %v", err)
 	}
@@ -245,7 +245,7 @@ type rdfcDIDKeyResolver struct{}
 
 func (rdfcDIDKeyResolver) ResolveDocument(_ context.Context, did string) (*verificationmethod.DIDDocument, error) {
 	multibaseKey := strings.TrimPrefix(did, "did:key:")
-	_, pub, err := verificationmethod.DecodeP256PubMultibase(multibaseKey)
+	pub, err := verificationmethod.ECPubFromMultibase(multibaseKey)
 	if err != nil {
 		return nil, err
 	}

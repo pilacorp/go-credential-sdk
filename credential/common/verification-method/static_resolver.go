@@ -84,7 +84,7 @@ func NewRSAVM(did, fragment string, pub *rsa.PublicKey) VerificationMethodEntry 
 }
 
 // NewP256VM builds a JsonWebKey2020 verification method from a P-256 public key.
-// Used by ecdsa-sd-2023.
+// Used by ecdsa-rdfc-2019 and ecdsa-sd-2023.
 func NewP256VM(did, fragment string, pub *ecdsa.PublicKey) VerificationMethodEntry {
 	xb := make([]byte, 32)
 	yb := make([]byte, 32)

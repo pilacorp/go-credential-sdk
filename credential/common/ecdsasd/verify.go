@@ -22,7 +22,7 @@ func verifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 	if err != nil {
 		return err
 	}
-	ephPub, err := verificationmethod.P256PubFromMultikeyBytes(bp.PublicKey)
+	ephPub, err := verificationmethod.ECPubFromMultikeyBytes(bp.PublicKey)
 	if err != nil {
 		return fmt.Errorf("ecdsasd: decode ephemeral key: %w", err)
 	}
@@ -69,7 +69,7 @@ func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string
 	if err != nil {
 		return err
 	}
-	ephPub, err := verificationmethod.P256PubFromMultikeyBytes(dp.PublicKey)
+	ephPub, err := verificationmethod.ECPubFromMultikeyBytes(dp.PublicKey)
 	if err != nil {
 		return fmt.Errorf("ecdsasd: decode ephemeral key: %w", err)
 	}

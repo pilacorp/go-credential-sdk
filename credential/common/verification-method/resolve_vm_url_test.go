@@ -2,9 +2,7 @@ package verificationmethod
 
 import (
 	"context"
-	"errors"
 	"testing"
-	"time"
 )
 
 func TestNormalizeVerificationMethodURL(t *testing.T) {
@@ -81,104 +79,61 @@ func (s *stubResolver) ResolveDocument(_ context.Context, _ string) (*DIDDocumen
 	return s.doc, s.err
 }
 
-func TestResolveVerificationMethodURL(t *testing.T) {
+// Selection must skip VMs whose key is of another kind, so a signer never binds
+// its proof to a VM it cannot verify against.
+func TestResolveVerificationMethodURLForKey_KindFilter(t *testing.T) {
 	const did = "did:pila:abc123"
 
-	revoked := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	docWithAuthAndAssertion := &DIDDocument{
+	doc := &DIDDocument{
 		ID: did,
 		VerificationMethod: []VerificationMethodEntry{
-			{ID: did + "#key-1", Type: "EcdsaSecp256k1VerificationKey2019", Controller: did},
-			{ID: did + "#key-2", Type: "EcdsaSecp256k1VerificationKey2019", Controller: did},
+			{ID: did + "#key-1", Type: "EcdsaSecp256k1VerificationKey2019", Controller: did, PublicKeyHex: "04aa"},
+			{ID: did + "#key-2", Type: "JsonWebKey2020", Controller: did, PublicKeyJwk: &JWK{Kty: "EC", Crv: "P-256"}},
 		},
-		Authentication:  []string{did + "#key-1", did + "#key-2"},
-		AssertionMethod: []string{did + "#key-1"},
-	}
-
-	docWithRevokedLatest := &DIDDocument{
-		ID: did,
-		VerificationMethod: []VerificationMethodEntry{
-			{ID: did + "#key-1", Type: "EcdsaSecp256k1VerificationKey2019", Controller: did},
-			{ID: did + "#key-2", Type: "EcdsaSecp256k1VerificationKey2019", Controller: did, Revoked: &revoked, RevocationReason: "keyCompromise"},
-		},
-		Authentication: []string{did + "#key-1", did + "#key-2"},
-	}
-
-	docEmptyPurpose := &DIDDocument{
-		ID:                 did,
-		VerificationMethod: []VerificationMethodEntry{{ID: did + "#key-1", Type: "EcdsaSecp256k1VerificationKey2019", Controller: did}},
-		Authentication:     []string{did + "#key-1"},
-		// AssertionMethod intentionally empty
+		AssertionMethod: []string{did + "#key-1", did + "#key-2"},
 	}
 
 	tests := []struct {
 		name     string
-		did      string
-		purpose  string
+		kind     KeyKind
 		resolver ResolverProvider
 		want     string
 		wantErr  bool
 	}{
 		{
-			name:     "nil resolver returns error",
-			did:      did,
-			purpose:  "authentication",
-			resolver: nil,
-			wantErr:  true,
-		},
-		{
-			name:     "resolver error propagates",
-			did:      did,
-			purpose:  "authentication",
-			resolver: &stubResolver{err: errors.New("network down")},
-			wantErr:  true,
-		},
-		{
-			name:     "picks highest key-N for authentication",
-			did:      did,
-			purpose:  "authentication",
-			resolver: &stubResolver{doc: docWithAuthAndAssertion},
+			name:     "picks latest active VM matching the key kind",
+			kind:     KeyP256,
+			resolver: &stubResolver{doc: doc},
 			want:     did + "#key-2",
 		},
 		{
-			name:     "picks key-1 for assertionMethod (only one listed)",
-			did:      did,
-			purpose:  "assertionMethod",
-			resolver: &stubResolver{doc: docWithAuthAndAssertion},
+			name:     "skips VMs of other kinds",
+			kind:     KeySecp256k1,
+			resolver: &stubResolver{doc: doc},
 			want:     did + "#key-1",
 		},
 		{
-			name:     "skips revoked latest, picks earlier active key",
-			did:      did,
-			purpose:  "authentication",
-			resolver: &stubResolver{doc: docWithRevokedLatest},
-			want:     did + "#key-1",
-		},
-		{
-			name:     "empty purpose array returns error",
-			did:      did,
-			purpose:  "assertionMethod",
-			resolver: &stubResolver{doc: docEmptyPurpose},
+			name:     "no matching kind returns error",
+			kind:     KeyRSA,
+			resolver: &stubResolver{doc: doc},
 			wantErr:  true,
 		},
 		{
-			name:     "unsupported purpose returns error",
-			did:      did,
-			purpose:  "keyAgreement",
-			resolver: &stubResolver{doc: docWithAuthAndAssertion},
+			name:     "nil resolver returns error",
+			kind:     KeyP256,
+			resolver: nil,
 			wantErr:  true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ResolveVerificationMethodURL(context.Background(), tt.did, tt.purpose, tt.resolver)
+			got, err := ResolveVerificationMethodURLForKey(context.Background(), did, "assertionMethod", tt.kind, tt.resolver)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("ResolveVerificationMethodURL() error = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("ResolveVerificationMethodURLForKey() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if !tt.wantErr && got != tt.want {
-				t.Errorf("ResolveVerificationMethodURL() = %q, want %q", got, tt.want)
+				t.Errorf("ResolveVerificationMethodURLForKey() = %q, want %q", got, tt.want)
 			}
 		})
 	}

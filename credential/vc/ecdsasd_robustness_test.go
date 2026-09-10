@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
+
+var sdMandatoryPointers = []string{"/issuer", "/validFrom", "/credentialSubject/id"}
 
 // signSDBase issues an ecdsa-sd-2023 base credential and returns its serialized
 // JSON. mandatory = issuer/validFrom/credentialSubject.id.
@@ -39,9 +42,37 @@ func signSDBase(t *testing.T, did string, provider signer.SignerProvider, resolv
 	return b
 }
 
+// signSDBaseSecp signs through jsonmap: vc issues ecdsa-sd-2023 with a P-256 VM
+// only, so a secp256k1 base proof can no longer be produced through it. Verify
+// still accepts them, which is what these tests exercise.
+func signSDBaseSecp(t *testing.T, did string, provider signer.SignerProvider, _ vmpkg.ResolverProvider) []byte {
+	t.Helper()
+	var m jsonmap.JSONMap
+	if err := json.Unmarshal(mkSDCredentialJSON(did), &m); err != nil {
+		t.Fatalf("unmarshal base: %v", err)
+	}
+	if err := m.AddECDSASDBaseProof(provider, did+"#key-1", "assertionMethod", sdMandatoryPointers); err != nil {
+		t.Fatalf("add base proof: %v", err)
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal base: %v", err)
+	}
+	return b
+}
+
+func mustEncodePubMultibase(t *testing.T, pub *ecdsa.PublicKey) string {
+	t.Helper()
+	s, err := vmpkg.EncodePubMultibase(pub)
+	if err != nil {
+		t.Fatalf("encode multikey: %v", err)
+	}
+	return s
+}
+
 // Gap #1: the standard P-256 issuer published as a publicKeyMultibase Multikey
 // (the W3C normative format) must route through the Multibase branch of
-// P256PubFromVM and verify end-to-end.
+// ECPubFromVM and verify end-to-end.
 func TestECDSASD_P256Multikey_IssueDeriveVerify(t *testing.T) {
 	const did = "did:example:sd-p256-mb"
 
@@ -53,7 +84,7 @@ func TestECDSASD_P256Multikey_IssueDeriveVerify(t *testing.T) {
 		ID:                 did + "#key-1",
 		Type:               "Multikey",
 		Controller:         did,
-		PublicKeyMultibase: vmpkg.EncodeP256PubMultibase(&priv.PublicKey),
+		PublicKeyMultibase: mustEncodePubMultibase(t, &priv.PublicKey),
 	}
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, mkVM))
 
@@ -89,11 +120,14 @@ func TestECDSASD_Tamper_Rejected(t *testing.T) {
 		t.Fatalf("gen p256: %v", err)
 	}
 
+	type signFunc func(t *testing.T, did string, provider signer.SignerProvider, resolver vmpkg.ResolverProvider) []byte
+
 	cases := []struct {
 		name     string
 		did      string
 		provider func(t *testing.T) signer.SignerProvider
 		vm       vmpkg.VerificationMethodEntry
+		sign     signFunc
 	}{
 		{
 			name: "P-256",
@@ -105,7 +139,8 @@ func TestECDSASD_Tamper_Rejected(t *testing.T) {
 				}
 				return p
 			},
-			vm: vmpkg.NewP256VM("did:example:sd-tamper-p256", "key-1", &p256Priv.PublicKey),
+			vm:   vmpkg.NewP256VM("did:example:sd-tamper-p256", "key-1", &p256Priv.PublicKey),
+			sign: signSDBase,
 		},
 		{
 			name: "secp256k1",
@@ -117,14 +152,15 @@ func TestECDSASD_Tamper_Rejected(t *testing.T) {
 				}
 				return p
 			},
-			vm: vmpkg.NewSecp256k1VM("did:example:sd-tamper-secp", "key-1", pubHex(t, secpPriv)),
+			vm:   vmpkg.NewSecp256k1VM("did:example:sd-tamper-secp", "key-1", pubHex(t, secpPriv)),
+			sign: signSDBaseSecp,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(tc.did, tc.vm))
-			baseBytes := signSDBase(t, tc.did, tc.provider(t), resolver)
+			baseBytes := tc.sign(t, tc.did, tc.provider(t), resolver)
 
 			base, err := vc.ParseECDSASDCredential(baseBytes)
 			if err != nil {
@@ -185,7 +221,7 @@ func TestECDSASD_WrongCurveVM_Rejected(t *testing.T) {
 		// Sign with the real secp256k1 issuer.
 		signResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
 			vmpkg.NewSecp256k1VM(did, "key-1", pubHex(t, secpPriv))))
-		baseBytes := signSDBase(t, did, secpProv, signResolver)
+		baseBytes := signSDBaseSecp(t, did, secpProv, signResolver)
 
 		// Verify against a resolver that advertises a P-256 VM for the same DID.
 		wrongResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,

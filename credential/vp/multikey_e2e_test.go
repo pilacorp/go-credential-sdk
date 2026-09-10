@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"strings"
 	"testing"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
@@ -12,9 +13,8 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
 )
 
-// TestVP_MultiKey_SignVerify signs and verifies a presentation with each holder
-// key type: secp256k1 (ecdsa-rdfc-2019), P-256 (JsonWebSignature2020/ES256) and
-// RSA (JsonWebSignature2020/RS256).
+// TestVP_MultiKey_SignVerify signs and verifies a presentation with a P-256
+// holder key, and checks secp256k1 and RSA holder keys are rejected.
 func TestVP_MultiKey_SignVerify(t *testing.T) {
 	const holderSecp = "57600b3f2b7e1054094e14cd85c72a40dc74c4ee062bb381cea604b55ce56aec"
 
@@ -32,9 +32,10 @@ func TestVP_MultiKey_SignVerify(t *testing.T) {
 		did      string
 		provider func(t *testing.T) signer.SignerProvider
 		vm       vmpkg.VerificationMethodEntry
+		wantErr  string
 	}{
 		{
-			name: "secp256k1/ecdsa-rdfc-2019",
+			name: "secp256k1 rejected",
 			did:  "did:example:vp-secp",
 			provider: func(t *testing.T) signer.SignerProvider {
 				p, err := signer.NewDefaultProvider(holderSecp)
@@ -43,10 +44,11 @@ func TestVP_MultiKey_SignVerify(t *testing.T) {
 				}
 				return p
 			},
-			vm: vmpkg.NewSecp256k1VM("did:example:vp-secp", "key-1", secpPubHex(t, holderSecp)),
+			vm:      vmpkg.NewSecp256k1VM("did:example:vp-secp", "key-1", secpPubHex(t, holderSecp)),
+			wantErr: "unsupported key kind",
 		},
 		{
-			name: "P-256/JsonWebSignature2020",
+			name: "P-256/ecdsa-rdfc-2019",
 			did:  "did:example:vp-p256",
 			provider: func(t *testing.T) signer.SignerProvider {
 				p, err := signer.NewP256Provider(p256Priv)
@@ -58,7 +60,7 @@ func TestVP_MultiKey_SignVerify(t *testing.T) {
 			vm: vmpkg.NewP256VM("did:example:vp-p256", "key-1", &p256Priv.PublicKey),
 		},
 		{
-			name: "RSA/JsonWebSignature2020",
+			name: "RSA rejected",
 			did:  "did:example:vp-rsa",
 			provider: func(t *testing.T) signer.SignerProvider {
 				p, err := signer.NewRSAProvider(rsaKey)
@@ -67,7 +69,8 @@ func TestVP_MultiKey_SignVerify(t *testing.T) {
 				}
 				return p
 			},
-			vm: vmpkg.NewRSAVM("did:example:vp-rsa", "key-1", &rsaKey.PublicKey),
+			vm:      vmpkg.NewRSAVM("did:example:vp-rsa", "key-1", &rsaKey.PublicKey),
+			wantErr: "unsupported key kind",
 		},
 	}
 
@@ -79,9 +82,18 @@ func TestVP_MultiKey_SignVerify(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse vp: %v", err)
 			}
-			if err := pres.AddProofByProvider(tc.provider(t), vp.WithResolver(resolver)); err != nil {
+
+			err = pres.AddProofByProvider(tc.provider(t), vp.WithResolver(resolver))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("sign vp err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("sign vp: %v", err)
 			}
+
 			if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
 				t.Fatalf("verify vp: %v", err)
 			}
