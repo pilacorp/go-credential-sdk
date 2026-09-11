@@ -40,10 +40,9 @@ func ParseECDSASDCredential(rawJSON []byte, opts ...CredentialOpt) (*ECDSASDCred
 // mandatoryPaths (dot-notation) are always disclosed; all other claims become
 // selectively disclosable.
 //
-// The standard issuer key is P-256. As a non-standard extension this SDK also
-// accepts a secp256k1 issuer key (it does not interoperate with conformant
-// ecdsa-sd-2023 verifiers); to use it, pin a secp256k1 verification method with
-// WithVerificationMethodKey, since auto-resolution selects a P-256 VM.
+// The proof is bound to "<issuer>#key-1" unless WithVerificationMethodKey pins
+// another kid; that VM must hold a P-256 key. Verification still accepts the
+// secp256k1 base proofs earlier versions could issue.
 func (e *ECDSASDCredential) AddProofByProvider(signerProvider signer.SignerProvider, mandatoryPaths []string, opts ...CredentialOpt) error {
 	if signerProvider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
@@ -51,12 +50,29 @@ func (e *ECDSASDCredential) AddProofByProvider(signerProvider signer.SignerProvi
 	if err := e.base.executeOptions(opts...); err != nil {
 		return err
 	}
-	vmURL, err := e.base.resolveSigningVM(verificationmethod.KeyP256, opts...)
+	vm, vmURL, err := e.base.resolveSigningVMEntry(opts...)
 	if err != nil {
 		return err
 	}
-	return (*jsonmap.JSONMap)(&e.base.credentialData).AddECDSASDBaseProof(
-		signerProvider, vmURL, "assertionMethod", dotPathsToPointers(mandatoryPaths))
+
+	kind, ok := verificationmethod.VMKeyKind(vm)
+	if !ok {
+		return fmt.Errorf("verification method %q has an unrecognized key type", vmURL)
+	}
+
+	switch kind {
+	case verificationmethod.KeyP256:
+		vmPub, err := verificationmethod.ECPubFromVM(vm)
+		if err != nil {
+			return fmt.Errorf("verification method %q: %w", vmURL, err)
+		}
+
+		return (*jsonmap.JSONMap)(&e.base.credentialData).AddECDSASDBaseProof(
+			signerProvider, vmURL, "assertionMethod", dotPathsToPointers(mandatoryPaths),
+			jsonmap.WithVMPublicKey(vmPub))
+	default:
+		return fmt.Errorf("unsupported key kind %v for ecdsa-sd-2023 credential", kind)
+	}
 }
 
 // Derive returns a new credential revealing the mandatory claims plus
@@ -68,8 +84,7 @@ func (e *ECDSASDCredential) Derive(selectivePaths []string) (*JSONCredential, er
 		return nil, fmt.Errorf("failed to derive selective disclosure: %w", err)
 	}
 	return &JSONCredential{
-		credentialData:        CredentialData(derived),
-		verificationMethodKey: e.base.verificationMethodKey,
+		credentialData: CredentialData(derived),
 	}, nil
 }
 

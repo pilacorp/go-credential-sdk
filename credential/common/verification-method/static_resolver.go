@@ -3,6 +3,7 @@ package verificationmethod
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/base64"
 	"fmt"
@@ -83,8 +84,27 @@ func NewRSAVM(did, fragment string, pub *rsa.PublicKey) VerificationMethodEntry 
 	}
 }
 
+// NewP256MultikeyVM builds a Multikey verification method from a P-256 public
+// key. This is the representation the W3C ecdsa-rdfc-2019 and ecdsa-sd-2023
+// suites specify; NewP256VM publishes the same key as a JWK instead.
+func NewP256MultikeyVM(did, fragment string, pub *ecdsa.PublicKey) (VerificationMethodEntry, error) {
+	if pub == nil || pub.Curve != elliptic.P256() {
+		return VerificationMethodEntry{}, fmt.Errorf("NewP256MultikeyVM requires a P-256 key")
+	}
+	mb, err := EncodePubMultibase(pub)
+	if err != nil {
+		return VerificationMethodEntry{}, err
+	}
+	return VerificationMethodEntry{
+		ID:                 did + "#" + fragment,
+		Type:               "Multikey",
+		Controller:         did,
+		PublicKeyMultibase: mb,
+	}, nil
+}
+
 // NewP256VM builds a JsonWebKey2020 verification method from a P-256 public key.
-// Used by ecdsa-sd-2023.
+// Used by ecdsa-rdfc-2019 and ecdsa-sd-2023.
 func NewP256VM(did, fragment string, pub *ecdsa.PublicKey) VerificationMethodEntry {
 	xb := make([]byte, 32)
 	yb := make([]byte, 32)

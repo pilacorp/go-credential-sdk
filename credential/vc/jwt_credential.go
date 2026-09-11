@@ -77,19 +77,25 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 		payload[key] = value
 	}
 
-	kid := options.verificationMethodKey
-	if kid == "" {
-		kid, err = verificationmethod.ResolveVerificationMethodURLForKey(context.Background(), vcc.Issuer, "assertionMethod", verificationmethod.KeySecp256k1, options.resolver)
-		if err != nil {
-			return nil, fmt.Errorf("resolve verification method: %w", err)
-		}
-	} else {
-		kid = verificationmethod.NormalizeVerificationMethodURL(vcc.Issuer, kid)
+	// Resolve the VM so alg reflects the key it actually holds, and so a kid
+	// that does not exist or is not granted assertionMethod is caught here.
+	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vcc.Issuer,
+		"assertionMethod", options.verificationMethodKey, options.resolver)
+	if err != nil {
+		return nil, fmt.Errorf("resolve verification method: %w", err)
+	}
+	kind, ok := verificationmethod.VMKeyKind(vm)
+	if !ok {
+		return nil, fmt.Errorf("verification method %q has an unrecognized key type", kid)
+	}
+	alg, err := jwt.AlgForKeyKind(kind)
+	if err != nil {
+		return nil, fmt.Errorf("verification method %q: %w", kid, err)
 	}
 
 	header := map[string]interface{}{
 		"typ": "JWT",
-		"alg": "ES256K",
+		"alg": alg,
 		"kid": kid,
 	}
 

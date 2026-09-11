@@ -2,15 +2,12 @@ package jwt
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/ethereum/go-ethereum/crypto"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -54,9 +51,8 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("invalid header: %w", err)
 	}
 
-	// Check algorithm
 	alg, ok := header["alg"].(string)
-	if !ok || alg != "ES256K" {
+	if !ok || (alg != AlgES256K && alg != AlgES256) {
 		return fmt.Errorf("unsupported algorithm: %v", header["alg"])
 	}
 
@@ -86,12 +82,21 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("failed to resolve verification method: %w", verr)
 	}
 
-	publicKeyHex, err := publicKeyHexFromVM(vm)
-	if err != nil {
-		return err
+	// The header must not claim an algorithm the verification method's key
+	// cannot produce, otherwise alg and key could be mixed.
+	kind, kok := verificationmethod.VMKeyKind(vm)
+	if !kok {
+		return fmt.Errorf("verification method '%s' has an unrecognized key type", vm.ID)
+	}
+	wantAlg, aerr := AlgForKeyKind(kind)
+	if aerr != nil {
+		return fmt.Errorf("verification method '%s': %w", vm.ID, aerr)
+	}
+	if alg != wantAlg {
+		return fmt.Errorf("JWT alg %q does not match verification method '%s', which holds a %s key", alg, vm.ID, kind)
 	}
 
-	publicKey, err := hexToECDSAPublicKey(publicKeyHex)
+	publicKey, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
 		return fmt.Errorf("invalid public key: %w", err)
 	}
@@ -246,39 +251,4 @@ func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmet
 		}
 	}
 	return fmt.Errorf("verification method '%s' is not granted purpose '%s' on DID '%s'", vm.ID, proofPurpose, doc.ID)
-}
-
-func publicKeyHexFromVM(vm *verificationmethod.VerificationMethodEntry) (string, error) {
-	if vm == nil {
-		return "", fmt.Errorf("verification method is nil")
-	}
-	if vm.PublicKeyHex != "" {
-		return strings.TrimPrefix(vm.PublicKeyHex, "0x"), nil
-	}
-	if vm.PublicKeyJwk != nil {
-		return verificationmethod.JWKToHex(vm.PublicKeyJwk)
-	}
-	return "", fmt.Errorf("verification method '%s' has no public key material", vm.ID)
-}
-
-// hexToECDSAPublicKey converts hex string to ECDSA public key
-func hexToECDSAPublicKey(publicKeyHex string) (*ecdsa.PublicKey, error) {
-	publicKeyHex = strings.TrimPrefix(publicKeyHex, "0x")
-
-	publicKeyBytes, err := hex.DecodeString(publicKeyHex)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode hex: %w", err)
-	}
-
-	// Handle compressed public keys (33 bytes)
-	if len(publicKeyBytes) == 33 && (publicKeyBytes[0] == 0x02 || publicKeyBytes[0] == 0x03) {
-		return crypto.DecompressPubkey(publicKeyBytes)
-	}
-
-	// Handle uncompressed public keys (65 bytes)
-	if len(publicKeyBytes) == 65 && publicKeyBytes[0] == 0x04 {
-		return crypto.UnmarshalPubkey(publicKeyBytes)
-	}
-
-	return nil, fmt.Errorf("unsupported public key format")
 }

@@ -1,6 +1,9 @@
 package vc
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -10,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -17,6 +21,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 func TestParseCredential(t *testing.T) {
@@ -179,32 +184,20 @@ func TestCreateCredentialWithContents(t *testing.T) {
 		errorMsg    string
 	}{
 		{
-			name: "Valid JWT contents",
-			input: CredentialContents{
-				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
-				ID:      "urn:uuid:1234",
-				Issuer:  "did:example:issuer",
-			},
-			expected: CredentialData{
-				"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
-				"id":       "urn:uuid:1234",
-				"issuer":   "did:example:issuer",
-			},
-			expectError: false,
-		},
-		{
 			name: "Valid JSON contents",
 			input: CredentialContents{
 				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				ID:      "urn:uuid:1234",
 				Issuer:  "did:example:issuer",
 				Types:   []string{"VerifiableCredential"},
+				Subject: []Subject{{ID: "did:example:subject"}},
 			},
 			expected: CredentialData{
-				"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
-				"id":       "urn:uuid:1234",
-				"issuer":   "did:example:issuer",
-				"type":     "VerifiableCredential",
+				"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+				"id":                "urn:uuid:1234",
+				"issuer":            "did:example:issuer",
+				"type":              "VerifiableCredential",
+				"credentialSubject": CredentialData{"id": "did:example:subject"},
 			},
 			expectError: false,
 		},
@@ -213,6 +206,26 @@ func TestCreateCredentialWithContents(t *testing.T) {
 			input:       CredentialContents{},
 			expectError: true,
 			errorMsg:    "credential contents must have at least one of: context, ID, or issuer",
+		},
+		{
+			name: "Missing type",
+			input: CredentialContents{
+				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+				Issuer:  "did:example:issuer",
+				Subject: []Subject{{ID: "did:example:subject"}},
+			},
+			expectError: true,
+			errorMsg:    "credential is missing type",
+		},
+		{
+			name: "Missing credentialSubject",
+			input: CredentialContents{
+				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+				Issuer:  "did:example:issuer",
+				Types:   []string{"VerifiableCredential"},
+			},
+			expectError: true,
+			errorMsg:    "credential is missing credentialSubject",
 		},
 	}
 
@@ -813,15 +826,15 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		credential, err := NewJSONCredential(credentialContents)
 		assert.NoError(t, err, "Failed to create JSON credential")
 
-		// Add proof using AddProofByProvider method
-		defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
-		assert.NoError(t, err, "NewDefaultProvider failed")
+		// P-256, not the secp256k1 testnet key: JSON credentials sign with
+		// ecdsa-rdfc-2019. The JWT flow below keeps the secp256k1 key.
+		p256Signer, opts := p256TestIssuer(t, issuerDID)
 
-		err = credential.AddProofByProvider(defaultSigner)
+		err = credential.AddProofByProvider(p256Signer, opts...)
 		assert.NoError(t, err, "Failed to add proof to JSON credential")
 
 		// Verify the credential
-		err = credential.Verify()
+		err = credential.Verify(opts...)
 		assert.NoError(t, err, "Failed to verify JSON credential with proof")
 
 		// Serialize and verify it has proof
@@ -998,7 +1011,6 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 }
 
 func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
-	issuerPrivateKey := "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
 	issuerDID := "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
 	schema := Schema{
 		ID:   "https://auth-dev.pila.vn/api/v1/schemas/7250251f-141e-47a2-aa5f-a5d3499d30da",
@@ -1038,18 +1050,15 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 	}
 
 	// add proof
-	defaultSigner, err := signer.NewDefaultProvider(issuerPrivateKey)
-	if err != nil {
-		t.Fatalf("NewDefaultProvider failed: %v", err)
-	}
+	p256Signer, opts := p256TestIssuer(t, issuerDID)
 
-	err = embededCredential.AddProofByProvider(defaultSigner)
+	err = embededCredential.AddProofByProvider(p256Signer, opts...)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
 
 	// verify
-	err = embededCredential.Verify(WithSchemaValidation())
+	err = embededCredential.Verify(append(opts, WithSchemaValidation())...)
 	if err != nil {
 		t.Fatalf("Failed to verify JSON credential: %v", err)
 	}
@@ -1101,6 +1110,39 @@ const (
 	testIssuerPrivateKey = "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
 	testIssuerDID        = "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
 )
+
+// secpVMResolver publishes a secp256k1 key-1 for did, so NewJWTCredential can
+// resolve the VM it needs to pick the JWT alg without touching the network.
+func secpVMResolver(t *testing.T, did string) CredentialOpt {
+	t.Helper()
+	priv, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("secp256k1 keygen: %v", err)
+	}
+	pubHex := hex.EncodeToString(ethcrypto.FromECDSAPub(&priv.PublicKey))
+	return WithResolver(verificationmethod.NewStaticResolver(
+		verificationmethod.NewDIDDocument(did,
+			verificationmethod.NewSecp256k1VM(did, "key-1", pubHex))))
+}
+
+// p256TestIssuer returns a P-256 signer plus the options binding it to did's
+// key-1 through a static resolver. JSON credentials sign with ecdsa-rdfc-2019,
+// which is P-256 only, while the testnet DIDs above publish secp256k1 keys.
+func p256TestIssuer(t *testing.T, did string) (signer.SignerProvider, []CredentialOpt) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("p256 keygen: %v", err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+	resolver := verificationmethod.NewStaticResolver(
+		verificationmethod.NewDIDDocument(did,
+			verificationmethod.NewP256VM(did, "key-1", &priv.PublicKey)))
+	return prov, []CredentialOpt{WithVerificationMethodKey("key-1"), WithResolver(resolver)}
+}
 
 func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
@@ -1230,12 +1272,9 @@ func TestSerializeJSONCredential(t *testing.T) {
 		t.Fatalf("Failed to create JSON credential: %v", err)
 	}
 	// add proof
-	defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
-	if err != nil {
-		t.Fatalf("NewDefaultProvider failed: %v", err)
-	}
+	p256Signer, opts := p256TestIssuer(t, testIssuerDID)
 
-	err = jsonCredential.AddProofByProvider(defaultSigner)
+	err = jsonCredential.AddProofByProvider(p256Signer, opts...)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1284,6 +1323,7 @@ func TestNewJWTCredential_WithSDDisclosures_SerializesSDJWT(t *testing.T) {
 		WithVerificationMethodKey("key-1"),
 		WithSDDisclosures(disclosures),
 		WithSDSelectivePaths(selectivePaths),
+		secpVMResolver(t, "did:example:issuer"),
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
@@ -1358,7 +1398,7 @@ func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 
 	selectivePaths := []string{"credentialSubject.emails[1]"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
@@ -1459,7 +1499,7 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 
 	selectivePaths := []string{"credentialSubject.profile.name"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
@@ -1560,7 +1600,7 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	}
 	selectivePaths := []string{"credentialSubject.firstname", "credentialSubject.email"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 	serialized, err := cred.Serialize()
 	assert.NoError(t, err)
@@ -1624,6 +1664,7 @@ func TestWithSDDecoyDigests_Array(t *testing.T) {
 		WithSDDecoyDigests([]Decoy{
 			{Path: "credentialSubject.emails[1]", Count: 1},
 		}),
+		secpVMResolver(t, "did:example:issuer"),
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
@@ -1692,7 +1733,7 @@ func TestExtractField(t *testing.T) {
 		ValidUntil: time.Now().Add(24 * time.Hour),
 	}
 
-	jwtCred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"))
+	jwtCred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 
 	// Test extracting from JWT credential
@@ -1730,13 +1771,13 @@ func TestExtractField_EdgeCases(t *testing.T) {
 	id := cred.ExtractField("id")
 	assert.Equal(t, "urn:uuid:edge-test", id)
 
-	// Test with empty credential
-	emptyJsonCred := `{}`
-	emptyCred, err := ParseCredential([]byte(emptyJsonCred))
-	assert.NoError(t, err)
+	// An empty document is not a credential; parsing rejects it.
+	_, err = ParseCredential([]byte(`{}`))
+	assert.Error(t, err)
 
-	emptyResult := emptyCred.ExtractField("any.path")
-	assert.Nil(t, emptyResult)
+	// ExtractField on an empty credential still yields nil rather than panics.
+	emptyCred := &JSONCredential{credentialData: CredentialData{}}
+	assert.Nil(t, emptyCred.ExtractField("any.path"))
 }
 
 func TestGetOptions_Defaults(t *testing.T) {
@@ -1747,9 +1788,8 @@ func TestGetOptions_Defaults(t *testing.T) {
 	assert.False(t, opts.isCheckExpiration)
 	assert.False(t, opts.isCheckRevocation)
 	assert.Equal(t, config.BaseURL, opts.didBaseURL)
-	// Multi-VM: default verificationMethodKey is empty so the SDK resolves
-	// the latest VM in the assertionMethod array at sign time.
-	assert.Equal(t, "", opts.verificationMethodKey)
+	// Signing falls back to "<issuer>#key-1" when no kid is pinned.
+	assert.Equal(t, "key-1", opts.verificationMethodKey)
 	assert.Nil(t, opts.loadedSchemaLoader)
 	assert.NotNil(t, opts.resolver, "default resolver should not be nil")
 }
@@ -1775,7 +1815,9 @@ func TestGetOptions_WithResolverOverridesDefault(t *testing.T) {
 func TestValidateCredential_WithCustomSchemaLoader_Succeeds(t *testing.T) {
 	// Minimal credential that satisfies validateCredential's required keys.
 	cred := CredentialData{
-		"type": []interface{}{"VerifiableCredential"},
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
 		"credentialSubject": map[string]interface{}{
 			"id": "did:example:123",
 		},
@@ -1802,7 +1844,9 @@ func TestValidateCredential_WithCustomSchemaLoader_Succeeds(t *testing.T) {
 
 func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T) {
 	cred := CredentialData{
-		"type": []interface{}{"VerifiableCredential"},
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
 		"credentialSubject": map[string]interface{}{
 			"id": "did:example:123",
 		},
@@ -1994,11 +2038,12 @@ func newTestSigner(t *testing.T) *signer.DefaultProvider {
 func newSignedJSONCredential(t *testing.T) Credential {
 	t.Helper()
 	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
-	cred, err := NewJSONCredential(contents, WithVerificationMethodKey("key-1"))
+	cred, err := NewJSONCredential(contents)
 	if err != nil {
 		t.Fatalf("NewJSONCredential failed: %v", err)
 	}
-	if err := cred.AddProofByProvider(newTestSigner(t)); err != nil {
+	p256Signer, opts := p256TestIssuer(t, testIssuerDID)
+	if err := cred.AddProofByProvider(p256Signer, opts...); err != nil {
 		t.Fatalf("AddProofByProvider failed: %v", err)
 	}
 	return cred
@@ -2100,7 +2145,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 		vcc := baseContents()
 		vcc.TermsOfUse = []TermsOfUse{{Type: "PresentationRequiredPolicy"}}
 
-		cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"))
+		cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), secpVMResolver(t, "did:example:issuer"))
 		assert.NoError(t, err)
 
 		contents, err := cred.GetContents()

@@ -236,6 +236,42 @@ cred, _ := vc.ParseJSONCredential(rawJSON)
 err = cred.AddProofByProvider(prov, vc.WithResolver(resolver)) // → ecdsa-rdfc-2019
 ```
 
+##### `ecdsa-rdfc-2019` proof format
+
+The suite follows [Data Integrity ECDSA Cryptosuites v1.0 § 3.2](https://www.w3.org/TR/vc-di-ecdsa/#ecdsa-rdfc-2019).
+The signature is computed over `proofConfigHash || transformedDocumentHash`
+(§ 3.2.4), so the proof options — `created`, `proofPurpose`,
+`verificationMethod`, `type` and `cryptosuite` — are covered by the signature
+alongside the credential body, and the canonicalization preserves JSON number
+types (`"age": 30` and `"age": "30"` no longer produce the same digest).
+
+`proofValue` is **multibase base58btc** (§ 3.2.1 step 6), i.e. a string starting
+with `z`:
+
+```json
+"proof": {
+  "type": "DataIntegrityProof",
+  "cryptosuite": "ecdsa-rdfc-2019",
+  "created": "2026-01-01T00:00:00Z",
+  "verificationMethod": "did:example:issuer#key-1",
+  "proofPurpose": "assertionMethod",
+  "proofValue": "z3PLC7..."
+}
+```
+
+Signing also appends `https://w3id.org/security/data-integrity/v2` to `@context`
+when the document does not already define the Data Integrity terms (VC 1.1
+documents carrying only the 2018 credentials context). A context adds no RDF
+triples, so this does not change the statements being signed.
+
+> **Migration.** Credentials issued before this change carry a bare hex
+> `proofValue`. Verification picks the format from the first character — `z`
+> selects the new path, anything else the previous one, and the two cannot
+> collide because the hex alphabet has no `z` — so **already-issued credentials
+> keep verifying unchanged and there is no re-issuance**. There is no option to
+> issue in the old format. Because an older SDK will reject the new format,
+> **upgrade every verifying component before any issuing component.**
+
 #### JsonWebSignature2020 (RSA) for JSON-LD credentials
 
 Sign a JSON-LD credential with an RSA key. The issuer DID must expose a
@@ -339,7 +375,7 @@ Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(u
 Supported Proof:
 
 - type: DataIntegrityProof
-  - cryptosuite: ecdsa-rdfc-2019 (standard signing), ecdsa-sd-2023 (selective disclosure for JSON-LD — see below)
+  - cryptosuite: ecdsa-rdfc-2019 (standard signing; `proofValue` is multibase base58btc — see above), ecdsa-sd-2023 (selective disclosure for JSON-LD — see below)
 - type: JsonWebSignature2020 (RSA, detached JWS — see above)
 
 ### <a name="sd-jwt-selective-disclosure"></a>SD-JWT (Selective Disclosure)
@@ -802,7 +838,7 @@ Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(u
 Supported Proof:
 
 - type: DataIntegrityProof
-- cryptosuite: ecdsa-rdfc-2019,
+- cryptosuite: ecdsa-rdfc-2019 (`proofValue` is multibase base58btc)
 
 ## <a name="vp-example"></a>Example
 

@@ -110,6 +110,12 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 		vcJSON["validUntil"] = vcc.ValidUntil.Format(time.RFC3339)
 	}
 
+	// Shared by NewJSONCredential and NewJWTCredential, so both reject a
+	// credential missing a property the data model requires.
+	if err := requireCredentialProperties(vcJSON); err != nil {
+		return nil, err
+	}
+
 	return vcJSON, nil
 }
 
@@ -507,10 +513,12 @@ func parseStringField(obj CredentialData, fieldName string) (string, error) {
 func validateCredential(m CredentialData, opts *credentialOptions) error {
 	copyMap := util.ShallowCopyObj(m)
 
-	requiredKeys := []string{"type", "credentialSchema", "credentialSubject"}
+	// credentialSchema is optional per VC Data Model 2.0 §4.11, but this path
+	// exists to validate against it, so here it is required.
+	requiredKeys := append([]string{"credentialSchema"}, requiredCredentialProperties...)
 	var schemaList []interface{}
 	for _, key := range requiredKeys {
-		if _, exists := copyMap[key]; !exists {
+		if isEmptyValue(copyMap[key]) {
 			return fmt.Errorf("%s is required", key)
 		}
 		if key == "credentialSchema" {

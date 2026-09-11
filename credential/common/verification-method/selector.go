@@ -1,6 +1,7 @@
 package verificationmethod
 
 import (
+	"crypto/elliptic"
 	"fmt"
 	"strings"
 )
@@ -37,8 +38,8 @@ func VMIsP256(vm *VerificationMethodEntry) bool {
 		return vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "P-256"
 	}
 	if vm.PublicKeyMultibase != "" {
-		_, _, err := DecodeP256PubMultibase(vm.PublicKeyMultibase)
-		return err == nil
+		pub, err := ECPubFromMultibase(vm.PublicKeyMultibase)
+		return err == nil && pub.Curve == elliptic.P256()
 	}
 	return false
 }

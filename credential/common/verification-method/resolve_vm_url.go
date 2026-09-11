@@ -4,25 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
-
-// ResolveVerificationMethodURL returns the full verification method URL (kid)
-// for signing/verifying given DID and purpose by reading the DID document and
-// picking the latest active VM in the relationship array for the given purpose.
-func ResolveVerificationMethodURL(ctx context.Context, did, purpose string, resolver ResolverProvider) (string, error) {
-	if resolver == nil {
-		return "", fmt.Errorf("document resolver is not configured")
-	}
-	doc, err := resolver.ResolveDocument(ctx, did)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve DID '%s': %w", did, err)
-	}
-	vm, err := SelectLatestActiveVMForPurpose(doc, purpose)
-	if err != nil {
-		return "", err
-	}
-	return vm.ID, nil
-}
 
 // ResolveVerificationMethodURLForKey is like ResolveVerificationMethodURL but
 // picks the latest active VM whose key matches kind, so the resolved VM is
@@ -51,36 +34,30 @@ func ResolveSigningVM(ctx context.Context, did, purpose, pinnedKid string, resol
 		return nil, "", fmt.Errorf("document resolver is not configured")
 	}
 
-	// Pinned kid may reference a VM in a different DID (e.g. a delegate), so
-	// resolve the DID the VM URL points to rather than the signer's own DID.
-	if pinnedKid != "" {
-		url := NormalizeVerificationMethodURL(did, pinnedKid)
-		vmDID := didFromVMURL(url)
-		if vmDID == "" {
-			vmDID = did
-		}
-		doc, err := resolver.ResolveDocument(ctx, vmDID)
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to resolve DID '%s': %w", vmDID, err)
-		}
-		vm, err := FindVerificationMethod(doc, url)
-		if err != nil {
-			return nil, "", err
-		}
-		if err := EnsureVMAuthorizedForPurpose(doc, vm.ID, purpose); err != nil {
-			return nil, "", err
-		}
-		return vm, vm.ID, nil
+	url := NormalizeVerificationMethodURL(did, pinnedKid)
+	vmDID := didFromVMURL(url)
+	if vmDID == "" {
+		vmDID = did
 	}
 
-	doc, err := resolver.ResolveDocument(ctx, did)
+	doc, err := resolver.ResolveDocument(ctx, vmDID)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to resolve DID '%s': %w", did, err)
+		return nil, "", fmt.Errorf("failed to resolve DID '%s': %w", vmDID, err)
 	}
-	vm, err := SelectLatestActiveVMForPurpose(doc, purpose)
+
+	vm, err := FindVerificationMethod(doc, url)
 	if err != nil {
 		return nil, "", err
 	}
+
+	if vm.Revoked != nil {
+		return nil, "", fmt.Errorf("verification method '%s' was revoked at %s",
+			vm.ID, vm.Revoked.UTC().Format(time.RFC3339))
+	}
+	if err := EnsureVMAuthorizedForPurpose(doc, vm.ID, purpose); err != nil {
+		return nil, "", err
+	}
+
 	return vm, vm.ID, nil
 }
 

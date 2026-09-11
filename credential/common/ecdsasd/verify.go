@@ -22,7 +22,7 @@ func verifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 	if err != nil {
 		return err
 	}
-	ephPub, err := verificationmethod.P256PubFromMultikeyBytes(bp.PublicKey)
+	ephPub, err := verificationmethod.ECPubFromMultikeyBytes(bp.PublicKey)
 	if err != nil {
 		return fmt.Errorf("ecdsasd: decode ephemeral key: %w", err)
 	}
@@ -35,7 +35,7 @@ func verifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 	nonMandatory := orderedValues(mg.nonMatching)
 	mandatoryHash := hashMandatory(mg.matching)
 
-	proofHash, err := hashProofConfig(proofConfig, document["@context"])
+	proofHash, err := hashProofConfig(proofConfig)
 	if err != nil {
 		return err
 	}
@@ -69,7 +69,7 @@ func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string
 	if err != nil {
 		return err
 	}
-	ephPub, err := verificationmethod.P256PubFromMultikeyBytes(dp.PublicKey)
+	ephPub, err := verificationmethod.ECPubFromMultikeyBytes(dp.PublicKey)
 	if err != nil {
 		return fmt.Errorf("ecdsasd: decode ephemeral key: %w", err)
 	}
@@ -98,7 +98,7 @@ func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string
 	}
 
 	// Recompute hashes.
-	proofHash, err := hashProofConfig(proofConfig, revealDoc["@context"])
+	proofHash, err := hashProofConfig(proofConfig)
 	if err != nil {
 		return err
 	}
