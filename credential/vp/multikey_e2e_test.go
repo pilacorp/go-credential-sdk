@@ -27,6 +27,20 @@ func TestVP_MultiKey_SignVerify(t *testing.T) {
 		t.Fatalf("gen rsa: %v", err)
 	}
 
+	// The same P-256 key published as a Multikey, the format W3C specifies.
+	mkVM, err := vmpkg.NewP256MultikeyVM("did:example:vp-p256-mb", "key-1", &p256Priv.PublicKey)
+	if err != nil {
+		t.Fatalf("multikey vm: %v", err)
+	}
+
+	p256Provider := func(t *testing.T) signer.SignerProvider {
+		p, err := signer.NewP256Provider(p256Priv)
+		if err != nil {
+			t.Fatalf("p256 provider: %v", err)
+		}
+		return p
+	}
+
 	cases := []struct {
 		name     string
 		did      string
@@ -48,16 +62,16 @@ func TestVP_MultiKey_SignVerify(t *testing.T) {
 			wantErr: "unsupported key kind",
 		},
 		{
-			name: "P-256/ecdsa-rdfc-2019",
-			did:  "did:example:vp-p256",
-			provider: func(t *testing.T) signer.SignerProvider {
-				p, err := signer.NewP256Provider(p256Priv)
-				if err != nil {
-					t.Fatalf("p256 provider: %v", err)
-				}
-				return p
-			},
-			vm: vmpkg.NewP256VM("did:example:vp-p256", "key-1", &p256Priv.PublicKey),
+			name:     "P-256 JWK/ecdsa-rdfc-2019",
+			did:      "did:example:vp-p256",
+			provider: p256Provider,
+			vm:       vmpkg.NewP256VM("did:example:vp-p256", "key-1", &p256Priv.PublicKey),
+		},
+		{
+			name:     "P-256 Multikey/ecdsa-rdfc-2019",
+			did:      "did:example:vp-p256-mb",
+			provider: p256Provider,
+			vm:       mkVM,
 		},
 		{
 			name: "RSA rejected",

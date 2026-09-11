@@ -51,9 +51,8 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("invalid header: %w", err)
 	}
 
-	// Check algorithm
 	alg, ok := header["alg"].(string)
-	if !ok || alg != "ES256K" {
+	if !ok || (alg != AlgES256K && alg != AlgES256) {
 		return fmt.Errorf("unsupported algorithm: %v", header["alg"])
 	}
 
@@ -81,6 +80,20 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	vm, verr := verificationmethod.FindVerificationMethod(doc, kid)
 	if verr != nil {
 		return fmt.Errorf("failed to resolve verification method: %w", verr)
+	}
+
+	// The header must not claim an algorithm the verification method's key
+	// cannot produce, otherwise alg and key could be mixed.
+	kind, kok := verificationmethod.VMKeyKind(vm)
+	if !kok {
+		return fmt.Errorf("verification method '%s' has an unrecognized key type", vm.ID)
+	}
+	wantAlg, aerr := AlgForKeyKind(kind)
+	if aerr != nil {
+		return fmt.Errorf("verification method '%s': %w", vm.ID, aerr)
+	}
+	if alg != wantAlg {
+		return fmt.Errorf("JWT alg %q does not match verification method '%s', which holds a %s key", alg, vm.ID, kind)
 	}
 
 	publicKey, err := verificationmethod.ECPubFromVM(vm)

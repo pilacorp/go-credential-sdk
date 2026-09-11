@@ -2,7 +2,9 @@ package verificationmethod
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeVerificationMethodURL(t *testing.T) {
@@ -77,6 +79,47 @@ type stubResolver struct {
 
 func (s *stubResolver) ResolveDocument(_ context.Context, _ string) (*DIDDocument, error) {
 	return s.doc, s.err
+}
+
+// Signing must refuse a revoked key even when the caller pins it: the verifier
+// rejects anything created at or after the revocation.
+func TestResolveSigningVM_RevokedKey(t *testing.T) {
+	const did = "did:pila:abc123"
+	revoked := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	secpVM := func(fragment string, revokedAt *time.Time) VerificationMethodEntry {
+		return VerificationMethodEntry{
+			ID:           did + "#" + fragment,
+			Type:         "EcdsaSecp256k1VerificationKey2019",
+			Controller:   did,
+			PublicKeyHex: "0x04aa",
+			Revoked:      revokedAt,
+		}
+	}
+
+	doc := &DIDDocument{
+		ID:                 did,
+		VerificationMethod: []VerificationMethodEntry{secpVM("key-1", &revoked), secpVM("key-2", nil)},
+		AssertionMethod:    []string{did + "#key-1", did + "#key-2"},
+	}
+	resolver := &stubResolver{doc: doc}
+
+	t.Run("revoked kid rejected", func(t *testing.T) {
+		_, _, err := ResolveSigningVM(context.Background(), did, "assertionMethod", "key-1", resolver)
+		if err == nil || !strings.Contains(err.Error(), "was revoked at") {
+			t.Fatalf("err = %v, want a revoked-key error", err)
+		}
+	})
+
+	t.Run("active kid accepted", func(t *testing.T) {
+		vm, url, err := ResolveSigningVM(context.Background(), did, "assertionMethod", "key-2", resolver)
+		if err != nil {
+			t.Fatalf("ResolveSigningVM: %v", err)
+		}
+		if url != did+"#key-2" || vm.ID != url {
+			t.Errorf("resolved %q, want %q", url, did+"#key-2")
+		}
+	})
 }
 
 // Selection must skip VMs whose key is of another kind, so a signer never binds

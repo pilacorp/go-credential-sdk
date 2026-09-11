@@ -346,6 +346,33 @@ func TestECPubFromVM_P384Multikey(t *testing.T) {
 	}
 }
 
+// NewP256MultikeyVM publishes the key in the W3C Multikey format, and the SDK
+// still reads its kind from the key material rather than the type string.
+func TestNewP256MultikeyVM(t *testing.T) {
+	pub, _ := genKey(t, "P-256")
+
+	vm, err := NewP256MultikeyVM("did:example:1", "key-1", pub)
+	if err != nil {
+		t.Fatalf("NewP256MultikeyVM: %v", err)
+	}
+	if vm.ID != "did:example:1#key-1" || vm.Type != "Multikey" {
+		t.Errorf("vm = {%s, %s}, want {did:example:1#key-1, Multikey}", vm.ID, vm.Type)
+	}
+	if vm.PublicKeyMultibase != mustEncode(t, pub) {
+		t.Error("publicKeyMultibase does not match the key")
+	}
+	if kind, ok := VMKeyKind(&vm); !ok || kind != KeyP256 {
+		t.Errorf("VMKeyKind = %v (ok=%v), want P-256", kind, ok)
+	}
+
+	// The name promises P-256, so another curve must be refused rather than
+	// published under a mismatched label.
+	other, _ := genKey(t, "P-384")
+	if _, err := NewP256MultikeyVM("did:example:1", "key-1", other); err == nil {
+		t.Error("NewP256MultikeyVM accepted a P-384 key")
+	}
+}
+
 func TestECPubFromVM_NoKeyMaterial(t *testing.T) {
 	vm := VerificationMethodEntry{ID: "did:example:1#k"}
 	if _, err := ECPubFromVM(&vm); err == nil {

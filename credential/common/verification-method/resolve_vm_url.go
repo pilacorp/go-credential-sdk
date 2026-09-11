@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ResolveVerificationMethodURLForKey is like ResolveVerificationMethodURL but
@@ -38,17 +39,25 @@ func ResolveSigningVM(ctx context.Context, did, purpose, pinnedKid string, resol
 	if vmDID == "" {
 		vmDID = did
 	}
+
 	doc, err := resolver.ResolveDocument(ctx, vmDID)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to resolve DID '%s': %w", vmDID, err)
 	}
+
 	vm, err := FindVerificationMethod(doc, url)
 	if err != nil {
 		return nil, "", err
 	}
+
+	if vm.Revoked != nil {
+		return nil, "", fmt.Errorf("verification method '%s' was revoked at %s",
+			vm.ID, vm.Revoked.UTC().Format(time.RFC3339))
+	}
 	if err := EnsureVMAuthorizedForPurpose(doc, vm.ID, purpose); err != nil {
 		return nil, "", err
 	}
+
 	return vm, vm.ID, nil
 }
 

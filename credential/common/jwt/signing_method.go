@@ -8,7 +8,26 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/crypto"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
+
+// JOSE algorithms this package signs and verifies.
+const (
+	AlgES256K = "ES256K" // secp256k1
+	AlgES256  = "ES256"  // P-256
+)
+
+// AlgForKeyKind returns the JOSE algorithm for the key a verification method
+// holds. RSA is rejected: the JWT path signs a 64-byte R||S signature.
+func AlgForKeyKind(kind verificationmethod.KeyKind) (string, error) {
+	switch kind {
+	case verificationmethod.KeySecp256k1:
+		return AlgES256K, nil
+	case verificationmethod.KeyP256:
+		return AlgES256, nil
+	}
+	return "", fmt.Errorf("key kind %v is not supported for JWT", kind)
+}
 
 // SigningMethodES256K implements ES256K signing
 type SigningMethodES256K struct{}

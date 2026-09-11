@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -1110,6 +1111,20 @@ const (
 	testIssuerDID        = "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
 )
 
+// secpVMResolver publishes a secp256k1 key-1 for did, so NewJWTCredential can
+// resolve the VM it needs to pick the JWT alg without touching the network.
+func secpVMResolver(t *testing.T, did string) CredentialOpt {
+	t.Helper()
+	priv, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("secp256k1 keygen: %v", err)
+	}
+	pubHex := hex.EncodeToString(ethcrypto.FromECDSAPub(&priv.PublicKey))
+	return WithResolver(verificationmethod.NewStaticResolver(
+		verificationmethod.NewDIDDocument(did,
+			verificationmethod.NewSecp256k1VM(did, "key-1", pubHex))))
+}
+
 // p256TestIssuer returns a P-256 signer plus the options binding it to did's
 // key-1 through a static resolver. JSON credentials sign with ecdsa-rdfc-2019,
 // which is P-256 only, while the testnet DIDs above publish secp256k1 keys.
@@ -1308,6 +1323,7 @@ func TestNewJWTCredential_WithSDDisclosures_SerializesSDJWT(t *testing.T) {
 		WithVerificationMethodKey("key-1"),
 		WithSDDisclosures(disclosures),
 		WithSDSelectivePaths(selectivePaths),
+		secpVMResolver(t, "did:example:issuer"),
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
@@ -1382,7 +1398,7 @@ func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 
 	selectivePaths := []string{"credentialSubject.emails[1]"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
@@ -1483,7 +1499,7 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 
 	selectivePaths := []string{"credentialSubject.profile.name"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
@@ -1584,7 +1600,7 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	}
 	selectivePaths := []string{"credentialSubject.firstname", "credentialSubject.email"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 	serialized, err := cred.Serialize()
 	assert.NoError(t, err)
@@ -1648,6 +1664,7 @@ func TestWithSDDecoyDigests_Array(t *testing.T) {
 		WithSDDecoyDigests([]Decoy{
 			{Path: "credentialSubject.emails[1]", Count: 1},
 		}),
+		secpVMResolver(t, "did:example:issuer"),
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
@@ -1716,7 +1733,7 @@ func TestExtractField(t *testing.T) {
 		ValidUntil: time.Now().Add(24 * time.Hour),
 	}
 
-	jwtCred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"))
+	jwtCred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 
 	// Test extracting from JWT credential
@@ -2128,7 +2145,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 		vcc := baseContents()
 		vcc.TermsOfUse = []TermsOfUse{{Type: "PresentationRequiredPolicy"}}
 
-		cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"))
+		cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), secpVMResolver(t, "did:example:issuer"))
 		assert.NoError(t, err)
 
 		contents, err := cred.GetContents()

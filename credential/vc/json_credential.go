@@ -24,9 +24,6 @@ func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (*JSONCred
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}
-	if err := requireCredentialProperties(m); err != nil {
-		return nil, err
-	}
 
 	e := &JSONCredential{
 		credentialData: m,

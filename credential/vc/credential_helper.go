@@ -110,6 +110,12 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 		vcJSON["validUntil"] = vcc.ValidUntil.Format(time.RFC3339)
 	}
 
+	// Shared by NewJSONCredential and NewJWTCredential, so both reject a
+	// credential missing a property the data model requires.
+	if err := requireCredentialProperties(vcJSON); err != nil {
+		return nil, err
+	}
+
 	return vcJSON, nil
 }
 
