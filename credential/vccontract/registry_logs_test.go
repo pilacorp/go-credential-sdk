@@ -407,3 +407,117 @@ func TestNewCredentialRegistryRejectsBadAlsoTrust(t *testing.T) {
 		t.Fatal("expected an error for a malformed alsoTrust address")
 	}
 }
+
+// TestGetAnchoredRootRejectsConflictingRoots is the ordering bug this guard
+// exists for.
+//
+// One transaction can carry logs from two deployments — the trusted set holds
+// more than one address precisely so a migration keeps verifying — and both may
+// record the same issuer and tree index with different roots. Reading only the
+// first match made the answer depend on the order the logs happen to sit in: a
+// proof valid against the second root came back as simply "not valid", with no
+// error to say the root had been picked by position.
+func TestGetAnchoredRootRejectsConflictingRoots(t *testing.T) {
+	first := mkLeaf(0xa1)
+	second := mkLeaf(0xa2)
+
+	logs := []*types.Log{
+		batchLog(t, registryAddress,
+			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{first}),
+		batchLog(t, legacyAddress,
+			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{second}),
+	}
+
+	for _, tc := range []struct {
+		name string
+		logs []*types.Log
+	}{
+		// Both orders, because the defect was that the order decided the answer.
+		{"conflicting root second", logs},
+		{"conflicting root first", []*types.Log{logs[1], logs[0]}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := newTestRegistry(t,
+				stubReceipts{receipt: successReceipt(tc.logs...)},
+				registryAddress, legacyAddress,
+			)
+
+			_, err := anchoredRootOf(t, registry)
+			if !errors.Is(err, ErrAmbiguousAnchoring) {
+				t.Fatalf("err = %v, want ErrAmbiguousAnchoring", err)
+			}
+		})
+	}
+}
+
+// Pinning the contract is the way out of an ambiguous transaction, so it has to
+// keep working on exactly the receipt that is ambiguous without one.
+func TestGetAnchoredRootFromContractResolvesConflictingRoots(t *testing.T) {
+	want := mkLeaf(0xa2)
+
+	receipt := successReceipt(
+		batchLog(t, registryAddress,
+			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{mkLeaf(0xa1)}),
+		batchLog(t, legacyAddress,
+			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{want}),
+	)
+
+	registry := newTestRegistry(t, stubReceipts{receipt: receipt}, registryAddress, legacyAddress)
+
+	got, err := registry.GetAnchoredRootFromContract(
+		context.Background(), common.Hash{}, issuerAddress, testTreeIndex, legacyAddress)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %x, want the root emitted by the pinned contract %x", got, want)
+	}
+}
+
+// The same root recorded twice is not a conflict: every copy says the same
+// thing, and rejecting it would break a transaction that merely logs an
+// anchoring more than once.
+func TestGetAnchoredRootAcceptsTheSameRootTwice(t *testing.T) {
+	want := mkLeaf(0xa3)
+
+	receipt := successReceipt(
+		batchLog(t, registryAddress,
+			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{want}),
+		batchLog(t, legacyAddress,
+			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{want}),
+	)
+
+	registry := newTestRegistry(t, stubReceipts{receipt: receipt}, registryAddress, legacyAddress)
+
+	got, err := anchoredRootOf(t, registry)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %x, want %x", got, want)
+	}
+}
+
+// A conflicting log from a contract nobody trusts must not be able to turn a
+// perfectly good verification into an error — that would be a denial of service
+// anyone could trigger by emitting one event.
+func TestGetAnchoredRootIgnoresConflictsFromUntrustedEmitters(t *testing.T) {
+	want := mkLeaf(0xa4)
+
+	receipt := successReceipt(
+		batchLog(t, registryAddress,
+			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{want}),
+		batchLog(t, attackerAddress,
+			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{mkLeaf(0xff)}),
+	)
+
+	registry := newTestRegistry(t, stubReceipts{receipt: receipt}, registryAddress)
+
+	got, err := anchoredRootOf(t, registry)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %x, want %x", got, want)
+	}
+}

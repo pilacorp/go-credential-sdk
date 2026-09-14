@@ -62,6 +62,10 @@ var (
 	// address supplied per-call would defeat the point of checking the emitter at
 	// all, so the pin narrows the trusted set and can never widen it.
 	ErrUntrustedContract = errors.New("contract address is not in this client's trusted set")
+	// ErrAmbiguousAnchoring is returned when one transaction records more than one
+	// root for the same issuer and tree index, so no single root can be said to be
+	// the anchored one. Pinning the anchoring contract resolves it.
+	ErrAmbiguousAnchoring = errors.New("transaction anchors conflicting roots for this issuer and tree index; pin the anchoring contract address")
 )
 
 // receiptSource reads transaction receipts from the chain.
@@ -236,8 +240,10 @@ func (v *CredentialRegistry) VerifyVCHashOnChain(ctx context.Context, req *Verif
 // req.TxHash anchored for the issuer and tree index. Returns false with a nil
 // error when the proof does not validate, when the transaction reverted, or when
 // the transaction anchored no root for this issuer and tree index. A non-nil error
-// means the check could not be completed — malformed input, RPC failure, or the
-// transaction not found / not yet mined (ErrTxNotFound).
+// means the check could not be completed — malformed input, RPC failure, the
+// transaction not found / not yet mined (ErrTxNotFound), or a transaction
+// recording conflicting roots for this tree (ErrAmbiguousAnchoring, which
+// req.ContractAddress resolves).
 func (v *CredentialRegistry) VerifyVCHashByTx(ctx context.Context, req *VerifyByTxRequest) (bool, error) {
 	if err := req.Validate(); err != nil {
 		return false, err
@@ -301,6 +307,11 @@ func (v *CredentialRegistry) anchoredRootForRequest(ctx context.Context, req *Ve
 // Returns ErrTxNotFound when no receipt exists (unknown or unmined),
 // ErrTxReverted when the transaction failed, and ErrRootNotAnchored when it
 // succeeded but recorded no root for this issuer and tree index.
+//
+// Returns ErrAmbiguousAnchoring when two trusted contracts recorded different
+// roots for this tree in the same transaction. There is no right answer to pick
+// between them, so the caller is told to say which contract it means rather than
+// being handed whichever log came first.
 func (v *CredentialRegistry) GetAnchoredRoot(ctx context.Context, txHash common.Hash, issuer common.Address, treeIndex uint64) ([32]byte, error) {
 	return v.anchoredRoot(ctx, txHash, issuer, treeIndex, nil)
 }
@@ -324,6 +335,12 @@ func (v *CredentialRegistry) GetAnchoredRootFromContract(ctx context.Context, tx
 // anchoredRoot scans a receipt's logs for the root anchored for issuer and
 // treeIndex. When emitter is non-nil only that contract's logs are read;
 // otherwise every trusted contract's logs are.
+//
+// Every matching log is read, not just the first. One transaction can carry logs
+// from two deployments — which is the whole reason the trusted set holds more
+// than one address — and stopping at the first match would make the answer depend
+// on the order the logs happen to sit in. A proof valid against the second root
+// would then be reported as simply not valid, with no error to say why.
 func (v *CredentialRegistry) anchoredRoot(ctx context.Context, txHash common.Hash, issuer common.Address, treeIndex uint64, emitter *common.Address) ([32]byte, error) {
 	var root [32]byte
 
@@ -344,6 +361,8 @@ func (v *CredentialRegistry) anchoredRoot(ctx context.Context, txHash common.Has
 	singleEventID := v.abi.Events[singleRootEvent].ID
 	treeIndexBig := new(big.Int).SetUint64(treeIndex)
 
+	found := false
+
 	for _, log := range receipt.Logs {
 		// Unpacking a log does not check which contract emitted it, and anyone
 		// can deploy a contract emitting these exact signatures, so a log from an
@@ -360,19 +379,36 @@ func (v *CredentialRegistry) anchoredRoot(ctx context.Context, txHash common.Has
 			continue
 		}
 
+		var (
+			candidate [32]byte
+			matched   bool
+		)
+
 		switch log.Topics[0] {
 		case batchEventID:
-			if found, ok := rootFromBatch(v.abi, log, issuer, treeIndexBig); ok {
-				return found, nil
-			}
+			candidate, matched = rootFromBatch(v.abi, log, issuer, treeIndexBig)
 		case singleEventID:
-			if found, ok := rootFromSingle(v.abi, log, issuer, treeIndexBig); ok {
-				return found, nil
-			}
+			candidate, matched = rootFromSingle(v.abi, log, issuer, treeIndexBig)
 		}
+
+		if !matched {
+			continue
+		}
+
+		// Repeating the same root is not a conflict: a transaction may record one
+		// tree's anchoring more than once, and every copy says the same thing.
+		if found && candidate != root {
+			return [32]byte{}, ErrAmbiguousAnchoring
+		}
+
+		root, found = candidate, true
 	}
 
-	return root, ErrRootNotAnchored
+	if !found {
+		return [32]byte{}, ErrRootNotAnchored
+	}
+
+	return root, nil
 }
 
 // rootFromBatch reads the root a BatchTreesUpdated log recorded for issuer and
