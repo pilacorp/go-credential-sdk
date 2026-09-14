@@ -363,9 +363,11 @@ credential, err := vc.ParseCredential(data, vc.WithBaseURL("https://custom-did-r
 
 Sets the verification method key to sign with (e.g. `"key-2"`). When omitted, the SDK resolves the DID and uses its only verification method, or the latest active one listed for the proof purpose (`assertionMethod` for VCs, `authentication` for VPs).
 
+For JSON credentials pass it when signing (`AddProofByProvider`); `NewJSONCredential` / `ParseJSONCredential` ignore it. For JWT credentials pass it to `NewJWTCredential`.
+
 ```go
 // Use custom verification method key
-credential, err := vc.NewJSONCredential(contents, vc.WithVerificationMethodKey("key-2"))
+err := credential.AddProofByProvider(signer, vc.WithVerificationMethodKey("key-2"), vc.WithResolver(resolver))
 ```
 
 Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(url)
@@ -826,9 +828,11 @@ err = presentation.Verify(vp.WithBaseURL("https://did-resolver.prod.company.com/
 
 Sets the verification method key to sign with (e.g. `"key-2"`). When omitted, the SDK resolves the DID and uses its only verification method, or the latest active one listed for the proof purpose (`assertionMethod` for VCs, `authentication` for VPs).
 
+For JSON presentations pass it when signing (`AddProofByProvider`); `NewJSONPresentation` / `ParseJSONPresentation` ignore it. For JWT presentations pass it to `NewJWTPresentation`.
+
 ```go
 // Use custom verification method key
-presentation, err := vp.NewJSONPresentation(contents, vp.WithVerificationMethodKey("key-2"))
+err := presentation.AddProofByProvider(signer, vp.WithVerificationMethodKey("key-2"), vp.WithResolver(resolver))
 ```
 
 Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(url)

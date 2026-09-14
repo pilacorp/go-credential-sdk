@@ -12,8 +12,7 @@ import (
 )
 
 type JSONPresentation struct {
-	presentationData      PresentationData
-	verificationMethodKey string
+	presentationData PresentationData
 }
 
 var _ Presentation = (*JSONPresentation)(nil)
@@ -24,9 +23,7 @@ func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JS
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}
 
-	options := getOptions(opts...)
-
-	e := &JSONPresentation{presentationData: m, verificationMethodKey: options.verificationMethodKey}
+	e := &JSONPresentation{presentationData: m}
 
 	return e, e.executeOptions(opts...)
 }
@@ -52,11 +49,11 @@ func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (*JSONPresen
 
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error {
-	defaultSigner, err := signer.NewDefaultProvider(priv)
+	p256Signer, err := signer.NewP256ProviderFromHex(priv)
 	if err != nil {
-		return fmt.Errorf("failed to create default signer: %w", err)
+		return fmt.Errorf("failed to create P-256 signer: %w", err)
 	}
-	return e.AddProofByProvider(defaultSigner, opts...)
+	return e.AddProofByProvider(p256Signer, opts...)
 }
 
 // AddProofByProvider signs the presentation, producing an ecdsa-rdfc-2019 proof

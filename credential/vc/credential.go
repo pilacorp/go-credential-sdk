@@ -142,6 +142,10 @@ func WithBaseURL(baseURL string) CredentialOpt {
 // keys of DIFFERENT types (e.g. secp256k1 and RSA), you MUST pin the VM here:
 // otherwise the selected VM's key type may not match your signer, producing a
 // proof that fails verification.
+//
+// For JSON credentials pass it to AddProofByProvider / AddProof; the
+// constructors and Parse functions ignore it. For JWT credentials pass it to
+// NewJWTCredential, which builds the header from it.
 func WithVerificationMethodKey(key string) CredentialOpt {
 	return func(c *credentialOptions) {
 		if key == "" {

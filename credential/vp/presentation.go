@@ -100,6 +100,10 @@ func WithBaseURL(baseURL string) PresentationOpt {
 // The cryptosuite is chosen from the bound VM's key type. If the DID holds
 // keys of DIFFERENT types, you MUST pin the VM here, otherwise the selected
 // VM may not match your signer.
+//
+// For JSON presentations pass it to AddProofByProvider / AddProof; the
+// constructors and Parse functions ignore it. For JWT presentations pass it to
+// NewJWTPresentation, which builds the header from it.
 func WithVerificationMethodKey(key string) PresentationOpt {
 	return func(p *presentationOptions) {
 		if key == "" {
