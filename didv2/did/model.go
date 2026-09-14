@@ -75,12 +75,15 @@ type VerificationMethod struct {
 	// Controller is the DID that controls this verification method.
 	Controller string `json:"controller"`
 	// PublicKeyHex is the hex-encoded public key (compressed format).
-	// Mutually exclusive with PublicKeyJwk.
+	// Mutually exclusive with PublicKeyJwk and PublicKeyMultibase.
 	PublicKeyHex string `json:"publicKeyHex,omitempty"`
 	// PublicKeyJwk is the JWK representation of the public key, used for
 	// non-secp256k1 keys (e.g. RSA CA keys with Type="JsonWebKey2020").
-	// Mutually exclusive with PublicKeyHex.
+	// Mutually exclusive with PublicKeyHex and PublicKeyMultibase.
 	PublicKeyJwk map[string]any `json:"publicKeyJwk,omitempty"`
+	// PublicKeyMultibase is the Multikey encoding used for P-256 keys.
+	// Mutually exclusive with PublicKeyHex and PublicKeyJwk.
+	PublicKeyMultibase string `json:"publicKeyMultibase,omitempty"`
 	// Revoked, when present, marks the moment this verification method was
 	// retired. Verifiers reject signatures whose proof.created is on or
 	// after this timestamp. Empty for active keys.
@@ -89,6 +92,22 @@ type VerificationMethod struct {
 	// revocation. Hard reasons (keyCompromise, cACompromise, aACompromise)
 	// invalidate every signature ever produced by the key.
 	RevocationReason string `json:"revocationReason,omitempty"`
+}
+
+// VerificationMethodSpec pairs a verification method with the relationship arrays
+// it joins. Empty Purposes means both.
+type VerificationMethodSpec struct {
+	VM       VerificationMethod
+	Purposes []VerificationPurpose
+}
+
+// purposes defaults an empty spec to both relationship arrays.
+func (s VerificationMethodSpec) purposes() []VerificationPurpose {
+	if len(s.Purposes) == 0 {
+		return []VerificationPurpose{PurposeAuthentication, PurposeAssertionMethod}
+	}
+
+	return s.Purposes
 }
 
 // KeyPair represents an ECDSA key pair for a DID.
@@ -101,6 +120,8 @@ type KeyPair struct {
 	// PrivateKey is the ECDSA private key used for signing and proving DID ownership.
 	// This must be stored securely and never exposed.
 	PrivateKey *ecdsa.PrivateKey `json:"privateKey"`
+	// P256PublicKey shares PublicKey's scalar; set only by GenerateDualCurveKeyPair.
+	P256PublicKey *ecdsa.PublicKey `json:"p256PublicKey,omitempty"`
 }
 
 // Hash calculates the Keccak256 hash of the canonicalized DID Document.

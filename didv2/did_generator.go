@@ -104,8 +104,13 @@ func (d *DIDGenerator) GenerateDID(
 	metadata map[string]any,
 	options ...DIDOption,
 ) (*DIDTxResult, error) {
-	// 1. Generate key pair.
-	keyPair, err := did.GenerateECDSAKeyPair()
+	cfg, err := d.resolveConfig(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
+	}
+
+	// 1. Generate key pair: one scalar, published as secp256k1 and P-256.
+	keyPair, err := did.GenerateDualCurveKeyPair()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate key pair: %w", err)
 	}
@@ -116,15 +121,27 @@ func (d *DIDGenerator) GenerateDID(
 		return nil, fmt.Errorf("failed to create did signer: %w", err)
 	}
 
-	options = append(options, WithDIDSignerProvider(didSigner))
+	// 2. Publish the P-256 key at #key-2, for the W3C Data Integrity cryptosuites.
+	didAddr, err := did.AddressFromPublicKeyHex(keyPair.GetPublicKeyHex())
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert public key hex to address: %w", err)
+	}
 
-	// 2. Generate DID TX.
-	didTx, err := d.GenerateDIDTX(ctx, didType, keyPair.GetPublicKeyHex(), hash, metadata, options...)
+	p256VM, err := did.NewP256MultikeyVM(did.ToDID(cfg.Method, didAddr), "#key-2", keyPair.P256PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build P-256 verification method: %w", err)
+	}
+
+	cfg.DIDSigner = didSigner
+	cfg.ExtraVMs = append(cfg.ExtraVMs, did.NewSpec(p256VM))
+
+	// 3. Generate DID TX.
+	didTx, err := d.GenerateDIDTX(ctx, didType, keyPair.GetPublicKeyHex(), hash, metadata, WithDIDConfig(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate DID TX: %w", err)
 	}
 
-	// 3. add secret to did tx result.
+	// 4. add secret to did tx result.
 	didTx.Secret = &Secret{PrivateKeyHex: keyPair.GetPrivateKeyHex()}
 
 	return didTx, nil
@@ -181,7 +198,7 @@ func (d *DIDGenerator) GenerateDIDTX(
 	issuerDID := did.ToDID(cfg.Method, issuerAddr)
 	didIdentifier := did.ToDID(cfg.Method, didAddr)
 
-	didDoc := did.GenerateDIDDocument(didPublicKeyHex, didIdentifier, hash, issuerDID, didType, metadata)
+	didDoc := did.GenerateDIDDocument(didPublicKeyHex, didIdentifier, hash, issuerDID, didType, metadata, cfg.ExtraVMs...)
 
 	docHash, err := didDoc.Hash()
 	if err != nil {
