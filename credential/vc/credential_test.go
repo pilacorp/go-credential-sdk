@@ -1788,8 +1788,8 @@ func TestGetOptions_Defaults(t *testing.T) {
 	assert.False(t, opts.isCheckExpiration)
 	assert.False(t, opts.isCheckRevocation)
 	assert.Equal(t, config.BaseURL, opts.didBaseURL)
-	// Signing falls back to "<issuer>#key-1" when no kid is pinned.
-	assert.Equal(t, "key-1", opts.verificationMethodKey)
+	// No kid pinned: signing resolves the DID and picks the default VM.
+	assert.Equal(t, "", opts.verificationMethodKey)
 	assert.Nil(t, opts.loadedSchemaLoader)
 	assert.NotNil(t, opts.resolver, "default resolver should not be nil")
 }

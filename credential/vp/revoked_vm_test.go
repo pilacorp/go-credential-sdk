@@ -34,12 +34,25 @@ func TestVP_RevokedVMRejectedAtSigning(t *testing.T) {
 	resolver := vmpkg.NewStaticResolver(
 		vmpkg.NewDIDDocument(did, old, vmpkg.NewP256VM(did, "key-2", &priv.PublicKey)))
 
-	t.Run("default key-1 is revoked", func(t *testing.T) {
+	t.Run("default skips revoked key-1", func(t *testing.T) {
 		pres, err := vp.ParseJSONPresentation(vpDoc(did))
 		if err != nil {
 			t.Fatalf("parse vp: %v", err)
 		}
-		err = pres.AddProofByProvider(prov, vp.WithResolver(resolver))
+		if err := pres.AddProofByProvider(prov, vp.WithResolver(resolver)); err != nil {
+			t.Fatalf("sign vp: %v", err)
+		}
+		if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+			t.Fatalf("verify vp: %v", err)
+		}
+	})
+
+	t.Run("pinned revoked key-1 is rejected", func(t *testing.T) {
+		pres, err := vp.ParseJSONPresentation(vpDoc(did))
+		if err != nil {
+			t.Fatalf("parse vp: %v", err)
+		}
+		err = pres.AddProofByProvider(prov, vp.WithResolver(resolver), vp.WithVerificationMethodKey("key-1"))
 		if err == nil || !strings.Contains(err.Error(), "was revoked at") {
 			t.Fatalf("sign vp err = %v, want a revoked-key error", err)
 		}

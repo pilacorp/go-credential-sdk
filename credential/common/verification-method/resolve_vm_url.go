@@ -26,9 +26,9 @@ func ResolveVerificationMethodURLForKey(ctx context.Context, did, purpose string
 }
 
 // ResolveSigningVM resolves the DID document and returns the verification method
-// to sign with: the pinned kid when given, otherwise the latest active VM for
-// purpose. The returned entry lets the caller read the key type and pick the
-// cryptosuite.
+// to sign with: the pinned kid when given, otherwise SelectDefaultSigningVM
+// (the only VM, or the latest active one for purpose). The returned entry lets
+// the caller read the key type and pick the cryptosuite.
 func ResolveSigningVM(ctx context.Context, did, purpose, pinnedKid string, resolver ResolverProvider) (*VerificationMethodEntry, string, error) {
 	if resolver == nil {
 		return nil, "", fmt.Errorf("document resolver is not configured")
@@ -45,7 +45,12 @@ func ResolveSigningVM(ctx context.Context, did, purpose, pinnedKid string, resol
 		return nil, "", fmt.Errorf("failed to resolve DID '%s': %w", vmDID, err)
 	}
 
-	vm, err := FindVerificationMethod(doc, url)
+	var vm *VerificationMethodEntry
+	if pinnedKid == "" {
+		vm, err = SelectDefaultSigningVM(doc, purpose)
+	} else {
+		vm, err = FindVerificationMethod(doc, url)
+	}
 	if err != nil {
 		return nil, "", err
 	}

@@ -60,7 +60,8 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 }
 
 // AddProofByProvider signs the presentation, producing an ecdsa-rdfc-2019 proof
-// bound to "<holder>#key-1" unless WithVerificationMethodKey pins another kid.
+// bound to the VM WithVerificationMethodKey pins, or by default the holder's
+// only VM / latest active authentication VM.
 // The VM must hold a P-256 key.
 //
 // Verification stays permissive: secp256k1, hex proofValues and

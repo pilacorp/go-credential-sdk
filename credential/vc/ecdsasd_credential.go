@@ -40,8 +40,9 @@ func ParseECDSASDCredential(rawJSON []byte, opts ...CredentialOpt) (*ECDSASDCred
 // mandatoryPaths (dot-notation) are always disclosed; all other claims become
 // selectively disclosable.
 //
-// The proof is bound to "<issuer>#key-1" unless WithVerificationMethodKey pins
-// another kid; that VM must hold a P-256 key. Verification still accepts the
+// The proof is bound to the VM WithVerificationMethodKey pins, or by default
+// the issuer's only VM / latest active assertionMethod VM; it must hold a P-256
+// key. Verification still accepts the
 // secp256k1 base proofs earlier versions could issue.
 func (e *ECDSASDCredential) AddProofByProvider(signerProvider signer.SignerProvider, mandatoryPaths []string, opts ...CredentialOpt) error {
 	if signerProvider == nil {

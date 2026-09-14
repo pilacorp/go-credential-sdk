@@ -166,6 +166,19 @@ func selectLatestActiveVM(doc *DIDDocument, purpose string, match func(*Verifica
 	return bestVM, nil
 }
 
+// SelectDefaultSigningVM picks the verification method to sign with when the
+// caller pins none: the only VM when the document has exactly one, otherwise
+// the latest active VM for purpose (see SelectLatestActiveVMForPurpose).
+func SelectDefaultSigningVM(doc *DIDDocument, purpose string) (*VerificationMethodEntry, error) {
+	if doc == nil {
+		return nil, fmt.Errorf("did document is nil")
+	}
+	if len(doc.VerificationMethod) == 1 {
+		return &doc.VerificationMethod[0], nil
+	}
+	return SelectLatestActiveVMForPurpose(doc, purpose)
+}
+
 // SelectVMForPurpose chooses a verification method from a resolved DID
 // Document, preferring an explicit kid when provided.
 //

@@ -98,10 +98,6 @@ type SchemaLoaderFunc func(schemaID string) ([]byte, error)
 // CredentialOpt configures credential processing options.
 type CredentialOpt func(*credentialOptions)
 
-// defaultVerificationMethodKey is the kid signing falls back to when the caller
-// pins none.
-const defaultVerificationMethodKey = "key-1"
-
 // credentialOptions holds configuration for credential processing.
 type credentialOptions struct {
 	isValidateSchema        bool
@@ -139,13 +135,13 @@ func WithBaseURL(baseURL string) CredentialOpt {
 
 // WithVerificationMethodKey sets the verification method fragment used when
 // signing — e.g. "key-2". When omitted, the SDK resolves the issuer DID and
-// picks the latest active VM listed in the assertionMethod relationship
-// array (or authentication for VPs).
+// picks its only VM, or the latest active VM listed in the assertionMethod
+// relationship array (authentication for VPs).
 //
 // The cryptosuite is chosen from the bound VM's key type. If the DID holds
 // keys of DIFFERENT types (e.g. secp256k1 and RSA), you MUST pin the VM here:
-// otherwise the latest active VM is used and its key type may not match your
-// signer, producing a proof that fails verification.
+// otherwise the selected VM's key type may not match your signer, producing a
+// proof that fails verification.
 func WithVerificationMethodKey(key string) CredentialOpt {
 	return func(c *credentialOptions) {
 		if key == "" {
@@ -246,14 +242,13 @@ func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 // getOptions returns the credential options.
 func getOptions(opts ...CredentialOpt) *credentialOptions {
 	options := &credentialOptions{
-		isValidateSchema:      false,
-		isVerifyProof:         false,
-		isCheckExpiration:     false,
-		isCheckRevocation:     false,
-		didBaseURL:            config.BaseURL,
-		loadedSchemaLoader:    nil,
-		verificationMethodKey: defaultVerificationMethodKey,
-		resolver:              nil,
+		isValidateSchema:   false,
+		isVerifyProof:      false,
+		isCheckExpiration:  false,
+		isCheckRevocation:  false,
+		didBaseURL:         config.BaseURL,
+		loadedSchemaLoader: nil,
+		resolver:           nil,
 	}
 
 	for _, opt := range opts {

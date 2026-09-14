@@ -58,10 +58,6 @@ type PresentationContents struct {
 // PresentationOpt configures presentation processing options.
 type PresentationOpt func(*presentationOptions)
 
-// defaultVerificationMethodKey is the kid signing falls back to when the caller
-// pins none.
-const defaultVerificationMethodKey = "key-1"
-
 // presentationOptions holds configuration for presentation processing.
 type presentationOptions struct {
 	isValidateVC            bool
@@ -98,14 +94,14 @@ func WithBaseURL(baseURL string) PresentationOpt {
 
 // WithVerificationMethodKey sets the verification method fragment used when
 // signing — e.g. "key-2". When omitted, the SDK resolves the holder DID and
-// picks the latest active VM in the authentication relationship array.
+// picks its only VM, or the latest active VM in the authentication
+// relationship array.
 //
 // The cryptosuite is chosen from the bound VM's key type. If the DID holds
-// keys of DIFFERENT types, you MUST pin the VM here, otherwise the latest
-// active VM is used and may not match your signer.
+// keys of DIFFERENT types, you MUST pin the VM here, otherwise the selected
+// VM may not match your signer.
 func WithVerificationMethodKey(key string) PresentationOpt {
 	return func(p *presentationOptions) {
-		// An empty key would wipe the default rather than pin anything.
 		if key == "" {
 			return
 		}
@@ -136,13 +132,11 @@ func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt 
 
 func getOptions(opts ...PresentationOpt) *presentationOptions {
 	options := &presentationOptions{
-		isValidateVC:      false,
-		isVerifyProof:     false,
-		isCheckExpiration: false,
-		didBaseURL:        config.BaseURL,
-		// Sign with "<holder>#key-1" unless WithVerificationMethodKey pins
-		// another kid.
-		verificationMethodKey: defaultVerificationMethodKey,
+		isValidateVC:          false,
+		isVerifyProof:         false,
+		isCheckExpiration:     false,
+		didBaseURL:            config.BaseURL,
+		verificationMethodKey: "",
 		resolver:              nil,
 	}
 

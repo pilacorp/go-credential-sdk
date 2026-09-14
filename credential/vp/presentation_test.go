@@ -345,7 +345,7 @@ func TestAddECDSAProof(t *testing.T) {
 		t.Fatalf("Failed to create presentation: %v", err)
 	}
 
-	presentation = signVPLegacy(t, presentation, mustDefaultSigner(t, privateKeyHex), "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"+"#key-1", false)
+	presentation = signVPViaJSONMap(t, presentation, mustDefaultSigner(t, privateKeyHex), "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"+"#key-1", false)
 
 	// Get JSON from JSON presentation
 	embeddedPres := presentation
@@ -393,7 +393,7 @@ func TestVerifyECDSAPresentation(t *testing.T) {
 		t.Fatalf("Failed to create presentation: %v", err)
 	}
 
-	presentation = signVPLegacy(t, presentation, mustDefaultSigner(t, privateKeyHex), "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"+"#key-1", false)
+	presentation = signVPViaJSONMap(t, presentation, mustDefaultSigner(t, privateKeyHex), "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"+"#key-1", false)
 
 	// Verify the presentation directly without JSON serialization/parsing
 	// since the JSON round-trip might not preserve credential proofs correctly
@@ -595,7 +595,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 
 		// Add proof using AddProofByProvider method
-		presentation = signVPLegacy(t, presentation, mustDefaultSigner(t, privateKeyHex), holderDID+"#key-1", false)
+		presentation = signVPViaJSONMap(t, presentation, mustDefaultSigner(t, privateKeyHex), holderDID+"#key-1", false)
 
 		// Verify the presentation
 		err = presentation.Verify()
@@ -840,7 +840,7 @@ func TestJSONPresentationFlow(t *testing.T) {
 	}
 
 	// 2. Use AddProof to add proof to VP with issuer private key
-	presentation = signVPLegacy(t, presentation, mustDefaultSigner(t, privateKeyHex), holderDID+"#key-1", false)
+	presentation = signVPViaJSONMap(t, presentation, mustDefaultSigner(t, privateKeyHex), holderDID+"#key-1", false)
 
 	// 3. Verify VP
 	err = presentation.Verify()
@@ -910,7 +910,7 @@ func TestCreateJSONPresentationOfTwoJSONCredentials(t *testing.T) {
 	}
 
 	// Add proof to the presentation
-	presentation = signVPLegacy(t, presentation, mustDefaultSigner(t, privateKeyHex), holderDID+"#key-1", false)
+	presentation = signVPViaJSONMap(t, presentation, mustDefaultSigner(t, privateKeyHex), holderDID+"#key-1", false)
 
 	// Verify the presentation
 	err = presentation.Verify()

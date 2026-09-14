@@ -181,3 +181,82 @@ func TestResolveVerificationMethodURLForKey_KindFilter(t *testing.T) {
 		})
 	}
 }
+
+// With no kid pinned, signing uses the only VM when there is one, otherwise the
+// latest active VM for the purpose.
+func TestResolveSigningVM_DefaultSelection(t *testing.T) {
+	const did = "did:pila:def"
+	revoked := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	vm := func(fragment string, revokedAt *time.Time) VerificationMethodEntry {
+		return VerificationMethodEntry{
+			ID: did + "#" + fragment, Type: "EcdsaSecp256k1VerificationKey2019",
+			Controller: did, PublicKeyHex: "0x04aa", Revoked: revokedAt,
+		}
+	}
+	resolve := func(doc *DIDDocument) (string, error) {
+		_, url, err := ResolveSigningVM(context.Background(), did, "assertionMethod", "", &stubResolver{doc: doc})
+		return url, err
+	}
+
+	t.Run("single VM is used", func(t *testing.T) {
+		url, err := resolve(&DIDDocument{
+			ID:                 did,
+			VerificationMethod: []VerificationMethodEntry{vm("signing", nil)},
+			AssertionMethod:    []string{did + "#signing"},
+		})
+		if err != nil || url != did+"#signing" {
+			t.Fatalf("got %q, %v; want %q", url, err, did+"#signing")
+		}
+	})
+
+	t.Run("latest active for purpose wins", func(t *testing.T) {
+		url, err := resolve(&DIDDocument{
+			ID:                 did,
+			VerificationMethod: []VerificationMethodEntry{vm("key-3", nil), vm("key-1", nil), vm("key-2", nil)},
+			AssertionMethod:    []string{did + "#key-1", did + "#key-2"},
+			Authentication:     []string{did + "#key-3"},
+		})
+		if err != nil || url != did+"#key-2" {
+			t.Fatalf("got %q, %v; want %q", url, err, did+"#key-2")
+		}
+	})
+
+	t.Run("revoked latest is skipped", func(t *testing.T) {
+		url, err := resolve(&DIDDocument{
+			ID:                 did,
+			VerificationMethod: []VerificationMethodEntry{vm("key-1", nil), vm("key-2", &revoked)},
+			AssertionMethod:    []string{did + "#key-1", did + "#key-2"},
+		})
+		if err != nil || url != did+"#key-1" {
+			t.Fatalf("got %q, %v; want %q", url, err, did+"#key-1")
+		}
+	})
+
+	t.Run("all revoked", func(t *testing.T) {
+		_, err := resolve(&DIDDocument{
+			ID:                 did,
+			VerificationMethod: []VerificationMethodEntry{vm("key-1", &revoked), vm("key-2", &revoked)},
+			AssertionMethod:    []string{did + "#key-1", did + "#key-2"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "no active verification method") {
+			t.Fatalf("err = %v, want no-active-VM error", err)
+		}
+	})
+
+	t.Run("single VM still checked for revocation and purpose", func(t *testing.T) {
+		if _, err := resolve(&DIDDocument{
+			ID:                 did,
+			VerificationMethod: []VerificationMethodEntry{vm("key-1", &revoked)},
+			AssertionMethod:    []string{did + "#key-1"},
+		}); err == nil || !strings.Contains(err.Error(), "was revoked at") {
+			t.Fatalf("err = %v, want a revoked-key error", err)
+		}
+		if _, err := resolve(&DIDDocument{
+			ID:                 did,
+			VerificationMethod: []VerificationMethodEntry{vm("key-1", nil)},
+			Authentication:     []string{did + "#key-1"},
+		}); err == nil {
+			t.Fatal("want an error when the only VM is not granted assertionMethod")
+		}
+	})
+}

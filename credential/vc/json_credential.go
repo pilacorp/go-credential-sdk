@@ -95,7 +95,8 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 }
 
 // AddProofByProvider signs with a provider, producing an ecdsa-rdfc-2019 proof
-// bound to "<issuer>#key-1" unless WithVerificationMethodKey pins another kid.
+// bound to the VM WithVerificationMethodKey pins, or by default the issuer's
+// only VM / latest active assertionMethod VM.
 // The VM must hold a P-256 key — secp256k1 and RSA are rejected.
 //
 // A resolver is REQUIRED at signing time: the SDK reads the VM's key type from

@@ -81,8 +81,18 @@ func TestVC_RevokedVMRejectedAtSigning(t *testing.T) {
 	}
 
 	for _, p := range paths {
-		t.Run(p.name+"/default key-1 is revoked", func(t *testing.T) {
-			_, err := p.sign(t, vc.WithResolver(resolver))
+		t.Run(p.name+"/default skips revoked key-1", func(t *testing.T) {
+			cred, err := p.sign(t, vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("sign: %v", err)
+			}
+			if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+				t.Fatalf("verify: %v", err)
+			}
+		})
+
+		t.Run(p.name+"/pinned revoked key-1 is rejected", func(t *testing.T) {
+			_, err := p.sign(t, vc.WithResolver(resolver), vc.WithVerificationMethodKey("key-1"))
 			if err == nil || !strings.Contains(err.Error(), "was revoked at") {
 				t.Fatalf("sign err = %v, want a revoked-key error", err)
 			}

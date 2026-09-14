@@ -361,7 +361,7 @@ credential, err := vc.ParseCredential(data, vc.WithBaseURL("https://custom-did-r
 
 #### **vc.WithVerificationMethodKey(key)**
 
-Sets a custom verification method key (default: "key-1").
+Sets the verification method key to sign with (e.g. `"key-2"`). When omitted, the SDK resolves the DID and uses its only verification method, or the latest active one listed for the proof purpose (`assertionMethod` for VCs, `authentication` for VPs).
 
 ```go
 // Use custom verification method key
@@ -824,7 +824,7 @@ err = presentation.Verify(vp.WithBaseURL("https://did-resolver.prod.company.com/
 
 #### **vp.WithVerificationMethodKey(key)**
 
-Sets a custom verification method key (default: "key-1").
+Sets the verification method key to sign with (e.g. `"key-2"`). When omitted, the SDK resolves the DID and uses its only verification method, or the latest active one listed for the proof purpose (`assertionMethod` for VCs, `authentication` for VPs).
 
 ```go
 // Use custom verification method key

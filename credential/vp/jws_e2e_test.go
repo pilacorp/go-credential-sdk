@@ -30,10 +30,11 @@ func secpPubHex(t *testing.T, privHex string) string {
 	return hex.EncodeToString(ethcrypto.FromECDSAPub(&priv.PublicKey))
 }
 
-// signVPLegacy signs a presentation through jsonmap. vp issues ecdsa-rdfc-2019
-// with a P-256 VM only, so secp256k1 and JsonWebSignature2020 presentations —
-// which verification still accepts — can only be produced this way.
-func signVPLegacy(t *testing.T, pres vp.Presentation, prov signer.SignerProvider, vmURL string, useJWS bool) *vp.JSONPresentation {
+// signVPViaJSONMap signs a presentation through jsonmap, bypassing vp's P-256
+// requirement, so secp256k1 and JsonWebSignature2020 presentations — which
+// verification still accepts — can be produced. The proofs are current-format
+// (multibase); see legacy_hex_test.go for pre-multibase hex artifacts.
+func signVPViaJSONMap(t *testing.T, pres vp.Presentation, prov signer.SignerProvider, vmURL string, useJWS bool) *vp.JSONPresentation {
 	t.Helper()
 	raw, err := pres.GetContents()
 	if err != nil {
@@ -91,7 +92,7 @@ func TestVP_AddProofByProvider_RSA(t *testing.T) {
 	}
 
 	rsaProv, _ := signer.NewRSAProvider(rsaKey)
-	signed := signVPLegacy(t, pres, rsaProv, jwsHolderDID+"#key-1", true)
+	signed := signVPViaJSONMap(t, pres, rsaProv, jwsHolderDID+"#key-1", true)
 	if err := signed.Verify(vp.WithResolver(resolver)); err != nil {
 		t.Fatalf("verify vp (rsa proof): %v", err)
 	}
@@ -120,8 +121,8 @@ func TestVP_VerifySpecificProof(t *testing.T) {
 
 	rsaProv, _ := signer.NewRSAProvider(rsaKey)
 	secp, _ := signer.NewDefaultProvider(holderSecpPriv)
-	signed := signVPLegacy(t, pres, rsaProv, jwsHolderDID+"#key-1", true)
-	signed = signVPLegacy(t, signed, secp, jwsHolderDID+"#key-2", false)
+	signed := signVPViaJSONMap(t, pres, rsaProv, jwsHolderDID+"#key-1", true)
+	signed = signVPViaJSONMap(t, signed, secp, jwsHolderDID+"#key-2", false)
 
 	// Full verification fails because the key-2 proof does not match.
 	if err := signed.Verify(vp.WithResolver(verifyResolver)); err == nil {
