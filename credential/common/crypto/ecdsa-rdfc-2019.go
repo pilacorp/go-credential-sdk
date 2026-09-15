@@ -10,25 +10,9 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-func ECDSAVerifySignature(publicKey, signature string, msg []byte) (bool, error) {
-	// Decode hex-encoded public key
-	pubKeyBytes, err := hex.DecodeString(publicKey)
-	if err != nil {
-		return false, fmt.Errorf("failed to decode public key: %v", err)
-	}
-
-	if pubKeyBytes[0] == 0x02 || pubKeyBytes[0] == 0x03 {
-		pubKeyParsed, err := btcec.ParsePubKey(pubKeyBytes)
-		if err != nil {
-			return false, fmt.Errorf("failed to parse compressed public key: %v", err)
-		}
-		pubKeyBytes = pubKeyParsed.SerializeUncompressed()
-	}
-
-	// Parse public key
-	pubKey, err := crypto.UnmarshalPubkey(pubKeyBytes)
-	if err != nil {
-		return false, fmt.Errorf("failed to parse public key: %v", err)
+func ECDSAVerifySignature(pubKey *ecdsa.PublicKey, signature string, msg []byte) (bool, error) {
+	if pubKey == nil {
+		return false, fmt.Errorf("public key is nil")
 	}
 
 	// Decode hex-encoded signature

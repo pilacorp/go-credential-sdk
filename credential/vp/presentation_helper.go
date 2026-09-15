@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
@@ -77,9 +77,10 @@ func checkExpiration(p PresentationData) error {
 	return nil
 }
 
-// verifyCredentials verifies the signatures of a slice of Verifiable
-// Credentials, resolving DIDs through the caller-provided resolver.
-func verifyCredentials(jsonPresentation PresentationData, resolver verificationmethod.ResolverProvider) error {
+// verifyCredentials verifies every embedded credential's proof, plus whatever
+// vc options WithVCValidation forwarded. The presentation resolver goes first
+// so a caller-supplied vc.WithResolver overrides it.
+func verifyCredentials(jsonPresentation PresentationData, options *presentationOptions) error {
 	contents, err := parsePresentationContents(jsonPresentation)
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)
@@ -91,11 +92,15 @@ func verifyCredentials(jsonPresentation PresentationData, resolver verificationm
 		return fmt.Errorf("credential input is nil")
 	}
 
+	vcOpts := make([]vc.CredentialOpt, 0, 1+len(options.vcOpts))
+	vcOpts = append(vcOpts, vc.WithResolver(options.resolver))
+	vcOpts = append(vcOpts, options.vcOpts...)
+
 	for i, v := range vcs {
 		if v == nil {
 			return fmt.Errorf("credential at index %d is nil", i)
 		}
-		err := v.Verify(vc.WithResolver(resolver), vc.WithSchemaValidation())
+		err := v.Verify(vcOpts...)
 		if err != nil {
 			return fmt.Errorf("failed to verify credential at index %d: %w", i, err)
 		}
@@ -193,9 +198,11 @@ func parseTypes(vp PresentationData, contents *PresentationContents) error {
 	return nil
 }
 
-// parseHolder extracts the holder field from a Presentation.
+// parseHolder extracts the holder field from a Presentation. Per the VC Data
+// Model it may be a plain URL/DID string or an object with an id; either way
+// Contents keeps only the id.
 func parseHolder(vp PresentationData, contents *PresentationContents) error {
-	if holder, ok := vp["holder"].(string); ok {
+	if holder, ok := jsonmap.DIDFromField(vp["holder"]); ok {
 		contents.Holder = holder
 	}
 	return nil

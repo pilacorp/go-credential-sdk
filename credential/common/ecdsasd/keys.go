@@ -23,12 +23,6 @@ func newEphemeralKey() (*ephemeralKey, error) {
 	return &ephemeralKey{priv: priv}, nil
 }
 
-// publicKeyCompressed returns the 33-byte compressed SEC1 encoding of the
-// P-256 public key.
-func (e *ephemeralKey) publicKeyCompressed() []byte {
-	return elliptic.MarshalCompressed(elliptic.P256(), e.priv.PublicKey.X, e.priv.PublicKey.Y)
-}
-
 // signStatement signs SHA-256(statement) and returns the 64-byte R||S signature.
 func (e *ephemeralKey) signStatement(statement string) ([]byte, error) {
 	digest := sha256.Sum256([]byte(statement))

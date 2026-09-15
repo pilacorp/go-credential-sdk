@@ -1,6 +1,7 @@
 package verificationmethod
 
 import (
+	"crypto/elliptic"
 	"fmt"
 	"strings"
 )
@@ -28,17 +29,22 @@ func (k KeyKind) String() string {
 	}
 }
 
+// VMIsRSA reports whether vm holds an RSA JWK. A nil vm holds no key.
 func VMIsRSA(vm *VerificationMethodEntry) bool {
-	return vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "RSA"
+	return vm != nil && vm.PublicKeyJwk != nil && vm.PublicKeyJwk.Kty == "RSA"
 }
 
+// VMIsP256 matches an EC P-256 JWK or a P-256 Multikey. A nil vm holds no key.
 func VMIsP256(vm *VerificationMethodEntry) bool {
+	if vm == nil {
+		return false
+	}
 	if vm.PublicKeyJwk != nil {
 		return vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "P-256"
 	}
 	if vm.PublicKeyMultibase != "" {
-		_, _, err := DecodeP256PubMultibase(vm.PublicKeyMultibase)
-		return err == nil
+		pub, err := ECPubFromMultibase(vm.PublicKeyMultibase)
+		return err == nil && pub.Curve == elliptic.P256()
 	}
 	return false
 }
@@ -47,6 +53,9 @@ func VMIsP256(vm *VerificationMethodEntry) bool {
 // EcdsaSecp256k1VerificationKey2019 representation). P-256 keys never use
 // publicKeyHex.
 func VMIsSecp256k1(vm *VerificationMethodEntry) bool {
+	if vm == nil {
+		return false
+	}
 	if vm.PublicKeyJwk != nil {
 		return vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "secp256k1"
 	}
@@ -54,8 +63,12 @@ func VMIsSecp256k1(vm *VerificationMethodEntry) bool {
 }
 
 // VMKeyKind reports the key kind a verification method holds, and whether it was
-// recognized. Signing uses it to pick the cryptosuite from the bound key.
+// recognized. Signing uses it to pick the cryptosuite from the bound key. A nil
+// vm is reported as unrecognized rather than panicking.
 func VMKeyKind(vm *VerificationMethodEntry) (KeyKind, bool) {
+	if vm == nil {
+		return KeySecp256k1, false
+	}
 	switch {
 	case VMIsSecp256k1(vm):
 		return KeySecp256k1, true
@@ -165,6 +178,19 @@ func selectLatestActiveVM(doc *DIDDocument, purpose string, match func(*Verifica
 	return bestVM, nil
 }
 
+// SelectDefaultSigningVM picks the verification method to sign with when the
+// caller pins none: the only VM when the document has exactly one, otherwise
+// the latest active VM for purpose (see SelectLatestActiveVMForPurpose).
+func SelectDefaultSigningVM(doc *DIDDocument, purpose string) (*VerificationMethodEntry, error) {
+	if doc == nil {
+		return nil, fmt.Errorf("did document is nil")
+	}
+	if len(doc.VerificationMethod) == 1 {
+		return &doc.VerificationMethod[0], nil
+	}
+	return SelectLatestActiveVMForPurpose(doc, purpose)
+}
+
 // SelectVMForPurpose chooses a verification method from a resolved DID
 // Document, preferring an explicit kid when provided.
 //
@@ -212,6 +238,9 @@ func idInPurposeArray(vmID, did string, arr []string) bool {
 // purpose-filtered selection), so a signer can't bind a proof to a key that the
 // verifier would reject for that purpose.
 func EnsureVMAuthorizedForPurpose(doc *DIDDocument, vmID, purpose string) error {
+	if doc == nil {
+		return fmt.Errorf("did document is nil")
+	}
 	var arr []string
 	switch purpose {
 	case "authentication":

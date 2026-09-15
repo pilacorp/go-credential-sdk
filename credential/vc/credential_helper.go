@@ -110,6 +110,12 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 		vcJSON["validUntil"] = vcc.ValidUntil.Format(time.RFC3339)
 	}
 
+	// Shared by NewJSONCredential and NewJWTCredential, so both reject a
+	// credential missing a property the data model requires.
+	if err := requireCredentialProperties(vcJSON); err != nil {
+		return nil, err
+	}
+
 	return vcJSON, nil
 }
 
@@ -290,9 +296,11 @@ func parseTypes(c CredentialData, contents *CredentialContents) error {
 	return nil
 }
 
-// parseIssuer extracts the issuer field from a Credential.
+// parseIssuer extracts the issuer field from a Credential. Per the VC Data
+// Model it may be a plain URL/DID string or an object with an id; either way
+// Contents keeps only the id.
 func parseIssuer(c CredentialData, contents *CredentialContents) error {
-	if issuer, ok := c["issuer"].(string); ok {
+	if issuer, ok := jsonmap.DIDFromField(c["issuer"]); ok {
 		contents.Issuer = issuer
 	}
 
@@ -507,10 +515,12 @@ func parseStringField(obj CredentialData, fieldName string) (string, error) {
 func validateCredential(m CredentialData, opts *credentialOptions) error {
 	copyMap := util.ShallowCopyObj(m)
 
-	requiredKeys := []string{"type", "credentialSchema", "credentialSubject"}
+	// credentialSchema is optional per VC Data Model 2.0 §4.11, but this path
+	// exists to validate against it, so here it is required.
+	requiredKeys := append([]string{"credentialSchema"}, requiredCredentialProperties...)
 	var schemaList []interface{}
 	for _, key := range requiredKeys {
-		if _, exists := copyMap[key]; !exists {
+		if isEmptyValue(copyMap[key]) {
 			return fmt.Errorf("%s is required", key)
 		}
 		if key == "credentialSchema" {
@@ -669,14 +679,21 @@ func convertToArray(value interface{}) []interface{} {
 	return []interface{}{value}
 }
 
-// dotPathsToPointers converts dot-notation paths ("credentialSubject.name")
-// into JSON Pointers ("/credentialSubject/name", RFC 6901) for the ecdsa-sd
-// primitives, escaping "~" and "/" within segments.
+// dotPathsToPointers normalizes claim paths for the ecdsa-sd primitives, which
+// take JSON Pointers (RFC 6901). A path starting with "/" is already a pointer
+// — the form the W3C spec and test suites use — and passes through unchanged;
+// anything else is a dot path ("credentialSubject.name") and is converted,
+// escaping "~" and "/" within segments. The two cannot collide: a dot path
+// never starts with "/" because JSON-LD drops such keys.
 func dotPathsToPointers(paths []string) []string {
 	esc := strings.NewReplacer("~", "~0", "/", "~1")
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
 		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(p, "/") {
+			out = append(out, p)
 			continue
 		}
 		var b strings.Builder

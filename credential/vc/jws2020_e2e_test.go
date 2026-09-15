@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -53,33 +54,31 @@ func jwsCredentialJSON() []byte {
     }`, jwsIssuerDID))
 }
 
+// issueJWS signs through jsonmap, not vc: vc issues ecdsa-rdfc-2019 with a P-256
+// key only, so JsonWebSignature2020 is verify-only (legacy VCs).
 func issueJWS(t *testing.T, resolver *memResolver, priv *rsa.PrivateKey) []byte {
 	t.Helper()
 	rsaProvider, err := signer.NewRSAProvider(priv)
 	if err != nil {
 		t.Fatalf("rsa provider: %v", err)
 	}
-	cred, err := vc.ParseJSONCredential(jwsCredentialJSON())
-	if err != nil {
-		t.Fatalf("parse credential: %v", err)
+	var m jsonmap.JSONMap
+	if err := json.Unmarshal(jwsCredentialJSON(), &m); err != nil {
+		t.Fatalf("unmarshal credential: %v", err)
 	}
-	if err := cred.AddProofByProvider(
-		rsaProvider,
-		vc.WithVerificationMethodKey("key-1"),
-		vc.WithResolver(resolver),
-	); err != nil {
+	if err := m.AddJWSProof(rsaProvider, jwsIssuerDID+"#key-1", "assertionMethod"); err != nil {
 		t.Fatalf("add jws proof: %v", err)
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	cred, err := vc.ParseJSONCredential(b)
+	if err != nil {
+		t.Fatalf("parse signed: %v", err)
 	}
 	if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
 		t.Fatalf("verify jws proof: %v", err)
-	}
-	serialized, err := cred.Serialize()
-	if err != nil {
-		t.Fatalf("serialize: %v", err)
-	}
-	b, err := json.Marshal(serialized)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
 	}
 	return b
 }

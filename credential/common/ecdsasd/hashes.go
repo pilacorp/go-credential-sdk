@@ -8,18 +8,14 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
-// hashProofConfig canonicalizes the proof options (with the document @context
-// attached, proofValue removed) and returns SHA-256 of the canonical N-Quads.
-// The proof config is string-only by construction, so the string-coercing
-// CanonicalizeDocument is safe here; a future numeric proof option would need
-// the native-type SD canonicalization path instead.
-func hashProofConfig(proofConfig map[string]interface{}, context interface{}) ([]byte, error) {
-	cfg := deepCopyMap(proofConfig)
-	delete(cfg, "proofValue")
-	if context != nil {
-		cfg["@context"] = deepCopy(context)
-	}
-	nquads, err := processor.CanonicalizeDocument(cfg)
+// hashProofConfig returns SHA-256 of the canonical N-Quads of proofConfig.
+// The caller supplies a complete proof configuration — the proof options
+// without proofValue, plus the securing document's @context — so both
+// cryptosuites build that configuration from one place and only the hashing
+// differs. CanonicalizeNative rejects a configuration whose terms no context
+// defines, rather than hashing an empty N-Quads set.
+func hashProofConfig(proofConfig map[string]interface{}) ([]byte, error) {
+	nquads, err := processor.CanonicalizeNative(proofConfig)
 	if err != nil {
 		return nil, fmt.Errorf("ecdsasd: hash proof config: %w", err)
 	}

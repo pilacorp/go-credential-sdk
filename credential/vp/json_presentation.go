@@ -12,8 +12,7 @@ import (
 )
 
 type JSONPresentation struct {
-	presentationData      PresentationData
-	verificationMethodKey string
+	presentationData PresentationData
 }
 
 var _ Presentation = (*JSONPresentation)(nil)
@@ -24,9 +23,7 @@ func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JS
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}
 
-	options := getOptions(opts...)
-
-	e := &JSONPresentation{presentationData: m, verificationMethodKey: options.verificationMethodKey}
+	e := &JSONPresentation{presentationData: m}
 
 	return e, e.executeOptions(opts...)
 }
@@ -52,21 +49,23 @@ func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (*JSONPresen
 
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error {
-	defaultSigner, err := signer.NewDefaultProvider(priv)
+	p256Signer, err := signer.NewP256ProviderFromHex(priv)
 	if err != nil {
-		return fmt.Errorf("failed to create default signer: %w", err)
+		return fmt.Errorf("failed to create P-256 signer: %w", err)
 	}
-	return e.AddProofByProvider(defaultSigner, opts...)
+	return e.AddProofByProvider(p256Signer, opts...)
 }
 
-// AddProofByProvider signs the presentation. The cryptosuite is chosen from the
-// bound verification method's key type: secp256k1 → ecdsa-rdfc-2019, P-256 →
-// JsonWebSignature2020 (ES256), RSA → JsonWebSignature2020 (alg via
-// AlgorithmProvider, default RS256). The VM is the pinned one
-// (WithVerificationMethodKey) or the latest active authentication VM.
+// AddProofByProvider signs the presentation, producing an ecdsa-rdfc-2019 proof
+// bound to the VM WithVerificationMethodKey pins, or by default the holder's
+// only VM / latest active authentication VM.
+// The VM must hold a P-256 key.
 //
-// A resolver is REQUIRED at signing time — the SDK reads the VM's key type from
-// the resolved DID document to pick the cryptosuite, even when the VM is pinned.
+// Verification stays permissive: secp256k1, hex proofValues and
+// JsonWebSignature2020 presentations issued by earlier versions still verify.
+//
+// A resolver is REQUIRED at signing time: the SDK reads the VM's key type from
+// the resolved DID document.
 func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, opts ...PresentationOpt) error {
 	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
@@ -86,15 +85,20 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 		return fmt.Errorf("verification method %q has an unrecognized key type", vmURL)
 	}
 
+	options := getOptions(opts...)
 	switch kind {
-	case verificationmethod.KeySecp256k1:
-		return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(provider, vmURL, "authentication")
-	case verificationmethod.KeyRSA, verificationmethod.KeyP256:
-		// P-256 signs the presentation via JsonWebSignature2020 (ES256); RSA via
-		// RS/PS. Same LD-proof path as JSONCredential, purpose "authentication".
-		return (*jsonmap.JSONMap)(&e.presentationData).AddJWSProof(provider, vmURL, "authentication")
+	case verificationmethod.KeyP256:
+		vmPub, err := verificationmethod.ECPubFromVM(vm)
+		if err != nil {
+			return fmt.Errorf("verification method %q: %w", vmURL, err)
+		}
+		return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(
+			provider, vmURL, "authentication",
+			jsonmap.WithVMPublicKey(vmPub),
+			jsonmap.WithChallenge(options.challenge),
+			jsonmap.WithDomain(options.domain))
 	default:
-		return fmt.Errorf("verification method %q key kind %v is not supported for presentations (secp256k1, P-256, or RSA)", vmURL, kind)
+		return fmt.Errorf("unsupported key kind %v for JSON presentation", kind)
 	}
 }
 
@@ -102,19 +106,14 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 // kid > latest active authentication VM) and returns the entry so the caller
 // can read its key type and choose the cryptosuite.
 func (e *JSONPresentation) resolveSigningVMEntry(opts ...PresentationOpt) (*verificationmethod.VerificationMethodEntry, string, error) {
-	holder, ok := e.presentationData["holder"].(string)
-	if !ok || holder == "" {
+	holder, ok := jsonmap.DIDFromField(e.presentationData["holder"])
+	if !ok {
 		return nil, "", fmt.Errorf("holder is missing or invalid")
 	}
 
 	options := getOptions(opts...)
 
-	pinned := e.verificationMethodKey
-	if options.verificationMethodKey != "" {
-		pinned = options.verificationMethodKey
-	}
-
-	return verificationmethod.ResolveSigningVM(context.Background(), holder, "authentication", pinned, options.resolver)
+	return verificationmethod.ResolveSigningVM(context.Background(), holder, "authentication", options.verificationMethodKey, options.resolver)
 }
 
 // resolveVerificationMethodURL returns the full verification method URL for
@@ -172,7 +171,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
 	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(e.presentationData), options.resolver); err != nil {
+		if err := verifyCredentials(PresentationData(e.presentationData), options); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}
@@ -194,7 +193,36 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		if !isValid {
 			return fmt.Errorf("invalid proof")
 		}
+		if err := e.checkChallengeAndDomain(options); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
 	}
 
+	return nil
+}
+
+// checkChallengeAndDomain enforces WithExpectedChallenge / WithExpectedDomain
+// on the proofs VerifyProof just validated: every checked proof (or only the
+// WithProofVerificationMethod one) must carry the expected values. Runs after
+// signature verification, so the values compared are the signed ones.
+func (e *JSONPresentation) checkChallengeAndDomain(options *presentationOptions) error {
+	if options.expectedChallenge == "" && options.expectedDomain == "" {
+		return nil
+	}
+	proofs, err := (*jsonmap.JSONMap)(&e.presentationData).Proofs()
+	if err != nil {
+		return err
+	}
+	for _, p := range proofs {
+		if options.proofVerificationMethod != "" && p.VerificationMethod != options.proofVerificationMethod {
+			continue
+		}
+		if options.expectedChallenge != "" && p.Challenge != options.expectedChallenge {
+			return fmt.Errorf("proof (%s): challenge %q does not match expected %q", p.VerificationMethod, p.Challenge, options.expectedChallenge)
+		}
+		if options.expectedDomain != "" && p.Domain != options.expectedDomain {
+			return fmt.Errorf("proof (%s): domain %q does not match expected %q", p.VerificationMethod, p.Domain, options.expectedDomain)
+		}
+	}
 	return nil
 }

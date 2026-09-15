@@ -1,7 +1,6 @@
 package jsonmap
 
 import (
-	"crypto/ecdsa"
 	"fmt"
 	"time"
 
@@ -55,6 +54,7 @@ func (m *JSONMap) AddECDSASDBaseProof(
 	signerProvider signer.SignerProvider,
 	verificationMethod, proofPurpose string,
 	mandatoryPointers []string,
+	opts ...ProofOpt,
 ) error {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
@@ -67,9 +67,6 @@ func (m *JSONMap) AddECDSASDBaseProof(
 	}
 	if proofPurpose == "" {
 		return fmt.Errorf("jsonmap: proof purpose is required")
-	}
-	if cs, ok := (*m)["credentialSubject"]; !ok || cs == nil {
-		return fmt.Errorf("jsonmap: credential is missing credentialSubject")
 	}
 
 	// Ensure the proof's data-integrity terms are defined in @context (VC 1.1
@@ -89,11 +86,20 @@ func (m *JSONMap) AddECDSASDBaseProof(
 		return err
 	}
 
+	// Both cryptosuites build the proof configuration here, so an
+	// ecdsa-sd-2023 proof commits to the same option set an ecdsa-rdfc-2019
+	// proof does.
+	proofConfig, err := m.ecdsaProofConfig(&proof)
+	if err != nil {
+		return fmt.Errorf("jsonmap: failed to build proof configuration: %w", err)
+	}
+
 	proofValue, err := ecdsasd.CreateBaseProof(
 		docNoProof,
-		proofConfigMapFor(proof),
+		proofConfig,
 		mandatoryPointers,
 		signerProvider,
+		newProofOptions(opts...).vmPub,
 	)
 	if err != nil {
 		return fmt.Errorf("jsonmap: create ecdsa-sd base proof: %w", err)
@@ -142,9 +148,8 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
 	}
 	// ecdsa-sd-2023 standardizes on P-256; this SDK also accepts a secp256k1
-	// issuer key as a non-standard extension. Pick the resolver explicitly from
-	// the verification method's curve.
-	pub, err := ecdsasdIssuerPub(vm)
+	// issuer key as a non-standard extension.
+	pub, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
 		return false, err
 	}
@@ -154,7 +159,12 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, err
 	}
 
-	if err := ecdsasd.VerifyProof(docNoProof, proofConfigMapFor(*proof), proof.ProofValue, pub); err != nil {
+	proofConfig, err := m.ecdsaProofConfig(proof)
+	if err != nil {
+		return false, fmt.Errorf("failed to build proof configuration: %w", err)
+	}
+
+	if err := ecdsasd.VerifyProof(docNoProof, proofConfig, proof.ProofValue, pub); err != nil {
 		return false, err
 	}
 	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
@@ -165,14 +175,26 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 
 // proofConfigMapFor builds the canonical proof-config map (without proofValue)
 // used for the proof hash. Issue and verify must build it identically.
+//
+// Data Integrity § 3.2.5: the configuration holds every proof option except
+// proofValue. challenge and domain are optional options, so they are included
+// exactly when the proof carries them — adding an empty one would change the
+// hash for proofs that never had it.
 func proofConfigMapFor(p dto.Proof) map[string]interface{} {
-	return map[string]interface{}{
+	cfg := map[string]interface{}{
 		"type":               p.Type,
 		"created":            p.Created,
 		"verificationMethod": p.VerificationMethod,
 		"proofPurpose":       p.ProofPurpose,
 		"cryptosuite":        p.Cryptosuite,
 	}
+	if p.Challenge != "" {
+		cfg["challenge"] = p.Challenge
+	}
+	if p.Domain != "" {
+		cfg["domain"] = p.Domain
+	}
+	return cfg
 }
 
 func (m *JSONMap) findECDSASDProof() (dto.Proof, bool) {
@@ -199,19 +221,4 @@ func (m *JSONMap) bodyWithoutProof() (map[string]interface{}, error) {
 // setSingleProof sets proof to a single proof object.
 func (m *JSONMap) setSingleProof(p dto.Proof) {
 	(*m)[proofField] = util.SerializeProofs([]dto.Proof{p})
-}
-
-// ecdsasdIssuerPub resolves the issuer public key for an ecdsa-sd-2023 proof,
-// dispatching on the verification method's curve. A secp256k1 VM (EC secp256k1
-// JWK or publicKeyHex) is the non-standard extension; everything else is the
-// standard P-256 path (P-256 JWK or publicKeyMultibase Multikey).
-func ecdsasdIssuerPub(vm *verificationmethod.VerificationMethodEntry) (*ecdsa.PublicKey, error) {
-	if verificationmethod.VMIsSecp256k1(vm) {
-		hexKey, err := verificationmethod.PublicKeyHexFromVM(vm)
-		if err != nil {
-			return nil, err
-		}
-		return verificationmethod.Secp256k1PubFromHex(hexKey)
-	}
-	return verificationmethod.P256PubFromVM(vm)
 }
