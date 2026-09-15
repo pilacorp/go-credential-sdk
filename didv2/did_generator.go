@@ -22,6 +22,7 @@ package didv2
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pilacorp/go-credential-sdk/didv2/did"
@@ -201,6 +202,9 @@ func (d *DIDGenerator) GenerateDIDTX(
 	didIdentifier := did.ToDID(cfg.Method, didAddr)
 
 	didDoc := did.GenerateDIDDocument(didPublicKeyHex, didIdentifier, hash, issuerDID, didType, metadata, cfg.ExtraVMs...)
+	if err := didDoc.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid DID document: %w", err)
+	}
 
 	docHash, err := didDoc.Hash()
 	if err != nil {
@@ -432,8 +436,8 @@ func (d *DIDGenerator) GenerateSetDocumentHashByIssuerTransaction(
 // It applies all provided options to the base config and automatically generates
 // a CapID if one is not provided. This is an internal method used by public APIs.
 func (d *DIDGenerator) resolveConfig(options ...DIDOption) (*DIDConfig, error) {
-	// copy base config to avoid modifying the original.
 	cfgCopy := *d.baseConfig
+	cfgCopy.ExtraVMs = slices.Clone(d.baseConfig.ExtraVMs)
 	cfg := &cfgCopy
 	for _, opt := range options {
 		opt(cfg)

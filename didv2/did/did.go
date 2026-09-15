@@ -157,11 +157,13 @@ func NewVerificationMethods(
 	return vms, authentication, assertionMethod
 }
 
-// documentContext adds the CID context when the document publishes a Multikey VM.
+// documentContext builds @context: DID Core 1.0 §6.1 requires did/v1 first,
+// then the security context, plus the CID context when the document publishes
+// a Multikey VM.
 func documentContext(vms []VerificationMethod) []string {
 	ctx := []string{
-		"https://w3id.org/security/v1",
 		"https://www.w3.org/ns/did/v1",
+		"https://w3id.org/security/v1",
 	}
 
 	for i := range vms {

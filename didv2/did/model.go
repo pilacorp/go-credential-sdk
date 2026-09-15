@@ -124,6 +124,38 @@ type KeyPair struct {
 	P256PublicKey *ecdsa.PublicKey `json:"p256PublicKey,omitempty"`
 }
 
+// Validate rejects a document whose verification methods cannot be published:
+// an empty or duplicate VM id, or an authentication / assertionMethod
+// reference to a VM the document does not carry. GenerateDIDTX runs it before
+// hashing so such a document never reaches the chain; callers building
+// documents with GenerateDIDDocument directly should call it themselves.
+func (doc *DIDDocument) Validate() error {
+	if doc == nil {
+		return fmt.Errorf("DID document is nil")
+	}
+	seen := make(map[string]struct{}, len(doc.VerificationMethod))
+	for i, vm := range doc.VerificationMethod {
+		if vm.Id == "" {
+			return fmt.Errorf("verificationMethod[%d]: id is empty", i)
+		}
+		if _, dup := seen[vm.Id]; dup {
+			return fmt.Errorf("verificationMethod: duplicate id %s (#key-1 and #key-2 are reserved by GenerateDID)", vm.Id)
+		}
+		seen[vm.Id] = struct{}{}
+	}
+	for _, rel := range []struct {
+		name string
+		refs []string
+	}{{"authentication", doc.Authentication}, {"assertionMethod", doc.AssertionMethod}} {
+		for _, ref := range rel.refs {
+			if _, ok := seen[ref]; !ok {
+				return fmt.Errorf("%s references unknown verification method %q", rel.name, ref)
+			}
+		}
+	}
+	return nil
+}
+
 // Hash calculates the Keccak256 hash of the canonicalized DID Document.
 //
 // The document is first canonicalized using JSON canonicalization to ensure

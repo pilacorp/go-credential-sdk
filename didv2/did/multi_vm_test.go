@@ -135,7 +135,41 @@ func TestNewVerificationMethods(t *testing.T) {
 }
 
 // A single-VM document feeds DocHash: its serialization must not drift.
-const singleVMDocumentJSON = `{"@context":["https://w3id.org/security/v1","https://www.w3.org/ns/did/v1"],"id":"did:nda:0xabc","controller":"did:nda:0xissuer","verificationMethod":[{"id":"did:nda:0xabc#key-1","type":"EcdsaSecp256k1VerificationKey2019","controller":"did:nda:0xabc","publicKeyHex":"0x02aa"}],"authentication":["did:nda:0xabc#key-1"],"assertionMethod":["did:nda:0xabc#key-1"],"didDocumentMetadata":{"type":"people"}}`
+const singleVMDocumentJSON = `{"@context":["https://www.w3.org/ns/did/v1","https://w3id.org/security/v1"],"id":"did:nda:0xabc","controller":"did:nda:0xissuer","verificationMethod":[{"id":"did:nda:0xabc#key-1","type":"EcdsaSecp256k1VerificationKey2019","controller":"did:nda:0xabc","publicKeyHex":"0x02aa"}],"authentication":["did:nda:0xabc#key-1"],"assertionMethod":["did:nda:0xabc#key-1"],"didDocumentMetadata":{"type":"people"}}`
+
+// DID Core 1.0 §6.1: a JSON-LD DID document's @context MUST list
+// https://www.w3.org/ns/did/v1 first.
+func TestDocumentContext_DIDCoreFirst(t *testing.T) {
+	secp := NewSecp256k1VM(testDID, "#key-1", "0x02aa")
+	p256, err := NewP256MultikeyVM(testDID, "#key-2", p256PubFromSecretMultibase(t, w3cP256SecretMultibase))
+	if err != nil {
+		t.Fatalf("p256 vm: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		vms  []VerificationMethod
+		want []string
+	}{
+		{"secp256k1 only", []VerificationMethod{secp},
+			[]string{"https://www.w3.org/ns/did/v1", "https://w3id.org/security/v1"}},
+		{"with multikey adds cid", []VerificationMethod{secp, p256},
+			[]string{"https://www.w3.org/ns/did/v1", "https://w3id.org/security/v1", cidContext}},
+		{"no vms", nil,
+			[]string{"https://www.w3.org/ns/did/v1", "https://w3id.org/security/v1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := documentContext(tt.vms)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("documentContext = %q, want %q", got, tt.want)
+			}
+			if got[0] != "https://www.w3.org/ns/did/v1" {
+				t.Errorf("@context[0] = %q, DID Core requires did/v1 first", got[0])
+			}
+		})
+	}
+}
 
 func TestGenerateDIDDocument_SingleVMSerializationUnchanged(t *testing.T) {
 	doc := GenerateDIDDocument("0x02aa", testDID, "", testIssuer, DIDTypePeople, nil)
