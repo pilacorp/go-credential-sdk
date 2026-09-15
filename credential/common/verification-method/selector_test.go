@@ -71,3 +71,21 @@ func TestSelectVMForPurpose_EmptyKidFallsBackToLatest(t *testing.T) {
 		t.Errorf("expected latest key #key-2, got %q", vm.ID)
 	}
 }
+
+func TestVMHelpers_NilVMDoesNotPanic(t *testing.T) {
+	if VMIsRSA(nil) || VMIsP256(nil) || VMIsSecp256k1(nil) {
+		t.Fatal("nil VM must not match any key kind")
+	}
+	if _, ok := VMKeyKind(nil); ok {
+		t.Fatal("VMKeyKind(nil) must report unrecognized")
+	}
+	if vmMatchesKind(nil, KeyP256) {
+		t.Fatal("vmMatchesKind(nil, ...) must be false")
+	}
+}
+
+func TestEnsureVMAuthorizedForPurpose_NilDoc(t *testing.T) {
+	if err := EnsureVMAuthorizedForPurpose(nil, "did:x:y#key-1", "assertionMethod"); err == nil {
+		t.Fatal("expected error for nil DID document")
+	}
+}

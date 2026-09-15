@@ -59,8 +59,9 @@ The example signs with **P-256**. Data Integrity ECDSA Cryptosuites v1.0 allows
 only P-256 and P-384 for `ecdsa-rdfc-2019`, and `@digitalbazaar/ecdsa-multikey`
 does not implement secp256k1 (its source carries a `FIXME` saying so).
 
-The SDK issues `ecdsa-rdfc-2019` with **secp256k1** today. The signing algorithm
-is identical for both curves — the same code path produces this credential — but
-no conformant verifier accepts secp256k1 here. Closing that gap means teaching
-the SDK to select a P-256 signer for `ecdsa-rdfc-2019`, and teaching its verifier
-to check P-256 signatures; neither exists yet.
+The SDK issues and verifies `ecdsa-rdfc-2019` with **P-256** (`signer.NewP256Provider`
+and a P-256 Multikey verification method); this example uses that path, and the
+same output is checked against the W3C test vectors in
+`credential/common/jsonmap/conformance_rdfc_test.go`. A secp256k1 signer routed
+to a P-256 verification method is rejected at signing time rather than producing
+a proof no conformant verifier would accept. P-384 is not implemented yet.

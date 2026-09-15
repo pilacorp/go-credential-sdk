@@ -37,8 +37,9 @@ func ParseECDSASDCredential(rawJSON []byte, opts ...CredentialOpt) (*ECDSASDCred
 }
 
 // AddProofByProvider signs the credential into an ecdsa-sd-2023 base proof.
-// mandatoryPaths (dot-notation) are always disclosed; all other claims become
-// selectively disclosable.
+// mandatoryPaths are always disclosed; all other claims become selectively
+// disclosable. Each path is either a JSON Pointer ("/credentialSubject/name",
+// as in the W3C spec) or a dot path ("credentialSubject.name").
 //
 // The proof is bound to the VM WithVerificationMethodKey pins, or by default
 // the issuer's only VM / latest active assertionMethod VM; it must hold a P-256
@@ -77,8 +78,9 @@ func (e *ECDSASDCredential) AddProofByProvider(signerProvider signer.SignerProvi
 }
 
 // Derive returns a new credential revealing the mandatory claims plus
-// selectivePaths; the rest are removed. The receiver is unchanged. The result
-// is a plain *JSONCredential — a derived SD credential cannot be derived again.
+// selectivePaths (JSON Pointers or dot paths, as for AddProofByProvider); the
+// rest are removed. The receiver is unchanged. The result is a plain
+// *JSONCredential — a derived SD credential cannot be derived again.
 func (e *ECDSASDCredential) Derive(selectivePaths []string) (*JSONCredential, error) {
 	derived, err := (*jsonmap.JSONMap)(&e.base.credentialData).DeriveECDSASD(dotPathsToPointers(selectivePaths))
 	if err != nil {

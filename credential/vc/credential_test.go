@@ -339,11 +339,29 @@ func TestParseTypes(t *testing.T) {
 }
 
 func TestParseIssuer(t *testing.T) {
-	credential := CredentialData{"issuer": "did:example:issuer"}
-	var contents CredentialContents
-	err := parseIssuer(credential, &contents)
-	assert.NoError(t, err)
-	assert.Equal(t, "did:example:issuer", contents.Issuer)
+	tests := []struct {
+		name     string
+		issuer   interface{}
+		expected string
+	}{
+		{"string", "did:example:issuer", "did:example:issuer"},
+		{"object with id", map[string]interface{}{"id": "did:example:issuer", "name": "Example"}, "did:example:issuer"},
+		{"object without id", map[string]interface{}{"name": "Example"}, ""},
+		{"empty string", "", ""},
+		{"missing", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			credential := CredentialData{}
+			if tt.issuer != nil {
+				credential["issuer"] = tt.issuer
+			}
+			var contents CredentialContents
+			err := parseIssuer(credential, &contents)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expected, contents.Issuer)
+		})
+	}
 }
 
 func TestParseDates(t *testing.T) {

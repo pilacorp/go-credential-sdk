@@ -24,7 +24,6 @@ import (
 
 	"github.com/mr-tron/base58"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vm "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -189,20 +188,18 @@ func (s *server) issueRDFC(raw json.RawMessage) (any, error) {
 	return cred.Serialize()
 }
 
-// issueSD parses through vc for its data-model checks but signs on jsonmap:
-// vc.ECDSASDCredential takes dot paths while the suite sends JSON Pointers.
+// issueSD signs an ecdsa-sd-2023 base proof. The suite sends mandatory
+// pointers as RFC 6901 JSON Pointers, which vc accepts as-is.
 func (s *server) issueSD(raw json.RawMessage, mandatoryPointers []string) (any, error) {
-	if _, err := vc.ParseJSONCredential(raw); err != nil {
+	cred, err := vc.ParseECDSASDCredential(raw)
+	if err != nil {
 		return nil, err
 	}
-	var m jsonmap.JSONMap
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, fmt.Errorf("parse credential: %w", err)
-	}
-	if err := (&m).AddECDSASDBaseProof(s.issuer, s.issuerVM, "assertionMethod", mandatoryPointers); err != nil {
+	if err := cred.AddProofByProvider(s.issuer, mandatoryPointers,
+		vc.WithVerificationMethodKey(s.issuerVM), vc.WithResolver(s.resolver)); err != nil {
 		return nil, err
 	}
-	return m, nil
+	return cred.Serialize()
 }
 
 func (s *server) handleDerive(w http.ResponseWriter, r *http.Request) {
@@ -223,19 +220,24 @@ func (s *server) handleDerive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var m jsonmap.JSONMap
-	if err := json.Unmarshal(body.VerifiableCredential, &m); err != nil {
+	base, err := vc.ParseECDSASDCredential(body.VerifiableCredential)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("parse verifiableCredential: %w", err))
 		return
 	}
 
-	derived, err := (&m).DeriveECDSASD(body.Options.SelectivePointers)
+	derived, err := base.Derive(body.Options.SelectivePointers)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("derive: %w", err))
 		return
 	}
+	out, err := derived.Serialize()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("serialize derived: %w", err))
+		return
+	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"verifiableCredential": derived})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"verifiableCredential": out})
 }
 
 func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
