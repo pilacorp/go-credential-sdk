@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
@@ -83,7 +82,10 @@ func TestJSONMap_AddECDSAProof_Accepts64ByteSignature(t *testing.T) {
 	}
 }
 
-func TestJSONMap_AddECDSAProof_Accepts65ByteSignature(t *testing.T) {
+// A 65-byte r||s||v signature is what the secp256k1 DefaultProvider produces;
+// ecdsa-rdfc-2019 is P-256 only (64 bytes), so it must be rejected as a
+// mis-routed signer rather than trimmed and stored.
+func TestJSONMap_AddECDSAProof_Rejects65ByteSignature(t *testing.T) {
 	m := testCredential()
 
 	sig65 := make([]byte, 65)
@@ -91,17 +93,15 @@ func TestJSONMap_AddECDSAProof_Accepts65ByteSignature(t *testing.T) {
 		sig65[i] = 0xCD
 	}
 
-	if err := (&m).AddECDSAProof(&testSigner{sig: sig65}, "did:example:issuer#key-1", "assertionMethod"); err != nil {
-		t.Fatalf("AddECDSAProof error: %v", err)
+	err := (&m).AddECDSAProof(&testSigner{sig: sig65}, "did:example:issuer#key-1", "assertionMethod")
+	if err == nil {
+		t.Fatal("expected AddECDSAProof to reject a 65-byte signature")
 	}
-
-	pv, _ := proofObject(t, m)["proofValue"].(string)
-	raw, err := verificationmethod.DecodeMultibaseKey(pv)
-	if err != nil {
-		t.Fatalf("proofValue is not multibase base58btc: %v", err)
+	if !strings.Contains(err.Error(), "64-byte") {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(raw) != 65 {
-		t.Fatalf("decoded proofValue length = %d, want 65", len(raw))
+	if _, has := m["proof"]; has {
+		t.Fatal("no proof must be appended on rejection")
 	}
 }
 
@@ -120,17 +120,15 @@ func TestJSONMap_AddECDSAProof_RejectsNonECDSASignature(t *testing.T) {
 
 const testPrivHex = "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318"
 
+// testKeyPair returns a P-256 signer: ecdsa-rdfc-2019 is defined for P-256
+// only, and AddECDSAProof rejects the 65-byte secp256k1 signature shape.
 func testKeyPair(t *testing.T) (signer.SignerProvider, *ecdsa.PublicKey) {
 	t.Helper()
-	priv, err := ethcrypto.HexToECDSA(testPrivHex)
-	if err != nil {
-		t.Fatalf("parse private key: %v", err)
-	}
-	sp, err := signer.NewDefaultProvider(testPrivHex)
+	sp, err := signer.NewP256ProviderFromHex(testPrivHex)
 	if err != nil {
 		t.Fatalf("signer: %v", err)
 	}
-	return sp, &priv.PublicKey
+	return sp, sp.Public()
 }
 
 func TestJSONMap_AddECDSAProof_RoundTripsThroughSpecConformantBranch(t *testing.T) {
@@ -342,7 +340,7 @@ func TestJSONMap_VerifyECDSA_RejectsMalformedMultibaseProofValue(t *testing.T) {
 	cases := map[string]string{
 		// 0, O, I and l are not in the base58 alphabet.
 		"undecodable": "z0OIl",
-		// Decodes cleanly, but is not a 64/65-byte secp256k1 signature.
+		// Decodes cleanly, but is not a 64-byte P-256 signature.
 		"wrong length": verificationmethod.EncodeMultibaseKey(make([]byte, 32)),
 	}
 
@@ -1280,5 +1278,70 @@ func TestCanonicalizeNative_RejectsNonJSONInput(t *testing.T) {
 				t.Fatalf("error = %q, want it wrapped as a canonicalization failure", err)
 			}
 		})
+	}
+}
+
+// challenge and domain are proof options, so Data Integrity § 3.2.5 puts them
+// in the signed proof configuration: they must be emitted, parsed back, and
+// any change to them must break the signature.
+func TestJSONMap_AddECDSAProof_SignsChallengeAndDomain(t *testing.T) {
+	sp, pub := testKeyPair(t)
+	m := testCredential()
+
+	err := (&m).AddECDSAProof(sp, "did:example:holder#key-1", "authentication",
+		WithChallenge("nonce-123"), WithDomain("verifier.example"))
+	if err != nil {
+		t.Fatalf("AddECDSAProof error: %v", err)
+	}
+
+	obj := proofObject(t, m)
+	if obj["challenge"] != "nonce-123" || obj["domain"] != "verifier.example" {
+		t.Fatalf("proof lacks challenge/domain: %v", obj)
+	}
+
+	proof, err := ParseRawToProof(m.getFirstProof())
+	if err != nil {
+		t.Fatalf("parse proof: %v", err)
+	}
+	if proof.Challenge != "nonce-123" || proof.Domain != "verifier.example" {
+		t.Fatalf("ParseRawToProof dropped challenge/domain: %+v", proof)
+	}
+	if ok, err := m.verifyECDSA(pub, &proof); err != nil || !ok {
+		t.Fatalf("untampered proof failed: ok=%v err=%v", ok, err)
+	}
+
+	tampered := proof
+	tampered.Challenge = "nonce-456"
+	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+		t.Fatal("changed challenge verified successfully")
+	}
+	tampered = proof
+	tampered.Domain = "attacker.example"
+	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+		t.Fatal("changed domain verified successfully")
+	}
+	tampered = proof
+	tampered.Challenge, tampered.Domain = "", ""
+	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+		t.Fatal("stripped challenge/domain verified successfully")
+	}
+}
+
+// A proof without challenge/domain must hash exactly as before (no empty keys
+// sneak into the proof configuration), so already-issued proofs keep verifying.
+func TestJSONMap_ProofConfig_OmitsEmptyChallengeAndDomain(t *testing.T) {
+	m := testCredential()
+	cfg, err := m.ecdsaProofConfig(&dto.Proof{
+		Type: DataIntegrityProof, Cryptosuite: ECDSARDFC2019,
+		Created: "2024-01-01T00:00:00Z", VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose: "assertionMethod",
+	})
+	if err != nil {
+		t.Fatalf("proof config: %v", err)
+	}
+	for _, k := range []string{"challenge", "domain"} {
+		if _, has := cfg[k]; has {
+			t.Fatalf("empty %s must not be in the proof configuration", k)
+		}
 	}
 }

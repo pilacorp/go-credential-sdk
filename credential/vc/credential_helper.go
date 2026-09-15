@@ -296,9 +296,11 @@ func parseTypes(c CredentialData, contents *CredentialContents) error {
 	return nil
 }
 
-// parseIssuer extracts the issuer field from a Credential.
+// parseIssuer extracts the issuer field from a Credential. Per the VC Data
+// Model it may be a plain URL/DID string or an object with an id; either way
+// Contents keeps only the id.
 func parseIssuer(c CredentialData, contents *CredentialContents) error {
-	if issuer, ok := c["issuer"].(string); ok {
+	if issuer, ok := jsonmap.DIDFromField(c["issuer"]); ok {
 		contents.Issuer = issuer
 	}
 
@@ -677,14 +679,21 @@ func convertToArray(value interface{}) []interface{} {
 	return []interface{}{value}
 }
 
-// dotPathsToPointers converts dot-notation paths ("credentialSubject.name")
-// into JSON Pointers ("/credentialSubject/name", RFC 6901) for the ecdsa-sd
-// primitives, escaping "~" and "/" within segments.
+// dotPathsToPointers normalizes claim paths for the ecdsa-sd primitives, which
+// take JSON Pointers (RFC 6901). A path starting with "/" is already a pointer
+// — the form the W3C spec and test suites use — and passes through unchanged;
+// anything else is a dot path ("credentialSubject.name") and is converted,
+// escaping "~" and "/" within segments. The two cannot collide: a dot path
+// never starts with "/" because JSON-LD drops such keys.
 func dotPathsToPointers(paths []string) []string {
 	esc := strings.NewReplacer("~", "~0", "/", "~1")
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
 		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(p, "/") {
+			out = append(out, p)
 			continue
 		}
 		var b strings.Builder

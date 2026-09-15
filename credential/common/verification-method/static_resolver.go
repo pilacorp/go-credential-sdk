@@ -8,13 +8,16 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math/big"
+	"sync"
 )
 
 // StaticResolver is an in-memory ResolverProvider backed by a fixed set of DID
 // documents. It does no I/O, so it is ideal for tests and offline use — for
 // example to verify credentials signed with key types the production DID
-// resolver does not yet publish (RSA, P-256).
+// resolver does not yet publish (RSA, P-256). Safe for concurrent use: Add
+// may run alongside ResolveDocument, e.g. while vc.Verify fans out its checks.
 type StaticResolver struct {
+	mu   sync.RWMutex
 	docs map[string]*DIDDocument
 }
 
@@ -30,14 +33,20 @@ func NewStaticResolver(docs ...*DIDDocument) *StaticResolver {
 
 // Add registers (or replaces) a DID document, keyed by its ID.
 func (r *StaticResolver) Add(doc *DIDDocument) {
-	if doc != nil && doc.ID != "" {
-		r.docs[doc.ID] = doc
+	if doc == nil || doc.ID == "" {
+		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.docs[doc.ID] = doc
 }
 
 // ResolveDocument returns the registered document for did, or an error if none.
 func (r *StaticResolver) ResolveDocument(_ context.Context, did string) (*DIDDocument, error) {
-	if doc, ok := r.docs[did]; ok {
+	r.mu.RLock()
+	doc, ok := r.docs[did]
+	r.mu.RUnlock()
+	if ok {
 		return doc, nil
 	}
 	return nil, fmt.Errorf("static resolver: unknown did %q", did)

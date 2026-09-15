@@ -85,6 +85,7 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 		return fmt.Errorf("verification method %q has an unrecognized key type", vmURL)
 	}
 
+	options := getOptions(opts...)
 	switch kind {
 	case verificationmethod.KeyP256:
 		vmPub, err := verificationmethod.ECPubFromVM(vm)
@@ -92,7 +93,10 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 			return fmt.Errorf("verification method %q: %w", vmURL, err)
 		}
 		return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(
-			provider, vmURL, "authentication", jsonmap.WithVMPublicKey(vmPub))
+			provider, vmURL, "authentication",
+			jsonmap.WithVMPublicKey(vmPub),
+			jsonmap.WithChallenge(options.challenge),
+			jsonmap.WithDomain(options.domain))
 	default:
 		return fmt.Errorf("unsupported key kind %v for JSON presentation", kind)
 	}
@@ -102,8 +106,8 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 // kid > latest active authentication VM) and returns the entry so the caller
 // can read its key type and choose the cryptosuite.
 func (e *JSONPresentation) resolveSigningVMEntry(opts ...PresentationOpt) (*verificationmethod.VerificationMethodEntry, string, error) {
-	holder, ok := e.presentationData["holder"].(string)
-	if !ok || holder == "" {
+	holder, ok := jsonmap.DIDFromField(e.presentationData["holder"])
+	if !ok {
 		return nil, "", fmt.Errorf("holder is missing or invalid")
 	}
 
@@ -167,7 +171,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
 	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(e.presentationData), options.resolver); err != nil {
+		if err := verifyCredentials(PresentationData(e.presentationData), options); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}
@@ -189,7 +193,36 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		if !isValid {
 			return fmt.Errorf("invalid proof")
 		}
+		if err := e.checkChallengeAndDomain(options); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
 	}
 
+	return nil
+}
+
+// checkChallengeAndDomain enforces WithExpectedChallenge / WithExpectedDomain
+// on the proofs VerifyProof just validated: every checked proof (or only the
+// WithProofVerificationMethod one) must carry the expected values. Runs after
+// signature verification, so the values compared are the signed ones.
+func (e *JSONPresentation) checkChallengeAndDomain(options *presentationOptions) error {
+	if options.expectedChallenge == "" && options.expectedDomain == "" {
+		return nil
+	}
+	proofs, err := (*jsonmap.JSONMap)(&e.presentationData).Proofs()
+	if err != nil {
+		return err
+	}
+	for _, p := range proofs {
+		if options.proofVerificationMethod != "" && p.VerificationMethod != options.proofVerificationMethod {
+			continue
+		}
+		if options.expectedChallenge != "" && p.Challenge != options.expectedChallenge {
+			return fmt.Errorf("proof (%s): challenge %q does not match expected %q", p.VerificationMethod, p.Challenge, options.expectedChallenge)
+		}
+		if options.expectedDomain != "" && p.Domain != options.expectedDomain {
+			return fmt.Errorf("proof (%s): domain %q does not match expected %q", p.VerificationMethod, p.Domain, options.expectedDomain)
+		}
+	}
 	return nil
 }

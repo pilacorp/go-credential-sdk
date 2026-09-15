@@ -107,7 +107,9 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("invalid signature: %w", err)
 	}
 
-	if err := ES256K.Verify(signingString, signature, publicKey); err != nil {
+	// alg was matched to the VM's key above, so publicKey is already on the
+	// curve alg names; ES256K and ES256 share the same ECDSA check.
+	if err := VerifyECDSA(signingString, signature, publicKey); err != nil {
 		return err
 	}
 

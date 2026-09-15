@@ -15,26 +15,28 @@ func CanonicalizeWithIdMap(doc map[string]interface{}) (nquads []string, idMap m
 		return nil, nil, fmt.Errorf("canonicalize: document is nil")
 	}
 	defer recoverJSONLD(&err, "canonicalize with id map")
-	std, err := standardizeForCanonicalization(doc)
+	dataset, err := toRDFDataset(doc)
 	if err != nil {
-		return nil, nil, fmt.Errorf("canonicalize: standardize: %w", err)
-	}
-	// Expanded only to reject input whose terms would be dropped; legacy
-	// credentials take the CanonicalizeDocument path instead.
-	if _, err := ExpandJSONLD(std); err != nil {
 		return nil, nil, err
 	}
-	opts := sdOptions()
-	opts.Format = ""
-	rdf, err := ld.NewJsonLdProcessor().ToRDF(std, opts)
-	if err != nil {
-		return nil, nil, fmt.Errorf("canonicalize: to rdf: %w", err)
-	}
-	dataset, ok := rdf.(*ld.RDFDataset)
-	if !ok {
-		return nil, nil, fmt.Errorf("canonicalize: unexpected ToRDF type %T", rdf)
-	}
 	return canonicalizeDatasetWithIdMap(dataset)
+}
+
+// toRDFDataset expands doc once and converts the expanded form to an RDF
+// dataset. ExpandJSONLD rejects input whose terms or types would be dropped
+// (legacy credentials take the CanonicalizeDocument path instead); its output
+// is fed straight to the low-level JsonLdApi.ToRDF, which unlike
+// JsonLdProcessor.ToRDF does not expand again.
+func toRDFDataset(doc map[string]interface{}) (*ld.RDFDataset, error) {
+	expanded, err := ExpandJSONLD(doc)
+	if err != nil {
+		return nil, err
+	}
+	dataset, err := ld.NewJsonLdApi().ToRDF(expanded, sdOptions())
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize: to rdf: %w", err)
+	}
+	return dataset, nil
 }
 
 // CanonicalizeNative returns doc's canonical N-Quads as a single byte string.
@@ -65,25 +67,11 @@ func canonicalizeNQuads(doc map[string]interface{}) (nquads []string, err error)
 		return nil, fmt.Errorf("canonicalize: document is nil")
 	}
 	defer recoverJSONLD(&err, "canonicalize")
-	std, err := standardizeForCanonicalization(doc)
+	// toRDFDataset rather than Normalize, which rebuilds options and drops
+	// SafeMode.
+	dataset, err := toRDFDataset(doc)
 	if err != nil {
-		return nil, fmt.Errorf("canonicalize: standardize: %w", err)
-	}
-	// Expanded only to reject input whose terms would be dropped; legacy
-	// credentials take the CanonicalizeDocument path instead.
-	if _, err := ExpandJSONLD(std); err != nil {
 		return nil, err
-	}
-	// ToRDF rather than Normalize, which rebuilds options and drops SafeMode.
-	opts := sdOptions()
-	opts.Format = ""
-	rdf, err := ld.NewJsonLdProcessor().ToRDF(std, opts)
-	if err != nil {
-		return nil, fmt.Errorf("canonicalize: to rdf: %w", err)
-	}
-	dataset, ok := rdf.(*ld.RDFDataset)
-	if !ok {
-		return nil, fmt.Errorf("canonicalize: unexpected ToRDF type %T", rdf)
 	}
 
 	na := ld.NewNormalisationAlgorithm(ld.AlgorithmURDNA2015)

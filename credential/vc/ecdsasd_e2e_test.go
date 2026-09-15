@@ -209,6 +209,51 @@ func TestECDSASDEndToEnd_IssueDeriveVerify(t *testing.T) {
 	}
 }
 
+// The same flow with RFC 6901 JSON Pointers — the form the W3C spec and test
+// suites use — for both mandatory and selective paths, mixed with a dot path.
+func TestECDSASDEndToEnd_JSONPointerPaths(t *testing.T) {
+	s := newE2E(t)
+	issuerSigner, err := signer.NewP256Provider(s.issuerPriv)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+
+	base, err := vc.ParseECDSASDCredential(e2eCredentialJSON())
+	if err != nil {
+		t.Fatalf("parse base: %v", err)
+	}
+	if err := base.AddProofByProvider(issuerSigner,
+		[]string{"/issuer", "/validFrom", "/credentialSubject/id"},
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(s.resolver),
+	); err != nil {
+		t.Fatalf("add base proof with pointer paths: %v", err)
+	}
+	baseSerialized, err := base.Serialize()
+	if err != nil {
+		t.Fatalf("serialize base: %v", err)
+	}
+	baseBytes, _ := json.Marshal(baseSerialized)
+
+	derivedBytes := deriveAndSerialize(t, baseBytes,
+		[]string{"/credentialSubject/name", "credentialSubject.dob"})
+	derived, err := vc.ParseJSONCredential(derivedBytes)
+	if err != nil {
+		t.Fatalf("parse derived: %v", err)
+	}
+	if err := derived.Verify(vc.WithResolver(s.resolver)); err != nil {
+		t.Fatalf("verify derived: %v", err)
+	}
+	if got := derived.ExtractField("credentialSubject.name"); got != "Nguyen Van A" {
+		t.Errorf("revealed name = %v, want %q", got, "Nguyen Van A")
+	}
+	if got := derived.ExtractField("credentialSubject.dob"); got != "1990-01-01" {
+		t.Errorf("revealed dob = %v, want %q", got, "1990-01-01")
+	}
+	if got := derived.ExtractField("credentialSubject.email"); got != nil {
+		t.Errorf("email should not be revealed, got %v", got)
+	}
+}
+
 func TestECDSASDEndToEnd_RevealNothingExtra(t *testing.T) {
 	s := newE2E(t)
 	baseBytes := issueBase(t, s)

@@ -63,13 +63,23 @@ func (m *SigningMethodES256K) Sign(signingString string, key interface{}) ([]byt
 	return sig[:64], nil // Return R and S, excluding recovery ID
 }
 
-// Verify verifies a signature
+// Verify verifies an ES256K signature. The check is plain ECDSA on the key's
+// curve (see VerifyECDSA).
 func (m *SigningMethodES256K) Verify(signingString string, signature []byte, key interface{}) error {
 	publicKey, ok := key.(*ecdsa.PublicKey)
 	if !ok {
 		return fmt.Errorf("invalid key type")
 	}
+	return VerifyECDSA(signingString, signature, publicKey)
+}
 
+// VerifyECDSA verifies a 64-byte r||s signature over SHA-256(signingString)
+// with publicKey, on whatever curve the key is on. ES256K (secp256k1) and
+// ES256 (P-256) differ only in that curve, so one check serves both.
+func VerifyECDSA(signingString string, signature []byte, publicKey *ecdsa.PublicKey) error {
+	if publicKey == nil {
+		return fmt.Errorf("public key is nil")
+	}
 	if len(signature) != 64 {
 		return fmt.Errorf("invalid signature length")
 	}
@@ -81,7 +91,6 @@ func (m *SigningMethodES256K) Verify(signingString string, signature []byte, key
 	if !ecdsa.Verify(publicKey, hash[:], r, s) {
 		return fmt.Errorf("signature verification failed")
 	}
-
 	return nil
 }
 

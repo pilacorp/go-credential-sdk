@@ -99,6 +99,12 @@ func SerializeProofs(proofs []dto.Proof) interface{} {
 		if proof.JWS != "" {
 			proofMap["jws"] = proof.JWS
 		}
+		if proof.Challenge != "" {
+			proofMap["challenge"] = proof.Challenge
+		}
+		if proof.Domain != "" {
+			proofMap["domain"] = proof.Domain
+		}
 		result[i] = proofMap
 	}
 	if len(result) == 1 {

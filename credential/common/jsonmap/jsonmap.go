@@ -120,13 +120,28 @@ func (m *JSONMap) CanonicalizeFull() ([]byte, error) {
 type ProofOpt func(*proofOptions)
 
 type proofOptions struct {
-	vmPub *ecdsa.PublicKey
+	vmPub     *ecdsa.PublicKey
+	challenge string
+	domain    string
 }
 
 // WithVMPublicKey verifies the fresh signature against the key the verification
 // method publishes. Omit it to skip the check.
 func WithVMPublicKey(pub *ecdsa.PublicKey) ProofOpt {
 	return func(o *proofOptions) { o.vmPub = pub }
+}
+
+// WithChallenge sets proof.challenge — the verifier-issued nonce a presentation
+// binds to so it cannot be replayed. It is part of the signed proof
+// configuration (Data Integrity § 3.2.5).
+func WithChallenge(challenge string) ProofOpt {
+	return func(o *proofOptions) { o.challenge = challenge }
+}
+
+// WithDomain sets proof.domain — the relying party a presentation is intended
+// for. Signed alongside challenge.
+func WithDomain(domain string) ProofOpt {
+	return func(o *proofOptions) { o.domain = domain }
 }
 
 func newProofOptions(opts ...ProofOpt) *proofOptions {
@@ -157,12 +172,15 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 	// must define the Data Integrity terms (VC 1.1 contexts don't).
 	m.ensureDataIntegrityContext()
 
+	options := newProofOptions(opts...)
 	proof := &dto.Proof{
 		Type:               DataIntegrityProof,
 		Created:            time.Now().UTC().Format(time.RFC3339),
 		VerificationMethod: verificationMethod,
 		ProofPurpose:       proofPurpose,
 		Cryptosuite:        ECDSARDFC2019,
+		Challenge:          options.challenge,
+		Domain:             options.domain,
 	}
 
 	hashData, err := m.ecdsaHashData(proof)
@@ -177,17 +195,29 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 	if err != nil {
 		return fmt.Errorf("jsonmap: failed to sign digest: %w", err)
 	}
-	// Guard against a mis-routed signer: a 256-bit ECDSA signature is 64 or 65 bytes.
-	if l := len(signature); l != 64 && l != 65 {
-		return fmt.Errorf("jsonmap: ecdsa-rdfc-2019 expects a 64/65-byte signature but the signer returned %d bytes; the signer does not match the verification method — pin the right VM with WithVerificationMethodKey", l)
+	// ecdsa-rdfc-2019 is a VC 2.0 Data Integrity cryptosuite defined for P-256
+	// and P-384. This SDK implements the P-256 profile only (SHA-256, 64-byte
+	// r||s); P-384 (SHA-384, 96-byte r||s) is NOT supported yet — the key
+	// helpers can parse P-384 VMs, but VMKeyKind never reports them, so a
+	// P-384 signer cannot reach this point. Wiring P-384 means hashing with
+	// SHA-384 here and in ecdsaHashData, accepting 96-byte signatures, and
+	// teaching VMKeyKind/VerifyECDSA the curve.
+	// secp256k1 has no Data Integrity cryptosuite: it exists solely in VC 1.1
+	// through the legacy EcdsaSecp256k1Signature2019 types, which this version
+	// of the SDK does not support. A 65-byte r||s||v therefore means a
+	// secp256k1 DefaultProvider (go-ethereum) was routed to a P-256 VM — reject
+	// it rather than trim it and bind the proof to a key the verifier will not
+	// accept. Any other length is not an ECDSA-256 signature at all.
+	if l := len(signature); l != 64 {
+		return fmt.Errorf("jsonmap: ecdsa-rdfc-2019 expects a 64-byte P-256 signature (r||s) but the signer returned %d bytes; the signer does not match the verification method — pin the right VM with WithVerificationMethodKey", l)
 	}
 	// Catch a signer bound to the wrong VM here, not at the verifier.
-	if vmPub := newProofOptions(opts...).vmPub; vmPub != nil {
+	if vmPub := options.vmPub; vmPub != nil {
 		if !crypto.VerifyECDSA(vmPub, signDigest[:], signature) {
 			return fmt.Errorf("jsonmap: the signature does not verify against verification method %q; the signer does not hold that key", verificationMethod)
 		}
 	}
-	// Section 3.2.1 step 6: multibase base58btc.
+	// Section 3.2.1 step 6: proofValue is multibase base58btc over r||s.
 	proof.ProofValue = verificationmethod.EncodeMultibaseKey(signature)
 	m.appendProof(*proof)
 
@@ -227,7 +257,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 		return false, fmt.Errorf("document resolver is required")
 	}
 
-	proofs, err := m.allProofs()
+	proofs, err := m.Proofs()
 	if err != nil {
 		return false, fmt.Errorf("failed to parse proof: %w", err)
 	}
@@ -411,8 +441,13 @@ func (m *JSONMap) verifyECDSASpecConformant(pub *ecdsa.PublicKey, proof *dto.Pro
 	}
 	digest := sha256.Sum256(hashData)
 
-	// ECDSAVerifySignature checks the 64/65-byte length itself.
-	return crypto.ECDSAVerifySignature(pub, hex.EncodeToString(signature), digest[:])
+	// Same length rule the signer enforces: 64-byte r||s only.
+	if l := len(signature); l != 64 {
+		return false, fmt.Errorf("ecdsa-rdfc-2019 proofValue decodes to %d bytes, want 64 (r||s)", l)
+	}
+	// Same verifier AddECDSAProof uses for its self-check; VerifyECDSA takes
+	// the raw bytes, so no hex round trip through ECDSAVerifySignature.
+	return crypto.VerifyECDSA(pub, digest[:], signature), nil
 }
 
 func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
@@ -516,8 +551,12 @@ func (m *JSONMap) getFirstProof() interface{} {
 	return nil
 }
 
-// allProofs parses every proof on the JSONMap (single object or array).
-func (m *JSONMap) allProofs() ([]dto.Proof, error) {
+// Proofs parses every proof on the JSONMap (single object or array) into
+// dto.Proof, in document order.
+func (m *JSONMap) Proofs() ([]dto.Proof, error) {
+	if m == nil {
+		return nil, fmt.Errorf("JSONMap is nil")
+	}
 	list := m.rawProofList()
 	out := make([]dto.Proof, 0, len(list))
 	for _, raw := range list {
@@ -593,6 +632,14 @@ func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 	}
 	if jws, ok := proofMap["jws"].(string); ok {
 		result.JWS = jws
+	}
+	// Presentation proof options (VC Data Model 2.0 § 5.2): part of the proof
+	// configuration, so they must survive parsing or the proof hash changes.
+	if c, ok := proofMap["challenge"].(string); ok {
+		result.Challenge = c
+	}
+	if d, ok := proofMap["domain"].(string); ok {
+		result.Domain = d
 	}
 
 	return result, nil

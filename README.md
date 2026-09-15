@@ -214,14 +214,26 @@ credential type:
 
 | Credential / method | VM key type | Cryptosuite |
 |---|---|---|
-| `JSONCredential` / `JSONPresentation` | secp256k1 | `ecdsa-rdfc-2019` |
-| `JSONCredential` / `JSONPresentation` | RSA | `JsonWebSignature2020` |
+| `JSONCredential` / `JSONPresentation` | P-256 | `ecdsa-rdfc-2019` |
 | `ECDSASDCredential` | P-256 | `ecdsa-sd-2023` (selective disclosure) |
 | `JWTCredential` / `JWTPresentation` | secp256k1 | `ES256K` (JWT) |
+| `JWTCredential` / `JWTPresentation` | P-256 | `ES256` (JWT) |
 
-Built-in providers: `NewDefaultProvider(hex)` (secp256k1); `NewP256Provider` /
-`NewP256ProviderFromHex` / `NewP256Func` (P-256); `NewRSAProvider(key, alg...)` /
-`NewRSAFunc(fn, alg)` (RSA).
+Any other combination is rejected at signing time (`unsupported key kind ...`).
+In particular, JSON-LD Data Integrity proofs are **P-256 only**. P-384 is
+**not supported yet**: the ECDSA cryptosuites spec also defines a P-384 profile
+(SHA-384, 96-byte signature), and the key-material helpers already parse P-384
+JWKs and Multikeys, but signing and verification are wired for P-256 (SHA-256,
+64-byte signature) only — a P-384 verification method is reported as an
+unrecognized key type. Also, secp256k1 has
+no Data Integrity cryptosuite in VC 2.0 (it exists only through the VC 1.1
+legacy `EcdsaSecp256k1Signature2019` types, which this SDK does not issue), and
+RSA / `JsonWebSignature2020` is **verify-only** (see below).
+
+Built-in providers: `NewDefaultProvider(hex)` (secp256k1, JWT only);
+`NewP256Provider` / `NewP256ProviderFromHex` / `NewP256Func` (P-256);
+`NewRSAProvider(key, alg...)` / `NewRSAFunc(fn, alg)` (RSA, verification-side
+helpers and low-level `jsonmap` use only).
 
 > **A resolver is required when signing a JSON VC/VP**, even when the VM is
 > pinned — the SDK reads the VM key type from the DID document to pick the
@@ -229,8 +241,11 @@ Built-in providers: `NewDefaultProvider(hex)` (secp256k1); `NewP256Provider` /
 > otherwise).
 
 ```go
-prov, err := signer.NewDefaultProvider(privateKeyHex) // secp256k1, local/dev
+prov, err := signer.NewP256ProviderFromHex(p256PrivateKeyHex) // P-256, local/dev
 if err != nil { /* handle */ }
+// Or keep the key in an HSM/KMS: signFn receives the 32-byte digest and must
+// return the 64-byte r||s signature.
+// prov, err = signer.NewP256Func(func(digest []byte) ([]byte, error) { return kms.SignP256(digest) })
 
 cred, _ := vc.ParseJSONCredential(rawJSON)
 err = cred.AddProofByProvider(prov, vc.WithResolver(resolver)) // → ecdsa-rdfc-2019
@@ -238,7 +253,9 @@ err = cred.AddProofByProvider(prov, vc.WithResolver(resolver)) // → ecdsa-rdfc
 
 ##### `ecdsa-rdfc-2019` proof format
 
-The suite follows [Data Integrity ECDSA Cryptosuites v1.0 § 3.2](https://www.w3.org/TR/vc-di-ecdsa/#ecdsa-rdfc-2019).
+The suite follows [Data Integrity ECDSA Cryptosuites v1.0 § 3.2](https://www.w3.org/TR/vc-di-ecdsa/#ecdsa-rdfc-2019),
+**P-256 profile only** (SHA-256, 64-byte `r||s`); the P-384 profile is not
+supported yet.
 The signature is computed over `proofConfigHash || transformedDocumentHash`
 (§ 3.2.4), so the proof options — `created`, `proofPurpose`,
 `verificationMethod`, `type` and `cryptosuite` — are covered by the signature
@@ -272,33 +289,34 @@ triples, so this does not change the statements being signed.
 > issue in the old format. Because an older SDK will reject the new format,
 > **upgrade every verifying component before any issuing component.**
 
-#### JsonWebSignature2020 (RSA) for JSON-LD credentials
+#### JsonWebSignature2020 (RSA) — verify-only
 
-Sign a JSON-LD credential with an RSA key. The issuer DID must expose a
-`JsonWebKey2020` verification method with an RSA `publicKeyJwk`. The JOSE
-algorithm (RS256/384/512, PS256/384/512; default RS256) is declared by the
-provider and written to the JWS header.
+`JSONCredential` / `JSONPresentation` **verify** `JsonWebSignature2020` proofs
+(detached JWS, `b64:false`, RS256/384/512 and PS256/384/512) issued by other
+systems: the signer DID must expose a `JsonWebKey2020` verification method with
+an RSA `publicKeyJwk`, and `Verify` checks the JWS against it like any other
+proof in the set.
+
+The public signing API does **not** issue them: `AddProofByProvider` on a JSON
+credential/presentation binds only to a P-256 VM and returns
+`unsupported key kind RSA for JSON credential` for an RSA signer. If you need to
+produce a JWS proof (e.g. test fixtures for interop), go through the low-level
+`jsonmap` layer directly:
 
 ```go
-// Local key (dev). alg defaults to "RS256".
-rsaProvider, err := signer.NewRSAProvider(rsaPrivateKey)          // RS256
-rsaProvider, err = signer.NewRSAProvider(rsaPrivateKey, "PS256")  // or PS256, RS384, ...
-
-// Or HSM/KMS callback — the key stays remote. signFn receives the digest
-// (already hashed with alg's SHA) and returns the raw RSA signature.
-rsaProvider, err = signer.NewRSAFunc(func(digest []byte) ([]byte, error) {
-    return hsm.SignRSA(digest)
-}, "PS256")
-
-cred, _ := vc.ParseJSONCredential(rawJSON)
-err = cred.AddProofByProvider(rsaProvider, vc.WithResolver(resolver)) // → JsonWebSignature2020
+var m jsonmap.JSONMap
+_ = json.Unmarshal(rawJSON, &m)
+rsaProvider, _ := signer.NewRSAProvider(rsaPrivateKey, "PS256") // alg defaults to RS256
+err := m.AddJWSProof(rsaProvider, "did:example:issuer#key-2", "assertionMethod")
+signed, _ := json.Marshal(m)
+cred, _ := vc.ParseJSONCredential(signed) // verifies like any other proof
 ```
 
 > **Pin the VM on mixed-key DIDs.** The suite comes from the bound VM's key type,
 > NOT from the provider. If the issuer DID holds keys of different types (e.g. a
-> secp256k1 and an RSA key), pin the right one with
-> `vc.WithVerificationMethodKey("key-2")`; otherwise the latest active VM is used
-> and a mismatched signer is rejected at signing time.
+> secp256k1 key for JWT and a P-256 key for Data Integrity), pin the right one
+> with `vc.WithVerificationMethodKey("key-2")`; otherwise the latest active VM is
+> used and a mismatched signer is rejected at signing time.
 
 For a complete, runnable issuer → holder → derive → present → verify flow, see
 [`examples/ecdsasd`](examples/ecdsasd).
@@ -307,15 +325,17 @@ For a complete, runnable issuer → holder → derive → present → verify flo
 
 Calling `AddProofByProvider` more than once appends to a **proof set** — the
 credential keeps every proof instead of replacing it. Each proof is independent
-(it signs the unsecured document), so you can mix cryptosuites, e.g. one
-`ecdsa-rdfc-2019` proof and one `JsonWebSignature2020` proof under different
-verification methods:
+(it signs the unsecured document), so a credential can carry several
+`ecdsa-rdfc-2019` proofs under different P-256 verification methods:
 
 ```go
 cred, _ := vc.ParseJSONCredential(rawJSON)
-cred.AddProofByProvider(ecdsaSigner, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)) // ecdsa-rdfc-2019
-cred.AddProofByProvider(rsaProvider, vc.WithVerificationMethodKey("key-2"), vc.WithResolver(resolver)) // JsonWebSignature2020
+cred.AddProofByProvider(p256SignerA, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)) // ecdsa-rdfc-2019
+cred.AddProofByProvider(p256SignerB, vc.WithVerificationMethodKey("key-2"), vc.WithResolver(resolver)) // ecdsa-rdfc-2019
 ```
+
+A proof set may also mix in a `JsonWebSignature2020` proof produced through
+`jsonmap.AddJWSProof` (see above); `Verify` handles each proof by its own type.
 
 On `Verify`, **every** proof must pass (AND), each checked against the DID
 document resolved from its own `verificationMethod`. (Note: `ecdsa-sd-2023`
@@ -377,8 +397,8 @@ Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(u
 Supported Proof:
 
 - type: DataIntegrityProof
-  - cryptosuite: ecdsa-rdfc-2019 (standard signing; `proofValue` is multibase base58btc — see above), ecdsa-sd-2023 (selective disclosure for JSON-LD — see below)
-- type: JsonWebSignature2020 (RSA, detached JWS — see above)
+  - cryptosuite: ecdsa-rdfc-2019 (standard signing, P-256 only; `proofValue` is multibase base58btc — see above), ecdsa-sd-2023 (selective disclosure for JSON-LD, P-256 only — see below)
+- type: JsonWebSignature2020 (RSA, detached JWS — verify-only, see above)
 
 ### <a name="sd-jwt-selective-disclosure"></a>SD-JWT (Selective Disclosure)
 
@@ -791,17 +811,27 @@ err = presentation.AddProof(holderSigner)
 
 The VP package provides several options to customize behavior:
 
-#### **vp.WithVCValidation()**
+#### **vp.WithVCValidation(opts ...vc.CredentialOpt)**
 
-Enables validation for credentials within the presentation.
+Verifies every credential embedded in the presentation. With no arguments only
+each credential's proof is verified. Any `vc.CredentialOpt` passed in is
+forwarded to each credential's `Verify`, so the same checks available on a
+standalone credential apply here — schema, revocation, expiration, and so on.
+The presentation's resolver is forwarded automatically.
 
 ```go
-// Create presentation with VC validation
-presentation, err := vp.NewJSONPresentation(contents, vp.WithVCValidation())
-
-// Parse presentation with VC validation
+// Proof only
 presentation, err := vp.ParsePresentation(data, vp.WithVCValidation())
+
+// Proof + credentialSchema + revocation status
+presentation, err := vp.ParsePresentation(data,
+    vp.WithVCValidation(vc.WithSchemaValidation(), vc.WithCheckRevocation()))
 ```
+
+> Before this change `WithVCValidation()` always validated `credentialSchema`
+> and rejected credentials without one. `credentialSchema` is optional in the
+> VC Data Model, so schema validation is now opt-in via
+> `vc.WithSchemaValidation()`.
 
 #### **vp.WithVerifyProof()**
 
