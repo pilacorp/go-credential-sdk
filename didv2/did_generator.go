@@ -132,11 +132,13 @@ func (d *DIDGenerator) GenerateDID(
 		return nil, fmt.Errorf("failed to build P-256 verification method: %w", err)
 	}
 
-	cfg.DIDSigner = didSigner
-	cfg.ExtraVMs = append(cfg.ExtraVMs, did.NewSpec(p256VM))
+	options = append(options,
+		WithDIDSignerProvider(didSigner),
+		WithVerificationMethods(did.NewSpec(p256VM)),
+	)
 
 	// 3. Generate DID TX.
-	didTx, err := d.GenerateDIDTX(ctx, didType, keyPair.GetPublicKeyHex(), hash, metadata, WithDIDConfig(cfg))
+	didTx, err := d.GenerateDIDTX(ctx, didType, keyPair.GetPublicKeyHex(), hash, metadata, options...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate DID TX: %w", err)
 	}
