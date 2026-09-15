@@ -312,8 +312,13 @@ issuerSig, _ := didGenerator.GenerateIssuerSignature(
     issuerAddr,
 )
 
-// Generate DID Document
+// Generate DID Document. GenerateDIDTX validates for you; when building the
+// document yourself, call Validate before hashing so a duplicate or empty VM
+// id never reaches the chain.
 didDoc := did.GenerateDIDDocument(didPublicKeyHex, didIdentifier, "", issuerDID, did.DIDTypePeople, metadata)
+if err := didDoc.Validate(); err != nil {
+    return err
+}
 docHash, _ := didDoc.Hash()
 
 // Return to Wallet/App: issuerSig, didDoc, docHash, capID (see "Backend ↔ Wallet contract" below for exact JSON format)
