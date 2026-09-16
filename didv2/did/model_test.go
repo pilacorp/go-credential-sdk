@@ -32,6 +32,19 @@ func TestDIDDocument_Validate(t *testing.T) {
 		{"duplicate vm id",
 			&DIDDocument{VerificationMethod: []VerificationMethod{vm("#key-1"), vm("#key-1")}},
 			"duplicate id " + testDID + "#key-1"},
+		{"relationships use relative fragment references",
+			&DIDDocument{
+				Id:                 testDID,
+				VerificationMethod: []VerificationMethod{vm("#key-1"), vm("#key-2")},
+				Authentication:     []string{"#key-1", testDID + "#key-2"},
+				AssertionMethod:    []string{"#key-2"},
+			}, ""},
+		{"relative fragment references unknown vm",
+			&DIDDocument{
+				Id:                 testDID,
+				VerificationMethod: []VerificationMethod{vm("#key-1")},
+				Authentication:     []string{"#ghost"},
+			}, `authentication references unknown verification method "#ghost"`},
 		{"authentication references unknown vm",
 			&DIDDocument{
 				VerificationMethod: []VerificationMethod{vm("#key-1")},

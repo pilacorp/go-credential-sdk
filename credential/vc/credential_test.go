@@ -1158,7 +1158,7 @@ func p256TestIssuer(t *testing.T, did string) (signer.SignerProvider, []Credenti
 	}
 	resolver := verificationmethod.NewStaticResolver(
 		verificationmethod.NewDIDDocument(did,
-			verificationmethod.NewP256VM(did, "key-1", &priv.PublicKey)))
+			mustP256VM(t, did, "key-1", &priv.PublicKey)))
 	return prov, []CredentialOpt{WithVerificationMethodKey("key-1"), WithResolver(resolver)}
 }
 
@@ -2273,4 +2273,14 @@ func TestTermsOfUse_CanonicalizationProducesAbsoluteIRIs(t *testing.T) {
 		assert.Contains(t, string(nq), "<PresentationRequiredPolicy>")
 		assert.Regexp(t, relativeIRIPattern, string(nq))
 	})
+}
+
+// mustP256VM builds a P-256 JsonWebKey2020 VM or fails the test.
+func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) verificationmethod.VerificationMethodEntry {
+	t.Helper()
+	entry, err := verificationmethod.NewP256VM(did, fragment, pub)
+	if err != nil {
+		t.Fatalf("NewP256VM(%s, %s): %v", did, fragment, err)
+	}
+	return entry
 }

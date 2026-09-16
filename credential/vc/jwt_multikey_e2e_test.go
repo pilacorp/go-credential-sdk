@@ -94,7 +94,7 @@ func TestJWT_MultiKey_IssueVerify(t *testing.T) {
 				}
 				return p
 			},
-			vm:      vmpkg.NewP256VM("did:example:jwt-p256", "key-1", &p256Priv.PublicKey),
+			vm:      mustP256VM(t, "did:example:jwt-p256", "key-1", &p256Priv.PublicKey),
 			wantAlg: "ES256",
 		},
 	}
@@ -154,7 +154,7 @@ func TestJWT_AlgMustMatchVM(t *testing.T) {
 
 	// Issue against a P-256 VM, so the header says ES256.
 	p256Resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
-		vmpkg.NewP256VM(did, "key-1", &p256Priv.PublicKey)))
+		mustP256VM(t, did, "key-1", &p256Priv.PublicKey)))
 
 	cred, err := vc.NewJWTCredential(jwtMultikeyContents(did),
 		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(p256Resolver))

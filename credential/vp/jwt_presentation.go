@@ -69,19 +69,25 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JWT
 		payload["aud"] = options.domain
 	}
 
-	kid := options.verificationMethodKey
-	if kid == "" {
-		kid, err = verificationmethod.ResolveVerificationMethodURLForKey(context.Background(), vpc.Holder, "authentication", verificationmethod.KeySecp256k1, options.resolver)
-		if err != nil {
-			return nil, fmt.Errorf("resolve verification method: %w", err)
-		}
-	} else {
-		kid = verificationmethod.NormalizeVerificationMethodURL(vpc.Holder, kid)
+	// Resolve the VM so alg reflects the key it actually holds, and so a kid
+	// that does not exist or is not granted authentication is caught here.
+	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vpc.Holder,
+		"authentication", options.verificationMethodKey, options.resolver)
+	if err != nil {
+		return nil, fmt.Errorf("resolve verification method: %w", err)
+	}
+	kind, ok := verificationmethod.VMKeyKind(vm)
+	if !ok {
+		return nil, fmt.Errorf("verification method %q has an unrecognized key type", kid)
+	}
+	alg, err := jwt.AlgForKeyKind(kind)
+	if err != nil {
+		return nil, fmt.Errorf("verification method %q: %w", kid, err)
 	}
 
 	header := map[string]interface{}{
 		"typ": "JWT",
-		"alg": "ES256K",
+		"alg": alg,
 		"kid": kid,
 	}
 
@@ -181,6 +187,12 @@ func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opt
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
+	// WithChallenge/WithDomain may be given at signing time, as with JSON
+	// presentations; they overwrite nonce/aud and the payload is re-encoded.
+	if err := j.applyChallengeDomain(getOptions(opts...)); err != nil {
+		return err
+	}
+
 	jwtSigner := jwt.NewJWTSigner(provider)
 
 	// Sign the existing signing input
@@ -189,13 +201,11 @@ func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opt
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
 
-	err = j.executeOptions(opts...)
-	if err != nil {
+	j.signature = signature
+	if err := j.executeOptions(opts...); err != nil {
+		j.signature = ""
 		return err
 	}
-
-	// Update signature
-	j.signature = signature
 
 	return nil
 }
@@ -282,6 +292,32 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 		}
 	}
 
+	return nil
+}
+
+// applyChallengeDomain writes options.challenge/domain into the nonce/aud
+// claims and re-encodes the payload half of signingInput. No-op when neither
+// is set.
+func (j *JWTPresentation) applyChallengeDomain(options *presentationOptions) error {
+	if options.challenge == "" && options.domain == "" {
+		return nil
+	}
+	if j.jwtClaims == nil {
+		return fmt.Errorf("presentation has no JWT claims to update")
+	}
+	if options.challenge != "" {
+		j.jwtClaims["nonce"] = options.challenge
+	}
+	if options.domain != "" {
+		j.jwtClaims["aud"] = options.domain
+	}
+	payloadJSON, err := json.Marshal(j.jwtClaims)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+	header, _, _ := strings.Cut(j.signingInput, ".")
+	j.signingInput = header + "." + base64.RawURLEncoding.EncodeToString(payloadJSON)
+	j.signature = ""
 	return nil
 }
 

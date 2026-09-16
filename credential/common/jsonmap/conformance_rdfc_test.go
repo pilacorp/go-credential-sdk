@@ -249,7 +249,11 @@ func (rdfcDIDKeyResolver) ResolveDocument(_ context.Context, did string) (*verif
 	if err != nil {
 		return nil, err
 	}
-	return verificationmethod.NewDIDDocument(did, verificationmethod.NewP256VM(did, multibaseKey, pub)), nil
+	entry, err := verificationmethod.NewP256VM(did, multibaseKey, pub)
+	if err != nil {
+		return nil, err
+	}
+	return verificationmethod.NewDIDDocument(did, entry), nil
 }
 
 // Phase 7: the full public verification path accepts the W3C credential

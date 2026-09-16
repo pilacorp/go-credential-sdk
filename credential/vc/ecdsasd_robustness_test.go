@@ -139,7 +139,7 @@ func TestECDSASD_Tamper_Rejected(t *testing.T) {
 				}
 				return p
 			},
-			vm:   vmpkg.NewP256VM("did:example:sd-tamper-p256", "key-1", &p256Priv.PublicKey),
+			vm:   mustP256VM(t, "did:example:sd-tamper-p256", "key-1", &p256Priv.PublicKey),
 			sign: signSDBase,
 		},
 		{
@@ -225,7 +225,7 @@ func TestECDSASD_WrongCurveVM_Rejected(t *testing.T) {
 
 		// Verify against a resolver that advertises a P-256 VM for the same DID.
 		wrongResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
-			vmpkg.NewP256VM(did, "key-1", &p256Priv.PublicKey)))
+			mustP256VM(t, did, "key-1", &p256Priv.PublicKey)))
 		base, err := vc.ParseECDSASDCredential(baseBytes)
 		if err != nil {
 			t.Fatalf("parse base: %v", err)
@@ -238,7 +238,7 @@ func TestECDSASD_WrongCurveVM_Rejected(t *testing.T) {
 	t.Run("P-256 proof vs secp256k1 VM", func(t *testing.T) {
 		const did = "did:example:sd-mismatch-2"
 		signResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
-			vmpkg.NewP256VM(did, "key-1", &p256Priv.PublicKey)))
+			mustP256VM(t, did, "key-1", &p256Priv.PublicKey)))
 		baseBytes := signSDBase(t, did, p256Prov, signResolver)
 
 		wrongResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,

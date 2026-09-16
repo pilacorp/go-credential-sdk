@@ -74,7 +74,7 @@ func TestVC_MultiKey_IssueVerify(t *testing.T) {
 			name:     "P-256 JWK/ecdsa-rdfc-2019",
 			did:      "did:example:vc-p256",
 			provider: p256Provider,
-			vm:       vmpkg.NewP256VM("did:example:vc-p256", "key-1", &p256Priv.PublicKey),
+			vm:       mustP256VM(t, "did:example:vc-p256", "key-1", &p256Priv.PublicKey),
 		},
 		{
 			name:     "P-256 Multikey/ecdsa-rdfc-2019",
@@ -154,7 +154,7 @@ func TestVC_AddProof_RawP256Key(t *testing.T) {
 	priv.D.FillBytes(d)
 
 	resolver := vmpkg.NewStaticResolver(
-		vmpkg.NewDIDDocument(did, vmpkg.NewP256VM(did, "key-1", &priv.PublicKey)))
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
 
 	cred, err := vc.ParseJSONCredential(mkCredentialJSON(did))
 	if err != nil {
@@ -197,7 +197,7 @@ func TestECDSASD_MultiKey_IssueDeriveVerify(t *testing.T) {
 				}
 				return p
 			},
-			vm: vmpkg.NewP256VM("did:example:sd-p256", "key-1", &p256Priv.PublicKey),
+			vm: mustP256VM(t, "did:example:sd-p256", "key-1", &p256Priv.PublicKey),
 		},
 		{
 			name: "secp256k1 issuer rejected",
@@ -276,4 +276,14 @@ func mkSDCredentialJSON(issuerDID string) []byte {
         "email": "a@example.vn"
       }
     }`, issuerDID))
+}
+
+// mustP256VM builds a P-256 JsonWebKey2020 VM or fails the test.
+func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) vmpkg.VerificationMethodEntry {
+	t.Helper()
+	entry, err := vmpkg.NewP256VM(did, fragment, pub)
+	if err != nil {
+		t.Fatalf("NewP256VM(%s, %s): %v", did, fragment, err)
+	}
+	return entry
 }

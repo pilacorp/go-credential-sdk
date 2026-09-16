@@ -22,7 +22,7 @@ func TestVP_AddProof_P256Hex(t *testing.T) {
 	d := make([]byte, 32)
 	priv.D.FillBytes(d)
 	resolver := vmpkg.NewStaticResolver(
-		vmpkg.NewDIDDocument(did, vmpkg.NewP256VM(did, "key-1", &priv.PublicKey)))
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
 
 	pres, err := vp.ParseJSONPresentation(vpDoc(did))
 	if err != nil {

@@ -212,12 +212,11 @@ func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider,
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
 
-	err = j.executeOptions(opts...)
-	if err != nil {
+	j.signature = signature
+	if err := j.executeOptions(opts...); err != nil {
+		j.signature = ""
 		return err
 	}
-
-	j.signature = signature
 	return nil
 }
 

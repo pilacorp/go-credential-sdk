@@ -37,7 +37,7 @@ func mpDIDDoc(t *testing.T, p256Pub *ecdsa.PublicKey, rsaPub *rsa.PublicKey) *ve
 	return &verificationmethod.DIDDocument{
 		ID: mpIssuerDID,
 		VerificationMethod: []verificationmethod.VerificationMethodEntry{
-			verificationmethod.NewP256VM(mpIssuerDID, "key-1", p256Pub),
+			mustP256VM(t, mpIssuerDID, "key-1", p256Pub),
 			{ID: k2, Type: "JsonWebKey2020", Controller: mpIssuerDID, PublicKeyJwk: &verificationmethod.JWK{
 				Kty: "RSA",
 				N:   base64.RawURLEncoding.EncodeToString(rsaPub.N.Bytes()),
@@ -290,7 +290,7 @@ func TestMultiProof_MixedKeyTypes(t *testing.T) {
 	rsaPS := genRSA(t)
 	resolver := verificationmethod.NewStaticResolver(
 		verificationmethod.NewDIDDocument(did,
-			verificationmethod.NewP256VM(did, "key-1", &p256Priv.PublicKey),
+			mustP256VM(t, did, "key-1", &p256Priv.PublicKey),
 			verificationmethod.NewRSAVM(did, "key-2", &rsaRS.PublicKey),
 			verificationmethod.NewRSAVM(did, "key-3", &rsaPS.PublicKey),
 		),
@@ -325,7 +325,7 @@ func TestMultiProof_CrossDIDVerificationMethods(t *testing.T) {
 	rsaKey := genRSA(t)
 	resolver := verificationmethod.NewStaticResolver(
 		verificationmethod.NewDIDDocument(issuerDID,
-			verificationmethod.NewP256VM(issuerDID, "key-1", &p256Priv.PublicKey)),
+			mustP256VM(t, issuerDID, "key-1", &p256Priv.PublicKey)),
 		verificationmethod.NewDIDDocument(delegateDID,
 			verificationmethod.NewRSAVM(delegateDID, "key-1", &rsaKey.PublicKey)),
 	)
@@ -356,7 +356,7 @@ func TestMultiProof_PartialFailureRejected(t *testing.T) {
 	rsaB := genRSA(t)
 	resolver := verificationmethod.NewStaticResolver(
 		verificationmethod.NewDIDDocument(did,
-			verificationmethod.NewP256VM(did, "key-1", &p256Priv.PublicKey),
+			mustP256VM(t, did, "key-1", &p256Priv.PublicKey),
 			verificationmethod.NewRSAVM(did, "key-2", &rsaA.PublicKey),
 			verificationmethod.NewRSAVM(did, "key-3", &rsaB.PublicKey),
 		),
@@ -379,7 +379,7 @@ func TestMultiProof_PartialFailureRejected(t *testing.T) {
 	other := genRSA(t)
 	badResolver := verificationmethod.NewStaticResolver(
 		verificationmethod.NewDIDDocument(did,
-			verificationmethod.NewP256VM(did, "key-1", &p256Priv.PublicKey),
+			mustP256VM(t, did, "key-1", &p256Priv.PublicKey),
 			verificationmethod.NewRSAVM(did, "key-2", &rsaA.PublicKey),
 			verificationmethod.NewRSAVM(did, "key-3", &other.PublicKey),
 		),

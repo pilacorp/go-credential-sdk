@@ -57,8 +57,8 @@ func vpWithSignedVC(t *testing.T, mutateVC func(map[string]interface{})) (Presen
 	issuerProv, _ := signer.NewP256Provider(issuerKey)
 	holderProv, _ := signer.NewP256Provider(holderKey)
 	resolver := vmpkg.NewStaticResolver(
-		vmpkg.NewDIDDocument(issuer, vmpkg.NewP256VM(issuer, "key-1", &issuerKey.PublicKey)),
-		vmpkg.NewDIDDocument(holder, vmpkg.NewP256VM(holder, "key-1", &holderKey.PublicKey)),
+		vmpkg.NewDIDDocument(issuer, mustP256VM(t, issuer, "key-1", &issuerKey.PublicKey)),
+		vmpkg.NewDIDDocument(holder, mustP256VM(t, holder, "key-1", &holderKey.PublicKey)),
 	)
 
 	cred, err := vc.ParseJSONCredential([]byte(`{
@@ -168,4 +168,14 @@ func TestAudContains(t *testing.T) {
 			}
 		})
 	}
+}
+
+// mustP256VM builds a P-256 JsonWebKey2020 VM or fails the test.
+func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) vmpkg.VerificationMethodEntry {
+	t.Helper()
+	entry, err := vmpkg.NewP256VM(did, fragment, pub)
+	if err != nil {
+		t.Fatalf("NewP256VM(%s, %s): %v", did, fragment, err)
+	}
+	return entry
 }

@@ -83,8 +83,8 @@ func GenerateDualCurveKeyPair() (*KeyPair, error) {
 // The issuerDID parameter is the DID identifier of the Issuer (controller).
 // The didType parameter specifies the type of DID (People, Item, Location, Activity).
 // The metadata parameter contains additional key-value pairs for the document.
-// The extraVMs parameter publishes extra verification methods, each keeping the id
-// its spec sets or taking "#key-N" by position, with the purposes the spec lists.
+// The extraVMs parameter publishes extra verification methods with the id and
+// purposes each spec sets; "#key-1" is reserved for didPublicKey.
 //
 // Returns a DIDDocument that can be hashed and included in blockchain transactions.
 func GenerateDIDDocument(

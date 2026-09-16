@@ -149,7 +149,7 @@ func (doc *DIDDocument) Validate() error {
 		refs []string
 	}{{"authentication", doc.Authentication}, {"assertionMethod", doc.AssertionMethod}} {
 		for _, ref := range rel.refs {
-			if _, ok := seen[ref]; !ok {
+			if _, ok := seen[canonicalVMID(doc.Id, ref)]; !ok {
 				return fmt.Errorf("%s references unknown verification method %q", rel.name, ref)
 			}
 		}

@@ -25,7 +25,7 @@ func TestVP_HolderObject_SignAndVerify(t *testing.T) {
 		t.Fatalf("provider: %v", err)
 	}
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(holder,
-		vmpkg.NewP256VM(holder, "key-1", &priv.PublicKey)))
+		mustP256VM(t, holder, "key-1", &priv.PublicKey)))
 
 	doc := []byte(`{
 		"@context": ["https://www.w3.org/ns/credentials/v2"],

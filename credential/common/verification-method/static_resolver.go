@@ -114,7 +114,13 @@ func NewP256MultikeyVM(did, fragment string, pub *ecdsa.PublicKey) (Verification
 
 // NewP256VM builds a JsonWebKey2020 verification method from a P-256 public key.
 // Used by ecdsa-rdfc-2019 and ecdsa-sd-2023.
-func NewP256VM(did, fragment string, pub *ecdsa.PublicKey) VerificationMethodEntry {
+func NewP256VM(did, fragment string, pub *ecdsa.PublicKey) (VerificationMethodEntry, error) {
+	if pub == nil || pub.X == nil || pub.Y == nil {
+		return VerificationMethodEntry{}, fmt.Errorf("NewP256VM requires a non-nil public key")
+	}
+	if pub.Curve != elliptic.P256() {
+		return VerificationMethodEntry{}, fmt.Errorf("NewP256VM requires a P-256 key")
+	}
 	xb := make([]byte, 32)
 	yb := make([]byte, 32)
 	pub.X.FillBytes(xb)
@@ -129,5 +135,5 @@ func NewP256VM(did, fragment string, pub *ecdsa.PublicKey) VerificationMethodEnt
 			X:   base64.RawURLEncoding.EncodeToString(xb),
 			Y:   base64.RawURLEncoding.EncodeToString(yb),
 		},
-	}
+	}, nil
 }

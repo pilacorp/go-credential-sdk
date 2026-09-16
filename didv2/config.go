@@ -1,6 +1,7 @@
 package didv2
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/didv2/did"
@@ -168,6 +169,6 @@ func WithDIDConfig(config *DIDConfig) DIDOption {
 		c.Nonce = config.Nonce
 		c.SyncEpoch = config.SyncEpoch
 		c.SyncNonce = config.SyncNonce
-		c.ExtraVMs = config.ExtraVMs
+		c.ExtraVMs = slices.Clone(config.ExtraVMs)
 	}
 }

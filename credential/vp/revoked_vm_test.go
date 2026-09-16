@@ -29,10 +29,10 @@ func TestVP_RevokedVMRejectedAtSigning(t *testing.T) {
 
 	// A rotation leaves a revoked #key-1 next to an active #key-2.
 	revokedAt := time.Now().Add(-time.Hour)
-	old := vmpkg.NewP256VM(did, "key-1", &priv.PublicKey)
+	old := mustP256VM(t, did, "key-1", &priv.PublicKey)
 	old.Revoked = &revokedAt
 	resolver := vmpkg.NewStaticResolver(
-		vmpkg.NewDIDDocument(did, old, vmpkg.NewP256VM(did, "key-2", &priv.PublicKey)))
+		vmpkg.NewDIDDocument(did, old, mustP256VM(t, did, "key-2", &priv.PublicKey)))
 
 	t.Run("default skips revoked key-1", func(t *testing.T) {
 		pres, err := vp.ParseJSONPresentation(vpDoc(did))

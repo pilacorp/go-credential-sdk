@@ -264,6 +264,10 @@ func pubMulticodecFor(c elliptic.Curve) ([]byte, error) {
 // PubToMultikeyBytes renders a public key as raw Multikey bytes (multicodec
 // prefix + compressed point).
 func PubToMultikeyBytes(pub *ecdsa.PublicKey) ([]byte, error) {
+	if pub == nil {
+		return nil, fmt.Errorf("public key is nil")
+	}
+
 	prefix, err := pubMulticodecFor(pub.Curve)
 	if err != nil {
 		return nil, err

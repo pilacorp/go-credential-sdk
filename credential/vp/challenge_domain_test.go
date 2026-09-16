@@ -27,7 +27,7 @@ func TestVP_ChallengeDomain_SignAndVerify(t *testing.T) {
 		t.Fatalf("provider: %v", err)
 	}
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(holder,
-		vmpkg.NewP256VM(holder, "key-1", &priv.PublicKey)))
+		mustP256VM(t, holder, "key-1", &priv.PublicKey)))
 
 	pres, err := vp.ParseJSONPresentation(vpDoc(holder))
 	if err != nil {
@@ -86,7 +86,7 @@ func TestVP_ChallengeDomain_MissingChallengeRejected(t *testing.T) {
 	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	prov, _ := signer.NewP256Provider(priv)
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(holder,
-		vmpkg.NewP256VM(holder, "key-1", &priv.PublicKey)))
+		mustP256VM(t, holder, "key-1", &priv.PublicKey)))
 
 	pres, err := vp.ParseJSONPresentation(vpDoc(holder))
 	if err != nil {
@@ -107,7 +107,7 @@ func TestVP_ChallengeDomain_ExpectedImpliesVerify(t *testing.T) {
 	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	prov, _ := signer.NewP256Provider(priv)
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(holder,
-		vmpkg.NewP256VM(holder, "key-1", &priv.PublicKey)))
+		mustP256VM(t, holder, "key-1", &priv.PublicKey)))
 
 	pres, err := vp.ParseJSONPresentation(vpDoc(holder))
 	if err != nil {
@@ -182,7 +182,7 @@ func jwtPayloadClaims(t *testing.T, token string) map[string]interface{} {
 func TestJWTVP_ChallengeDomain_SignAndVerify(t *testing.T) {
 	resolver := testResolver(t)
 
-	pres, err := vp.NewJWTPresentation(jwtVPContents(),
+	pres, err := vp.NewJWTPresentation(jwtVPContents(), vp.WithVerificationMethodKey("#key-1"),
 		vp.WithResolver(resolver),
 		vp.WithChallenge("nonce-123"),
 		vp.WithDomain("verifier.example"))
@@ -237,7 +237,7 @@ func TestJWTVP_ChallengeDomain_SignAndVerify(t *testing.T) {
 func TestJWTVP_ChallengeDomain_MissingRejected(t *testing.T) {
 	resolver := testResolver(t)
 
-	pres, err := vp.NewJWTPresentation(jwtVPContents(), vp.WithResolver(resolver))
+	pres, err := vp.NewJWTPresentation(jwtVPContents(), vp.WithVerificationMethodKey("#key-1"), vp.WithResolver(resolver))
 	if err != nil {
 		t.Fatalf("new jwt vp: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestJWTVP_ChallengeDomain_MissingRejected(t *testing.T) {
 func TestJWTVP_ChallengeDomain_TamperedAudRejected(t *testing.T) {
 	resolver := testResolver(t)
 
-	pres, err := vp.NewJWTPresentation(jwtVPContents(), vp.WithResolver(resolver), vp.WithDomain("verifier.example"))
+	pres, err := vp.NewJWTPresentation(jwtVPContents(), vp.WithVerificationMethodKey("#key-1"), vp.WithResolver(resolver), vp.WithDomain("verifier.example"))
 	if err != nil {
 		t.Fatalf("new jwt vp: %v", err)
 	}
@@ -288,5 +288,108 @@ func checkErr(t *testing.T, err error, want string) {
 	}
 	if want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
 		t.Fatalf("err = %v, want containing %q", err, want)
+	}
+}
+
+// A JWT VP bound to a P-256 verification method must carry alg ES256 and
+// verify with a P-256 signer; the header alg is derived from the VM, not fixed.
+func TestJWTVP_P256VerificationMethod(t *testing.T) {
+	resolver := testResolver(t)
+
+	pres, err := vp.NewJWTPresentation(jwtVPContents(),
+		vp.WithResolver(resolver), vp.WithVerificationMethodKey("#key-2"))
+	if err != nil {
+		t.Fatalf("new jwt vp: %v", err)
+	}
+	if err := pres.AddProofByProvider(mustP256Signer(t)); err != nil {
+		t.Fatalf("sign jwt vp: %v", err)
+	}
+	serialized, err := pres.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	token := serialized.(string)
+
+	headerRaw, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[0])
+	if err != nil {
+		t.Fatalf("decode header: %v", err)
+	}
+	var header map[string]interface{}
+	if err := json.Unmarshal(headerRaw, &header); err != nil {
+		t.Fatalf("unmarshal header: %v", err)
+	}
+	if header["alg"] != "ES256" {
+		t.Fatalf("alg = %v, want ES256", header["alg"])
+	}
+	if header["kid"] != testDID+"#key-2" {
+		t.Fatalf("kid = %v, want %s#key-2", header["kid"], testDID)
+	}
+
+	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	reparsed, err := vp.ParseJWTPresentation(token)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if err := reparsed.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify re-parsed: %v", err)
+	}
+}
+
+// Verify-time options passed to AddProofByProvider run against the signed
+// token, and a failed check leaves the presentation unsigned.
+func TestJWTVP_AddProofByProvider_VerifyOptions(t *testing.T) {
+	resolver := testResolver(t)
+
+	pres, err := vp.NewJWTPresentation(jwtVPContents(),
+		vp.WithResolver(resolver), vp.WithVerificationMethodKey("#key-1"), vp.WithChallenge("nonce-123"))
+	if err != nil {
+		t.Fatalf("new jwt vp: %v", err)
+	}
+
+	if err := pres.AddProofByProvider(mustDefaultSigner(t, testSecpPrivHex),
+		vp.WithResolver(resolver), vp.WithExpectedChallenge("wrong")); err == nil {
+		t.Fatal("expected sign+verify with wrong challenge to fail")
+	}
+	if serialized, _ := pres.Serialize(); strings.Count(serialized.(string), ".") != 1 {
+		t.Fatalf("presentation must stay unsigned after a failed check, got %q", serialized)
+	}
+
+	if err := pres.AddProofByProvider(mustDefaultSigner(t, testSecpPrivHex),
+		vp.WithResolver(resolver), vp.WithExpectedChallenge("nonce-123")); err != nil {
+		t.Fatalf("sign+verify: %v", err)
+	}
+	if serialized, _ := pres.Serialize(); strings.Count(serialized.(string), ".") != 2 {
+		t.Fatalf("presentation must be signed, got %q", serialized)
+	}
+}
+
+// WithChallenge/WithDomain given at signing time (as with JSON presentations)
+// overwrite the nonce/aud claims before the token is signed.
+func TestJWTVP_ChallengeDomain_SetAtSignTime(t *testing.T) {
+	resolver := testResolver(t)
+
+	pres, err := vp.NewJWTPresentation(jwtVPContents(),
+		vp.WithResolver(resolver), vp.WithVerificationMethodKey("#key-1"),
+		vp.WithChallenge("stale"), vp.WithDomain("stale.example"))
+	if err != nil {
+		t.Fatalf("new jwt vp: %v", err)
+	}
+	if err := pres.AddProofByProvider(mustDefaultSigner(t, testSecpPrivHex),
+		vp.WithChallenge("nonce-123"), vp.WithDomain("verifier.example")); err != nil {
+		t.Fatalf("sign jwt vp: %v", err)
+	}
+	serialized, _ := pres.Serialize()
+	claims := jwtPayloadClaims(t, serialized.(string))
+	if claims["nonce"] != "nonce-123" || claims["aud"] != "verifier.example" {
+		t.Fatalf("claims not overwritten at sign time: nonce=%v aud=%v", claims["nonce"], claims["aud"])
+	}
+	if err := pres.Verify(vp.WithResolver(resolver),
+		vp.WithExpectedChallenge("nonce-123"), vp.WithExpectedDomain("verifier.example")); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if err := pres.Verify(vp.WithResolver(resolver), vp.WithExpectedChallenge("stale")); err == nil {
+		t.Fatal("stale challenge must not verify")
 	}
 }

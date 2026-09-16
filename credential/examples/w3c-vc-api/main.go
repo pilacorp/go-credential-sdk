@@ -75,7 +75,11 @@ func (didKeyResolver) ResolveDocument(_ context.Context, did string) (*vm.DIDDoc
 		return nil, err
 	}
 	base := "did:key:" + multibaseKey
-	return vm.NewDIDDocument(base, vm.NewP256VM(base, multibaseKey, pub)), nil
+	entry, err := vm.NewP256VM(base, multibaseKey, pub)
+	if err != nil {
+		return nil, err
+	}
+	return vm.NewDIDDocument(base, entry), nil
 }
 
 // Cryptosuites this server can issue with. Verification is not switched on this

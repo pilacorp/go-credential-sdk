@@ -126,7 +126,7 @@ func TestVP_VerifySpecificProof(t *testing.T) {
 	// The verifier resolves a WRONG P-256 key for key-2, so only that proof fails.
 	verifyResolver := vm.NewStaticResolver(vm.NewDIDDocument(jwsHolderDID,
 		vm.NewRSAVM(jwsHolderDID, "key-1", &rsaKey.PublicKey),
-		vm.NewP256VM(jwsHolderDID, "key-2", wrongP256.Public()),
+		mustP256VM(t, jwsHolderDID, "key-2", wrongP256.Public()),
 	))
 
 	rsaProv, _ := signer.NewRSAProvider(rsaKey)

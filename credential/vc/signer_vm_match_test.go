@@ -23,7 +23,7 @@ func TestVC_SignerKeyMustMatchVM(t *testing.T) {
 		// The DID publishes a different P-256 key.
 		vmPriv := genP256(t)
 		resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
-			vmpkg.NewP256VM(did, "key-1", &vmPriv.PublicKey)))
+			mustP256VM(t, did, "key-1", &vmPriv.PublicKey)))
 
 		cred, err := vc.ParseJSONCredential(mkCredentialJSON(did))
 		if err != nil {
@@ -43,7 +43,7 @@ func TestVC_SignerKeyMustMatchVM(t *testing.T) {
 
 	t.Run("matching key signs and verifies", func(t *testing.T) {
 		resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
-			vmpkg.NewP256VM(did, "key-1", &signerPriv.PublicKey)))
+			mustP256VM(t, did, "key-1", &signerPriv.PublicKey)))
 
 		cred, err := vc.ParseJSONCredential(mkCredentialJSON(did))
 		if err != nil {
@@ -62,7 +62,7 @@ func TestVC_SignerKeyMustMatchVM(t *testing.T) {
 	t.Run("ecdsa-sd base proof rejected too", func(t *testing.T) {
 		vmPriv := genP256(t)
 		resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
-			vmpkg.NewP256VM(did, "key-1", &vmPriv.PublicKey)))
+			mustP256VM(t, did, "key-1", &vmPriv.PublicKey)))
 
 		base, err := vc.ParseECDSASDCredential(mkSDCredentialJSON(did))
 		if err != nil {
@@ -90,7 +90,7 @@ func TestVC_SignerKeyMustMatchVM(t *testing.T) {
 
 		// VM publishes signerPriv, the callback signs with vmPriv → mismatch.
 		resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
-			vmpkg.NewP256VM(did, "key-1", &signerPriv.PublicKey)))
+			mustP256VM(t, did, "key-1", &signerPriv.PublicKey)))
 
 		cred, err := vc.ParseJSONCredential(mkCredentialJSON(did))
 		if err != nil {

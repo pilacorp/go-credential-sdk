@@ -673,22 +673,42 @@ func TestJSONMap_EnsureDataIntegrityContext_DoesNotWriteThroughSharedBacking(t *
 	}
 }
 
-// TestEnsureDataIntegrityContext_UnhandledTypesAreLeftAlone documents the
-// current gap: the type switch handles nil, string and []interface{} only, so a
-// bare inline object or a []string @context passes through untouched and the
-// Data Integrity terms are never added.
-func TestJSONMap_EnsureDataIntegrityContext_UnhandledTypesAreLeftAlone(t *testing.T) {
-	for _, ctx := range []interface{}{
-		map[string]interface{}{"foo": "https://example.com/foo"},
-		[]string{testContextV1},
-	} {
-		m := JSONMap{"@context": ctx}
+// TestJSONMap_EnsureDataIntegrityContext_GoNativeTypes covers @context values
+// a Go caller builds by hand: a []string is normalized to []interface{} and
+// completed, and a bare inline object is wrapped so the proof terms resolve.
+func TestJSONMap_EnsureDataIntegrityContext_GoNativeTypes(t *testing.T) {
+	inline := map[string]interface{}{"foo": "https://example.com/foo"}
+	tests := []struct {
+		name    string
+		context interface{}
+		want    interface{}
+	}{
+		{
+			name:    "[]string uncovered gets the context appended",
+			context: []string{testContextV1},
+			want:    []interface{}{testContextV1, dataIntegrityV2Context},
+		},
+		{
+			name:    "[]string already covered is normalized only",
+			context: []string{"https://www.w3.org/ns/credentials/v2"},
+			want:    []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		},
+		{
+			name:    "bare inline object is wrapped with the context",
+			context: inline,
+			want:    []interface{}{inline, dataIntegrityV2Context},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := JSONMap{"@context": tc.context}
 
-		m.ensureDataIntegrityContext()
+			m.ensureDataIntegrityContext()
 
-		if got := m["@context"]; !reflect.DeepEqual(got, ctx) {
-			t.Errorf("@context = %#v, want it unchanged as %#v", got, ctx)
-		}
+			if got := m["@context"]; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("@context = %#v, want %#v", got, tc.want)
+			}
+		})
 	}
 }
 

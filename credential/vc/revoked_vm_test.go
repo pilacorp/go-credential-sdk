@@ -19,10 +19,10 @@ import (
 func rotatedVMResolver(t *testing.T, did string, pub *ecdsa.PublicKey) vmpkg.ResolverProvider {
 	t.Helper()
 	revokedAt := time.Now().Add(-time.Hour)
-	old := vmpkg.NewP256VM(did, "key-1", pub)
+	old := mustP256VM(t, did, "key-1", pub)
 	old.Revoked = &revokedAt
 	return vmpkg.NewStaticResolver(
-		vmpkg.NewDIDDocument(did, old, vmpkg.NewP256VM(did, "key-2", pub)))
+		vmpkg.NewDIDDocument(did, old, mustP256VM(t, did, "key-2", pub)))
 }
 
 // Every signing path must refuse a revoked verification method: the verifier

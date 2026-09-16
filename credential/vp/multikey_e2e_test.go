@@ -65,7 +65,7 @@ func TestVP_MultiKey_SignVerify(t *testing.T) {
 			name:     "P-256 JWK/ecdsa-rdfc-2019",
 			did:      "did:example:vp-p256",
 			provider: p256Provider,
-			vm:       vmpkg.NewP256VM("did:example:vp-p256", "key-1", &p256Priv.PublicKey),
+			vm:       mustP256VM(t, "did:example:vp-p256", "key-1", &p256Priv.PublicKey),
 		},
 		{
 			name:     "P-256 Multikey/ecdsa-rdfc-2019",

@@ -2,6 +2,9 @@ package verificationmethod
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"fmt"
 	"sync"
 	"testing"
@@ -43,5 +46,26 @@ func TestStaticResolver_AddIgnoresNilAndEmptyID(t *testing.T) {
 	r.Add(&DIDDocument{})
 	if _, err := r.ResolveDocument(context.Background(), ""); err == nil {
 		t.Fatal("expected empty-ID document not to be registered")
+	}
+}
+
+func TestNewP256VM_RejectsBadKeys(t *testing.T) {
+	if _, err := NewP256VM("did:example:x", "key-1", nil); err == nil {
+		t.Fatal("nil key must be rejected")
+	}
+	if _, err := NewP256VM("did:example:x", "key-1", &ecdsa.PublicKey{}); err == nil {
+		t.Fatal("empty key must be rejected")
+	}
+	k384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if _, err := NewP256VM("did:example:x", "key-1", &k384.PublicKey); err == nil {
+		t.Fatal("non-P-256 key must be rejected")
+	}
+	k256, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	vm, err := NewP256VM("did:example:x", "key-1", &k256.PublicKey)
+	if err != nil {
+		t.Fatalf("P-256 key: %v", err)
+	}
+	if vm.ID != "did:example:x#key-1" || vm.PublicKeyJwk == nil || vm.PublicKeyJwk.Crv != "P-256" {
+		t.Fatalf("unexpected vm: %+v", vm)
 	}
 }

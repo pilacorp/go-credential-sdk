@@ -42,6 +42,17 @@ func (m *JSONMap) ensureDataIntegrityContext() {
 			}
 		}
 		(*m)["@context"] = append(append([]interface{}{}, c...), dataIntegrityV2Context)
+	case []string:
+		// Go-built documents often use []string; normalize and re-run.
+		generic := make([]interface{}, len(c))
+		for i, s := range c {
+			generic[i] = s
+		}
+		(*m)["@context"] = generic
+		m.ensureDataIntegrityContext()
+	case map[string]interface{}:
+		// A bare inline context object defines no proof terms.
+		(*m)["@context"] = []interface{}{c, dataIntegrityV2Context}
 	}
 }
 

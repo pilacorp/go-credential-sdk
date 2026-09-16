@@ -1,6 +1,7 @@
 package vp_test
 
 import (
+	"crypto/ecdsa"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -52,7 +53,7 @@ func testResolver(t *testing.T) *vmpkg.StaticResolver {
 	t.Helper()
 	return vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(testDID,
 		vmpkg.NewSecp256k1VM(testDID, "key-1", secpPubHex(t, testSecpPrivHex)),
-		vmpkg.NewP256VM(testDID, "key-2", mustP256Signer(t).Public()),
+		mustP256VM(t, testDID, "key-2", mustP256Signer(t).Public()),
 	))
 }
 
@@ -994,7 +995,8 @@ func TestJWTPresentationFlow(t *testing.T) {
 		VerifiableCredentials: []vc.Credential{jsonVC, jwtVC},
 	}
 
-	presentation, err := vp.NewJWTPresentation(presentationContents, vp.WithResolver(testResolver(t)))
+	presentation, err := vp.NewJWTPresentation(presentationContents,
+		vp.WithResolver(testResolver(t)), vp.WithVerificationMethodKey("#key-1"))
 	if err != nil {
 		t.Fatalf("Failed to create JWT presentation: %v", err)
 	}
@@ -1488,4 +1490,14 @@ func TestParseDatesInPresentation(t *testing.T) {
 	} else {
 		t.Error("Expected validUntil field in parsed presentation")
 	}
+}
+
+// mustP256VM builds a P-256 JsonWebKey2020 VM or fails the test.
+func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) vmpkg.VerificationMethodEntry {
+	t.Helper()
+	entry, err := vmpkg.NewP256VM(did, fragment, pub)
+	if err != nil {
+		t.Fatalf("NewP256VM(%s, %s): %v", did, fragment, err)
+	}
+	return entry
 }
