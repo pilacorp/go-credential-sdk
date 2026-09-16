@@ -98,12 +98,39 @@ if errors.Is(err, vccontract.ErrTxNotFound) {
 }
 ```
 
-`ok == true` means the VC hash is anchored. `ok == false` with a `nil` error means
-it is not — the proof does not fold to any root this transaction anchored for this
-issuer, or the transaction reverted (`ErrTxReverted`) and so anchored nothing.
-Either way the transaction cannot attest the leaf; that is a verdict, not a
-failure. A non-nil error means the check could not be completed — bad input, an
-RPC error, or the transaction not being found (`ErrTxNotFound`).
+### Reading the result
+
+The two return values answer two different questions, and the distinction is the
+whole contract of this call:
+
+| Result | Meaning |
+|---|---|
+| `(true, nil)` | The chain was asked, and it attests the leaf. |
+| `(false, nil)` | **The chain was asked, and it does not.** |
+| `(_, err)` | **The chain could not be asked.** Nothing was established either way. |
+
+A `false` is a verdict, not a failure. It covers both of these:
+
+- the proof does not fold to any root this transaction anchored for this issuer;
+- the transaction **reverted**, and so anchored nothing at all.
+
+The second one is deliberately not an error. A reverted transaction did run, and
+it wrote nothing — so "this transaction does not attest the leaf" is the true and
+complete answer, already known. Returning an error would claim the check never
+happened.
+
+It is also close to unreachable in practice: a `tx_hash` obtained from the
+authen-service proof API is always a successful anchoring, because the anchoring
+row is only written after a successful receipt. A reverted hash arriving here
+means the caller supplied one that did not come from there.
+
+An error means bad input, an RPC failure, or the transaction not being found
+(`ErrTxNotFound` — unknown or not yet mined, so worth retrying).
+
+**If you do need to tell a reverted transaction apart** — an auditing tool, an
+operator script — call `IsRootAnchored` directly. It is the layer below and
+returns `ErrTxReverted` unchanged. `VerifyVCHashByTx` exists to give a verdict;
+`IsRootAnchored` exists to report what the chain said.
 
 ## API
 
@@ -115,9 +142,11 @@ RPC error, or the transaction not being found (`ErrTxNotFound`).
 - `(*CredentialRegistry) VerifyVCHashOnChain(ctx, *VerifyRequest) (bool, error)` —
   **deprecated**, see above.
 - `(*CredentialRegistry) IsRootAnchored(ctx, txHash, issuer, root) (bool, error)` —
-  whether a transaction records this issuer anchoring this root. Returns
-  `ErrTxNotFound` or `ErrTxReverted` where they apply; a transaction that simply
-  does not carry the root is `(false, nil)`.
+  whether a transaction records this issuer anchoring this root. Unlike
+  `VerifyVCHashByTx` above, this reports the chain's state rather than a verdict:
+  it returns `ErrTxNotFound` and `ErrTxReverted` to the caller instead of folding
+  them into `false`. A transaction that simply does not carry the root is still
+  `(false, nil)`.
 - `(*CredentialRegistry) IsRootAnchoredAtContract(ctx, txHash, issuer, root, contractAddress) (bool, error)` —
   the same, restricted to one deployment. The address must already be trusted:
   pinning narrows what is believed and can never widen it.

@@ -30,16 +30,22 @@ import (
 
 func main() {
 	const (
-		rpcURL          = "https://rpc-testnet-new.pila.vn"
-		contractAddress = "0x...CurrentDeployment"
-		// Every earlier deployment whose anchorings must keep verifying. A tree
-		// stays verifiable at the contract that anchored it and nothing re-anchors
-		// it, so leaving an address out here makes every credential anchored by
-		// that deployment read as never anchored.
-		previousDeployment = "0x7F58Eb7eaEe52768970EC3796bdD146286EF82C6"
+		rpcURL = "https://rpc-testnet-new.pila.vn"
+		// The deployment on testnet today. The sample anchoring below was made by
+		// it, so this example runs as-is.
+		contractAddress = "0x7F58Eb7eaEe52768970EC3796bdD146286EF82C6"
 	)
 
-	registry, err := vccontract.NewCredentialRegistry(rpcURL, contractAddress, previousDeployment)
+	// Once a new deployment replaces the one above, it becomes contractAddress and
+	// this one moves here, to the list of earlier deployments whose anchorings must
+	// keep verifying:
+	//
+	//	registry, err := vccontract.NewCredentialRegistry(rpcURL, newAddress, contractAddress)
+	//
+	// A tree stays verifiable only at the contract that anchored it, and nothing
+	// re-anchors it — so an address left out of that list makes every credential
+	// anchored by it read as never anchored.
+	registry, err := vccontract.NewCredentialRegistry(rpcURL, contractAddress)
 	if err != nil {
 		log.Fatalf("failed to create registry: %v", err)
 	}

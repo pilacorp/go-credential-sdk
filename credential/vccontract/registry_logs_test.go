@@ -474,3 +474,64 @@ func TestIsRootAnchoredWithoutAReceiptSource(t *testing.T) {
 		t.Fatal("a lookup without a receipt source was accepted")
 	}
 }
+
+// TestIsRootAnchoredHandlesAReceiptSourceThatReturnsNothing covers the one thing
+// the interface cannot enforce: a source that reports no error and no receipt.
+//
+// go-ethereum's own client turns that into ethereum.NotFound, but the receipt
+// source is an interface precisely so other implementations can be used — a test
+// double, a wrapper around a different node client — and one of those may not.
+// Dereferencing the nil would panic here, inside a verification request.
+func TestIsRootAnchoredHandlesAReceiptSourceThatReturnsNothing(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t, stubReceipts{})
+
+	if _, err := anchoredFor(t, registry, mkLeaf(0xbb)); err == nil {
+		t.Fatal("a receipt source that returned nothing was accepted")
+	}
+}
+
+// TestIsRootAnchoredRejectsABatchLogWithMismatchedArrays covers a batch log whose
+// parallel arrays do not line up.
+//
+// The contract requires them to match — it reverts with ArrayLengthMismatch
+// otherwise — so a log where they do not is not an anchoring this client can
+// read: the ABI it was decoded against does not describe the event that was
+// emitted, or the payload is damaged. Answering from the prefix would mean
+// trusting part of a record whose shape is already known to be wrong.
+func TestIsRootAnchoredRejectsABatchLogWithMismatchedArrays(t *testing.T) {
+	t.Parallel()
+
+	want := mkLeaf(0xbb)
+
+	// The entry being asked about sits at index 0, so a scan bounded by the
+	// shorter array would find it and answer true.
+	logs := []struct {
+		name string
+		log  *types.Log
+	}{
+		{"current batch", packNonIndexed(t, registryAddress, batchAnchoredEvent,
+			[]common.Address{issuerAddress, otherIssuer},
+			[][32]byte{want})},
+		{"legacy batch", packNonIndexed(t, registryAddress, legacyBatchEvent,
+			[]common.Address{issuerAddress, otherIssuer},
+			[]*big.Int{big.NewInt(legacyTreeIndex)},
+			[][32]byte{want})},
+	}
+
+	for _, tc := range logs {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(tc.log)})
+
+			ok, err := anchoredFor(t, registry, want)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if ok {
+				t.Fatal("a log whose parallel arrays disagree was read as an anchoring")
+			}
+		})
+	}
+}

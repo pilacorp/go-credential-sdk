@@ -243,10 +243,25 @@ func (v *CredentialRegistry) VerifyVCHashOnChain(ctx context.Context, req *Verif
 // must therefore come from the same anchoring.
 //
 // Returns true when the leaf, folded with its proof, produces a root that
-// req.TxHash anchored for this issuer. Returns false with a nil error when it
-// does not, or when the transaction reverted. A non-nil error means the check
-// could not be completed — malformed input, RPC failure, or the transaction not
-// found / not yet mined (ErrTxNotFound).
+// req.TxHash anchored for this issuer.
+//
+// The two return values answer two different questions. A false with a nil error
+// means the chain was asked and does not attest the leaf; an error means the
+// chain could not be asked, and nothing was established either way — malformed
+// input, an RPC failure, or the transaction not found / not yet mined
+// (ErrTxNotFound).
+//
+// A reverted transaction falls on the first side on purpose. It did run, and it
+// wrote nothing, so "this transaction does not attest the leaf" is already the
+// true and complete answer; returning an error would claim the check never
+// happened. It is also close to unreachable — a tx hash from the proof API is
+// always a successful anchoring, because the anchoring row is only written after
+// a successful receipt.
+//
+// A caller that does need to tell a reverted transaction apart — an auditing
+// tool, an operator script — calls IsRootAnchored, the layer below, which returns
+// ErrTxReverted unchanged. This function gives a verdict; that one reports what
+// the chain said.
 //
 // req.TreeIndex is accepted but not used: the contract no longer records one.
 func (v *CredentialRegistry) VerifyVCHashByTx(ctx context.Context, req *VerifyByTxRequest) (bool, error) {
@@ -362,6 +377,15 @@ func (v *CredentialRegistry) rootAnchored(ctx context.Context, txHash common.Has
 		return false, fmt.Errorf("failed to get transaction receipt: %w", err)
 	}
 
+	// TransactionReceipt is reached through an interface, so nothing here enforces
+	// that a nil error comes with a receipt. go-ethereum's own client maps a nil
+	// receipt to ethereum.NotFound, but another implementation — a test double, a
+	// wrapper around a different node client — may not, and dereferencing it here
+	// would panic instead of reporting anything.
+	if receipt == nil {
+		return false, fmt.Errorf("receipt source returned no receipt and no error for tx %s", txHash.Hex())
+	}
+
 	if receipt.Status != types.ReceiptStatusSuccessful {
 		return false, ErrTxReverted
 	}
@@ -401,8 +425,8 @@ func logAnchors(contractABI abi.ABI, log *types.Log, issuer common.Address, root
 	case contractABI.Events[singleAnchoredEvent].ID:
 		// Both fields indexed, so the whole anchoring is in the topics.
 		return len(log.Topics) == singleAnchoredTopicCount &&
-			common.BytesToAddress(log.Topics[1].Bytes()) == issuer &&
-			log.Topics[2] == common.BytesToHash(root[:])
+			topicAddress(log.Topics[1]) == issuer &&
+			log.Topics[2] == common.Hash(root)
 
 	case contractABI.Events[batchAnchoredEvent].ID:
 		var event struct {
@@ -418,7 +442,7 @@ func logAnchors(contractABI abi.ABI, log *types.Log, issuer common.Address, root
 
 	case contractABI.Events[issuerAnchoredEvent].ID:
 		if len(log.Topics) != issuerAnchoredTopicCount ||
-			common.BytesToAddress(log.Topics[1].Bytes()) != issuer {
+			topicAddress(log.Topics[1]) != issuer {
 			return false
 		}
 
@@ -434,7 +458,7 @@ func logAnchors(contractABI abi.ABI, log *types.Log, issuer common.Address, root
 
 	case contractABI.Events[legacySingleEvent].ID:
 		if len(log.Topics) != legacySingleTopicCount ||
-			common.BytesToAddress(log.Topics[1].Bytes()) != issuer {
+			topicAddress(log.Topics[1]) != issuer {
 			return false
 		}
 
@@ -465,16 +489,31 @@ func logAnchors(contractABI abi.ABI, log *types.Log, issuer common.Address, root
 	return false
 }
 
+// topicAddress reads an indexed address out of a log topic.
+//
+// A topic is always 32 bytes, so an address is stored left-padded into it and is
+// the last 20. Slicing the topic in place avoids copying it out first, and naming
+// the rule here keeps it from being re-derived at each of the three call sites.
+func topicAddress(topic common.Hash) common.Address {
+	return common.BytesToAddress(topic[common.HashLength-common.AddressLength:])
+}
+
 // pairPresent reports whether the parallel arrays hold this (issuer, root) entry.
 //
-// Arrays that disagree in length come from a log this client cannot read, so the
-// shorter one bounds the scan rather than panicking on it.
+// Arrays of different lengths are rejected outright rather than scanned up to the
+// shorter one. The contract requires them to match — it reverts with
+// ArrayLengthMismatch otherwise — so a log where they do not is not an anchoring
+// this client can read: either the ABI it was decoded against does not describe
+// the event that was emitted, or the payload is damaged.
+//
+// Answering from the prefix of such a log would mean trusting part of a record
+// whose shape is already known to be wrong. Verification fails closed instead.
 func pairPresent(issuers []common.Address, roots [][32]byte, issuer common.Address, root [32]byte) bool {
-	for i := range issuers {
-		if i >= len(roots) {
-			break
-		}
+	if len(issuers) != len(roots) {
+		return false
+	}
 
+	for i := range issuers {
 		if issuers[i] == issuer && roots[i] == root {
 			return true
 		}

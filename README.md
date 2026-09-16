@@ -987,18 +987,27 @@ func main() {
 `credential/vccontract` is a lightweight, **read-only** client for the Credential
 Registry smart contract. It lets a holder or any third party verify that a
 Verifiable Credential (VC) hash is anchored on-chain — without a private key and
-without spending gas (every call is an `eth_call`).
+without spending gas.
 
-The issuer service groups VC hashes per issuer into Merkle trees and publishes each
-tree's **root** on-chain (one root per `issuer` + `treeIndex`). A VC hash is a
-**leaf**; membership is proven with a Merkle **proof** (the ordered sibling
-hashes). The contract folds the proof up to the stored root, so this package only
-passes the proof through — it does not build trees or submit transactions.
+The issuer service groups VC hashes per issuer into Merkle trees and anchors each
+tree's **root** on-chain. A VC hash is a **leaf**; membership is proven with a
+Merkle **proof** (the ordered sibling hashes). This package folds the proof into a
+root locally and asks the chain whether that issuer anchored it — it does not
+build trees or submit transactions.
+
+**The contract keeps no roots in storage.** An anchoring is the log its
+transaction emitted, and logs are never overwritten — so a proof, once issued,
+stays checkable however the issuer's trees grow afterwards. It also means
+verification needs the transaction hash the proof was issued against.
 
 ## <a name="vccontract-features"></a>Features
 
-- Verify a VC hash against its on-chain Merkle tree via the contract's `verifyVC`
-- Read helpers: fetch the anchored tree root, check whether a tree exists
+- Verify a VC hash against the transaction that anchored it, by reading that
+  transaction's logs
+- Reads five event shapes: the three the current contract emits and the two its
+  predecessor did, so credentials anchored before the upgrade keep verifying
+- Checks which contract emitted a log — anyone can deploy one emitting the same
+  event signatures
 - Read-only: no private key, no gas, no transactions
 - Self-contained (only depends on `go-ethereum`); the contract ABI is embedded
 
@@ -1006,99 +1015,98 @@ passes the proof through — it does not build trees or submit transactions.
 
 You supply the proof components directly (this package does not call the
 authen-service API). They typically come from the authen-service proof endpoint
-`GetVCProofByHash` / `GetVCProofByID`.
+`GetVCProofByHash` / `GetVCProofByID`, whose response carries the `TxHash`.
 
 ```go
 import "github.com/pilacorp/go-credential-sdk/credential/vccontract"
 
 registry, err := vccontract.NewCredentialRegistry(
     "https://rpc-testnet-new.pila.vn",
-    "0x7F58Eb7eaEe52768970EC3796bdD146286EF82C6",
+    "0x...CurrentDeployment",
+    // Every earlier deployment whose anchorings must keep verifying. Leave one
+    // out and every credential anchored by it reads as never anchored.
+    "0x...PreviousDeployment",
 )
 if err != nil {
     log.Fatal(err)
 }
 defer registry.Close() // reuse one registry across calls; Close on shutdown
 
-req := &vccontract.VerifyRequest{
-    IssuerAddress: "0x...Issuer",
-    TreeIndex:     0,
-    Leaf:          "0x...vcHash",           // 32-byte hex
-    Proof:         []string{"0x...", "0x..."}, // sibling hashes (empty for a single-leaf tree)
-}
-
-ok, err := registry.VerifyVCHashOnChain(context.Background(), req)
-if err != nil {
-    log.Fatal(err)
-}
-// ok == true  -> the VC hash is anchored on-chain
-```
-
-A `false` result (with a `nil` error) means the proof does not validate; a non-nil
-error means the call itself failed (bad input, RPC error, or the tree does not
-exist). A runnable example lives in [`credential/examples/vccontract/verifyonchain`](credential/examples/vccontract/verifyonchain).
-
-## <a name="vccontract-api"></a>API
-
-- `NewCredentialRegistry(rpcURL, contractAddress string, alsoTrust ...string) (*CredentialRegistry, error)` — connect to the chain (RPC connection required). `alsoTrust` names further deployments whose anchoring logs may be believed; see [Verifying by transaction](#vccontract-bytx).
-- `(*CredentialRegistry) VerifyVCHashByTx(ctx, *VerifyByTxRequest) (bool, error)` — verify against the root a specific transaction anchored. **Prefer this.**
-- `(*CredentialRegistry) GetAnchoredRoot(ctx, txHash common.Hash, issuer common.Address, treeIndex uint64) ([32]byte, error)` — read the root a transaction anchored, from any trusted contract.
-- `(*CredentialRegistry) GetAnchoredRootFromContract(ctx, txHash, issuer, treeIndex, contractAddress common.Address) ([32]byte, error)` — same, restricted to one contract.
-- `(*CredentialRegistry) VerifyVCHashOnChain(ctx, *VerifyRequest) (bool, error)` — verify a VC hash against its on-chain tree. Only works against a deployment that keeps roots in storage.
-- `(*CredentialRegistry) GetTreeRoot(ctx, issuer string, treeIndex uint64) ([32]byte, error)` — read the anchored Merkle root (zero value = no such tree).
-- `(*CredentialRegistry) HasTree(ctx, issuer string, treeIndex uint64) (bool, error)` — whether the issuer has an anchored tree at that index.
-- `(*CredentialRegistry) Close()` — release the RPC connection.
-
-Errors worth branching on: `ErrTxNotFound` (unknown or unmined), `ErrTxReverted`, `ErrRootNotAnchored`, `ErrUntrustedContract`.
-
-## <a name="vccontract-bytx"></a>Verifying by transaction
-
-`VerifyVCHashOnChain` asks the contract to fold the proof against the tree's
-**current** stored root. That is wrong for any tree still being added to: each new
-anchoring overwrites the stored root, so a proof taken earlier stops matching and
-a perfectly valid credential reports as invalid.
-
-`VerifyVCHashByTx` instead reads the root out of the logs of the transaction that
-anchored it, and folds the proof locally. Those logs are never overwritten, so
-the answer holds forever — and it needs no archive node.
-
-```go
-registry, err := vccontract.NewCredentialRegistry(
-    "https://rpc-testnet-new.pila.vn",
-    "0x...CurrentContract",
-    "0x...PreviousContract", // optional: keep older anchorings verifiable
-)
-if err != nil {
-    log.Fatal(err)
-}
-defer registry.Close()
-
 ok, err := registry.VerifyVCHashByTx(context.Background(), &vccontract.VerifyByTxRequest{
     IssuerAddress:   "0x...Issuer",
-    TreeIndex:       7,
-    Leaf:            "0x...vcHash",
-    Proof:           []string{"0x...", "0x..."},
-    TxHash:          "0x...",          // from the proof API — store it with the VC
-    ContractAddress: "0x...",          // optional; pins the lookup to one deployment
+    Leaf:            "0x...vcHash",              // 32-byte hex
+    Proof:           []string{"0x...", "0x..."}, // sibling hashes (empty for a single-leaf tree)
+    TxHash:          "0x...",                    // from the proof API — store it with the VC
+    ContractAddress: "0x...",                    // optional; pins the lookup to one deployment
 })
+if errors.Is(err, vccontract.ErrTxNotFound) {
+    // unknown or not yet mined — worth retrying
+}
 ```
 
 > **`TxHash` is part of the proof, not metadata.** Store it alongside the VC: a
 > proof without it cannot be checked. If it is lost, the proof API can reissue it.
 
+A runnable example lives in [`credential/examples/vccontract/verifybytx`](credential/examples/vccontract/verifybytx).
+
+### Reading the result
+
+`(true, nil)` means the chain attests the leaf. `(false, nil)` means **the chain
+was asked and it does not** — the proof folds to no root this transaction anchored
+for this issuer, or the transaction reverted and so anchored nothing. Both are
+verdicts, not failures.
+
+An error means **the chain could not be asked**, and nothing was established
+either way. Errors worth branching on: `ErrTxNotFound` (unknown or not yet mined),
+`ErrUntrustedContract` (a pinned `ContractAddress` this client was not configured
+to trust).
+
+A caller that needs to tell a reverted transaction apart from a proof that simply
+does not match calls `IsRootAnchored` directly — the layer below, which returns
+`ErrTxReverted` unchanged.
+
+### Why the transaction hash is required
+
+There is no tree index any more. The contract records an anchoring as
+`(issuer, root)` and nothing else, so "what root did tree 7 get?" has no single
+answer: one transaction anchors many of an issuer's trees and nothing in the log
+tells them apart.
+
+Folding the proof first removes the need for a tiebreaker. Every root in the log
+is one the issuer really anchored, so finding your folded root among them proves
+exactly what verification is for.
+
+### Trusting the right contract
+
 Reading a root from a log means trusting whoever emitted it, and anyone can deploy
 a contract emitting these exact event signatures. The client therefore only
 believes logs from the addresses passed to `NewCredentialRegistry`. Setting
 `ContractAddress` narrows that further to the one deployment that anchored the
-proof; it must already be trusted, or the call returns `ErrUntrustedContract`.
+proof; it must already be trusted, or the call returns `ErrUntrustedContract` —
+pinning can only narrow what is believed, never widen it.
 
-A runnable example lives in [`credential/examples/vccontract/verifybytx`](credential/examples/vccontract/verifybytx).
+## <a name="vccontract-api"></a>API
+
+- `NewCredentialRegistry(rpcURL, contractAddress string, alsoTrust ...string) (*CredentialRegistry, error)` — connect to the chain (RPC connection required). `alsoTrust` names earlier deployments whose anchoring logs are still to be believed.
+- `(*CredentialRegistry) VerifyVCHashByTx(ctx, *VerifyByTxRequest) (bool, error)` — verify a VC hash against the transaction that anchored it. **This is the one to use.**
+- `(*CredentialRegistry) IsRootAnchored(ctx, txHash common.Hash, issuer common.Address, root [32]byte) (bool, error)` — whether a transaction records this issuer anchoring this root. Reports the chain's state rather than a verdict: returns `ErrTxNotFound` and `ErrTxReverted` instead of folding them into `false`.
+- `(*CredentialRegistry) IsRootAnchoredAtContract(ctx, txHash, issuer, root, contractAddress common.Address) (bool, error)` — the same, restricted to one deployment.
+- `(*CredentialRegistry) Close()` — release the RPC connection.
+
+**Deprecated.** These call contract functions the current deployment does not
+have, so against it they can only fail; they work solely against an older one that
+still keeps roots in storage.
+
+- `(*CredentialRegistry) VerifyVCHashOnChain(ctx, *VerifyRequest) (bool, error)`
+- `(*CredentialRegistry) GetTreeRoot(ctx, issuer string, treeIndex uint64) ([32]byte, error)`
+- `(*CredentialRegistry) HasTree(ctx, issuer string, treeIndex uint64) (bool, error)`
 
 > Reuse a single `CredentialRegistry` across calls (it holds a live,
 > concurrency-safe RPC client) and `Close()` it on shutdown rather than creating
 > one per request.
 
 ---
+
 
 ## Key Differences from Previous Version
 
