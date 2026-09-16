@@ -23,23 +23,36 @@ import (
 //go:embed smartcontract/credential_registry_smc_abi.json
 var credentialRegistryABIJSON []byte
 
-// anchoredRootEvent is the log emitted by the Credential Registry when one
-// transaction anchors new roots for a batch of trees at once. Its three parallel
-// arrays are read to recover the root a specific transaction recorded.
-const anchoredRootEvent = "BatchTreesUpdated"
-
-// singleRootEvent is the log emitted when one tree is anchored on its own, by an
-// issuer writing its own root rather than the batching writer.
+// The five shapes an anchoring has ever taken.
 //
-// Both events must be understood. While the contract still kept every root in
-// storage, missing this one was harmless — a view call could always fall back on
-// the stored root. Once anchoring proof lives only in the logs that fallback is
-// gone, and a root anchored singly would silently read as never anchored.
-const singleRootEvent = "TreeUpdated"
+// Three are the current contract's. Two are the previous one's, kept because the
+// roots anchored through them are still valid: nothing re-anchors those trees and
+// no migration could, so a reader that stops understanding the old events reports
+// every pre-upgrade credential as never anchored.
+const (
+	// batchAnchoredEvent carries parallel arrays, one entry per anchoring, for
+	// trees belonging to different issuers.
+	batchAnchoredEvent = "BatchRootsAnchored"
+	// singleAnchoredEvent carries one anchoring with both fields indexed.
+	singleAnchoredEvent = "TreeRootAnchored"
+	// issuerAnchoredEvent carries several roots belonging to one indexed issuer.
+	issuerAnchoredEvent = "IssuerRootsAnchored"
 
-// treeUpdatedTopicCount is the topic count of a well-formed TreeUpdated log: the
-// event ID, then its two indexed fields.
-const treeUpdatedTopicCount = 3
+	// legacyBatchEvent is batchAnchoredEvent's predecessor, with a tree index per
+	// entry.
+	legacyBatchEvent = "BatchTreesUpdated"
+	// legacySingleEvent is singleAnchoredEvent's predecessor. Its issuer and tree
+	// index were indexed; the root rode in the data section.
+	legacySingleEvent = "TreeUpdated"
+)
+
+// Topic counts of a well-formed log, counting the event ID plus the indexed
+// fields. A log carrying fewer has to be skipped rather than indexed into.
+const (
+	singleAnchoredTopicCount = 3 // id, issuer, root
+	issuerAnchoredTopicCount = 2 // id, issuer
+	legacySingleTopicCount   = 3 // id, issuer, tree index
+)
 
 var (
 	parsedABI    abi.ABI
@@ -54,18 +67,11 @@ var (
 	// ErrTxReverted is returned when the tx exists but failed, so it anchored
 	// nothing.
 	ErrTxReverted = errors.New("transaction reverted")
-	// ErrRootNotAnchored is returned when the tx succeeded but carries no root
-	// for the requested issuer and tree index.
-	ErrRootNotAnchored = errors.New("transaction did not anchor a root for this issuer and tree index")
 	// ErrUntrustedContract is returned when a caller pins verification to a
 	// contract address this client was not configured to trust. Believing an
 	// address supplied per-call would defeat the point of checking the emitter at
 	// all, so the pin narrows the trusted set and can never widen it.
 	ErrUntrustedContract = errors.New("contract address is not in this client's trusted set")
-	// ErrAmbiguousAnchoring is returned when one transaction records more than one
-	// root for the same issuer and tree index, so no single root can be said to be
-	// the anchored one. Pinning the anchoring contract resolves it.
-	ErrAmbiguousAnchoring = errors.New("transaction anchors conflicting roots for this issuer and tree index; pin the anchoring contract address")
 )
 
 // receiptSource reads transaction receipts from the chain.
@@ -186,10 +192,10 @@ func (v *CredentialRegistry) Close() {
 // does not validate (both with a nil error). A non-nil error means the call
 // itself failed — malformed input, RPC failure, or the tree does not exist.
 //
-// Deprecated: the Credential Registry no longer keeps roots in storage, so this
-// only works against a deployment that still does. Use VerifyVCHashByTx, which
-// reads the root from the anchoring transaction's logs and stays correct however
-// the tree grows afterwards.
+// Deprecated: the current contract does not have verifyVC at all, so against it
+// this can only fail — it works solely against an older deployment that still
+// keeps roots in storage. Use VerifyVCHashByTx, which reads the anchoring out of
+// the transaction's logs and works against both.
 func (v *CredentialRegistry) VerifyVCHashOnChain(ctx context.Context, req *VerifyRequest) (bool, error) {
 	if err := req.Validate(); err != nil {
 		return false, err
@@ -236,14 +242,13 @@ func (v *CredentialRegistry) VerifyVCHashOnChain(ctx context.Context, req *Verif
 // the root recorded in that anchoring's transaction. The proof and the tx hash
 // must therefore come from the same anchoring.
 //
-// Returns true when the leaf, folded with its proof, reproduces the root that
-// req.TxHash anchored for the issuer and tree index. Returns false with a nil
-// error when the proof does not validate, when the transaction reverted, or when
-// the transaction anchored no root for this issuer and tree index. A non-nil error
-// means the check could not be completed — malformed input, RPC failure, the
-// transaction not found / not yet mined (ErrTxNotFound), or a transaction
-// recording conflicting roots for this tree (ErrAmbiguousAnchoring, which
-// req.ContractAddress resolves).
+// Returns true when the leaf, folded with its proof, produces a root that
+// req.TxHash anchored for this issuer. Returns false with a nil error when it
+// does not, or when the transaction reverted. A non-nil error means the check
+// could not be completed — malformed input, RPC failure, or the transaction not
+// found / not yet mined (ErrTxNotFound).
+//
+// req.TreeIndex is accepted but not used: the contract no longer records one.
 func (v *CredentialRegistry) VerifyVCHashByTx(ctx context.Context, req *VerifyByTxRequest) (bool, error) {
 	if err := req.Validate(); err != nil {
 		return false, err
@@ -259,109 +264,107 @@ func (v *CredentialRegistry) VerifyVCHashByTx(ctx context.Context, req *VerifyBy
 		return false, fmt.Errorf("invalid tx hash: %w", err)
 	}
 
-	root, err := v.anchoredRootForRequest(ctx, req, common.Hash(txHash))
+	// Fold first, then ask. An anchoring is recorded as (issuer, root) and nothing
+	// else, so the root the caller's proof produces is the only handle there is for
+	// finding it — there is no tree index left to look one up by.
+	anchored, err := v.rootAnchoredForRequest(ctx, req, common.Hash(txHash), foldProof(leaf, proof))
 
 	switch {
-	// The transaction reverted or records no root for this tree, so it cannot
-	// attest the leaf: a definitive "not verified", not a failure to check.
-	case errors.Is(err, ErrTxReverted), errors.Is(err, ErrRootNotAnchored):
+	// A reverted transaction anchored nothing, so it cannot attest the leaf: a
+	// definitive "not verified", not a failure to check.
+	case errors.Is(err, ErrTxReverted):
 		return false, nil
 	case err != nil:
 		return false, err
 	}
 
-	return verifyMerkleProof(leaf, proof, root), nil
+	return anchored, nil
 }
 
-// anchoredRootForRequest reads the anchored root for req, pinned to req's
-// contract address when it carries one.
+// rootAnchoredForRequest asks whether req's transaction anchored root, pinned to
+// req's contract address when it carries one.
 //
 // The field is optional so a caller whose proof API does not yet report the
 // anchoring contract still verifies, against any trusted contract. Once it is
 // reported, passing it is strictly better: it stops a root anchored by a
 // different deployment from satisfying the lookup.
-func (v *CredentialRegistry) anchoredRootForRequest(ctx context.Context, req *VerifyByTxRequest, txHash common.Hash) ([32]byte, error) {
+//
+// req.TreeIndex is deliberately unused. The contract has no tree index any more,
+// and the field is kept on the request only so callers still sending it keep
+// working.
+func (v *CredentialRegistry) rootAnchoredForRequest(ctx context.Context, req *VerifyByTxRequest, txHash common.Hash, root [32]byte) (bool, error) {
 	issuer := common.HexToAddress(req.IssuerAddress)
 
 	if req.ContractAddress == "" {
-		return v.GetAnchoredRoot(ctx, txHash, issuer, req.TreeIndex)
+		return v.IsRootAnchored(ctx, txHash, issuer, root)
 	}
 
-	return v.GetAnchoredRootFromContract(
+	return v.IsRootAnchoredAtContract(
 		ctx,
 		txHash,
 		issuer,
-		req.TreeIndex,
+		root,
 		common.HexToAddress(req.ContractAddress),
 	)
 }
 
-// GetAnchoredRoot returns the Merkle root that txHash anchored on-chain for the
-// given issuer and tree index, read from the anchoring logs of the transaction's
-// receipt.
+// IsRootAnchored reports whether txHash records issuer anchoring root.
+//
+// The question used to run the other way — "what root did this tree get?" — and
+// was answered by looking the tree index up in the log. The contract carries no
+// tree index any more, so that question has no single answer: one transaction
+// anchors many of an issuer's trees and nothing in the log tells them apart.
+//
+// Asking about a root the caller already holds needs no such tiebreaker. Fold a
+// leaf and its proof into a root, then ask whether that exact root was anchored
+// by that issuer. Every root in the log belongs to a tree the issuer really
+// anchored, so a match proves what verification is there to prove.
 //
 // Logs from any contract in this client's trusted set are read. When the caller
-// knows which contract anchored the tree — the proof API reports it per
-// anchoring — GetAnchoredRootFromContract is the stricter choice.
+// knows which contract anchored the tree, IsRootAnchoredAtContract is stricter.
 //
-// Returns ErrTxNotFound when no receipt exists (unknown or unmined),
-// ErrTxReverted when the transaction failed, and ErrRootNotAnchored when it
-// succeeded but recorded no root for this issuer and tree index.
-//
-// Returns ErrAmbiguousAnchoring when two trusted contracts recorded different
-// roots for this tree in the same transaction. There is no right answer to pick
-// between them, so the caller is told to say which contract it means rather than
-// being handed whichever log came first.
-func (v *CredentialRegistry) GetAnchoredRoot(ctx context.Context, txHash common.Hash, issuer common.Address, treeIndex uint64) ([32]byte, error) {
-	return v.anchoredRoot(ctx, txHash, issuer, treeIndex, nil)
+// Returns ErrTxNotFound when no receipt exists (unknown or unmined) and
+// ErrTxReverted when the transaction failed. A transaction that simply does not
+// carry the root is (false, nil): a verdict, not a failure to check.
+func (v *CredentialRegistry) IsRootAnchored(ctx context.Context, txHash common.Hash, issuer common.Address, root [32]byte) (bool, error) {
+	return v.rootAnchored(ctx, txHash, issuer, root, nil)
 }
 
-// GetAnchoredRootFromContract is GetAnchoredRoot restricted to logs emitted by
-// one specific contract.
+// IsRootAnchoredAtContract is IsRootAnchored restricted to logs emitted by one
+// deployment, which must already be trusted.
 //
-// Use it when the anchoring's contract address is known, so a root anchored by a
-// different deployment cannot satisfy the lookup. The address must already be in
-// this client's trusted set; otherwise it returns ErrUntrustedContract. Pinning
-// can only narrow what is believed — a per-call address is caller input, and
-// trusting it on its own word would defeat the emitter check entirely.
-func (v *CredentialRegistry) GetAnchoredRootFromContract(ctx context.Context, txHash common.Hash, issuer common.Address, treeIndex uint64, contractAddress common.Address) ([32]byte, error) {
+// Pinning can only narrow what is believed, never widen it. The address is caller
+// input, so honouring an unknown one would let a caller nominate any contract at
+// all and undo the emitter check entirely.
+func (v *CredentialRegistry) IsRootAnchoredAtContract(ctx context.Context, txHash common.Hash, issuer common.Address, root [32]byte, contractAddress common.Address) (bool, error) {
 	if !v.trusts(contractAddress) {
-		return [32]byte{}, fmt.Errorf("%w: %s", ErrUntrustedContract, contractAddress.Hex())
+		return false, fmt.Errorf("%w: %s", ErrUntrustedContract, contractAddress.Hex())
 	}
 
-	return v.anchoredRoot(ctx, txHash, issuer, treeIndex, &contractAddress)
+	return v.rootAnchored(ctx, txHash, issuer, root, &contractAddress)
 }
 
-// anchoredRoot scans a receipt's logs for the root anchored for issuer and
-// treeIndex. When emitter is non-nil only that contract's logs are read;
-// otherwise every trusted contract's logs are.
-//
-// Every matching log is read, not just the first. One transaction can carry logs
-// from two deployments — which is the whole reason the trusted set holds more
-// than one address — and stopping at the first match would make the answer depend
-// on the order the logs happen to sit in. A proof valid against the second root
-// would then be reported as simply not valid, with no error to say why.
-func (v *CredentialRegistry) anchoredRoot(ctx context.Context, txHash common.Hash, issuer common.Address, treeIndex uint64, emitter *common.Address) ([32]byte, error) {
-	var root [32]byte
+func (v *CredentialRegistry) rootAnchored(ctx context.Context, txHash common.Hash, issuer common.Address, root [32]byte, emitter *common.Address) (bool, error) {
+	if v.receipts == nil {
+		return false, errors.New("registry is not initialized")
+	}
+
+	if root == ([32]byte{}) {
+		return false, errors.New("cannot look up an empty root")
+	}
 
 	receipt, err := v.receipts.TransactionReceipt(ctx, txHash)
 	if err != nil {
 		if errors.Is(err, ethereum.NotFound) {
-			return root, ErrTxNotFound
+			return false, ErrTxNotFound
 		}
 
-		return root, fmt.Errorf("failed to get transaction receipt: %w", err)
+		return false, fmt.Errorf("failed to get transaction receipt: %w", err)
 	}
 
 	if receipt.Status != types.ReceiptStatusSuccessful {
-		return root, ErrTxReverted
+		return false, ErrTxReverted
 	}
-
-	batchEventID := v.abi.Events[anchoredRootEvent].ID
-	singleEventID := v.abi.Events[singleRootEvent].ID
-	treeIndexBig := new(big.Int).SetUint64(treeIndex)
-
-	found := false
 
 	for _, log := range receipt.Logs {
 		// Unpacking a log does not check which contract emitted it, and anyone
@@ -379,98 +382,124 @@ func (v *CredentialRegistry) anchoredRoot(ctx context.Context, txHash common.Has
 			continue
 		}
 
-		var (
-			candidate [32]byte
-			matched   bool
-		)
-
-		switch log.Topics[0] {
-		case batchEventID:
-			candidate, matched = rootFromBatch(v.abi, log, issuer, treeIndexBig)
-		case singleEventID:
-			candidate, matched = rootFromSingle(v.abi, log, issuer, treeIndexBig)
+		if logAnchors(v.abi, log, issuer, root) {
+			return true, nil
 		}
-
-		if !matched {
-			continue
-		}
-
-		// Repeating the same root is not a conflict: a transaction may record one
-		// tree's anchoring more than once, and every copy says the same thing.
-		if found && candidate != root {
-			return [32]byte{}, ErrAmbiguousAnchoring
-		}
-
-		root, found = candidate, true
 	}
 
-	if !found {
-		return [32]byte{}, ErrRootNotAnchored
-	}
-
-	return root, nil
+	return false, nil
 }
 
-// rootFromBatch reads the root a BatchTreesUpdated log recorded for issuer and
-// treeIndex. One transaction anchors many trees at once, so the event carries
-// parallel arrays and only the entry matching both fields belongs to the
-// caller's tree.
-func rootFromBatch(contractABI abi.ABI, log *types.Log, issuer common.Address, treeIndex *big.Int) ([32]byte, bool) {
-	event, err := unpackAnchoredRoot(contractABI, log)
-	if err != nil {
-		return [32]byte{}, false
+// logAnchors reports whether one log records issuer anchoring root.
+//
+// The two legacy events are matched on (issuer, root) like the rest; their tree
+// index is skipped rather than compared. It was only ever a lookup key and never
+// part of what an anchoring asserts, so ignoring it loses nothing and lets one
+// question cover both contract versions.
+func logAnchors(contractABI abi.ABI, log *types.Log, issuer common.Address, root [32]byte) bool {
+	switch log.Topics[0] {
+	case contractABI.Events[singleAnchoredEvent].ID:
+		// Both fields indexed, so the whole anchoring is in the topics.
+		return len(log.Topics) == singleAnchoredTopicCount &&
+			common.BytesToAddress(log.Topics[1].Bytes()) == issuer &&
+			log.Topics[2] == common.BytesToHash(root[:])
+
+	case contractABI.Events[batchAnchoredEvent].ID:
+		var event struct {
+			Issuers []common.Address
+			Roots   [][32]byte
+		}
+
+		if contractABI.UnpackIntoInterface(&event, batchAnchoredEvent, log.Data) != nil {
+			return false
+		}
+
+		return pairPresent(event.Issuers, event.Roots, issuer, root)
+
+	case contractABI.Events[issuerAnchoredEvent].ID:
+		if len(log.Topics) != issuerAnchoredTopicCount ||
+			common.BytesToAddress(log.Topics[1].Bytes()) != issuer {
+			return false
+		}
+
+		var event struct {
+			Roots [][32]byte
+		}
+
+		if contractABI.UnpackIntoInterface(&event, issuerAnchoredEvent, log.Data) != nil {
+			return false
+		}
+
+		return containsRoot(event.Roots, root)
+
+	case contractABI.Events[legacySingleEvent].ID:
+		if len(log.Topics) != legacySingleTopicCount ||
+			common.BytesToAddress(log.Topics[1].Bytes()) != issuer {
+			return false
+		}
+
+		var event struct {
+			NewRoot [32]byte
+		}
+
+		if contractABI.UnpackIntoInterface(&event, legacySingleEvent, log.Data) != nil {
+			return false
+		}
+
+		return event.NewRoot == root
+
+	case contractABI.Events[legacyBatchEvent].ID:
+		var event struct {
+			Issuers     []common.Address
+			TreeIndices []*big.Int
+			NewRoots    [][32]byte
+		}
+
+		if contractABI.UnpackIntoInterface(&event, legacyBatchEvent, log.Data) != nil {
+			return false
+		}
+
+		return pairPresent(event.Issuers, event.NewRoots, issuer, root)
 	}
 
-	for i := range event.Issuers {
-		if i >= len(event.TreeIndices) || i >= len(event.NewRoots) {
+	return false
+}
+
+// pairPresent reports whether the parallel arrays hold this (issuer, root) entry.
+//
+// Arrays that disagree in length come from a log this client cannot read, so the
+// shorter one bounds the scan rather than panicking on it.
+func pairPresent(issuers []common.Address, roots [][32]byte, issuer common.Address, root [32]byte) bool {
+	for i := range issuers {
+		if i >= len(roots) {
 			break
 		}
 
-		if event.Issuers[i] == issuer && event.TreeIndices[i].Cmp(treeIndex) == 0 {
-			return event.NewRoots[i], true
+		if issuers[i] == issuer && roots[i] == root {
+			return true
 		}
 	}
 
-	return [32]byte{}, false
+	return false
 }
 
-// rootFromSingle reads the root a TreeUpdated log recorded for issuer and
-// treeIndex.
-//
-// Unlike the batch event, its issuer and tree index are indexed, so they live in
-// the log's topics rather than its data and are compared there; only the root
-// itself is in the data section.
-func rootFromSingle(contractABI abi.ABI, log *types.Log, issuer common.Address, treeIndex *big.Int) ([32]byte, bool) {
-	// A log claiming this event ID with the wrong topic count is malformed, and
-	// indexing into it would panic rather than reject it.
-	if len(log.Topics) != treeUpdatedTopicCount {
-		return [32]byte{}, false
+func containsRoot(roots [][32]byte, root [32]byte) bool {
+	for _, anchored := range roots {
+		if anchored == root {
+			return true
+		}
 	}
 
-	if common.BytesToAddress(log.Topics[1].Bytes()) != issuer {
-		return [32]byte{}, false
-	}
-
-	if new(big.Int).SetBytes(log.Topics[2].Bytes()).Cmp(treeIndex) != 0 {
-		return [32]byte{}, false
-	}
-
-	var event struct {
-		NewRoot [32]byte
-	}
-
-	if err := contractABI.UnpackIntoInterface(&event, singleRootEvent, log.Data); err != nil {
-		return [32]byte{}, false
-	}
-
-	return event.NewRoot, true
+	return false
 }
 
 // GetTreeRoot returns the on-chain Merkle root for the given issuer and tree
 // index. A zero value means no such tree has been anchored.
 //
-// Deprecated: only a deployment that still keeps roots in storage answers this.
-// Read the root of a specific anchoring with GetAnchoredRoot instead.
+// Deprecated: the current contract does not have getTreeRoot at all, so against
+// it this can only fail. There is no replacement that returns a root: an
+// anchoring is identified by (issuer, root) now, so ask IsRootAnchored whether a
+// root you already hold was anchored.
 func (v *CredentialRegistry) GetTreeRoot(ctx context.Context, issuerAddress string, treeIndex uint64) ([32]byte, error) {
 	if !common.IsHexAddress(issuerAddress) {
 		return [32]byte{}, fmt.Errorf("invalid issuer address: %q", issuerAddress)
@@ -502,8 +531,9 @@ func (v *CredentialRegistry) GetTreeRoot(ctx context.Context, issuerAddress stri
 
 // HasTree reports whether the issuer has an anchored tree at the given index.
 //
-// Deprecated: only a deployment that still keeps roots in storage answers this.
-// An anchoring is now evidenced by its transaction, not by contract state.
+// Deprecated: the current contract does not have treeExists at all, so against
+// it this can only fail. An anchoring is evidenced by its transaction now, not by
+// contract state — see IsRootAnchored.
 func (v *CredentialRegistry) HasTree(ctx context.Context, issuerAddress string, treeIndex uint64) (bool, error) {
 	if !common.IsHexAddress(issuerAddress) {
 		return false, fmt.Errorf("invalid issuer address: %q", issuerAddress)
@@ -533,28 +563,6 @@ func (v *CredentialRegistry) HasTree(ctx context.Context, issuerAddress string, 
 	return exists, nil
 }
 
-// batchTreesUpdated mirrors the non-indexed fields of the BatchTreesUpdated
-// event, in declaration order.
-type batchTreesUpdated struct {
-	Issuers     []common.Address
-	TreeIndices []*big.Int
-	NewRoots    [][32]byte
-}
-
-// unpackAnchoredRoot decodes a BatchTreesUpdated log's data into its parallel
-// arrays. All three event fields are non-indexed, so they live entirely in the
-// log's data section.
-func unpackAnchoredRoot(contractABI abi.ABI, log *types.Log) (batchTreesUpdated, error) {
-	var event batchTreesUpdated
-
-	err := contractABI.UnpackIntoInterface(&event, anchoredRootEvent, log.Data)
-	if err != nil {
-		return batchTreesUpdated{}, err
-	}
-
-	return event, nil
-}
-
 // verifyMerkleProof reports whether leaf, folded together with its sibling path,
 // reproduces root.
 //
@@ -564,12 +572,23 @@ func unpackAnchoredRoot(contractABI abi.ABI, log *types.Log) (batchTreesUpdated,
 // be checked against a historical root recovered from a transaction's receipt. An
 // empty proof means a single-leaf tree, where the root equals the leaf.
 func verifyMerkleProof(leaf [32]byte, proof [][32]byte, root [32]byte) bool {
+	return foldProof(leaf, proof) == root
+}
+
+// foldProof folds leaf together with its sibling path and returns the root it
+// produces.
+//
+// verifyMerkleProof answers "does this fold to the root I already have?", which
+// is the wrong question once the root is what has to be looked up: the anchoring
+// log is searched *by* root, so the root has to exist before the lookup. Folding
+// first and asking about the result inverts that order.
+func foldProof(leaf [32]byte, proof [][32]byte) [32]byte {
 	computed := leaf
 	for _, sibling := range proof {
 		computed = hashPair(computed, sibling)
 	}
 
-	return computed == root
+	return computed
 }
 
 // hashPair keccak256-hashes two 32-byte nodes concatenated in ascending byte

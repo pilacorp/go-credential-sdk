@@ -11,6 +11,17 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
+// These tests exercise IsRootAnchored's log rules without a chain.
+//
+// Five event shapes are covered. Three are the current contract's; two are the
+// previous one's, kept because the roots anchored through them are still valid
+// and must keep verifying forever — nothing re-anchors those trees, and no
+// migration could.
+
+// legacyTreeIndex is any value at all: the legacy events carried a tree index,
+// and the point of these tests is that nothing reads it any more.
+const legacyTreeIndex = 7
+
 var (
 	registryAddress = common.HexToAddress("0x1111111111111111111111111111111111111111")
 	legacyAddress   = common.HexToAddress("0x2222222222222222222222222222222222222222")
@@ -23,8 +34,6 @@ var (
 	otherIssuer   = common.HexToAddress("0xabc0000000000000000000000000000000000002")
 )
 
-const testTreeIndex = 7
-
 // stubReceipts serves one canned receipt, standing in for the chain so the
 // log-filtering rules can be exercised directly.
 type stubReceipts struct {
@@ -36,8 +45,8 @@ func (s stubReceipts) TransactionReceipt(context.Context, common.Hash) (*types.R
 	return s.receipt, s.err
 }
 
-// newTestRegistry builds a registry with no RPC connection: anchoredRoot needs
-// only the receipt source, the ABI, and the trusted set.
+// newTestRegistry builds a registry with no RPC connection: reading a log needs
+// only the receipt source, the ABI and the trusted set.
 func newTestRegistry(t *testing.T, receipts receiptSource, trusted ...common.Address) *CredentialRegistry {
 	t.Helper()
 
@@ -46,7 +55,7 @@ func newTestRegistry(t *testing.T, receipts receiptSource, trusted ...common.Add
 		t.Fatalf("failed to load ABI: %v", err)
 	}
 
-	set := make(map[common.Address]struct{}, len(trusted))
+	set := map[common.Address]struct{}{registryAddress: {}}
 	for _, address := range trusted {
 		set[address] = struct{}{}
 	}
@@ -59,9 +68,7 @@ func newTestRegistry(t *testing.T, receipts receiptSource, trusted ...common.Add
 	}
 }
 
-// batchLog builds a well-formed BatchTreesUpdated log emitted by emitter. All
-// three fields are non-indexed, so they are packed into the data section.
-func batchLog(t *testing.T, emitter common.Address, issuers []common.Address, treeIndices []int64, roots [][32]byte) *types.Log {
+func packNonIndexed(t *testing.T, emitter common.Address, eventName string, args ...any) *types.Log {
 	t.Helper()
 
 	contractABI, err := loadABI()
@@ -69,29 +76,17 @@ func batchLog(t *testing.T, emitter common.Address, issuers []common.Address, tr
 		t.Fatalf("failed to load ABI: %v", err)
 	}
 
-	indices := make([]*big.Int, len(treeIndices))
-	for i, index := range treeIndices {
-		indices[i] = big.NewInt(index)
-	}
+	event := contractABI.Events[eventName]
 
-	event := contractABI.Events[anchoredRootEvent]
-
-	data, err := event.Inputs.NonIndexed().Pack(issuers, indices, roots)
+	data, err := event.Inputs.NonIndexed().Pack(args...)
 	if err != nil {
-		t.Fatalf("failed to pack %s: %v", anchoredRootEvent, err)
+		t.Fatalf("failed to pack %s: %v", eventName, err)
 	}
 
-	return &types.Log{
-		Address: emitter,
-		Topics:  []common.Hash{event.ID},
-		Data:    data,
-	}
+	return &types.Log{Address: emitter, Topics: []common.Hash{event.ID}, Data: data}
 }
 
-// treeUpdatedLog builds a well-formed TreeUpdated log emitted by emitter. Its
-// issuer and tree index are indexed, so they go in the topics and only the root
-// is packed into the data section.
-func treeUpdatedLog(t *testing.T, emitter, issuer common.Address, treeIndex int64, root [32]byte) *types.Log {
+func eventID(t *testing.T, name string) common.Hash {
 	t.Helper()
 
 	contractABI, err := loadABI()
@@ -99,425 +94,383 @@ func treeUpdatedLog(t *testing.T, emitter, issuer common.Address, treeIndex int6
 		t.Fatalf("failed to load ABI: %v", err)
 	}
 
-	event := contractABI.Events[singleRootEvent]
+	return contractABI.Events[name].ID
+}
 
-	data, err := event.Inputs.NonIndexed().Pack(root)
-	if err != nil {
-		t.Fatalf("failed to pack %s: %v", singleRootEvent, err)
-	}
+// batchLog is the current cross-issuer batch: parallel arrays, nothing indexed.
+func batchLog(t *testing.T, emitter common.Address, issuers []common.Address, roots [][32]byte) *types.Log {
+	t.Helper()
+
+	return packNonIndexed(t, emitter, batchAnchoredEvent, issuers, roots)
+}
+
+// singleLog is the current single anchoring. Both fields are indexed, so both sit
+// in topics and the data section is empty.
+func singleLog(t *testing.T, emitter, issuer common.Address, root [32]byte) *types.Log {
+	t.Helper()
 
 	return &types.Log{
 		Address: emitter,
 		Topics: []common.Hash{
-			event.ID,
+			eventID(t, singleAnchoredEvent),
 			common.BytesToHash(issuer.Bytes()),
-			common.BigToHash(big.NewInt(treeIndex)),
+			common.BytesToHash(root[:]),
 		},
-		Data: data,
 	}
+}
+
+// issuerBatchLog is the current per-issuer batch: issuer indexed, roots in data.
+func issuerBatchLog(t *testing.T, emitter, issuer common.Address, roots [][32]byte) *types.Log {
+	t.Helper()
+
+	log := packNonIndexed(t, emitter, issuerAnchoredEvent, roots)
+	log.Topics = append(log.Topics, common.BytesToHash(issuer.Bytes()))
+
+	return log
+}
+
+// legacyBatchLog is the previous contract's batch event, tree indices and all.
+func legacyBatchLog(t *testing.T, emitter common.Address, issuers []common.Address, roots [][32]byte) *types.Log {
+	t.Helper()
+
+	indices := make([]*big.Int, len(roots))
+	for i := range indices {
+		indices[i] = big.NewInt(int64(legacyTreeIndex + i))
+	}
+
+	return packNonIndexed(t, emitter, legacyBatchEvent, issuers, indices, roots)
+}
+
+// legacySingleLog is the previous contract's single-tree event.
+func legacySingleLog(t *testing.T, emitter, issuer common.Address, root [32]byte) *types.Log {
+	t.Helper()
+
+	log := packNonIndexed(t, emitter, legacySingleEvent, root)
+	log.Topics = append(log.Topics,
+		common.BytesToHash(issuer.Bytes()),
+		common.BigToHash(big.NewInt(legacyTreeIndex)),
+	)
+
+	return log
 }
 
 func successReceipt(logs ...*types.Log) *types.Receipt {
 	return &types.Receipt{Status: types.ReceiptStatusSuccessful, Logs: logs}
 }
 
-func anchoredRootOf(t *testing.T, registry *CredentialRegistry) ([32]byte, error) {
+func anchoredFor(t *testing.T, registry *CredentialRegistry, root [32]byte) (bool, error) {
 	t.Helper()
 
-	return registry.GetAnchoredRoot(context.Background(), common.Hash{}, issuerAddress, testTreeIndex)
+	return registry.IsRootAnchored(context.Background(), common.Hash{}, issuerAddress, root)
 }
 
-// TestGetAnchoredRootRejectsForeignEmitter is the negative test the change
-// hinges on. Anyone can deploy a contract emitting these exact signatures, so a
-// perfectly well-formed anchoring log from an address outside the trusted set
-// must not be believed. Without the emitter check, any transaction at all could
-// pose as a valid anchoring.
-func TestGetAnchoredRootRejectsForeignEmitter(t *testing.T) {
-	root := mkLeaf(0xaa)
+// everyShape builds one log per event shape, all recording issuer anchoring root.
+func everyShape(t *testing.T, emitter, issuer common.Address, root [32]byte) []struct {
+	name string
+	log  *types.Log
+} {
+	t.Helper()
 
-	cases := []struct {
+	return []struct {
 		name string
 		log  *types.Log
 	}{
-		{
-			name: "batch event from an untrusted contract",
-			log: batchLog(t, attackerAddress,
-				[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{root}),
-		},
-		{
-			name: "single event from an untrusted contract",
-			log:  treeUpdatedLog(t, attackerAddress, issuerAddress, testTreeIndex, root),
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			registry := newTestRegistry(t,
-				stubReceipts{receipt: successReceipt(tc.log)},
-				registryAddress,
-			)
-
-			got, err := anchoredRootOf(t, registry)
-			if !errors.Is(err, ErrRootNotAnchored) {
-				t.Fatalf("foreign emitter accepted: got root %x, err %v", got, err)
-			}
-		})
+		{"current single", singleLog(t, emitter, issuer, root)},
+		{"current cross-issuer batch", batchLog(t, emitter,
+			[]common.Address{otherIssuer, issuer}, [][32]byte{mkLeaf(0x01), root})},
+		{"current issuer batch", issuerBatchLog(t, emitter, issuer,
+			[][32]byte{mkLeaf(0x02), root})},
+		{"legacy single", legacySingleLog(t, emitter, issuer, root)},
+		{"legacy batch", legacyBatchLog(t, emitter,
+			[]common.Address{otherIssuer, issuer}, [][32]byte{mkLeaf(0x03), root})},
 	}
 }
 
-// TestGetAnchoredRootBatch covers the path every anchoring takes today: one
-// transaction carries many trees, and only the entry matching both the issuer
-// and the tree index is the caller's.
-func TestGetAnchoredRootBatch(t *testing.T) {
+// TestIsRootAnchoredReadsEveryEventShape is the test the upgrade rests on.
+//
+// A root anchored through the previous contract must keep verifying afterwards.
+// The legacy events carry a tree index that no longer means anything; it is
+// skipped rather than matched, because it was only ever a lookup key and never
+// part of what an anchoring asserts.
+func TestIsRootAnchoredReadsEveryEventShape(t *testing.T) {
 	want := mkLeaf(0xbb)
 
-	log := batchLog(t, registryAddress,
-		[]common.Address{otherIssuer, issuerAddress, issuerAddress},
-		[]int64{testTreeIndex, 3, testTreeIndex},
-		[][32]byte{mkLeaf(0x01), mkLeaf(0x02), want},
-	)
-
-	registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(log)}, registryAddress)
-
-	got, err := anchoredRootOf(t, registry)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != want {
-		t.Fatalf("wrong entry selected: got %x want %x", got, want)
-	}
-}
-
-// TestGetAnchoredRootTreeUpdated covers a root anchored on its own rather than
-// in a batch. Before roots stopped being kept in storage this event could be
-// ignored, because a view call would still find the root; now missing it would
-// report a genuinely anchored tree as never anchored.
-func TestGetAnchoredRootTreeUpdated(t *testing.T) {
-	want := mkLeaf(0xcc)
-
-	log := treeUpdatedLog(t, registryAddress, issuerAddress, testTreeIndex, want)
-	registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(log)}, registryAddress)
-
-	got, err := anchoredRootOf(t, registry)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != want {
-		t.Fatalf("root mismatch: got %x want %x", got, want)
-	}
-}
-
-// TestGetAnchoredRootTreeUpdatedIgnoresOtherTrees checks that the indexed topics
-// are actually compared, not just assumed to match.
-func TestGetAnchoredRootTreeUpdatedIgnoresOtherTrees(t *testing.T) {
-	cases := []struct {
-		name string
-		log  *types.Log
-	}{
-		{
-			name: "another issuer, same tree index",
-			log:  treeUpdatedLog(t, registryAddress, otherIssuer, testTreeIndex, mkLeaf(0x11)),
-		},
-		{
-			name: "same issuer, another tree index",
-			log:  treeUpdatedLog(t, registryAddress, issuerAddress, testTreeIndex+1, mkLeaf(0x12)),
-		},
-	}
-
-	for _, tc := range cases {
+	for _, tc := range everyShape(t, registryAddress, issuerAddress, want) {
 		t.Run(tc.name, func(t *testing.T) {
-			registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(tc.log)}, registryAddress)
+			registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(tc.log)})
 
-			if got, err := anchoredRootOf(t, registry); !errors.Is(err, ErrRootNotAnchored) {
-				t.Fatalf("unrelated tree accepted: got root %x, err %v", got, err)
+			ok, err := anchoredFor(t, registry, want)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if !ok {
+				t.Fatal("a root this log anchors was reported as not anchored")
 			}
 		})
 	}
 }
 
-// TestGetAnchoredRootMalformedTopics feeds a log that claims the TreeUpdated ID
-// but carries the wrong number of topics. Indexing into it blindly would panic,
-// turning a malformed log from a trusted contract into a crash.
-func TestGetAnchoredRootMalformedTopics(t *testing.T) {
-	contractABI, err := loadABI()
-	if err != nil {
-		t.Fatalf("failed to load ABI: %v", err)
-	}
+// The other direction: a root the transaction does not carry must not match,
+// whichever shape the logs take. Without this the tests above would pass on a
+// function that always says yes.
+func TestIsRootAnchoredRejectsARootNotInTheLogs(t *testing.T) {
+	present := mkLeaf(0xbb)
+	absent := mkLeaf(0xcc)
 
-	log := &types.Log{
-		Address: registryAddress,
-		Topics: []common.Hash{
-			contractABI.Events[singleRootEvent].ID,
-			common.BytesToHash(issuerAddress.Bytes()),
-		},
-		Data: nil,
-	}
+	for _, tc := range everyShape(t, registryAddress, issuerAddress, present) {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(tc.log)})
 
-	registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(log)}, registryAddress)
+			ok, err := anchoredFor(t, registry, absent)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-	if got, err := anchoredRootOf(t, registry); !errors.Is(err, ErrRootNotAnchored) {
-		t.Fatalf("malformed log accepted: got root %x, err %v", got, err)
+			if ok {
+				t.Fatal("a root that was never anchored verified")
+			}
+		})
 	}
 }
 
-// TestGetAnchoredRootTrustsEveryConfiguredContract covers a tree that stays open
-// across a migration: earlier anchorings sit at the previous deployment, and
-// both must remain verifiable.
-func TestGetAnchoredRootTrustsEveryConfiguredContract(t *testing.T) {
-	want := mkLeaf(0xdd)
+// The root has to belong to the issuer being asked about. Another issuer
+// anchoring the same root says nothing about this one.
+func TestIsRootAnchoredRejectsAnotherIssuersRoot(t *testing.T) {
+	want := mkLeaf(0xbb)
 
-	log := batchLog(t, legacyAddress,
-		[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{want})
+	for _, tc := range everyShape(t, registryAddress, otherIssuer, want) {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(tc.log)})
+
+			ok, err := anchoredFor(t, registry, want)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if ok {
+				t.Fatal("a root anchored by a different issuer verified")
+			}
+		})
+	}
+}
+
+// TestIsRootAnchoredRejectsForeignEmitter is the negative test the whole approach
+// hinges on. Anyone can deploy a contract emitting these exact signatures, so a
+// perfectly well-formed anchoring log from an address outside the trusted set
+// must not be believed — otherwise any transaction at all could pose as a valid
+// anchoring.
+func TestIsRootAnchoredRejectsForeignEmitter(t *testing.T) {
+	want := mkLeaf(0xbb)
+
+	for _, tc := range everyShape(t, attackerAddress, issuerAddress, want) {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(tc.log)})
+
+			ok, err := anchoredFor(t, registry, want)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if ok {
+				t.Fatal("a log from an untrusted contract was believed")
+			}
+		})
+	}
+}
+
+// A migration leaves both deployments live in the same trusted set, and the old
+// one still holds the anchorings nothing will redo.
+func TestIsRootAnchoredTrustsEveryConfiguredContract(t *testing.T) {
+	want := mkLeaf(0xbb)
 
 	registry := newTestRegistry(t,
-		stubReceipts{receipt: successReceipt(log)},
-		registryAddress, legacyAddress,
+		stubReceipts{receipt: successReceipt(
+			legacyBatchLog(t, legacyAddress, []common.Address{issuerAddress}, [][32]byte{want}),
+		)},
+		legacyAddress,
 	)
 
-	got, err := anchoredRootOf(t, registry)
+	ok, err := anchoredFor(t, registry, want)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != want {
-		t.Fatalf("root mismatch: got %x want %x", got, want)
+
+	if !ok {
+		t.Fatal("a root anchored by the previous deployment no longer verifies")
 	}
 }
 
-// TestGetAnchoredRootFromContractPinsEmitter checks that pinning narrows the
-// trusted set: a root anchored by one trusted deployment must not satisfy a
-// lookup pinned to another.
-func TestGetAnchoredRootFromContractPinsEmitter(t *testing.T) {
-	want := mkLeaf(0xee)
-
-	log := batchLog(t, legacyAddress,
-		[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{want})
+// One transaction can mix shapes — an upgrade window, or a wrapper calling both
+// deployments. Every log still has to be read, not just the first that decodes.
+func TestIsRootAnchoredReadsMixedLogsInOneReceipt(t *testing.T) {
+	want := mkLeaf(0xbb)
 
 	registry := newTestRegistry(t,
-		stubReceipts{receipt: successReceipt(log)},
-		registryAddress, legacyAddress,
+		stubReceipts{receipt: successReceipt(
+			legacyBatchLog(t, legacyAddress, []common.Address{otherIssuer}, [][32]byte{mkLeaf(0x01)}),
+			batchLog(t, registryAddress, []common.Address{issuerAddress}, [][32]byte{want}),
+		)},
+		legacyAddress,
 	)
 
-	got, err := registry.GetAnchoredRootFromContract(
-		context.Background(), common.Hash{}, issuerAddress, testTreeIndex, legacyAddress)
+	ok, err := anchoredFor(t, registry, want)
 	if err != nil {
-		t.Fatalf("unexpected error for the anchoring contract: %v", err)
-	}
-	if got != want {
-		t.Fatalf("root mismatch: got %x want %x", got, want)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err = registry.GetAnchoredRootFromContract(
-		context.Background(), common.Hash{}, issuerAddress, testTreeIndex, registryAddress)
-	if !errors.Is(err, ErrRootNotAnchored) {
-		t.Fatalf("pin ignored: got root %x, err %v", got, err)
+	if !ok {
+		t.Fatal("a root in the second log was missed")
 	}
 }
 
-// TestGetAnchoredRootFromContractRejectsUntrustedPin checks that pinning can
-// only ever narrow the trusted set. The address is caller input, so honouring an
-// unknown one would let a caller nominate the attacker's contract and undo the
-// emitter check entirely.
-func TestGetAnchoredRootFromContractRejectsUntrustedPin(t *testing.T) {
-	log := batchLog(t, attackerAddress,
-		[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{mkLeaf(0x21)})
+// Pinning narrows the trusted set to one deployment; it can never widen it.
+func TestIsRootAnchoredAtContractPinsEmitter(t *testing.T) {
+	want := mkLeaf(0xbb)
 
-	registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(log)}, registryAddress)
+	registry := newTestRegistry(t,
+		stubReceipts{receipt: successReceipt(
+			legacyBatchLog(t, legacyAddress, []common.Address{issuerAddress}, [][32]byte{want}),
+		)},
+		legacyAddress,
+	)
 
-	_, err := registry.GetAnchoredRootFromContract(
-		context.Background(), common.Hash{}, issuerAddress, testTreeIndex, attackerAddress)
+	ok, err := registry.IsRootAnchoredAtContract(
+		context.Background(), common.Hash{}, issuerAddress, want, legacyAddress)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !ok {
+		t.Fatal("pinning the contract that emitted the log rejected it")
+	}
+
+	// Same receipt, pinned to the other trusted deployment: its log is not there.
+	ok, err = registry.IsRootAnchoredAtContract(
+		context.Background(), common.Hash{}, issuerAddress, want, registryAddress)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ok {
+		t.Fatal("a log from a different deployment satisfied a pinned lookup")
+	}
+}
+
+func TestIsRootAnchoredAtContractRejectsUntrustedPin(t *testing.T) {
+	want := mkLeaf(0xbb)
+
+	registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(
+		batchLog(t, registryAddress, []common.Address{issuerAddress}, [][32]byte{want}),
+	)})
+
+	_, err := registry.IsRootAnchoredAtContract(
+		context.Background(), common.Hash{}, issuerAddress, want, attackerAddress)
 	if !errors.Is(err, ErrUntrustedContract) {
-		t.Fatalf("expected ErrUntrustedContract, got %v", err)
+		t.Fatalf("err = %v, want ErrUntrustedContract", err)
 	}
 }
 
-func TestGetAnchoredRootReceiptOutcomes(t *testing.T) {
-	cases := []struct {
+// A log with no topics reaches the decoder from any contract that emits one, and
+// the switch indexes Topics[0] — so the guard has to come first.
+func TestIsRootAnchoredTopiclessLog(t *testing.T) {
+	registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(
+		&types.Log{Address: registryAddress},
+	)})
+
+	ok, err := anchoredFor(t, registry, mkLeaf(0xbb))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ok {
+		t.Fatal("a topicless log was read as an anchoring")
+	}
+}
+
+// An indexed event whose topics were truncated must not be indexed into either.
+func TestIsRootAnchoredTruncatedTopics(t *testing.T) {
+	// Each carries only the event id, with every indexed field missing.
+	truncated := func(eventName string) *types.Log {
+		return &types.Log{
+			Address: registryAddress,
+			Topics:  []common.Hash{eventID(t, eventName)},
+		}
+	}
+
+	tests := []struct {
+		name string
+		log  *types.Log
+	}{
+		{"current single", truncated(singleAnchoredEvent)},
+		{"current issuer batch", truncated(issuerAnchoredEvent)},
+		{"legacy single", truncated(legacySingleEvent)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(tc.log)})
+
+			ok, err := anchoredFor(t, registry, mkLeaf(0xbb))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if ok {
+				t.Fatal("a log with missing topics was read as an anchoring")
+			}
+		})
+	}
+}
+
+// An empty root folds out of a malformed proof and would otherwise be looked up
+// like any other. Nothing anchors it, but failing loudly beats searching for a
+// value that can never be there.
+func TestIsRootAnchoredRejectsAnEmptyRoot(t *testing.T) {
+	registry := newTestRegistry(t, stubReceipts{receipt: successReceipt()})
+
+	if _, err := anchoredFor(t, registry, [32]byte{}); err == nil {
+		t.Fatal("looking up an empty root was accepted")
+	}
+}
+
+func TestIsRootAnchoredReceiptOutcomes(t *testing.T) {
+	tests := []struct {
 		name     string
 		receipts stubReceipts
-		want     error
+		wantErr  error
 	}{
 		{
 			name:     "unknown or unmined transaction",
 			receipts: stubReceipts{err: ethereum.NotFound},
-			want:     ErrTxNotFound,
+			wantErr:  ErrTxNotFound,
 		},
 		{
 			name:     "reverted transaction anchors nothing",
 			receipts: stubReceipts{receipt: &types.Receipt{Status: types.ReceiptStatusFailed}},
-			want:     ErrTxReverted,
-		},
-		{
-			name:     "successful transaction with no anchoring log",
-			receipts: stubReceipts{receipt: successReceipt()},
-			want:     ErrRootNotAnchored,
+			wantErr:  ErrTxReverted,
 		},
 	}
 
-	for _, tc := range cases {
+	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			registry := newTestRegistry(t, tc.receipts, registryAddress)
+			registry := newTestRegistry(t, tc.receipts)
 
-			if _, err := anchoredRootOf(t, registry); !errors.Is(err, tc.want) {
-				t.Fatalf("expected %v, got %v", tc.want, err)
+			if _, err := anchoredFor(t, registry, mkLeaf(0xbb)); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
 		})
 	}
 }
 
-// TestAnchoringEventIDs pins the embedded ABI's two anchoring events to the
-// topic hashes of the deployed NDACredential contract.
-//
-// The ABI here is a hand-trimmed subset rather than compiler output, so a typo
-// in a field name or type would change the event ID and make every log stop
-// matching — with no error anywhere, just verification quietly reporting that
-// nothing was ever anchored.
-func TestAnchoringEventIDs(t *testing.T) {
-	contractABI, err := loadABI()
-	if err != nil {
-		t.Fatalf("failed to load ABI: %v", err)
-	}
+// A registry built without a receipt source must fail with a reason rather than
+// panic. Assigning a nil *ethclient.Client into the interface would make this
+// guard pass and the call panic one line later, so the constructor never does.
+func TestIsRootAnchoredWithoutAReceiptSource(t *testing.T) {
+	registry := &CredentialRegistry{}
 
-	cases := map[string]string{
-		anchoredRootEvent: "0xdfca0e820844f18511e987f70077b11bc4543e954283a833a15d51abdbbc7cd0",
-		singleRootEvent:   "0x6359763dd97d67c7b79a119f0e38c8d995c8b2fd50f10d53b24d9949ca132fdb",
-	}
-
-	for name, want := range cases {
-		event, ok := contractABI.Events[name]
-		if !ok {
-			t.Fatalf("event %s is missing from the embedded ABI", name)
-		}
-
-		if got := event.ID.Hex(); got != want {
-			t.Fatalf("event %s topic mismatch: got %s want %s", name, got, want)
-		}
-	}
-}
-
-// TestNewCredentialRegistryRejectsBadAlsoTrust confirms a malformed trusted
-// address fails at construction. common.HexToAddress would otherwise quietly
-// truncate or zero-pad it into a plausible-looking address that never matches.
-func TestNewCredentialRegistryRejectsBadAlsoTrust(t *testing.T) {
-	_, err := NewCredentialRegistry(
-		"http://localhost:8545",
-		registryAddress.Hex(),
-		"not-an-address",
-	)
-	if err == nil {
-		t.Fatal("expected an error for a malformed alsoTrust address")
-	}
-}
-
-// TestGetAnchoredRootRejectsConflictingRoots is the ordering bug this guard
-// exists for.
-//
-// One transaction can carry logs from two deployments — the trusted set holds
-// more than one address precisely so a migration keeps verifying — and both may
-// record the same issuer and tree index with different roots. Reading only the
-// first match made the answer depend on the order the logs happen to sit in: a
-// proof valid against the second root came back as simply "not valid", with no
-// error to say the root had been picked by position.
-func TestGetAnchoredRootRejectsConflictingRoots(t *testing.T) {
-	first := mkLeaf(0xa1)
-	second := mkLeaf(0xa2)
-
-	logs := []*types.Log{
-		batchLog(t, registryAddress,
-			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{first}),
-		batchLog(t, legacyAddress,
-			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{second}),
-	}
-
-	for _, tc := range []struct {
-		name string
-		logs []*types.Log
-	}{
-		// Both orders, because the defect was that the order decided the answer.
-		{"conflicting root second", logs},
-		{"conflicting root first", []*types.Log{logs[1], logs[0]}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			registry := newTestRegistry(t,
-				stubReceipts{receipt: successReceipt(tc.logs...)},
-				registryAddress, legacyAddress,
-			)
-
-			_, err := anchoredRootOf(t, registry)
-			if !errors.Is(err, ErrAmbiguousAnchoring) {
-				t.Fatalf("err = %v, want ErrAmbiguousAnchoring", err)
-			}
-		})
-	}
-}
-
-// Pinning the contract is the way out of an ambiguous transaction, so it has to
-// keep working on exactly the receipt that is ambiguous without one.
-func TestGetAnchoredRootFromContractResolvesConflictingRoots(t *testing.T) {
-	want := mkLeaf(0xa2)
-
-	receipt := successReceipt(
-		batchLog(t, registryAddress,
-			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{mkLeaf(0xa1)}),
-		batchLog(t, legacyAddress,
-			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{want}),
-	)
-
-	registry := newTestRegistry(t, stubReceipts{receipt: receipt}, registryAddress, legacyAddress)
-
-	got, err := registry.GetAnchoredRootFromContract(
-		context.Background(), common.Hash{}, issuerAddress, testTreeIndex, legacyAddress)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != want {
-		t.Fatalf("got %x, want the root emitted by the pinned contract %x", got, want)
-	}
-}
-
-// The same root recorded twice is not a conflict: every copy says the same
-// thing, and rejecting it would break a transaction that merely logs an
-// anchoring more than once.
-func TestGetAnchoredRootAcceptsTheSameRootTwice(t *testing.T) {
-	want := mkLeaf(0xa3)
-
-	receipt := successReceipt(
-		batchLog(t, registryAddress,
-			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{want}),
-		batchLog(t, legacyAddress,
-			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{want}),
-	)
-
-	registry := newTestRegistry(t, stubReceipts{receipt: receipt}, registryAddress, legacyAddress)
-
-	got, err := anchoredRootOf(t, registry)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != want {
-		t.Fatalf("got %x, want %x", got, want)
-	}
-}
-
-// A conflicting log from a contract nobody trusts must not be able to turn a
-// perfectly good verification into an error — that would be a denial of service
-// anyone could trigger by emitting one event.
-func TestGetAnchoredRootIgnoresConflictsFromUntrustedEmitters(t *testing.T) {
-	want := mkLeaf(0xa4)
-
-	receipt := successReceipt(
-		batchLog(t, registryAddress,
-			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{want}),
-		batchLog(t, attackerAddress,
-			[]common.Address{issuerAddress}, []int64{testTreeIndex}, [][32]byte{mkLeaf(0xff)}),
-	)
-
-	registry := newTestRegistry(t, stubReceipts{receipt: receipt}, registryAddress)
-
-	got, err := anchoredRootOf(t, registry)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != want {
-		t.Fatalf("got %x, want %x", got, want)
+	if _, err := registry.IsRootAnchored(
+		context.Background(), common.Hash{}, issuerAddress, mkLeaf(0xbb)); err == nil {
+		t.Fatal("a lookup without a receipt source was accepted")
 	}
 }

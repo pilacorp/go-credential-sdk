@@ -19,15 +19,39 @@ why there are two verification paths.
 
 ## Two ways to verify
 
-- **`VerifyVCHashOnChain`** — checks the proof against the tree's **current**
-  root. The contract's `verifyVC(...)` view function folds the proof and returns
-  the verdict. Use this for a sealed tree, or when the proof was taken against the
-  latest anchoring.
-- **`VerifyVCHashByTx`** — checks the proof against the root that a **specific
-  transaction** anchored, read from that transaction's receipt logs
-  (`BatchTreesUpdated`). The proof is folded locally (sorted-pair keccak256, the
-  same rule the contract uses). Use this when the tree is unsealed and its current
-  root has moved on: pass the tx hash of the anchoring the proof belongs to.
+- **`VerifyVCHashByTx`** — the one to use. It folds the proof locally
+  (sorted-pair keccak256) and asks whether that exact root appears in the logs of
+  the given transaction, emitted by a trusted contract for that issuer.
+- **`VerifyVCHashOnChain`** — **deprecated**. It calls `verifyVC(...)`, which the
+  current contract does not have, so against it this can only fail. It works
+  solely against an older deployment that still keeps roots in storage.
+
+### Why the by-tx path asks about a root instead of fetching one
+
+The contract records an anchoring as `(issuer, root)` and carries **no tree
+index**. So "what root did tree 7 get?" has no single answer — one transaction
+anchors many of an issuer's trees and nothing in the log tells them apart.
+
+Folding first removes the need for a tiebreaker: every root in the log is one the
+issuer really anchored, so finding your folded root among them proves exactly what
+verification is for. The tree index was only ever a lookup key, never part of what
+an anchoring asserts, so nothing is lost.
+
+### Roots anchored before the contract changed
+
+Still verify, with no re-anchoring and no migration. Five event shapes are read —
+three current (`TreeRootAnchored`, `BatchRootsAnchored`, `IssuerRootsAnchored`)
+and two legacy (`TreeUpdated`, `BatchTreesUpdated`). The legacy events carry a
+tree index; it is skipped rather than matched.
+
+Two things must be true for this to hold:
+
+1. The embedded ABI keeps all five events. It is a **hand-merged** file — the
+   current contract's ABI does not contain the legacy two, so regenerating it
+   blindly silently breaks every pre-upgrade credential.
+2. The previous deployment's address is passed to `NewCredentialRegistry` via
+   `alsoTrust`. The current contract is at a new address, so without this its
+   predecessor's logs are dropped at the emitter check.
 
 ## Inputs
 
@@ -37,7 +61,7 @@ authen-service API). They typically come from the authen-service proof endpoint
 (including `TxHash` for the by-transaction path):
 
 - `IssuerAddress` — issuer's Ethereum address (`0x…`)
-- `TreeIndex` — which tree of that issuer
+- `TreeIndex` — **deprecated, ignored.** Kept so callers still setting it compile.
 - `Leaf` — the VC hash (32-byte hex)
 - `Proof` — ordered sibling hashes (32-byte hex each; empty for a single-leaf tree)
 - `TxHash` — hash of the anchoring transaction (32-byte hex) — **`VerifyVCHashByTx` only**
@@ -48,6 +72,9 @@ authen-service API). They typically come from the authen-service proof endpoint
 registry, err := vccontract.NewCredentialRegistry(
     "https://rpc.example.com",
     "0x...CredentialRegistry",
+    // Every earlier deployment whose anchorings must keep verifying. Leave one
+    // out and every credential anchored by it reads as never anchored.
+    "0x...PreviousDeployment",
 )
 if err != nil {
     // handle
@@ -55,25 +82,11 @@ if err != nil {
 defer registry.Close()
 ```
 
-Against the current root:
-
-```go
-req := &vccontract.VerifyRequest{
-    IssuerAddress: "0x...Issuer",
-    TreeIndex:     0,
-    Leaf:          "0x...vcHash",
-    Proof:         []string{"0x...", "0x..."},
-}
-
-ok, err := registry.VerifyVCHashOnChain(context.Background(), req)
-```
-
-Against the root a specific transaction anchored:
+Verify against the anchoring transaction:
 
 ```go
 req := &vccontract.VerifyByTxRequest{
     IssuerAddress: "0x...Issuer",
-    TreeIndex:     0,
     Leaf:          "0x...vcHash",
     Proof:         []string{"0x...", "0x..."},
     TxHash:        "0x...anchoringTx",
@@ -85,29 +98,31 @@ if errors.Is(err, vccontract.ErrTxNotFound) {
 }
 ```
 
-For both, `ok == true` means the VC hash is anchored; `ok == false` with a
-`nil` error means the proof does not validate. For `VerifyVCHashByTx`, a `false`
-with `nil` error also covers a reverted transaction (`ErrTxReverted`) or a
-transaction that anchored no root for this issuer and tree index
-(`ErrRootNotAnchored`) — in both cases the transaction simply cannot attest the
-leaf. A non-nil error means the check could not be completed — bad input, an RPC
-error, or (for the by-tx path) the transaction not being found (`ErrTxNotFound`).
+`ok == true` means the VC hash is anchored. `ok == false` with a `nil` error means
+it is not — the proof does not fold to any root this transaction anchored for this
+issuer, or the transaction reverted (`ErrTxReverted`) and so anchored nothing.
+Either way the transaction cannot attest the leaf; that is a verdict, not a
+failure. A non-nil error means the check could not be completed — bad input, an
+RPC error, or the transaction not being found (`ErrTxNotFound`).
 
 ## API
 
-- `NewCredentialRegistry(rpcURL, contractAddress string) (*CredentialRegistry, error)` —
-  connect to the chain (RPC connection is required).
-- `(*CredentialRegistry) VerifyVCHashOnChain(ctx, *VerifyRequest) (bool, error)` —
-  verify a VC hash against the tree's current on-chain root.
+- `NewCredentialRegistry(rpcURL, contractAddress string, alsoTrust ...string) (*CredentialRegistry, error)` —
+  connect to the chain (RPC connection is required). `alsoTrust` names earlier
+  deployments whose anchoring logs are still to be believed.
 - `(*CredentialRegistry) VerifyVCHashByTx(ctx, *VerifyByTxRequest) (bool, error)` —
-  verify a VC hash against the root a specific transaction anchored.
-- `(*CredentialRegistry) GetAnchoredRoot(ctx, txHash, issuer, treeIndex) ([32]byte, error)` —
-  read the root a transaction recorded for an issuer/tree (returns `ErrTxNotFound`,
-  `ErrTxReverted`, or `ErrRootNotAnchored` as appropriate).
-- `(*CredentialRegistry) GetTreeRoot(ctx, issuer, treeIndex) ([32]byte, error)` —
-  read the current anchored Merkle root (zero value = no such tree).
-- `(*CredentialRegistry) HasTree(ctx, issuer, treeIndex) (bool, error)` —
-  whether the issuer has an anchored tree at that index.
+  verify a VC hash against the anchoring transaction it belongs to.
+- `(*CredentialRegistry) VerifyVCHashOnChain(ctx, *VerifyRequest) (bool, error)` —
+  **deprecated**, see above.
+- `(*CredentialRegistry) IsRootAnchored(ctx, txHash, issuer, root) (bool, error)` —
+  whether a transaction records this issuer anchoring this root. Returns
+  `ErrTxNotFound` or `ErrTxReverted` where they apply; a transaction that simply
+  does not carry the root is `(false, nil)`.
+- `(*CredentialRegistry) IsRootAnchoredAtContract(ctx, txHash, issuer, root, contractAddress) (bool, error)` —
+  the same, restricted to one deployment. The address must already be trusted:
+  pinning narrows what is believed and can never widen it.
+- `(*CredentialRegistry) GetTreeRoot(...)`, `HasTree(...)` — **deprecated**, see
+  `VerifyVCHashOnChain` above.
 - `(*CredentialRegistry) Close()` — release the RPC connection.
 
 Reuse a single `CredentialRegistry` across calls (it holds a live, concurrency-safe

@@ -93,6 +93,11 @@ type VerifyByTxRequest struct {
 	// issuer's tree the leaf is expected to belong to.
 	IssuerAddress string
 	// TreeIndex is the index of the issuer's tree that anchors this leaf.
+	//
+	// Deprecated: unused. The contract records an anchoring as (issuer, root) and
+	// carries no tree index, so verification folds the proof and looks the
+	// resulting root up directly. The field is kept so callers still setting it
+	// keep compiling; it is ignored.
 	TreeIndex uint64
 	// Leaf is the VC hash to verify, as a 32-byte hex string (with or without "0x").
 	Leaf string
