@@ -80,6 +80,7 @@ type VerificationMethod struct {
 	// PublicKeyJwk is the JWK representation of the public key, used for
 	// non-secp256k1 keys (e.g. RSA CA keys with Type="JsonWebKey2020").
 	// Mutually exclusive with PublicKeyHex and PublicKeyMultibase.
+	// Deprecated: Use PublicKeyMultibase for P-256 keys instead of JWK.
 	PublicKeyJwk map[string]any `json:"publicKeyJwk,omitempty"`
 	// PublicKeyMultibase is the Multikey encoding used for P-256 keys.
 	// Mutually exclusive with PublicKeyHex and PublicKeyJwk.
