@@ -167,6 +167,9 @@ func (doc *DIDDocument) Validate() error {
 //
 // Returns the hash as a lowercase hex string (with "0x" prefix).
 func (doc *DIDDocument) Hash() (string, error) {
+	if doc == nil {
+		return "", fmt.Errorf("DID document is nil")
+	}
 	docJSON, err := json.Marshal(doc)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal DID document: %w", err)
