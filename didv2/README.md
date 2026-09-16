@@ -312,8 +312,13 @@ issuerSig, _ := didGenerator.GenerateIssuerSignature(
     issuerAddr,
 )
 
-// Generate DID Document
+// Generate DID Document. GenerateDIDTX validates for you; when building the
+// document yourself, call Validate before hashing so a duplicate or empty VM
+// id never reaches the chain.
 didDoc := did.GenerateDIDDocument(didPublicKeyHex, didIdentifier, "", issuerDID, did.DIDTypePeople, metadata)
+if err := didDoc.Validate(); err != nil {
+    return err
+}
 docHash, _ := didDoc.Hash()
 
 // Return to Wallet/App: issuerSig, didDoc, docHash, capID (see "Backend ↔ Wallet contract" below for exact JSON format)
@@ -591,6 +596,57 @@ If more than one backend instance can create transactions for the **same DID sig
 **Epoch** is per Issuer address and is read from the chain; multiple instances can all use `WithSyncEpoch(true)` as long as they use the same Issuer, since they only read the current epoch.
 
 ---
+
+## Signing W3C Verifiable Credentials with the generated DID
+
+`GenerateDID()` draws **one 32-byte private scalar** and publishes it on two
+curves, so a single secret backs both the chain identity and W3C credentials:
+
+| Verification method | Curve | Type | Used for |
+|---|---|---|---|
+| `#key-1` | secp256k1 | `EcdsaSecp256k1VerificationKey2019` (`publicKeyHex`) | DID transactions, JWT VCs (`ES256K`) |
+| `#key-2` | P-256 | `Multikey` (`publicKeyMultibase`) | W3C Data Integrity VCs (`ecdsa-rdfc-2019`, `ecdsa-sd-2023`), JWT VCs (`ES256`) |
+
+`res.Secret.PrivateKeyHex` is that scalar. Feed it to the P-256 signer of the
+`credential` module and pin `#key-2` when issuing — the two fragments are
+reserved by the generator, so extra verification methods must use other names.
+
+```go
+import (
+    "github.com/pilacorp/go-credential-sdk/credential/common/signer"
+    "github.com/pilacorp/go-credential-sdk/credential/vc"
+    "github.com/pilacorp/go-credential-sdk/didv2"
+    "github.com/pilacorp/go-credential-sdk/didv2/did"
+)
+
+// 1. Create the DID (submit res.Transaction to the chain as usual).
+res, err := didGenerator.GenerateDID(ctx, did.DIDTypePeople, "", nil)
+if err != nil {
+    return err
+}
+
+// 2. The same scalar as a P-256 signer.
+p256Signer, err := signer.NewP256ProviderFromHex(res.Secret.PrivateKeyHex)
+if err != nil {
+    return err
+}
+
+// 3. Issue a Data Integrity credential bound to #key-2. The resolver must
+//    serve the DID document once the transaction is confirmed.
+cred, err := vc.ParseJSONCredential(rawCredentialJSON) // "issuer": res.DID
+if err != nil {
+    return err
+}
+err = cred.AddProofByProvider(p256Signer,
+    vc.WithVerificationMethodKey("#key-2"),
+    vc.WithResolver(resolver))
+```
+
+For selective disclosure use `vc.ParseECDSASDCredential` and pass mandatory
+paths; for a JWT VC over the same key use `vc.NewJWTCredential` with the
+`signer.NewDefaultProvider(res.Secret.PrivateKeyHex)` (secp256k1, `ES256K`)
+or the P-256 signer above (`ES256`). See the root [README](../README.md) for
+the credential API.
 
 ## Signer Providers
 
