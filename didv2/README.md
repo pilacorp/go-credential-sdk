@@ -643,10 +643,39 @@ err = cred.AddProofByProvider(p256Signer,
 ```
 
 For selective disclosure use `vc.ParseECDSASDCredential` and pass mandatory
-paths; for a JWT VC over the same key use `vc.NewJWTCredential` with the
-`signer.NewDefaultProvider(res.Secret.PrivateKeyHex)` (secp256k1, `ES256K`)
-or the P-256 signer above (`ES256`). See the root [README](../README.md) for
-the credential API.
+paths.
+
+For a JWT VC, **always pin the verification method to the signer's curve**.
+When no key is pinned the SDK picks the highest active `#key-N` in
+`assertionMethod`, which on a generated DID is `#key-2` (P-256). Signing with
+the secp256k1 `NewDefaultProvider` against that header produces `alg: ES256`
+/ `kid: #key-2` over an `ES256K` signature, and verification fails.
+
+```go
+// secp256k1 → #key-1, ES256K
+k1Signer, err := signer.NewDefaultProvider(res.Secret.PrivateKeyHex)
+if err != nil {
+    return err
+}
+jwtCred, err := vc.NewJWTCredential(vcc,
+    vc.WithVerificationMethodKey("#key-1"),
+    vc.WithResolver(resolver))
+if err != nil {
+    return err
+}
+err = jwtCred.AddProofByProvider(k1Signer)
+
+// P-256 → #key-2, ES256 (p256Signer from step 2 above)
+jwtCred, err = vc.NewJWTCredential(vcc,
+    vc.WithVerificationMethodKey("#key-2"),
+    vc.WithResolver(resolver))
+if err != nil {
+    return err
+}
+err = jwtCred.AddProofByProvider(p256Signer)
+```
+
+See the root [README](../README.md) for the credential API.
 
 ## Signer Providers
 
