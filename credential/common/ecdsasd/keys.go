@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"math/big"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
 
 // ephemeralKey is the proof-scoped P-256 key pair; its public half is embedded
@@ -30,6 +32,7 @@ func (e *ephemeralKey) signStatement(statement string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sign statement: %w", err)
 	}
+	s = signer.NormalizeLowS(e.priv.Curve, s)
 	return encodeRS(r, s), nil
 }
 

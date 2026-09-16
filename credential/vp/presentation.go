@@ -170,18 +170,22 @@ func WithDomain(domain string) PresentationOpt {
 }
 
 // WithExpectedChallenge (verifying) requires every verified proof to carry this
-// challenge; a missing or different value fails verification.
+// challenge; a missing or different value fails verification. Implies
+// WithVerifyProof, since the challenge is only trustworthy on a verified proof.
 func WithExpectedChallenge(challenge string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.expectedChallenge = challenge
+		p.isVerifyProof = true
 	}
 }
 
 // WithExpectedDomain (verifying) requires every verified proof to carry this
-// domain; a missing or different value fails verification.
+// domain; a missing or different value fails verification. Implies
+// WithVerifyProof, since the domain is only trustworthy on a verified proof.
 func WithExpectedDomain(domain string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.expectedDomain = domain
+		p.isVerifyProof = true
 	}
 }
 

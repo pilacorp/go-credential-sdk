@@ -144,3 +144,28 @@ func TestWithoutVCValidation_VCsNotChecked(t *testing.T) {
 		t.Fatalf("VC should not have been checked without WithVCValidation: %v", err)
 	}
 }
+
+// aud may be a single string or an array of strings (RFC 7519 §4.1.3).
+func TestAudContains(t *testing.T) {
+	cases := []struct {
+		name string
+		aud  interface{}
+		want bool
+	}{
+		{"string match", "verifier.example", true},
+		{"string mismatch", "other.example", false},
+		{"array contains", []interface{}{"other.example", "verifier.example"}, true},
+		{"array missing", []interface{}{"other.example"}, false},
+		{"array non-string entries", []interface{}{1, nil, "verifier.example"}, true},
+		{"string slice", []string{"verifier.example"}, true},
+		{"nil", nil, false},
+		{"wrong type", 42, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := audContains(tc.aud, "verifier.example"); got != tc.want {
+				t.Fatalf("audContains(%v) = %v, want %v", tc.aud, got, tc.want)
+			}
+		})
+	}
+}

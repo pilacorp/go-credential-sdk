@@ -1,10 +1,14 @@
 package ecdsasd
 
 import (
+	"crypto/elliptic"
 	"crypto/sha256"
 	"fmt"
+	"math/big"
 	"strings"
 	"testing"
+
+	commoncrypto "github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 )
 
 const testProofContext = "https://w3id.org/security/data-integrity/v2"
@@ -106,5 +110,62 @@ func TestHashProofConfig_DoesNotMutateCaller(t *testing.T) {
 	}
 	if _, ok := nested["@vocab"]; !ok || len(nested) != 1 {
 		t.Errorf("nested @context object was mutated: %v", nested)
+	}
+}
+
+// TestEphemeralKey_SignStatementLowS asserts the per-statement ecdsa-sd-2023
+// signatures are low-S normalized, matching the issuer-side P256Provider.
+func TestEphemeralKey_SignStatementLowS(t *testing.T) {
+	eph, err := newEphemeralKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	half := new(big.Int).Rsh(elliptic.P256().Params().N, 1)
+	for i := 0; i < 500; i++ {
+		stmt := fmt.Sprintf("<urn:s%d> <urn:p> \"o\" .", i)
+		sig, err := eph.signStatement(stmt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sig) != 64 {
+			t.Fatalf("sig len = %d, want 64", len(sig))
+		}
+		s := new(big.Int).SetBytes(sig[32:])
+		if s.Cmp(half) > 0 {
+			t.Fatalf("iteration %d: high-S statement signature: s=%x", i, s)
+		}
+		digest := sha256.Sum256([]byte(stmt))
+		if !commoncrypto.VerifyP256(&eph.priv.PublicKey, digest[:], sig) {
+			t.Fatalf("iteration %d: signature does not verify", i)
+		}
+	}
+}
+
+// TestVerifyP256_AcceptsHighS locks in lenient verification for the
+// ecdsa-sd-2023 verify path (FIPS 186-5 §6.4.2 accepts any s in [1, n-1]).
+func TestVerifyP256_AcceptsHighS(t *testing.T) {
+	eph, err := newEphemeralKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt := "<urn:s> <urn:p> \"o\" ."
+	sig, err := eph.signStatement(stmt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := elliptic.P256().Params().N
+	s := new(big.Int).SetBytes(sig[32:])
+	highS := new(big.Int).Sub(n, s)
+	flipped := make([]byte, 64)
+	copy(flipped[:32], sig[:32])
+	highS.FillBytes(flipped[32:])
+
+	digest := sha256.Sum256([]byte(stmt))
+	pub := &eph.priv.PublicKey
+	if !commoncrypto.VerifyP256(pub, digest[:], flipped) {
+		t.Fatal("VerifyP256 must accept high-S signatures")
+	}
+	if !commoncrypto.VerifyECDSA(pub, digest[:], flipped) {
+		t.Fatal("VerifyECDSA must accept high-S signatures")
 	}
 }
