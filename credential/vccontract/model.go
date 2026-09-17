@@ -91,6 +91,12 @@ func (r *VerifyRequest) Validate() error {
 type VerifyByTxRequest struct {
 	// IssuerAddress is the issuer's Ethereum address (0x...). It identifies which
 	// issuer's tree the leaf is expected to belong to.
+	//
+	// Derive it from the VC's own issuer, and check it against the issuers you
+	// trust. Never take it from the proof bundle: the contract lets any address
+	// anchor roots under itself, so anyone can build a tree containing anything,
+	// anchor it under an address they control, and hand over a valid proof. A true
+	// then means only "that address anchored this".
 	IssuerAddress string
 	// TreeIndex is the index of the issuer's tree that anchors this leaf.
 	//
@@ -100,6 +106,12 @@ type VerifyByTxRequest struct {
 	// keep compiling; it is ignored.
 	TreeIndex uint64
 	// Leaf is the VC hash to verify, as a 32-byte hex string (with or without "0x").
+	//
+	// Compute it from the VC being verified. Never take it from the proof bundle:
+	// the tree hashes sibling pairs but not leaves, so an inner node is also just
+	// 32 bytes and folds to the anchored root one step shorter. Verification then
+	// says true, correctly — that value is in the tree — while saying nothing about
+	// any credential.
 	Leaf string
 	// Proof is the ordered list of sibling hashes (each a 32-byte hex string) that,
 	// folded with the leaf, reconstruct the tree root. It is empty for a

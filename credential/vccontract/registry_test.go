@@ -196,3 +196,35 @@ func TestHashPairKnownVector(t *testing.T) {
 		t.Fatal("verifyMerkleProof rejected a proof that folds to the known root")
 	}
 }
+
+// TestAnInnerNodeAlsoFoldsToTheRoot is the reason every caller must compute the
+// leaf itself, and it is a property of the tree rather than a bug to fix.
+//
+// Sibling pairs are hashed and leaves are not, so a leaf and an inner node are
+// both just 32 bytes and the fold cannot tell them apart. An inner node,
+// presented with the rest of its path, therefore reproduces the anchored root —
+// one step shorter, and just as valid to the arithmetic.
+//
+// A verifier that takes `Leaf` on trust can be handed an inner node and told it
+// is the hash of some credential. Verification says true, and it is true: that
+// value is in the tree. It says nothing about the credential. The only thing that
+// ties the answer to a document is the verifier hashing that document itself.
+func TestAnInnerNodeAlsoFoldsToTheRoot(t *testing.T) {
+	t.Parallel()
+
+	a, b, c, d := mkLeaf(0x0a), mkLeaf(0x0b), mkLeaf(0x0c), mkLeaf(0x0d)
+
+	left := hashPair(a, b)
+	right := hashPair(c, d)
+	root := hashPair(left, right)
+
+	// A real leaf with its full path.
+	if got := foldProof(a, [][32]byte{b, right}); got != root {
+		t.Fatalf("a real leaf folded to %x, want the root %x", got, root)
+	}
+
+	// The inner node, with what remains of the path, reaches the same root.
+	if got := foldProof(left, [][32]byte{right}); got != root {
+		t.Fatalf("an inner node folded to %x, want the root %x", got, root)
+	}
+}

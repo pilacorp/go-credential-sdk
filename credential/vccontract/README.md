@@ -60,13 +60,43 @@ authen-service API). They typically come from the authen-service proof endpoint
 `GetVCProofByHash` / `GetVCProofByID`, which returns exactly these fields
 (including `TxHash` for the by-transaction path):
 
-- `IssuerAddress` — issuer's Ethereum address (`0x…`)
+- `IssuerAddress` — issuer's Ethereum address (`0x…`). **Derive it from the VC's
+  own `issuer` and check it against the issuers you trust; never take it from the
+  proof bundle.** See below.
 - `TreeIndex` — **deprecated, ignored.** Kept so callers still setting it compile.
 - `Leaf` — the VC hash (32-byte hex). Compute it yourself from the VC being
   verified; never accept it from the holder. An inner node of the tree also
   folds to the anchored root, so an unverified leaf proves nothing.
 - `Proof` — ordered sibling hashes (32-byte hex each; empty for a single-leaf tree)
 - `TxHash` — hash of the anchoring transaction (32-byte hex) — **`VerifyVCHashByTx` only**
+
+### What this package proves, and what it does not
+
+A `true` means exactly one thing:
+
+> **this issuer address anchored a tree, and this leaf is in it.**
+
+Two of the inputs decide what that sentence is *about*, and neither can be taken
+from whoever is presenting the credential.
+
+**`Leaf` — hash the VC yourself.** The tree hashes sibling pairs but does not hash
+leaves, so a leaf and an inner node are both just 32 bytes and the fold cannot
+tell them apart. An inner node, presented with the rest of its path, reproduces
+the anchored root one step shorter — and verification says true, correctly: that
+value really is in the tree. It says nothing about any credential. Only hashing
+the document in front of you ties the answer to that document.
+
+**`IssuerAddress` — derive it from the VC and check it against issuers you trust.**
+The contract lets any address anchor roots under itself (`anchorTreeRoot` and
+`batchAnchorIssuerTreeRoots` accept the caller as its own issuer). So anyone can
+build a tree containing anything, anchor it under an address they control, and
+hand over a perfectly valid proof. `true` then means "that address anchored this"
+— which is true and worthless. The address has to be the one the VC names, and
+one you recognise.
+
+`TxHash` and `Proof` are safe to take from the bundle: they only decide *where to
+look*. If the leaf and the issuer are established independently, a bundle pointing
+at the wrong transaction simply fails.
 
 ## Usage
 

@@ -1049,6 +1049,33 @@ if errors.Is(err, vccontract.ErrTxNotFound) {
 
 A runnable example lives in [`credential/examples/vccontract/verifybytx`](credential/examples/vccontract/verifybytx).
 
+### What a `true` proves — and what the verifier must supply itself
+
+A `true` means exactly one thing:
+
+> **this issuer address anchored a tree, and this leaf is in it.**
+
+Two of the inputs decide what that sentence is *about*, and neither can be taken
+from whoever is presenting the credential.
+
+- **`Leaf` — hash the VC yourself.** The tree hashes sibling pairs but does not
+  hash leaves, so a leaf and an inner node are both just 32 bytes and the fold
+  cannot tell them apart. An inner node, presented with the rest of its path,
+  reproduces the anchored root one step shorter — and verification says true,
+  correctly: that value really is in the tree. It says nothing about any
+  credential. Only hashing the document in front of you ties the answer to that
+  document.
+- **`IssuerAddress` — derive it from the VC's own `issuer`, and check it against
+  the issuers you trust.** The contract lets any address anchor roots under itself
+  (`anchorTreeRoot` and `batchAnchorIssuerTreeRoots` accept the caller as its own
+  issuer). So anyone can build a tree containing anything, anchor it under an
+  address they control, and hand over a valid proof. `true` then means "that
+  address anchored this" — true, and worthless.
+
+`TxHash` and `Proof` are safe to take from the bundle: they only decide *where to
+look*. With the leaf and the issuer established independently, a bundle pointing
+at the wrong transaction simply fails.
+
 ### Reading the result
 
 `(true, nil)` means the chain attests the leaf. `(false, nil)` means **the chain
