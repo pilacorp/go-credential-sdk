@@ -1072,9 +1072,10 @@ from whoever is presenting the credential.
   address they control, and hand over a valid proof. `true` then means "that
   address anchored this" — true, and worthless.
 
-`TxHash` and `Proof` are safe to take from the bundle: they only decide *where to
-look*. With the leaf and the issuer established independently, a bundle pointing
-at the wrong transaction simply fails.
+`TxHash`, `Proof` and `ContractAddress` are safe to take from the bundle: they
+cannot make a false claim verify. A bad one yields `false`, or an error —
+`ErrTxNotFound` for an unknown hash, `ErrUntrustedContract` for an untrusted
+pin — so cap retries on `ErrTxNotFound` when the hash came from the holder.
 
 ### Reading the result
 
