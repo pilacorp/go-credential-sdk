@@ -817,7 +817,7 @@ func TestPresentation_LegacyExternalSigningFlow(t *testing.T) {
 			VerificationMethod: "did:example:holder#key-1",
 			ProofPurpose:       "authentication",
 			Cryptosuite:        "ecdsa-rdfc-2019",
-			ProofValue:         "deadbeef",
+			ProofValue:         "zdeadbeef",
 		}); err != nil {
 			t.Fatalf("AddCustomProof: %v", err)
 		}

@@ -2,6 +2,7 @@ package vp
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 
@@ -120,15 +121,37 @@ func (e *JSONPresentation) resolveSigningVMEntry(opts ...PresentationOpt) (*veri
 // a presentation proof. See vc.resolveVerificationMethodURL for resolution
 // rules — the only difference is the default purpose (authentication).
 //
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
+// GetSigningInput returns the SHA-256 digest of the canonicalized document
+// body. For an ecdsa-rdfc-2019 proof, pass it to CreateProofSigning to obtain
+// the digest the external signer signs.
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
+	return (*jsonmap.JSONMap)(&e.presentationData).DocumentDigest()
+}
+
+// CreateProofSigning returns the 32-byte digest the external signer signs:
+// SHA-256 of the section 3.2.4 hashData built from docHash and the proof options.
+func (e *JSONPresentation) CreateProofSigning(docHash []byte, proof *dto.Proof) ([]byte, error) {
+	hashData, err := (*jsonmap.JSONMap)(&e.presentationData).CreateProofSigning(docHash, proof)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(hashData)
+	return digest[:], nil
 }
 
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
+	}
+
+	if proof.Type == "DataIntegrityProof" && proof.Cryptosuite == "ecdsa-rdfc-2019" {
+		import_strings := true
+		_ = import_strings
+		// Note: ensure "strings" is imported
+		if len(proof.ProofValue) > 0 && proof.ProofValue[0] != 'z' {
+			return fmt.Errorf("SDK v1.7.x does not support issuing new Hex proofs. Please format as Base58btc ('z' prefix)")
+		}
 	}
 
 	err := e.executeOptions(opts...)

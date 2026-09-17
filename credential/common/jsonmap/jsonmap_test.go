@@ -223,7 +223,7 @@ func nativeBodyHash(t *testing.T, m JSONMap) []byte {
 	if err != nil {
 		t.Fatalf("bodyWithoutProof: %v", err)
 	}
-	canonical, err := processor.CanonicalizeNative(body)
+	canonical, err := processor.Canonicalize(body)
 	if err != nil {
 		t.Fatalf("canonicalizeNative: %v", err)
 	}
@@ -231,7 +231,7 @@ func nativeBodyHash(t *testing.T, m JSONMap) []byte {
 	return h[:]
 }
 
-func TestJSONMap_CanonicalizeNative_CommitsToNumericType(t *testing.T) {
+func TestJSONMap_Canonicalize_CommitsToNumericType(t *testing.T) {
 	numeric := testCredential()
 	stringy := testCredential()
 	stringy["credentialSubject"].(map[string]interface{})["age"] = "30"
@@ -243,11 +243,11 @@ func TestJSONMap_CanonicalizeNative_CommitsToNumericType(t *testing.T) {
 	}
 
 	// The legacy path coerces both to xsd:string and cannot tell them apart.
-	legacyNumeric, err := numeric.Canonicalize()
+	legacyNumeric, err := numeric.LegacyHexCanonicalize()
 	if err != nil {
 		t.Fatalf("Canonicalize(numeric): %v", err)
 	}
-	legacyString, err := stringy.Canonicalize()
+	legacyString, err := stringy.LegacyHexCanonicalize()
 	if err != nil {
 		t.Fatalf("Canonicalize(string): %v", err)
 	}
@@ -257,7 +257,7 @@ func TestJSONMap_CanonicalizeNative_CommitsToNumericType(t *testing.T) {
 }
 
 // Oracle: hand-written canonical N-Quads must be exactly what the signer hashes.
-func TestJSONMap_CanonicalizeNative_MatchesExpectedNQuads(t *testing.T) {
+func TestJSONMap_Canonicalize_MatchesExpectedNQuads(t *testing.T) {
 	const wantNQuads = `<did:example:subject> <https://schema.org/age> "30"^^<http://www.w3.org/2001/XMLSchema#integer> .
 <did:example:subject> <https://schema.org/name> "Alice" .
 <urn:uuid:0f7c2d1e-3b4a-4c5d-8e9f-0a1b2c3d4e5f> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://www.w3.org/2018/credentials#VerifiableCredential> .
@@ -271,7 +271,7 @@ func TestJSONMap_CanonicalizeNative_MatchesExpectedNQuads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bodyWithoutProof: %v", err)
 	}
-	got, err := processor.CanonicalizeNative(body)
+	got, err := processor.Canonicalize(body)
 	if err != nil {
 		t.Fatalf("canonicalizeNative: %v", err)
 	}
@@ -749,11 +749,11 @@ func TestJSONMap_EnsureDataIntegrityContext_GoNativeTypes(t *testing.T) {
 
 // ===== canonicalizeNative: JSON input to canonical N-Quads =====
 
-// TestCanonicalizeNative checks each JSON document against the exact canonical
+// TestCanonicalize checks each JSON document against the exact canonical
 // N-Quads it must produce. Some cases are lossy on purpose: numbers past 2^53
 // round, 2.0 and 2 collapse, null and empty arrays vanish, and arrays lose
 // their order, duplicates and nesting.
-func TestCanonicalizeNative(t *testing.T) {
+func TestCanonicalize(t *testing.T) {
 	cases := []struct {
 		name string
 		doc  string // input JSON document
@@ -1206,7 +1206,7 @@ _:c14n0 <https://www.w3.org/ns/credentials/examples#nested> "value" .
 			if err := json.Unmarshal([]byte(tc.doc), &doc); err != nil {
 				t.Fatalf("test document is not valid JSON: %v", err)
 			}
-			got, err := processor.CanonicalizeNative(doc)
+			got, err := processor.Canonicalize(doc)
 			if err != nil {
 				t.Fatalf("canonicalizeNative: %v", err)
 			}
@@ -1217,8 +1217,8 @@ _:c14n0 <https://www.w3.org/ns/credentials/examples#nested> "value" .
 	}
 }
 
-// TestCanonicalizeNative_Errors covers documents that must produce no bytes.
-func TestCanonicalizeNative_Errors(t *testing.T) {
+// TestCanonicalize_Errors covers documents that must produce no bytes.
+func TestCanonicalize_Errors(t *testing.T) {
 	cases := []struct {
 		name    string
 		doc     string // input JSON document
@@ -1278,7 +1278,7 @@ func TestCanonicalizeNative_Errors(t *testing.T) {
 			if err := json.Unmarshal([]byte(tc.doc), &doc); err != nil {
 				t.Fatalf("test document is not valid JSON: %v", err)
 			}
-			got, err := processor.CanonicalizeNative(doc)
+			got, err := processor.Canonicalize(doc)
 			if err == nil {
 				t.Fatalf("expected an error, got canonical N-Quads:\n%s", got)
 			}
@@ -1292,13 +1292,13 @@ func TestCanonicalizeNative_Errors(t *testing.T) {
 	}
 }
 
-// TestCanonicalizeNative_RejectsNonJSONInput covers the inputs that cannot be
+// TestCanonicalize_RejectsNonJSONInput covers the inputs that cannot be
 // written as JSON: a nil map, and Go types json.Unmarshal never produces.
 // Those panic inside the JSON-LD processor and come back as an error, so
 // callers must round-trip through JSON first, as bodyWithoutProof does.
-func TestCanonicalizeNative_RejectsNonJSONInput(t *testing.T) {
+func TestCanonicalize_RejectsNonJSONInput(t *testing.T) {
 	t.Run("nil document", func(t *testing.T) {
-		got, err := processor.CanonicalizeNative(nil)
+		got, err := processor.Canonicalize(nil)
 		if err == nil {
 			t.Fatalf("expected an error, got canonical N-Quads:\n%s", got)
 		}
@@ -1325,7 +1325,7 @@ func TestCanonicalizeNative_RejectsNonJSONInput(t *testing.T) {
 				"id":    "urn:uuid:subject",
 				"value": tc.value,
 			}
-			got, err := processor.CanonicalizeNative(doc)
+			got, err := processor.Canonicalize(doc)
 			if err == nil {
 				t.Fatalf("expected an error for a %s value, got:\n%s", tc.name, got)
 			}
@@ -1562,5 +1562,20 @@ func TestJSONMap_VerifyECDSA_P256OnlyAppliesToMultibaseProofs(t *testing.T) {
 	legacy.ProofValue = strings.Repeat("00", 64) // hex, not multibase
 	if _, err := m.verifyECDSA(pub, &legacy); err != nil && strings.Contains(err.Error(), "supports P-256 only") {
 		t.Fatalf("hex proof must not hit the P-256-only check, got %v", err)
+	}
+}
+
+// HasMultibaseProof distinguishes Data Integrity proofs ("z" / "u") from
+// legacy hex ones; vc.Hash picks its canonicalizer on it.
+func TestJSONMap_HasMultibaseProof(t *testing.T) {
+	for pv, want := range map[string]bool{"z3abc": true, "u2V0B": true, strings.Repeat("ab", 64): false, "": false} {
+		m := testCredential()
+		m["proof"] = map[string]interface{}{"type": DataIntegrityProof, "proofValue": pv}
+		if got := m.HasMultibaseProof(); got != want {
+			t.Errorf("proofValue %q: HasMultibaseProof = %v, want %v", pv, got, want)
+		}
+	}
+	if (&JSONMap{}).HasMultibaseProof() {
+		t.Error("no proof: HasMultibaseProof must be false")
 	}
 }

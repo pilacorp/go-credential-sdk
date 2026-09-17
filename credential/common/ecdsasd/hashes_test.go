@@ -32,7 +32,7 @@ func testProofConfig(context interface{}) map[string]interface{} {
 // the @context does not define the proof terms. It then hashed sha256(""),
 // leaving proofPurpose, verificationMethod, created and cryptosuite entirely
 // unbound from the signature: an attacker could rewrite them and the proof
-// still verified. CanonicalizeNative fails instead.
+// still verified. Canonicalize fails instead.
 func TestHashProofConfig_RejectsConfigThatCanonicalizesToNothing(t *testing.T) {
 	emptyHash := sha256.Sum256(nil)
 

@@ -130,7 +130,7 @@ func TestW3CRDFCVectors_FixturesPresent(t *testing.T) {
 // Phase 1 (section 3.2.3, Transformation): URDNA2015 canonicalization of the
 // credential without its proof must reproduce the published N-Quads exactly.
 func TestW3CRDFC_Phase1_CanonicalizeDocument(t *testing.T) {
-	got, err := processor.CanonicalizeNative(rdfcUnsignedDoc(t))
+	got, err := processor.Canonicalize(rdfcUnsignedDoc(t))
 	if err != nil {
 		t.Fatalf("canonicalize document: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestW3CRDFC_Phase1_CanonicalizeDocument(t *testing.T) {
 // Phase 2 (section 3.2.5, Proof Configuration): the proof options canonicalize
 // to the published N-Quads.
 func TestW3CRDFC_Phase2_CanonicalizeProofConfig(t *testing.T) {
-	got, err := processor.CanonicalizeNative(rdfcProofConfig(t))
+	got, err := processor.Canonicalize(rdfcProofConfig(t))
 	if err != nil {
 		t.Fatalf("canonicalize proof configuration: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestW3CRDFC_Phase2_CanonicalizeProofConfig(t *testing.T) {
 
 // Phase 3 (section 3.2.4, Hashing): SHA-256 of each canonical form.
 func TestW3CRDFC_Phase3_Hashes(t *testing.T) {
-	docCanon, err := processor.CanonicalizeNative(rdfcUnsignedDoc(t))
+	docCanon, err := processor.Canonicalize(rdfcUnsignedDoc(t))
 	if err != nil {
 		t.Fatalf("canonicalize document: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestW3CRDFC_Phase3_Hashes(t *testing.T) {
 		t.Fatalf("docHash = %s, want %s", got, want)
 	}
 
-	cfgCanon, err := processor.CanonicalizeNative(rdfcProofConfig(t))
+	cfgCanon, err := processor.Canonicalize(rdfcProofConfig(t))
 	if err != nil {
 		t.Fatalf("canonicalize proof configuration: %v", err)
 	}

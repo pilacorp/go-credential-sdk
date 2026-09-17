@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
@@ -1010,7 +1011,7 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 			VerificationMethod: issuerDID + "#key-1",
 			ProofPurpose:       "assertionMethod",
 			Cryptosuite:        "ecdsa-rdfc-2019",
-			ProofValue:         "deadbeef",
+			ProofValue:         "zdeadbeef",
 		})
 		assert.NoError(t, err)
 
@@ -1886,7 +1887,6 @@ func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T
 	assert.Contains(t, err.Error(), "schema is empty")
 }
 
-
 func TestJSONCredentialHash_RequiresProof(t *testing.T) {
 	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
 	cred, err := NewJSONCredential(contents)
@@ -1929,6 +1929,34 @@ func TestJSONCredentialHash_StableAcrossSerializeParseRoundTrip(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, h1, h2, "hash must survive serialize/parse round trip")
+}
+
+// Hash keeps the legacy full-document digest for hex proofs (already anchored
+// on chain) and switches to the Data Integrity canonicalizer for multibase
+// proofs, so the two must differ for a body that carries numbers.
+func TestJSONCredentialHash_SelectsCanonicalizerByProofFormat(t *testing.T) {
+	legacyJSON := []byte(`{
+		"@context": ["https://www.w3.org/ns/credentials/v2"],
+		"id": "urn:uuid:1234",
+		"type": ["VerifiableCredential"],
+		"issuer": "did:example:issuer",
+		"credentialSubject": {"id": "did:example:subject1", "age": 10},
+		"proof": {"type": "DataIntegrityProof", "cryptosuite": "ecdsa-rdfc-2019", "created": "2025-08-05T10:00:00Z", "proofPurpose": "assertionMethod", "verificationMethod": "did:example:issuer#key-1", "proofValue": "abab"}
+	}`)
+	legacy, err := ParseJSONCredential(legacyJSON)
+	assert.NoError(t, err)
+	got, err := legacy.Hash()
+	assert.NoError(t, err)
+	want, err := (*jsonmap.JSONMap)(&legacy.credentialData).CanonicalizeFull()
+	assert.NoError(t, err)
+	assert.Equal(t, hex.EncodeToString(want), got, "hex proof must keep the legacy CanonicalizeFull digest")
+
+	modern := newSignedJSONCredential(t).(*JSONCredential)
+	got, err = modern.Hash()
+	assert.NoError(t, err)
+	legacyDigest, err := (*jsonmap.JSONMap)(&modern.credentialData).CanonicalizeFull()
+	assert.NoError(t, err)
+	assert.NotEqual(t, hex.EncodeToString(legacyDigest), got, "z proof must not use the legacy canonicalizer")
 }
 
 func TestJSONCredentialHash_IndependentOfKeyOrder(t *testing.T) {
@@ -1979,7 +2007,7 @@ func TestJSONCredentialHash_IncludesProof(t *testing.T) {
 
 	proof, ok := m["proof"].(map[string]interface{})
 	assert.True(t, ok, "expected proof to be a map, got %T", m["proof"])
-	proof["proofValue"] = "deadbeef"
+	proof["proofValue"] = "zdeadbeef"
 
 	raw, err := json.Marshal(m)
 	assert.NoError(t, err)

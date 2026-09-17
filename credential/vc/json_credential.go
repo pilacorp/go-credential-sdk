@@ -2,12 +2,14 @@ package vc
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"golang.org/x/sync/errgroup"
@@ -148,15 +150,37 @@ func (e *JSONCredential) resolveSigningVMEntry(opts ...CredentialOpt) (*verifica
 	return verificationmethod.ResolveSigningVM(context.Background(), issuer, "assertionMethod", options.verificationMethodKey, options.resolver)
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
+// GetSigningInput returns the SHA-256 digest of the canonicalized document
+// body. For an ecdsa-rdfc-2019 proof, pass it to CreateProofSigning to obtain
+// the digest the external signer signs.
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.credentialData).Canonicalize()
+	return (*jsonmap.JSONMap)(&e.credentialData).DocumentDigest()
+}
+
+// CreateProofSigning returns the 32-byte digest the external signer signs:
+// SHA-256 of the section 3.2.4 hashData built from docHash and the proof options.
+func (e *JSONCredential) CreateProofSigning(docHash []byte, proof *dto.Proof) ([]byte, error) {
+	hashData, err := (*jsonmap.JSONMap)(&e.credentialData).CreateProofSigning(docHash, proof)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(hashData)
+	return digest[:], nil
 }
 
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
+	}
+
+	if proof.Type == "DataIntegrityProof" && proof.Cryptosuite == "ecdsa-rdfc-2019" {
+		import_strings := true
+		_ = import_strings
+		// Note: ensure "strings" is imported
+		if len(proof.ProofValue) > 0 && proof.ProofValue[0] != 'z' {
+			return fmt.Errorf("SDK v1.7.x does not support issuing new Hex proofs. Please format as Base58btc ('z' prefix)")
+		}
 	}
 
 	err := e.executeOptions(opts...)
@@ -183,15 +207,33 @@ func (e *JSONCredential) Serialize() (any, error) {
 }
 
 // Hash returns the SHA-256 hash (hex-encoded) of the JSON-LD canonicalized (URDNA2015)
-// full credential, including the proof field. The credential must have proof before hashing.
+// full credential, including the proof field — the identity of a signed
+// credential (Merkle leaf). A multibase proof ("z" / "u", Data Integrity) is
+// hashed with processor.Canonicalize; a legacy hex proof keeps CanonicalizeFull
+// so digests already anchored on chain do not change.
 func (e *JSONCredential) Hash() (string, error) {
 	if e.credentialData["proof"] == nil {
 		return "", fmt.Errorf("credential must have proof before hashing")
 	}
+	m := (*jsonmap.JSONMap)(&e.credentialData)
 
-	digest, err := (*jsonmap.JSONMap)(&e.credentialData).CanonicalizeFull()
-	if err != nil {
-		return "", fmt.Errorf("failed to canonicalize credential: %w", err)
+	var digest []byte
+	if m.HasMultibaseProof() {
+		full, err := m.ToMap()
+		if err != nil {
+			return "", err
+		}
+		canonical, err := processor.Canonicalize(full)
+		if err != nil {
+			return "", fmt.Errorf("failed to canonicalize credential: %w", err)
+		}
+		sum := sha256.Sum256(canonical)
+		digest = sum[:]
+	} else {
+		var err error
+		if digest, err = m.CanonicalizeFull(); err != nil {
+			return "", fmt.Errorf("failed to canonicalize credential: %w", err)
+		}
 	}
 
 	return hex.EncodeToString(digest), nil

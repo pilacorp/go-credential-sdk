@@ -69,8 +69,12 @@ func (m *JSONMap) ToMap() (map[string]interface{}, error) {
 	return data, nil
 }
 
-// Canonicalize canonicalizes the JSONMap for signing or verification, excluding the proof field.
-func (m *JSONMap) Canonicalize() ([]byte, error) {
+// LegacyHexCanonicalize returns the digest hex proofs from SDK <= v1.7.0 signed:
+// SHA-256 of the canonicalized body with the proof removed. It does not cover
+// any proof option (challenge, domain, created, ...), so it must only be used
+// to verify those proofs, never to issue new ones — ecdsaHashData is the Data
+// Integrity replacement.
+func (m *JSONMap) LegacyHexCanonicalize() ([]byte, error) {
 	mCopy := make(JSONMap)
 	for k, v := range *m {
 		if k != proofField {
@@ -96,8 +100,21 @@ func (m *JSONMap) Canonicalize() ([]byte, error) {
 	return processor.ComputeDigest(canonicalDoc)
 }
 
+// HasMultibaseProof reports whether the first proof carries a multibase
+// proofValue (base58btc "z" or base64url "u"), i.e. a Data Integrity proof
+// rather than a legacy hex one.
+func (m *JSONMap) HasMultibaseProof() bool {
+	proof, ok := m.getFirstProof().(map[string]interface{})
+	if !ok {
+		return false
+	}
+	pv, _ := proof["proofValue"].(string)
+	return strings.HasPrefix(pv, multibaseBase58BTCPrefix) || strings.HasPrefix(pv, "u")
+}
+
 // CanonicalizeFull canonicalizes the full JSONMap, including the proof field,
-// and returns its SHA-256 digest. Unlike Canonicalize, nothing is excluded.
+// with the legacy canonicalizer and returns its SHA-256 digest. Unlike
+// LegacyHexCanonicalize, nothing is excluded.
 func (m *JSONMap) CanonicalizeFull() ([]byte, error) {
 	encoded, err := json.Marshal(m)
 	if err != nil {
@@ -364,7 +381,12 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, err
 		return m.verifyECDSASpecConformant(pub, proof)
 	}
 
-	doc, err := m.Canonicalize()
+	// Legacy hex proofs (SDK <= v1.7.0) sign the body only, so challenge and
+	// domain are not covered by the signature; verifiers must prevent replay
+	// themselves. TODO(after the 14-day grace period): reject hex proofs that
+	// carry challenge or domain.
+
+	doc, err := m.LegacyHexCanonicalize()
 	if err != nil {
 		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
 	}
@@ -421,25 +443,11 @@ func concatHashData(proofConfigHash, transformedDocumentHash [sha256.Size]byte) 
 // ecdsaHashData builds the 64-byte hashData of section 3.2.4,
 // proofConfigHash || transformedDocumentHash, for both signing and verifying.
 func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
-	cfg, err := m.ecdsaProofConfig(proof)
+	docHash, err := m.DocumentDigest()
 	if err != nil {
-		return nil, fmt.Errorf("failed to build proof configuration: %w", err)
+		return nil, fmt.Errorf("failed to hash document: %w", err)
 	}
-	cfgCanonical, err := processor.CanonicalizeNative(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to canonicalize proof configuration: %w", err)
-	}
-
-	body, err := m.bodyWithoutProof()
-	if err != nil {
-		return nil, fmt.Errorf("failed to copy document body: %w", err)
-	}
-	bodyCanonical, err := processor.CanonicalizeNative(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
-	}
-
-	return concatHashData(sha256.Sum256(cfgCanonical), sha256.Sum256(bodyCanonical)), nil
+	return m.CreateProofSigning(docHash, proof)
 }
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,
@@ -755,4 +763,38 @@ func jwsKid(jws string) (string, bool) {
 		return "", false
 	}
 	return hdr.Kid, hdr.Kid != ""
+}
+
+// DocumentDigest returns the SHA-256 digest of the canonicalized document body.
+func (m *JSONMap) DocumentDigest() ([]byte, error) {
+	body, err := m.bodyWithoutProof()
+	if err != nil {
+		return nil, err
+	}
+	bodyCanonical, err := processor.Canonicalize(body)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(bodyCanonical)
+	return digest[:], nil
+}
+
+// CreateProofSigning builds the 64-byte hashData of section 3.2.4 from an
+// already computed document digest (GetSigningInput) and the proof options.
+// The signer must sign SHA-256(hashData), not hashData itself.
+func (m *JSONMap) CreateProofSigning(docHash []byte, proof *dto.Proof) ([]byte, error) {
+	if len(docHash) != sha256.Size {
+		return nil, fmt.Errorf("document digest must be %d bytes, got %d", sha256.Size, len(docHash))
+	}
+	cfg, err := m.ecdsaProofConfig(proof)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build proof configuration: %w", err)
+	}
+	cfgCanonical, err := processor.Canonicalize(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to canonicalize proof configuration: %w", err)
+	}
+	var docHash32 [sha256.Size]byte
+	copy(docHash32[:], docHash)
+	return concatHashData(sha256.Sum256(cfgCanonical), docHash32), nil
 }
