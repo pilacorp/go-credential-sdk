@@ -85,8 +85,6 @@ func GenerateDualCurveKeyPair() (*KeyPair, error) {
 // The metadata parameter contains additional key-value pairs for the document.
 // The extraVMs parameter publishes extra verification methods with the id and
 // purposes each spec sets; "#key-1" is reserved for didPublicKey.
-//
-// Returns a DIDDocument that can be hashed and included in blockchain transactions.
 func GenerateDIDDocument(
 	didPublicKey, did, hash, issuerDID string,
 	didType DIDType,
@@ -105,7 +103,10 @@ func GenerateDIDDocument(
 	}
 
 	specs := append([]VerificationMethodSpec{NewSpec(NewSecp256k1VM(did, "#key-1", didPublicKey))}, extraVMs...)
-	vms, authentication, assertionMethod := NewVerificationMethods(specs...)
+	vms, authentication, assertionMethod, err := NewVerificationMethods(specs...)
+	if err != nil {
+		return nil
+	}
 
 	return &DIDDocument{
 		Context:            documentContext(vms),
@@ -133,10 +134,11 @@ func NewSpec(vm VerificationMethod, purposes ...VerificationPurpose) Verificatio
 }
 
 // NewVerificationMethods splits complete specs into the document's verification
-// methods and its two relationship arrays.
+// methods and its two relationship arrays. It rejects any purpose outside
+// supportedPurposes instead of silently dropping the key from both arrays.
 func NewVerificationMethods(
 	specs ...VerificationMethodSpec,
-) (vms []VerificationMethod, authentication, assertionMethod []string) {
+) (vms []VerificationMethod, authentication, assertionMethod []string, err error) {
 	vms = make([]VerificationMethod, 0, len(specs))
 	authentication = make([]string, 0, len(specs))
 	assertionMethod = make([]string, 0, len(specs))
@@ -150,11 +152,13 @@ func NewVerificationMethods(
 				authentication = append(authentication, s.VM.Id)
 			case PurposeAssertionMethod:
 				assertionMethod = append(assertionMethod, s.VM.Id)
+			default:
+				return nil, nil, nil, fmt.Errorf("verification method %s: unsupported purpose: %q", s.VM.Id, p)
 			}
 		}
 	}
 
-	return vms, authentication, assertionMethod
+	return vms, authentication, assertionMethod, nil
 }
 
 // documentContext builds @context: DID Core 1.0 §6.1 requires did/v1 first,

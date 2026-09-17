@@ -184,30 +184,6 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 	return true, nil
 }
 
-// proofConfigMapFor builds the canonical proof-config map (without proofValue)
-// used for the proof hash. Issue and verify must build it identically.
-//
-// Data Integrity § 3.2.5: the configuration holds every proof option except
-// proofValue. challenge and domain are optional options, so they are included
-// exactly when the proof carries them — adding an empty one would change the
-// hash for proofs that never had it.
-func proofConfigMapFor(p dto.Proof) map[string]interface{} {
-	cfg := map[string]interface{}{
-		"type":               p.Type,
-		"created":            p.Created,
-		"verificationMethod": p.VerificationMethod,
-		"proofPurpose":       p.ProofPurpose,
-		"cryptosuite":        p.Cryptosuite,
-	}
-	if p.Challenge != "" {
-		cfg["challenge"] = p.Challenge
-	}
-	if p.Domain != "" {
-		cfg["domain"] = p.Domain
-	}
-	return cfg
-}
-
 func (m *JSONMap) findECDSASDProof() (dto.Proof, bool) {
 	proof, err := ParseRawToProof(m.getFirstProof())
 	if err != nil {

@@ -90,7 +90,10 @@ func TestNewVerificationMethods(t *testing.T) {
 	auth := testP256VM(t, testDID, "#auth")
 
 	t.Run("keeps order and ids", func(t *testing.T) {
-		vms, _, _ := NewVerificationMethods(NewSpec(key1), NewSpec(sign), NewSpec(auth))
+		vms, _, _, err := NewVerificationMethods(NewSpec(key1), NewSpec(sign), NewSpec(auth))
+		if err != nil {
+			t.Fatalf("NewVerificationMethods: %v", err)
+		}
 
 		want := []string{testDID + "#key-1", testDID + "#sign", testDID + "#auth"}
 		for i, id := range want {
@@ -101,11 +104,14 @@ func TestNewVerificationMethods(t *testing.T) {
 	})
 
 	t.Run("routes purposes", func(t *testing.T) {
-		_, authentication, assertionMethod := NewVerificationMethods(
+		_, authentication, assertionMethod, err := NewVerificationMethods(
 			NewSpec(key1),
 			NewSpec(sign, PurposeAssertionMethod),
 			NewSpec(auth, PurposeAuthentication),
 		)
+		if err != nil {
+			t.Fatalf("NewVerificationMethods: %v", err)
+		}
 
 		// key-1 lists no purpose, so it joins both arrays.
 		if want := []string{testDID + "#key-1", testDID + "#auth"}; !slices.Equal(authentication, want) {
@@ -117,7 +123,10 @@ func TestNewVerificationMethods(t *testing.T) {
 	})
 
 	t.Run("arrays do not share memory", func(t *testing.T) {
-		_, authentication, assertionMethod := NewVerificationMethods(NewSpec(key1))
+		_, authentication, assertionMethod, err := NewVerificationMethods(NewSpec(key1))
+		if err != nil {
+			t.Fatalf("NewVerificationMethods: %v", err)
+		}
 
 		authentication[0] = "mutated"
 		if assertionMethod[0] == "mutated" {
@@ -125,13 +134,49 @@ func TestNewVerificationMethods(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects unsupported purpose", func(t *testing.T) {
+		vms, authentication, assertionMethod, err := NewVerificationMethods(
+			NewSpec(key1),
+			NewSpec(sign, VerificationPurpose("keyAgreement")),
+		)
+		if err == nil {
+			t.Fatal("expected error for unsupported purpose, got nil")
+		}
+		if !strings.Contains(err.Error(), "unsupported purpose") || !strings.Contains(err.Error(), "keyAgreement") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if vms != nil || authentication != nil || assertionMethod != nil {
+			t.Fatalf("expected nil results on error, got %v / %v / %v", vms, authentication, assertionMethod)
+		}
+	})
+
 	t.Run("empty", func(t *testing.T) {
-		vms, authentication, assertionMethod := NewVerificationMethods()
+		vms, authentication, assertionMethod, err := NewVerificationMethods()
+		if err != nil {
+			t.Fatalf("NewVerificationMethods: %v", err)
+		}
 
 		if len(vms) != 0 || len(authentication) != 0 || len(assertionMethod) != 0 {
 			t.Fatalf("expected empty results, got %v / %v / %v", vms, authentication, assertionMethod)
 		}
 	})
+}
+
+// An unsupported purpose cannot be published, so the generator yields nil and
+// Validate refuses it before the document is hashed.
+func TestGenerateDIDDocument_UnsupportedPurpose(t *testing.T) {
+	doc := GenerateDIDDocument("0x02aa", testDID, "", testIssuer, DIDTypePeople, nil,
+		NewSpec(testP256VM(t, testDID, "#key-2"), VerificationPurpose("keyAgreement")))
+
+	if doc != nil {
+		t.Fatalf("expected nil document, got %+v", doc)
+	}
+	if err := doc.Validate(); err == nil {
+		t.Fatal("Validate should reject a nil document")
+	}
+	if _, err := doc.Hash(); err == nil {
+		t.Fatal("Hash should reject a nil document")
+	}
 }
 
 // A single-VM document feeds DocHash: its serialization must not drift.
