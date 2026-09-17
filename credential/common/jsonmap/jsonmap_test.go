@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
@@ -502,13 +503,14 @@ func TestJSONMap_ECDSAProofConfig_NormalizesContextTypes(t *testing.T) {
 	}
 }
 
-// TestECDSAProofConfig_MatchesSDOptionSet pins the shared-source guarantee in the
-// doc comment: both cryptosuites hash the same option set because both read it
-// from proofConfigMapFor. A divergence here means an ecdsa-sd-2023 proof and an
-// ecdsa-rdfc-2019 proof no longer commit to the same options.
-func TestJSONMap_ECDSAProofConfig_MatchesSDOptionSet(t *testing.T) {
+// TestJSONMap_ECDSAProofConfig_IsProofMinusProofValue pins Data Integrity § 4.4:
+// the configuration is a copy of the whole proof object with proofValue
+// removed. Both cryptosuites read it from ecdsaProofConfig, so this is also
+// the shared-option-set guarantee for ecdsa-sd-2023.
+func TestJSONMap_ECDSAProofConfig_IsProofMinusProofValue(t *testing.T) {
 	m := JSONMap{"@context": proofConfigTestContext}
 	proof := testProof()
+	proof.ProofValue = "zSHOULD-BE-REMOVED"
 
 	cfg, err := m.ecdsaProofConfig(proof)
 	if err != nil {
@@ -516,8 +518,41 @@ func TestJSONMap_ECDSAProofConfig_MatchesSDOptionSet(t *testing.T) {
 	}
 	delete(cfg, "@context") // the SD path attaches the context further down
 
-	if want := proofConfigMapFor(*proof); !reflect.DeepEqual(cfg, want) {
-		t.Errorf("proof config = %#v, want the shared option set %#v", cfg, want)
+	want := proof.ToMap()
+	delete(want, "proofValue")
+	if !reflect.DeepEqual(cfg, want) {
+		t.Errorf("proof config = %#v, want the proof minus proofValue %#v", cfg, want)
+	}
+}
+
+// Every § 2.1 property and every extra property the signer put on the proof
+// is part of the configuration. A whitelist here would silently un-sign them
+// and break proofs issued by other implementations.
+func TestJSONMap_ECDSAProofConfig_KeepsEveryProofProperty(t *testing.T) {
+	m := JSONMap{"@context": proofConfigTestContext}
+	proof := testProof()
+	proof.Id = "urn:uuid:proof-1"
+	proof.Expires = "2030-01-01T00:00:00Z"
+	proof.Nonce = "n-1"
+	proof.PreviousProof = dto.StringOrStrings{"urn:uuid:proof-0"}
+	proof.Challenge = "c-1"
+	proof.Domain = "d.example"
+	proof.ProofValue = "zSHOULD-BE-REMOVED"
+	proof.Extra = map[string]interface{}{"customTerm": "custom-value"}
+
+	cfg, err := m.ecdsaProofConfig(proof)
+	if err != nil {
+		t.Fatalf("ecdsaProofConfig: %v", err)
+	}
+
+	gotKeys := make([]string, 0, len(cfg))
+	for k := range cfg {
+		gotKeys = append(gotKeys, k)
+	}
+	sort.Strings(gotKeys)
+	wantKeys := []string{"@context", "challenge", "created", "cryptosuite", "customTerm", "domain", "expires", "id", "nonce", "previousProof", "proofPurpose", "type", "verificationMethod"}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Errorf("keys = %v, want %v", gotKeys, wantKeys)
 	}
 }
 
@@ -1363,5 +1398,169 @@ func TestJSONMap_ProofConfig_OmitsEmptyChallengeAndDomain(t *testing.T) {
 		if _, has := cfg[k]; has {
 			t.Fatalf("empty %s must not be in the proof configuration", k)
 		}
+	}
+}
+
+// signProofObject signs an arbitrary proof object the way AddECDSAProof does,
+// so tests can sign proofs carrying properties the SDK never sets itself.
+func signProofObject(t *testing.T, m *JSONMap, sp signer.SignerProvider, proofObj map[string]interface{}) {
+	t.Helper()
+	m.ensureDataIntegrityContext()
+	proof := dto.ProofFromMap(proofObj)
+	hashData, err := m.ecdsaHashData(&proof)
+	if err != nil {
+		t.Fatalf("ecdsaHashData: %v", err)
+	}
+	digest := sha256.Sum256(hashData)
+	sig, err := sp.Sign(digest[:])
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	proofObj["proofValue"] = verificationmethod.EncodeMultibaseKey(sig)
+	(*m)["proof"] = proofObj
+}
+
+// Standard optional properties the SDK does not set itself (id, expires,
+// nonce, previousProof) are defined by the Data Integrity context and must be
+// signed: a proof carrying them verifies, and editing or stripping one fails.
+func TestJSONMap_VerifyECDSA_SignsStandardOptionalProperties(t *testing.T) {
+	sp, pub := testKeyPair(t)
+	m := testCredential()
+	signProofObject(t, &m, sp, map[string]interface{}{
+		"type":               DataIntegrityProof,
+		"cryptosuite":        ECDSARDFC2019,
+		"created":            "2024-01-01T00:00:00Z",
+		"expires":            "2030-01-01T00:00:00Z",
+		"verificationMethod": "did:example:issuer#key-1",
+		"proofPurpose":       "assertionMethod",
+		"id":                 "urn:uuid:proof-1",
+		"nonce":              "n-1",
+		"previousProof":      "urn:uuid:proof-0",
+	})
+
+	proof, err := ParseRawToProof(m.getFirstProof())
+	if err != nil {
+		t.Fatalf("parse proof: %v", err)
+	}
+	if proof.Expires == "" || proof.Nonce == "" || proof.Id == "" || len(proof.PreviousProof) != 1 {
+		t.Fatalf("ParseRawToProof dropped standard properties: %+v", proof)
+	}
+	if ok, err := m.verifyECDSA(pub, &proof); err != nil || !ok {
+		t.Fatalf("untampered proof failed: ok=%v err=%v", ok, err)
+	}
+
+	tampered := proof
+	tampered.Expires = "2099-01-01T00:00:00Z"
+	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+		t.Fatal("changed expires verified successfully")
+	}
+	tampered = proof
+	tampered.Nonce = ""
+	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+		t.Fatal("stripped nonce verified successfully")
+	}
+}
+
+// A property outside § 2.1 is signed too, as long as the document's @context
+// defines it (§ 3.1 lets cryptosuites add properties). It lives in Proof.Extra
+// and must survive parsing, hashing, and re-serialization.
+func TestJSONMap_VerifyECDSA_SignsExtraProofProperty(t *testing.T) {
+	sp, pub := testKeyPair(t)
+	m := testCredential()
+	m["@context"] = append(m["@context"].([]interface{}), map[string]interface{}{
+		"customTerm": "https://example.org/vocab#customTerm",
+	})
+	signProofObject(t, &m, sp, map[string]interface{}{
+		"type":               DataIntegrityProof,
+		"cryptosuite":        ECDSARDFC2019,
+		"created":            "2024-01-01T00:00:00Z",
+		"verificationMethod": "did:example:issuer#key-1",
+		"proofPurpose":       "assertionMethod",
+		"customTerm":         "custom-value",
+	})
+
+	proof, err := ParseRawToProof(m.getFirstProof())
+	if err != nil {
+		t.Fatalf("parse proof: %v", err)
+	}
+	if proof.Extra["customTerm"] != "custom-value" {
+		t.Fatalf("ParseRawToProof dropped customTerm: %+v", proof)
+	}
+	if ok, err := m.verifyECDSA(pub, &proof); err != nil || !ok {
+		t.Fatalf("untampered proof failed: ok=%v err=%v", ok, err)
+	}
+
+	// Re-serializing through setSingleProof must keep the property, or a
+	// derived / re-attached proof would no longer verify.
+	m.setSingleProof(proof)
+	if proofObject(t, m)["customTerm"] != "custom-value" {
+		t.Fatalf("setSingleProof dropped customTerm: %v", proofObject(t, m))
+	}
+
+	tampered := proof
+	tampered.Extra = map[string]interface{}{"customTerm": "other"}
+	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+		t.Fatal("changed extra property verified successfully")
+	}
+	tampered = proof
+	tampered.Extra = nil
+	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+		t.Fatal("stripped extra property verified successfully")
+	}
+}
+
+// A proof property the @context does not define is rejected by JSON-LD safe
+// mode, never silently dropped from the hash.
+func TestJSONMap_VerifyECDSA_RejectsUndefinedProofTerm(t *testing.T) {
+	_, pub := testKeyPair(t)
+	m := testCredential()
+	m.ensureDataIntegrityContext()
+	m["proof"] = map[string]interface{}{
+		"type":               DataIntegrityProof,
+		"cryptosuite":        ECDSARDFC2019,
+		"created":            "2024-01-01T00:00:00Z",
+		"verificationMethod": "did:example:issuer#key-1",
+		"proofPurpose":       "assertionMethod",
+		"proofValue":         "z" + strings.Repeat("1", 87),
+		"undefinedTerm":      "x",
+	}
+
+	proof, err := ParseRawToProof(m.getFirstProof())
+	if err != nil {
+		t.Fatalf("parse proof: %v", err)
+	}
+	if _, err := m.verifyECDSA(pub, &proof); err == nil {
+		t.Fatal("expected an error for a proof term the @context does not define")
+	}
+}
+
+// The P-256-only rule applies to spec-conformant ("z") proofs. Legacy hex
+// proofs issued by SDK <= v1.7.0 are secp256k1 and also carry cryptosuite
+// ecdsa-rdfc-2019, so the check must not reach them.
+func TestJSONMap_VerifyECDSA_P256OnlyAppliesToMultibaseProofs(t *testing.T) {
+	sp, _ := testKeyPair(t)
+	m := testCredential()
+	if err := (&m).AddECDSAProof(sp, "did:example:issuer#key-1", "assertionMethod"); err != nil {
+		t.Fatalf("AddECDSAProof error: %v", err)
+	}
+	proof, err := ParseRawToProof(m.getFirstProof())
+	if err != nil {
+		t.Fatalf("parse proof: %v", err)
+	}
+
+	secp, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("secp256k1 key: %v", err)
+	}
+	pub := &secp.PublicKey
+
+	if _, err := m.verifyECDSA(pub, &proof); err == nil || !strings.Contains(err.Error(), "supports P-256 only") {
+		t.Fatalf("z proof with secp256k1 key: want P-256-only error, got %v", err)
+	}
+
+	legacy := proof
+	legacy.ProofValue = strings.Repeat("00", 64) // hex, not multibase
+	if _, err := m.verifyECDSA(pub, &legacy); err != nil && strings.Contains(err.Error(), "supports P-256 only") {
+		t.Fatalf("hex proof must not hit the P-256-only check, got %v", err)
 	}
 }

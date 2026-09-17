@@ -70,93 +70,18 @@ func SerializeContexts(contexts []interface{}) ([]interface{}, error) {
 	return validated, nil
 }
 
-// serializeProofs converts a slice of Proof structs to a JSON-LD compatible format.
+// SerializeProofs converts a slice of Proof structs to a JSON-LD compatible
+// format: a single object for one proof, an array otherwise.
 func SerializeProofs(proofs []dto.Proof) interface{} {
 	if len(proofs) == 0 {
 		return nil
 	}
 	result := make([]JSONMap, len(proofs))
 	for i, proof := range proofs {
-		proofMap := make(JSONMap)
-		if proof.Type != "" {
-			proofMap[jsonFldType] = proof.Type
-		}
-		if proof.Created != "" {
-			proofMap["created"] = proof.Created
-		}
-		if proof.VerificationMethod != "" {
-			proofMap["verificationMethod"] = proof.VerificationMethod
-		}
-		if proof.ProofPurpose != "" {
-			proofMap["proofPurpose"] = proof.ProofPurpose
-		}
-		if proof.ProofValue != "" {
-			proofMap["proofValue"] = proof.ProofValue
-		}
-		if proof.Cryptosuite != "" {
-			proofMap["cryptosuite"] = proof.Cryptosuite
-		}
-		if proof.JWS != "" {
-			proofMap["jws"] = proof.JWS
-		}
-		if proof.Challenge != "" {
-			proofMap["challenge"] = proof.Challenge
-		}
-		if proof.Domain != "" {
-			proofMap["domain"] = proof.Domain
-		}
-		result[i] = proofMap
+		result[i] = proof.ToMap()
 	}
 	if len(result) == 1 {
 		return result[0]
 	}
 	return result
-}
-
-// parseProof converts a single proof map into a Proof struct.
-func ParseProof(proof map[string]interface{}) (dto.Proof, error) {
-	var result dto.Proof
-	if t, ok := proof["type"].(string); ok && t != "" {
-		result.Type = t
-	} else {
-		return dto.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing type field")
-	}
-	if created, ok := proof["created"].(string); ok && created != "" {
-		result.Created = created
-	} else {
-		return dto.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing created field")
-	}
-	if vm, ok := proof["verificationMethod"].(string); ok && vm != "" {
-		result.VerificationMethod = vm
-	} else {
-		return dto.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing verificationMethod field")
-	}
-	if pp, ok := proof["proofPurpose"].(string); ok && pp != "" {
-		result.ProofPurpose = pp
-	} else {
-		return dto.Proof{}, fmt.Errorf("failed to parse proof: invalid or missing proofPurpose field")
-	}
-	if pv, ok := proof["proofValue"].(string); ok {
-		result.ProofValue = pv
-	}
-	if jws, ok := proof["jws"].(string); ok {
-		result.JWS = jws
-	}
-	if disclosures, ok := proof["disclosures"].([]interface{}); ok {
-		for _, d := range disclosures {
-			if ds, ok := d.(string); ok {
-				result.Disclosures = append(result.Disclosures, ds)
-			}
-		}
-	}
-	if cs, ok := proof["cryptosuite"].(string); ok {
-		result.Cryptosuite = cs
-	}
-	if ch, ok := proof["challenge"].(string); ok {
-		result.Challenge = ch
-	}
-	if dm, ok := proof["domain"].(string); ok {
-		result.Domain = dm
-	}
-	return result, nil
 }

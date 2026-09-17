@@ -3,6 +3,7 @@ package jsonmap
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -348,9 +349,18 @@ func didFromVMURL(vm string) string {
 }
 
 // verifyECDSA verifies an ECDSA-signed JSONMap. A "z" prefix selects the
-// spec-conformant path, anything else the legacy hex path.
+// spec-conformant path, anything else the legacy hex path (secp256k1 proofs
+// issued by SDK <= v1.7.0, which also carry cryptosuite ecdsa-rdfc-2019).
 func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, error) {
 	if strings.HasPrefix(proof.ProofValue, multibaseBase58BTCPrefix) {
+		// Only the P-256 profile of ecdsa-rdfc-2019 is implemented; reject
+		// other curves up front so a P-384 key gets a clear error, not a
+		// length mismatch.
+		if pub.Curve != elliptic.P256() {
+			return false, fmt.Errorf(
+				"ecdsa-rdfc-2019: verification method %q uses curve %q, but this SDK supports P-256 only",
+				proof.VerificationMethod, pub.Curve.Params().Name)
+		}
 		return m.verifyECDSASpecConformant(pub, proof)
 	}
 
@@ -364,9 +374,11 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, err
 
 // ===== ecdsa-rdfc-2019 (Data Integrity ECDSA Cryptosuites v1.0, section 3.2) =====
 
-// ecdsaProofConfig builds the proof configuration of section 3.2.5: the proof
-// options without proofValue, plus the document's @context. Fields come from
-// proofConfigMapFor so both cryptosuites hash the same option set.
+// ecdsaProofConfig builds the proof configuration of section 3.2.5: a copy of
+// the whole proof object with proofValue removed (Data Integrity § 4.4), plus
+// the document's @context. No property is filtered here — every option the
+// signer put on the proof, including ones this SDK does not model, is part of
+// the hash; the document's @context decides which terms are meaningful.
 func (m *JSONMap) ecdsaProofConfig(proof *dto.Proof) (map[string]interface{}, error) {
 	if proof == nil {
 		return nil, fmt.Errorf("proof is nil")
@@ -377,7 +389,11 @@ func (m *JSONMap) ecdsaProofConfig(proof *dto.Proof) (map[string]interface{}, er
 		return nil, fmt.Errorf("document is missing the @context needed to canonicalize the proof configuration")
 	}
 
-	cfg := JSONMap(proofConfigMapFor(*proof))
+	cfg := JSONMap(proof.ToMap())
+	// The signature cannot cover itself: proofValue per § 3.2.5, and jws, the
+	// signature carrier of JsonWebSignature2020 proofs.
+	delete(cfg, "proofValue")
+	delete(cfg, "jws")
 	cfg["@context"] = ctx
 
 	// Round-trip through JSON: normalizes @context to plain JSON types and
@@ -423,7 +439,6 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
 		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
 	}
 
-	// Steps 2, 1 and 3.
 	return concatHashData(sha256.Sum256(cfgCanonical), sha256.Sum256(bodyCanonical)), nil
 }
 
@@ -483,7 +498,6 @@ func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, 
 	if err != nil {
 		return false, err
 	}
-
 	ok, err := m.verifyECDSA(pub, proof)
 	if err != nil || !ok {
 		return ok, err
@@ -601,48 +615,18 @@ func (m *JSONMap) appendProof(p dto.Proof) {
 	}
 }
 
-// ParseRawToProof converts a JSON object to a Proof struct.
+// ParseRawToProof converts a JSON proof object to a Proof struct. Properties
+// the struct has no field for are kept in Proof.Extra so the proof
+// configuration hashed at verification time matches what the signer hashed.
 func ParseRawToProof(proof interface{}) (dto.Proof, error) {
-	var result dto.Proof
 	if proof == nil {
-		return result, fmt.Errorf("JSONMap has no proof")
+		return dto.Proof{}, fmt.Errorf("JSONMap has no proof")
 	}
 	proofMap, ok := proof.(map[string]interface{})
 	if !ok {
-		return result, fmt.Errorf("invalid proof format: expected map[string]interface{}, got %T", proof)
+		return dto.Proof{}, fmt.Errorf("invalid proof format: expected map[string]interface{}, got %T", proof)
 	}
-
-	if t, ok := proofMap["type"].(string); ok {
-		result.Type = t
-	}
-	if created, ok := proofMap["created"].(string); ok {
-		result.Created = created
-	}
-	if purpose, ok := proofMap["proofPurpose"].(string); ok {
-		result.ProofPurpose = purpose
-	}
-	if vm, ok := proofMap["verificationMethod"].(string); ok {
-		result.VerificationMethod = vm
-	}
-	if pv, ok := proofMap["proofValue"].(string); ok {
-		result.ProofValue = pv
-	}
-	if pv, ok := proofMap["cryptosuite"].(string); ok {
-		result.Cryptosuite = pv
-	}
-	if jws, ok := proofMap["jws"].(string); ok {
-		result.JWS = jws
-	}
-	// Presentation proof options (VC Data Model 2.0 § 5.2): part of the proof
-	// configuration, so they must survive parsing or the proof hash changes.
-	if c, ok := proofMap["challenge"].(string); ok {
-		result.Challenge = c
-	}
-	if d, ok := proofMap["domain"].(string); ok {
-		result.Domain = d
-	}
-
-	return result, nil
+	return dto.ProofFromMap(proofMap), nil
 }
 
 // signerDIDFromBody returns the DID of the entity that signed the JSONMap.
