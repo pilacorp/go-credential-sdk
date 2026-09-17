@@ -62,7 +62,9 @@ authen-service API). They typically come from the authen-service proof endpoint
 
 - `IssuerAddress` — issuer's Ethereum address (`0x…`)
 - `TreeIndex` — **deprecated, ignored.** Kept so callers still setting it compile.
-- `Leaf` — the VC hash (32-byte hex)
+- `Leaf` — the VC hash (32-byte hex). Compute it yourself from the VC being
+  verified; never accept it from the holder. An inner node of the tree also
+  folds to the anchored root, so an unverified leaf proves nothing.
 - `Proof` — ordered sibling hashes (32-byte hex each; empty for a single-leaf tree)
 - `TxHash` — hash of the anchoring transaction (32-byte hex) — **`VerifyVCHashByTx` only**
 
