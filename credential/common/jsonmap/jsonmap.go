@@ -71,8 +71,9 @@ func (m *JSONMap) ToMap() (map[string]interface{}, error) {
 
 // Canonicalize canonicalizes the JSONMap for signing or verification, excluding the proof field.
 // LegacyHexCanonicalize removes the proof and hashes the body.
-// WARNING: Bug-for-bug compatibility. Hàm chứa thuật toán cũ bị lỗi, CHỈ dùng để verify
-// tài liệu Hex cũ <= v1.7.0. Tuyệt đối không dùng để phát hành tài liệu mới.
+// WARNING: Bug-for-bug compatibility. This function contains the flawed legacy canonicalization
+// algorithm. It MUST ONLY be used for verifying legacy Hex proofs (issued by SDK <= v1.7.0).
+// NEVER use this function for issuing new credentials.
 func (m *JSONMap) LegacyHexCanonicalize() ([]byte, error) {
 	mCopy := make(JSONMap)
 	for k, v := range *m {
@@ -367,20 +368,20 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, err
 		return m.verifyECDSASpecConformant(pub, proof)
 	}
 
-	// DEPRECATED & ACCEPTED RISK (Thời gian ân hạn 14 ngày cho Legacy Hex Proofs)
-	// Nhánh này sử dụng thuật toán băm cũ (chỉ băm body) để giữ tương thích
-	// với các tài liệu VC/VP đã phát hành từ bản SDK <= v1.7.0.
+	// DEPRECATED & ACCEPTED RISK (14-day Grace Period for Legacy Hex Proofs)
+	// This branch uses the flawed legacy hashing algorithm (body only) to maintain
+	// backward compatibility with VC/VPs issued by SDK <= v1.7.0.
 	//
 	// WARNING - REPLAY ATTACK VULNERABILITY:
-	// Tạm thời CHO PHÉP proof hex chứa `challenge` và `domain` để các hệ thống
-	// Client cũ không bị lỗi (breaking change) trên Production. Tuy nhiên, do hàm băm cũ
-	// bỏ qua các trường này, challenge KHÔNG HỀ được bảo vệ bằng chữ ký số.
+	// Temporarily ALLOWING hex proofs containing `challenge` and `domain` so that
+	// legacy clients do not break on Production. However, because the legacy hash
+	// ignores these fields, the challenge is NOT protected by the digital signature.
 	//
-	// Ứng dụng Verifier PHẢI TỰ CHỐNG Replay Attack ở cấp độ Application
-	// (ví dụ: dùng Redis cache kiểm tra nonce/jti trùng lặp) trong thời gian này.
+	// Verifier applications MUST MITIGATE Replay Attacks at the Application level
+	// (e.g., using Redis cache to check for duplicate nonce/jti) during this period.
 	//
-	// TODO: Sau 14 ngày ân hạn, BẮT BUỘC phải vá lại đoạn code này để CHẶN ĐỨNG
-	// các proof hex chứa challenge/domain, vá triệt để lỗ hổng Replay Attack:
+	// TODO: After the 14-day grace period, this code MUST be updated to BLOCK
+	// hex proofs containing challenge/domain, fully patching the Replay Attack vulnerability:
 	// if proof.Challenge != "" || proof.Domain != "" { return false, error... }
 
 	doc, err := m.LegacyHexCanonicalize()
@@ -450,7 +451,6 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
 	}
 	return proofHash, nil
 }
-
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,
 // rebuilding hashData exactly as the signer did.
