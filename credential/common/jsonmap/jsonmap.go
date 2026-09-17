@@ -435,17 +435,6 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
 	return proofHash, nil
 }
 
-// SigningDigest returns the 32-byte digest for a proof.
-// It covers both the document body and the proof configuration (challenge, domain, etc.)
-// using the Data Integrity ECDSA Cryptosuites v1.0 standard.
-func (m *JSONMap) SigningDigest(proof *dto.Proof) ([]byte, error) {
-	hashData, err := m.ecdsaHashData(proof)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build hash data: %w", err)
-	}
-	digest := sha256.Sum256(hashData)
-	return digest[:], nil
-}
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,
 // rebuilding hashData exactly as the signer did.
