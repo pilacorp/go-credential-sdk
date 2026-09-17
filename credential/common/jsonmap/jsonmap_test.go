@@ -242,11 +242,11 @@ func TestJSONMap_CanonicalizeNative_CommitsToNumericType(t *testing.T) {
 	}
 
 	// The legacy path coerces both to xsd:string and cannot tell them apart.
-	legacyNumeric, err := numeric.Canonicalize()
+	legacyNumeric, err := numeric.LegacyHexCanonicalize()
 	if err != nil {
 		t.Fatalf("Canonicalize(numeric): %v", err)
 	}
-	legacyString, err := stringy.Canonicalize()
+	legacyString, err := stringy.LegacyHexCanonicalize()
 	if err != nil {
 		t.Fatalf("Canonicalize(string): %v", err)
 	}

@@ -69,7 +69,10 @@ func (m *JSONMap) ToMap() (map[string]interface{}, error) {
 }
 
 // Canonicalize canonicalizes the JSONMap for signing or verification, excluding the proof field.
-func (m *JSONMap) Canonicalize() ([]byte, error) {
+// LegacyHexCanonicalize removes the proof and hashes the body.
+// WARNING: Bug-for-bug compatibility. Hàm chứa thuật toán cũ bị lỗi, CHỈ dùng để verify
+// tài liệu Hex cũ <= v1.7.0. Tuyệt đối không dùng để phát hành tài liệu mới.
+func (m *JSONMap) LegacyHexCanonicalize() ([]byte, error) {
 	mCopy := make(JSONMap)
 	for k, v := range *m {
 		if k != proofField {
@@ -354,7 +357,23 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, err
 		return m.verifyECDSASpecConformant(pub, proof)
 	}
 
-	doc, err := m.Canonicalize()
+	// DEPRECATED & ACCEPTED RISK (Thời gian ân hạn 14 ngày cho Legacy Hex Proofs)
+	// Nhánh này sử dụng thuật toán băm cũ (chỉ băm body) để giữ tương thích
+	// với các tài liệu VC/VP đã phát hành từ bản SDK <= v1.7.0.
+	//
+	// WARNING - REPLAY ATTACK VULNERABILITY:
+	// Tạm thời CHO PHÉP proof hex chứa `challenge` và `domain` để các hệ thống
+	// Client cũ không bị lỗi (breaking change) trên Production. Tuy nhiên, do hàm băm cũ
+	// bỏ qua các trường này, challenge KHÔNG HỀ được bảo vệ bằng chữ ký số.
+	//
+	// Ứng dụng Verifier PHẢI TỰ CHỐNG Replay Attack ở cấp độ Application
+	// (ví dụ: dùng Redis cache kiểm tra nonce/jti trùng lặp) trong thời gian này.
+	//
+	// TODO: Sau 14 ngày ân hạn, BẮT BUỘC phải vá lại đoạn code này để CHẶN ĐỨNG
+	// các proof hex chứa challenge/domain, vá triệt để lỗ hổng Replay Attack:
+	// if proof.Challenge != "" || proof.Domain != "" { return false, error... }
+
+	doc, err := m.LegacyHexCanonicalize()
 	if err != nil {
 		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
 	}
@@ -405,26 +424,27 @@ func concatHashData(proofConfigHash, transformedDocumentHash [sha256.Size]byte) 
 // ecdsaHashData builds the 64-byte hashData of section 3.2.4,
 // proofConfigHash || transformedDocumentHash, for both signing and verifying.
 func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
-	cfg, err := m.ecdsaProofConfig(proof)
+	docHash, err := m.DocumentDigest()
 	if err != nil {
-		return nil, fmt.Errorf("failed to build proof configuration: %w", err)
+		return nil, fmt.Errorf("failed to hash document: %w", err)
 	}
-	cfgCanonical, err := processor.CanonicalizeNative(cfg)
+	proofHash, err := m.CreateProofSigning(docHash, proof)
 	if err != nil {
-		return nil, fmt.Errorf("failed to canonicalize proof configuration: %w", err)
+		return nil, fmt.Errorf("failed to hash proof config: %w", err)
 	}
+	return proofHash, nil
+}
 
-	body, err := m.bodyWithoutProof()
+// SigningDigest returns the 32-byte digest for a proof.
+// It covers both the document body and the proof configuration (challenge, domain, etc.)
+// using the Data Integrity ECDSA Cryptosuites v1.0 standard.
+func (m *JSONMap) SigningDigest(proof *dto.Proof) ([]byte, error) {
+	hashData, err := m.ecdsaHashData(proof)
 	if err != nil {
-		return nil, fmt.Errorf("failed to copy document body: %w", err)
+		return nil, fmt.Errorf("failed to build hash data: %w", err)
 	}
-	bodyCanonical, err := processor.CanonicalizeNative(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
-	}
-
-	// Steps 2, 1 and 3.
-	return concatHashData(sha256.Sum256(cfgCanonical), sha256.Sum256(bodyCanonical)), nil
+	digest := sha256.Sum256(hashData)
+	return digest[:], nil
 }
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,
@@ -771,4 +791,39 @@ func jwsKid(jws string) (string, bool) {
 		return "", false
 	}
 	return hdr.Kid, hdr.Kid != ""
+}
+
+// DocumentDigest returns the SHA-256 digest of the canonicalized document body.
+func (m *JSONMap) DocumentDigest() ([]byte, error) {
+	body, err := m.bodyWithoutProof()
+	if err != nil {
+		return nil, err
+	}
+	bodyCanonical, err := processor.CanonicalizeNative(body)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(bodyCanonical)
+	return digest[:], nil
+}
+
+// CreateProofSigning mixes the document hash with proof options to generate the final digest.
+func (m *JSONMap) CreateProofSigning(docHash []byte, proof *dto.Proof) ([]byte, error) {
+	cfg, err := m.ecdsaProofConfig(proof)
+	if err != nil {
+		return nil, err
+	}
+	cfgCanonical, err := processor.CanonicalizeNative(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	var pHash, dHash [sha256.Size]byte
+	pDigest := sha256.Sum256(cfgCanonical)
+	copy(pHash[:], pDigest[:])
+	copy(dHash[:], docHash)
+
+	combined := concatHashData(pHash, dHash)
+	finalDigest := sha256.Sum256(combined)
+	return finalDigest[:], nil
 }

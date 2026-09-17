@@ -148,15 +148,31 @@ func (e *JSONCredential) resolveSigningVMEntry(opts ...CredentialOpt) (*verifica
 	return verificationmethod.ResolveSigningVM(context.Background(), issuer, "assertionMethod", options.verificationMethodKey, options.resolver)
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
+// GetSigningInput returns the canonicalized hash of the document body.
+// IMPORTANT: To generate a valid ecdsa-rdfc-2019 proof, you MUST pass this hash
+// into CreateProofSigning(docHash, proof) before sending it to the external signer.
 func (e *JSONCredential) GetSigningInput() ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.credentialData).Canonicalize()
+	return (*jsonmap.JSONMap)(&e.credentialData).DocumentDigest()
+}
+
+// CreateProofSigning combines the document hash and proof options into the final digest to be signed.
+func (e *JSONCredential) CreateProofSigning(docHash []byte, proof *dto.Proof) ([]byte, error) {
+	return (*jsonmap.JSONMap)(&e.credentialData).CreateProofSigning(docHash, proof)
 }
 
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
+	}
+
+	if proof.Type == "DataIntegrityProof" && proof.Cryptosuite == "ecdsa-rdfc-2019" {
+		import_strings := true
+		_ = import_strings
+		// Note: ensure "strings" is imported
+		if len(proof.ProofValue) > 0 && proof.ProofValue[0] != 'z' {
+			return fmt.Errorf("SDK v1.7.x does not support issuing new Hex proofs. Please format as Base58btc ('z' prefix)")
+		}
 	}
 
 	err := e.executeOptions(opts...)

@@ -1010,7 +1010,7 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 			VerificationMethod: issuerDID + "#key-1",
 			ProofPurpose:       "assertionMethod",
 			Cryptosuite:        "ecdsa-rdfc-2019",
-			ProofValue:         "deadbeef",
+			ProofValue:         "zdeadbeef",
 		})
 		assert.NoError(t, err)
 
@@ -1886,7 +1886,6 @@ func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T
 	assert.Contains(t, err.Error(), "schema is empty")
 }
 
-
 func TestJSONCredentialHash_RequiresProof(t *testing.T) {
 	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
 	cred, err := NewJSONCredential(contents)
@@ -1979,7 +1978,7 @@ func TestJSONCredentialHash_IncludesProof(t *testing.T) {
 
 	proof, ok := m["proof"].(map[string]interface{})
 	assert.True(t, ok, "expected proof to be a map, got %T", m["proof"])
-	proof["proofValue"] = "deadbeef"
+	proof["proofValue"] = "zdeadbeef"
 
 	raw, err := json.Marshal(m)
 	assert.NoError(t, err)
