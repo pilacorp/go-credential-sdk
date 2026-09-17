@@ -447,7 +447,7 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash document: %w", err)
 	}
-	return m.CreateProofSigning(docHash, proof)
+	return m.ProofHashData(docHash, proof)
 }
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,
@@ -779,10 +779,10 @@ func (m *JSONMap) DocumentDigest() ([]byte, error) {
 	return digest[:], nil
 }
 
-// CreateProofSigning builds the 64-byte hashData of section 3.2.4 from an
+// ProofHashData builds the 64-byte hashData of section 3.2.4 from an
 // already computed document digest (GetSigningInput) and the proof options.
 // The signer must sign SHA-256(hashData), not hashData itself.
-func (m *JSONMap) CreateProofSigning(docHash []byte, proof *dto.Proof) ([]byte, error) {
+func (m *JSONMap) ProofHashData(docHash []byte, proof *dto.Proof) ([]byte, error) {
 	if len(docHash) != sha256.Size {
 		return nil, fmt.Errorf("document digest must be %d bytes, got %d", sha256.Size, len(docHash))
 	}

@@ -160,7 +160,7 @@ func (e *JSONCredential) GetSigningInput() ([]byte, error) {
 // CreateProofSigning returns the 32-byte digest the external signer signs:
 // SHA-256 of the section 3.2.4 hashData built from docHash and the proof options.
 func (e *JSONCredential) CreateProofSigning(docHash []byte, proof *dto.Proof) ([]byte, error) {
-	hashData, err := (*jsonmap.JSONMap)(&e.credentialData).CreateProofSigning(docHash, proof)
+	hashData, err := (*jsonmap.JSONMap)(&e.credentialData).ProofHashData(docHash, proof)
 	if err != nil {
 		return nil, err
 	}
@@ -175,9 +175,6 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	}
 
 	if proof.Type == "DataIntegrityProof" && proof.Cryptosuite == "ecdsa-rdfc-2019" {
-		import_strings := true
-		_ = import_strings
-		// Note: ensure "strings" is imported
 		if len(proof.ProofValue) > 0 && proof.ProofValue[0] != 'z' {
 			return fmt.Errorf("SDK v1.7.x does not support issuing new Hex proofs. Please format as Base58btc ('z' prefix)")
 		}

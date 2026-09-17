@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -85,5 +86,53 @@ func TestProof_ToMapOmitsEmptyFieldsAndSignature(t *testing.T) {
 	want := map[string]interface{}{"type": "DataIntegrityProof"}
 	if got := p.ToMap(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ToMap = %#v, want %#v", got, want)
+	}
+}
+
+// A previousProof that is not a string or string set (§ 2.1) must not stop
+// decoding: the keys after it in alphabetical order still land in their typed
+// fields, and the odd value survives in Extra for round-tripping.
+func TestProofFromMap_BadPreviousProofDoesNotStopDecoding(t *testing.T) {
+	m := map[string]interface{}{
+		"created":            "2026-01-01T00:00:00Z",
+		"previousProof":      map[string]interface{}{"id": "urn:uuid:prev"},
+		"proofPurpose":       "assertionMethod",
+		"proofValue":         "zabc",
+		"type":               "DataIntegrityProof",
+		"verificationMethod": "did:example:issuer#key-1",
+	}
+	p := ProofFromMap(m)
+
+	if p.Type != "DataIntegrityProof" || p.ProofPurpose != "assertionMethod" ||
+		p.ProofValue != "zabc" || p.VerificationMethod != "did:example:issuer#key-1" {
+		t.Fatalf("typed fields after previousProof were not decoded: %+v", p)
+	}
+	if len(p.PreviousProof) != 0 {
+		t.Errorf("expected PreviousProof unset, got %v", p.PreviousProof)
+	}
+	if _, ok := p.Extra["previousProof"]; !ok {
+		t.Errorf("expected the object to be kept in Extra, got %v", p.Extra)
+	}
+	if !reflect.DeepEqual(p.ToMap(), m) {
+		t.Errorf("round trip changed the proof:\n got %v\nwant %v", p.ToMap(), m)
+	}
+}
+
+// previousProof: null is "not set"; it must not come back as "previousProof": "".
+func TestProofFromMap_NullPreviousProofIsOmitted(t *testing.T) {
+	p := ProofFromMap(map[string]interface{}{
+		"type":          "DataIntegrityProof",
+		"previousProof": nil,
+	})
+	if p.PreviousProof != nil {
+		t.Errorf("expected nil PreviousProof, got %#v", p.PreviousProof)
+	}
+	if _, ok := p.ToMap()["previousProof"]; ok {
+		t.Errorf("expected previousProof omitted from ToMap, got %v", p.ToMap())
+	}
+
+	var s StringOrStrings
+	if err := json.Unmarshal([]byte("null"), &s); err != nil || s != nil {
+		t.Errorf("StringOrStrings null: err=%v s=%#v", err, s)
 	}
 }

@@ -238,3 +238,87 @@ func TestExpandJSONLD_RejectsDroppedTerms(t *testing.T) {
 		}
 	})
 }
+
+// Every term defined; the root `id` is a relative reference. Expansion keeps
+// it (no base IRI), ToRDF drops the whole node, so without the id check the
+// signature would not commit to type, issuer, validUntil or the subject link.
+func docWithRelativeID() map[string]interface{} {
+	return map[string]interface{}{
+		"@context":   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"id":         "credential-123",
+		"type":       []interface{}{"VerifiableCredential"},
+		"issuer":     "did:example:issuer",
+		"validUntil": "2030-01-01T00:00:00Z",
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"name": "Alice",
+		},
+	}
+}
+
+func TestCanonicalize_RejectsRelativeID(t *testing.T) {
+	for name, mutate := range map[string]func(map[string]interface{}){
+		"root id": func(map[string]interface{}) {},
+		"issuer":  func(d map[string]interface{}) { d["id"] = "urn:uuid:1"; d["issuer"] = "issuer-1" },
+		"subject id": func(d map[string]interface{}) {
+			d["id"] = "urn:uuid:1"
+			d["credentialSubject"].(map[string]interface{})["id"] = "subject-1"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := docWithRelativeID()
+			mutate(doc)
+			if _, err := Canonicalize(doc); err == nil {
+				t.Error("Canonicalize: expected an error for a relative id, got nil")
+			} else if !strings.Contains(err.Error(), "not an absolute IRI") {
+				t.Errorf("Canonicalize: unexpected error: %v", err)
+			}
+			if _, _, err := CanonicalizeWithIdMap(doc); err == nil {
+				t.Error("CanonicalizeWithIdMap: expected an error for a relative id, got nil")
+			}
+		})
+	}
+
+	// Control: the same document with absolute ids canonicalizes, and every
+	// root statement the relative id would have dropped is in the output.
+	t.Run("absolute ids pass", func(t *testing.T) {
+		doc := docWithRelativeID()
+		doc["id"] = "urn:uuid:c3fb0f5c-1c67-4d1e-9d1c-6b1a2c3d4e5f"
+		nquads, err := Canonicalize(doc)
+		if err != nil {
+			t.Fatalf("Canonicalize: %v", err)
+		}
+		for _, want := range []string{"<urn:uuid:c3fb0f5c", "#issuer", "#validUntil", "#credentialSubject"} {
+			if !strings.Contains(string(nquads), want) {
+				t.Errorf("expected %q in the canonical output, got:\n%s", want, nquads)
+			}
+		}
+		if _, _, err := CanonicalizeWithIdMap(doc); err != nil {
+			t.Errorf("CanonicalizeWithIdMap: %v", err)
+		}
+	})
+}
+
+// Pins the json-gold behaviour the id check exists for: a relative root id
+// takes the root node out of the dataset silently, so tampering with the
+// fields on it does not change the canonical bytes.
+func TestToRDFDropsNodesWithRelativeID(t *testing.T) {
+	signed := docWithRelativeID()
+	nq1, err := ToRDFNQuads(signed)
+	if err != nil {
+		t.Fatalf("to rdf: %v", err)
+	}
+	tampered := docWithRelativeID()
+	tampered["id"] = "credential-999"
+	tampered["validUntil"] = "2099-01-01T00:00:00Z"
+	nq2, err := ToRDFNQuads(tampered)
+	if err != nil {
+		t.Fatalf("to rdf: %v", err)
+	}
+	if strings.Join(nq1, "") != strings.Join(nq2, "") {
+		t.Fatalf("json-gold now keeps nodes with a relative id; rejectRelativeIDs may be redundant:\n%v\n%v", nq1, nq2)
+	}
+	if strings.Contains(strings.Join(nq1, ""), "validUntil") {
+		t.Fatalf("expected the root node to be dropped, got:\n%v", nq1)
+	}
+}

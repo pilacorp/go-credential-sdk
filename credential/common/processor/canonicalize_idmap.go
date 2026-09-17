@@ -147,8 +147,12 @@ func ExpandJSONLD(doc map[string]interface{}) (result []interface{}, err error) 
 	if err != nil {
 		return nil, fmt.Errorf("expand: %w", err)
 	}
-	// SafeMode above catches dropped properties; this catches dropped types.
+	// SafeMode above catches dropped properties; these catch dropped types
+	// and node identifiers.
 	if err := checkExpandedTypes(out); err != nil {
+		return nil, err
+	}
+	if err := rejectRelativeIDs(out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -216,33 +220,43 @@ func splitNQuadsKeepNL(s string) []string {
 
 // checkExpandedTypes reports `type` values RDF conversion would drop.
 func checkExpandedTypes(expanded interface{}) error {
-	if dropped := relativeTypes(expanded, nil); len(dropped) > 0 {
+	if dropped := relativeKeywordValues(expanded, "@type", nil); len(dropped) > 0 {
 		return fmt.Errorf("json-ld: type %q is not defined by @context and would be dropped, leaving it unsigned", dropped[0])
 	}
 	return nil
 }
 
-// relativeTypes collects @type values RDF conversion would drop: not a
-// keyword, blank node, or absolute IRI.
-func relativeTypes(v interface{}, out []string) []string {
+// rejectRelativeIDs reports `id` values RDF conversion would drop. Expansion
+// resolves @id against the base IRI, and with none set a relative id stays
+// relative; ToRDF then skips the node, taking every statement about it (on the
+// root: type, issuer, validUntil, ...) out of the signed bytes.
+func rejectRelativeIDs(expanded interface{}) error {
+	if dropped := relativeKeywordValues(expanded, "@id", nil); len(dropped) > 0 {
+		return fmt.Errorf("json-ld: id %q is not an absolute IRI and would be dropped, leaving the node unsigned", dropped[0])
+	}
+	return nil
+}
+
+// relativeKeywordValues collects the string values of keyword (@type or @id)
+// that RDF conversion would drop: not a keyword, blank node, or absolute IRI,
+// the same test json-gold applies before emitting a quad.
+func relativeKeywordValues(v interface{}, keyword string, out []string) []string {
 	switch t := v.(type) {
 	case map[string]interface{}:
 		for k, val := range t {
-			if k != "@type" {
-				out = relativeTypes(val, out)
+			if k != keyword {
+				out = relativeKeywordValues(val, keyword, out)
 				continue
 			}
-			for _, tv := range ld.Arrayify(val) {
-				s, ok := tv.(string)
-				if !ok || strings.HasPrefix(s, "@") || strings.HasPrefix(s, "_:") || ld.IsAbsoluteIri(s) {
-					continue
+			for _, kv := range ld.Arrayify(val) {
+				if s, ok := kv.(string); ok && ld.IsRelativeIri(s) {
+					out = append(out, s)
 				}
-				out = append(out, s)
 			}
 		}
 	case []interface{}:
 		for _, e := range t {
-			out = relativeTypes(e, out)
+			out = relativeKeywordValues(e, keyword, out)
 		}
 	}
 	return out

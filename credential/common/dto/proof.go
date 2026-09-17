@@ -1,6 +1,9 @@
 package dto
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // Proof represents a Linked Data Proof for a Verifiable Credential.
 //
@@ -41,6 +44,10 @@ type Proof struct {
 type StringOrStrings []string
 
 func (s *StringOrStrings) UnmarshalJSON(data []byte) error {
+	// null is "not set", not a single empty string.
+	if string(data) == "null" {
+		return nil
+	}
 	var one string
 	if json.Unmarshal(data, &one) == nil {
 		*s = StringOrStrings{one}
@@ -63,14 +70,15 @@ func (s StringOrStrings) MarshalJSON() ([]byte, error) {
 
 // ProofFromMap builds a Proof from a JSON proof object. A property lands in
 // its typed field when the value fits the field's JSON tag, otherwise in Extra.
+// Keys are decoded one at a time so a bad value (e.g. an object under
+// previousProof) affects only that key, not every key after it.
 func ProofFromMap(m map[string]interface{}) Proof {
 	var p Proof
-	raw, _ := json.Marshal(m)
-	_ = json.Unmarshal(raw, &p) // a mismatched value is skipped, not fatal
-
-	typed := p.ToMap()
 	for key, value := range m {
-		if _, ok := typed[key]; ok {
+		raw, _ := json.Marshal(map[string]interface{}{key: value})
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if dec.Decode(&p) == nil {
 			continue
 		}
 		if p.Extra == nil {
