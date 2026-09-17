@@ -96,6 +96,12 @@ type Decoy = sdjwt.DecoyConfig
 type SchemaLoaderFunc func(schemaID string) ([]byte, error)
 
 // CredentialOpt configures credential processing options.
+//
+// TODO(opts): one option type is reused across constructors, Parse, signing
+// and verification, so some options are meaningless in some call sites and
+// are silently ignored there (e.g. WithVerificationMethodKey on
+// NewJSONCredential, which only signing reads). Splitting into per-operation
+// option sets is planned; until then each option documents where it applies.
 type CredentialOpt func(*credentialOptions)
 
 // credentialOptions holds configuration for credential processing.
@@ -135,15 +141,23 @@ func WithBaseURL(baseURL string) CredentialOpt {
 
 // WithVerificationMethodKey sets the verification method fragment used when
 // signing — e.g. "key-2". When omitted, the SDK resolves the issuer DID and
-// picks the latest active VM listed in the assertionMethod relationship
-// array (or authentication for VPs).
+// picks its only VM, or the latest active VM listed in the assertionMethod
+// relationship array (authentication for VPs).
 //
 // The cryptosuite is chosen from the bound VM's key type. If the DID holds
 // keys of DIFFERENT types (e.g. secp256k1 and RSA), you MUST pin the VM here:
-// otherwise the latest active VM is used and its key type may not match your
-// signer, producing a proof that fails verification.
+// otherwise the selected VM's key type may not match your signer, producing a
+// proof that fails verification.
+//
+// For JSON credentials pass it to AddProofByProvider / AddProof; the
+// constructors and Parse functions ignore it (see the TODO on CredentialOpt).
+// For JWT credentials pass it to NewJWTCredential, which builds the header
+// from it.
 func WithVerificationMethodKey(key string) CredentialOpt {
 	return func(c *credentialOptions) {
+		if key == "" {
+			return
+		}
 		c.verificationMethodKey = key
 	}
 }
@@ -245,11 +259,7 @@ func getOptions(opts ...CredentialOpt) *credentialOptions {
 		isCheckRevocation:  false,
 		didBaseURL:         config.BaseURL,
 		loadedSchemaLoader: nil,
-		// verificationMethodKey is left empty so the signer/proof builder
-		// can resolve the latest VM in the assertionMethod array. Callers
-		// can override with WithVerificationMethodKey to pin a specific kid.
-		verificationMethodKey: "",
-		resolver:              nil,
+		resolver:           nil,
 	}
 
 	for _, opt := range opts {

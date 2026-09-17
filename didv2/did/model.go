@@ -75,12 +75,16 @@ type VerificationMethod struct {
 	// Controller is the DID that controls this verification method.
 	Controller string `json:"controller"`
 	// PublicKeyHex is the hex-encoded public key (compressed format).
-	// Mutually exclusive with PublicKeyJwk.
+	// Mutually exclusive with PublicKeyJwk and PublicKeyMultibase.
 	PublicKeyHex string `json:"publicKeyHex,omitempty"`
 	// PublicKeyJwk is the JWK representation of the public key, used for
 	// non-secp256k1 keys (e.g. RSA CA keys with Type="JsonWebKey2020").
-	// Mutually exclusive with PublicKeyHex.
+	// Mutually exclusive with PublicKeyHex and PublicKeyMultibase.
+	// Deprecated: Use PublicKeyMultibase for P-256 keys instead of JWK.
 	PublicKeyJwk map[string]any `json:"publicKeyJwk,omitempty"`
+	// PublicKeyMultibase is the Multikey encoding used for P-256 keys.
+	// Mutually exclusive with PublicKeyHex and PublicKeyJwk.
+	PublicKeyMultibase string `json:"publicKeyMultibase,omitempty"`
 	// Revoked, when present, marks the moment this verification method was
 	// retired. Verifiers reject signatures whose proof.created is on or
 	// after this timestamp. Empty for active keys.
@@ -89,6 +93,22 @@ type VerificationMethod struct {
 	// revocation. Hard reasons (keyCompromise, cACompromise, aACompromise)
 	// invalidate every signature ever produced by the key.
 	RevocationReason string `json:"revocationReason,omitempty"`
+}
+
+// VerificationMethodSpec pairs a verification method with the relationship arrays
+// it joins. Empty Purposes means both.
+type VerificationMethodSpec struct {
+	VM       VerificationMethod
+	Purposes []VerificationPurpose
+}
+
+// purposes defaults an empty spec to both relationship arrays.
+func (s VerificationMethodSpec) purposes() []VerificationPurpose {
+	if len(s.Purposes) == 0 {
+		return []VerificationPurpose{PurposeAuthentication, PurposeAssertionMethod}
+	}
+
+	return s.Purposes
 }
 
 // KeyPair represents an ECDSA key pair for a DID.
@@ -101,6 +121,40 @@ type KeyPair struct {
 	// PrivateKey is the ECDSA private key used for signing and proving DID ownership.
 	// This must be stored securely and never exposed.
 	PrivateKey *ecdsa.PrivateKey `json:"privateKey"`
+	// P256PublicKey shares PublicKey's scalar; set only by GenerateDualCurveKeyPair.
+	P256PublicKey *ecdsa.PublicKey `json:"p256PublicKey,omitempty"`
+}
+
+// Validate rejects a document whose verification methods cannot be published:
+// an empty or duplicate VM id, or an authentication / assertionMethod
+// reference to a VM the document does not carry. GenerateDIDTX runs it before
+// hashing so such a document never reaches the chain; callers building
+// documents with GenerateDIDDocument directly should call it themselves.
+func (doc *DIDDocument) Validate() error {
+	if doc == nil {
+		return fmt.Errorf("DID document is nil")
+	}
+	seen := make(map[string]struct{}, len(doc.VerificationMethod))
+	for i, vm := range doc.VerificationMethod {
+		if vm.Id == "" {
+			return fmt.Errorf("verificationMethod[%d]: id is empty", i)
+		}
+		if _, dup := seen[vm.Id]; dup {
+			return fmt.Errorf("verificationMethod: duplicate id %s (#key-1 and #key-2 are reserved by GenerateDID)", vm.Id)
+		}
+		seen[vm.Id] = struct{}{}
+	}
+	for _, rel := range []struct {
+		name string
+		refs []string
+	}{{"authentication", doc.Authentication}, {"assertionMethod", doc.AssertionMethod}} {
+		for _, ref := range rel.refs {
+			if _, ok := seen[canonicalVMID(doc.Id, ref)]; !ok {
+				return fmt.Errorf("%s references unknown verification method %q", rel.name, ref)
+			}
+		}
+	}
+	return nil
 }
 
 // Hash calculates the Keccak256 hash of the canonicalized DID Document.
@@ -113,6 +167,9 @@ type KeyPair struct {
 //
 // Returns the hash as a lowercase hex string (with "0x" prefix).
 func (doc *DIDDocument) Hash() (string, error) {
+	if doc == nil {
+		return "", fmt.Errorf("DID document is nil")
+	}
 	docJSON, err := json.Marshal(doc)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal DID document: %w", err)

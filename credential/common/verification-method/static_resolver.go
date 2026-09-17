@@ -3,17 +3,21 @@ package verificationmethod
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/base64"
 	"fmt"
 	"math/big"
+	"sync"
 )
 
 // StaticResolver is an in-memory ResolverProvider backed by a fixed set of DID
 // documents. It does no I/O, so it is ideal for tests and offline use — for
 // example to verify credentials signed with key types the production DID
-// resolver does not yet publish (RSA, P-256).
+// resolver does not yet publish (RSA, P-256). Safe for concurrent use: Add
+// may run alongside ResolveDocument, e.g. while vc.Verify fans out its checks.
 type StaticResolver struct {
+	mu   sync.RWMutex
 	docs map[string]*DIDDocument
 }
 
@@ -29,14 +33,20 @@ func NewStaticResolver(docs ...*DIDDocument) *StaticResolver {
 
 // Add registers (or replaces) a DID document, keyed by its ID.
 func (r *StaticResolver) Add(doc *DIDDocument) {
-	if doc != nil && doc.ID != "" {
-		r.docs[doc.ID] = doc
+	if doc == nil || doc.ID == "" {
+		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.docs[doc.ID] = doc
 }
 
 // ResolveDocument returns the registered document for did, or an error if none.
 func (r *StaticResolver) ResolveDocument(_ context.Context, did string) (*DIDDocument, error) {
-	if doc, ok := r.docs[did]; ok {
+	r.mu.RLock()
+	doc, ok := r.docs[did]
+	r.mu.RUnlock()
+	if ok {
 		return doc, nil
 	}
 	return nil, fmt.Errorf("static resolver: unknown did %q", did)
@@ -83,9 +93,34 @@ func NewRSAVM(did, fragment string, pub *rsa.PublicKey) VerificationMethodEntry 
 	}
 }
 
+// NewP256MultikeyVM builds a Multikey verification method from a P-256 public
+// key. This is the representation the W3C ecdsa-rdfc-2019 and ecdsa-sd-2023
+// suites specify; NewP256VM publishes the same key as a JWK instead.
+func NewP256MultikeyVM(did, fragment string, pub *ecdsa.PublicKey) (VerificationMethodEntry, error) {
+	if pub == nil || pub.Curve != elliptic.P256() {
+		return VerificationMethodEntry{}, fmt.Errorf("NewP256MultikeyVM requires a P-256 key")
+	}
+	mb, err := EncodePubMultibase(pub)
+	if err != nil {
+		return VerificationMethodEntry{}, err
+	}
+	return VerificationMethodEntry{
+		ID:                 did + "#" + fragment,
+		Type:               "Multikey",
+		Controller:         did,
+		PublicKeyMultibase: mb,
+	}, nil
+}
+
 // NewP256VM builds a JsonWebKey2020 verification method from a P-256 public key.
-// Used by ecdsa-sd-2023.
-func NewP256VM(did, fragment string, pub *ecdsa.PublicKey) VerificationMethodEntry {
+// Used by ecdsa-rdfc-2019 and ecdsa-sd-2023.
+func NewP256VM(did, fragment string, pub *ecdsa.PublicKey) (VerificationMethodEntry, error) {
+	if pub == nil || pub.X == nil || pub.Y == nil {
+		return VerificationMethodEntry{}, fmt.Errorf("NewP256VM requires a non-nil public key")
+	}
+	if pub.Curve != elliptic.P256() {
+		return VerificationMethodEntry{}, fmt.Errorf("NewP256VM requires a P-256 key")
+	}
 	xb := make([]byte, 32)
 	yb := make([]byte, 32)
 	pub.X.FillBytes(xb)
@@ -100,5 +135,5 @@ func NewP256VM(did, fragment string, pub *ecdsa.PublicKey) VerificationMethodEnt
 			X:   base64.RawURLEncoding.EncodeToString(xb),
 			Y:   base64.RawURLEncoding.EncodeToString(yb),
 		},
-	}
+	}, nil
 }

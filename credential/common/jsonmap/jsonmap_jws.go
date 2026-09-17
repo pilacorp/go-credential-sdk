@@ -45,7 +45,7 @@ func (m *JSONMap) AddJWSProof(signerProvider signer.SignerProvider, verification
 		ProofPurpose:       proofPurpose,
 	}
 
-	payload, err := m.Canonicalize()
+	payload, err := m.LegacyHexCanonicalize()
 	if err != nil {
 		return fmt.Errorf("jsonmap: canonicalize: %w", err)
 	}
@@ -127,7 +127,7 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 		return false, err
 	}
 
-	payload, err := m.Canonicalize()
+	payload, err := m.LegacyHexCanonicalize()
 	if err != nil {
 		return false, fmt.Errorf("canonicalize: %w", err)
 	}

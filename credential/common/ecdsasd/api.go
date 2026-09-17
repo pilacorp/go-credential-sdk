@@ -16,8 +16,14 @@ const Cryptosuite = "ecdsa-sd-2023"
 // JSON Pointers (RFC 6901) the issuer forces to always be disclosed; every
 // other statement becomes selectively disclosable. issuerSigner signs the base
 // signature with the issuer's P-256 key. The document body is left unchanged.
-func CreateBaseProof(document map[string]interface{}, proofConfig map[string]interface{}, mandatoryPointers []string, issuerSigner signer.SignerProvider) (string, error) {
-	return createBaseProof(document, proofConfig, mandatoryPointers, issuerSigner)
+// An optional issuerPub is the key the verification method publishes; when
+// given, the base signature is checked against it.
+func CreateBaseProof(document map[string]interface{}, proofConfig map[string]interface{}, mandatoryPointers []string, issuerSigner signer.SignerProvider, issuerPub ...*ecdsa.PublicKey) (string, error) {
+	var pub *ecdsa.PublicKey
+	if len(issuerPub) > 0 {
+		pub = issuerPub[0]
+	}
+	return createBaseProof(document, proofConfig, mandatoryPointers, issuerSigner, pub)
 }
 
 // DeriveProof produces a revealed document plus a derived (disclosure) proof

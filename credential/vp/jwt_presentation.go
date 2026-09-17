@@ -15,9 +15,10 @@ import (
 )
 
 type JWTPresentation struct {
-	signingInput string           // JWT header.payload (base64 encoded)
-	payloadData  PresentationData // Parsed payload as PresentationData
-	signature    string           // JWT signature (if signed)
+	signingInput string                 // JWT header.payload (base64 encoded)
+	payloadData  PresentationData       // Parsed payload as PresentationData
+	jwtClaims    map[string]interface{} // Top-level JWT claims (iss, aud, nonce, ...)
+	signature    string                 // JWT signature (if signed)
 }
 
 var _ Presentation = (*JWTPresentation)(nil)
@@ -58,19 +59,35 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JWT
 	}
 
 	options := getOptions(opts...)
-	kid := options.verificationMethodKey
-	if kid == "" {
-		kid, err = verificationmethod.ResolveVerificationMethodURLForKey(context.Background(), vpc.Holder, "authentication", verificationmethod.KeySecp256k1, options.resolver)
-		if err != nil {
-			return nil, fmt.Errorf("resolve verification method: %w", err)
-		}
-	} else {
-		kid = verificationmethod.NormalizeVerificationMethodURL(vpc.Holder, kid)
+
+	// Challenge/domain map to the standard JWT claims used by OpenID4VP and
+	// VC-JWT: nonce (replay protection) and aud (intended verifier).
+	if options.challenge != "" {
+		payload["nonce"] = options.challenge
+	}
+	if options.domain != "" {
+		payload["aud"] = options.domain
+	}
+
+	// Resolve the VM so alg reflects the key it actually holds, and so a kid
+	// that does not exist or is not granted authentication is caught here.
+	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vpc.Holder,
+		"authentication", options.verificationMethodKey, options.resolver)
+	if err != nil {
+		return nil, fmt.Errorf("resolve verification method: %w", err)
+	}
+	kind, ok := verificationmethod.VMKeyKind(vm)
+	if !ok {
+		return nil, fmt.Errorf("verification method %q has an unrecognized key type", kid)
+	}
+	alg, err := jwt.AlgForKeyKind(kind)
+	if err != nil {
+		return nil, fmt.Errorf("verification method %q: %w", kid, err)
 	}
 
 	header := map[string]interface{}{
 		"typ": "JWT",
-		"alg": "ES256K",
+		"alg": alg,
 		"kid": kid,
 	}
 
@@ -93,6 +110,7 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JWT
 	e := &JWTPresentation{
 		signingInput: signingInput,
 		payloadData:  payloadData,
+		jwtClaims:    payload,
 		signature:    "",
 	}
 
@@ -148,6 +166,7 @@ func ParseJWTPresentation(rawJWT string, opts ...PresentationOpt) (*JWTPresentat
 	e := &JWTPresentation{
 		signingInput: signingInput,
 		payloadData:  PresentationData(vpMap),
+		jwtClaims:    payloadMap,
 		signature:    signature,
 	}
 
@@ -168,6 +187,12 @@ func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opt
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
+	// WithChallenge/WithDomain may be given at signing time, as with JSON
+	// presentations; they overwrite nonce/aud and the payload is re-encoded.
+	if err := j.applyChallengeDomain(getOptions(opts...)); err != nil {
+		return err
+	}
+
 	jwtSigner := jwt.NewJWTSigner(provider)
 
 	// Sign the existing signing input
@@ -176,13 +201,11 @@ func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opt
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
 
-	err = j.executeOptions(opts...)
-	if err != nil {
+	j.signature = signature
+	if err := j.executeOptions(opts...); err != nil {
+		j.signature = ""
 		return err
 	}
-
-	// Update signature
-	j.signature = signature
 
 	return nil
 }
@@ -242,7 +265,7 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
 	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(j.payloadData), options.resolver); err != nil {
+		if err := verifyCredentials(PresentationData(j.payloadData), options); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}
@@ -264,7 +287,74 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
+		if err := j.checkChallengeAndDomain(options); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
 	}
 
 	return nil
+}
+
+// applyChallengeDomain writes options.challenge/domain into the nonce/aud
+// claims and re-encodes the payload half of signingInput. No-op when neither
+// is set.
+func (j *JWTPresentation) applyChallengeDomain(options *presentationOptions) error {
+	if options.challenge == "" && options.domain == "" {
+		return nil
+	}
+	if j.jwtClaims == nil {
+		return fmt.Errorf("presentation has no JWT claims to update")
+	}
+	if options.challenge != "" {
+		j.jwtClaims["nonce"] = options.challenge
+	}
+	if options.domain != "" {
+		j.jwtClaims["aud"] = options.domain
+	}
+	payloadJSON, err := json.Marshal(j.jwtClaims)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+	header, _, _ := strings.Cut(j.signingInput, ".")
+	j.signingInput = header + "." + base64.RawURLEncoding.EncodeToString(payloadJSON)
+	j.signature = ""
+	return nil
+}
+
+// checkChallengeAndDomain enforces WithExpectedChallenge / WithExpectedDomain
+// against the nonce and aud claims. Runs after signature verification, so the
+// values compared are the signed ones.
+func (j *JWTPresentation) checkChallengeAndDomain(options *presentationOptions) error {
+	if options.expectedChallenge != "" {
+		nonce, _ := j.jwtClaims["nonce"].(string)
+		if nonce != options.expectedChallenge {
+			return fmt.Errorf("nonce %q does not match expected challenge %q", nonce, options.expectedChallenge)
+		}
+	}
+	if options.expectedDomain != "" && !audContains(j.jwtClaims["aud"], options.expectedDomain) {
+		return fmt.Errorf("aud %v does not match expected domain %q", j.jwtClaims["aud"], options.expectedDomain)
+	}
+	return nil
+}
+
+// audContains reports whether the aud claim (a string or array of strings per
+// RFC 7519 §4.1.3) includes domain.
+func audContains(aud interface{}, domain string) bool {
+	switch v := aud.(type) {
+	case string:
+		return v == domain
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s == domain {
+				return true
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if s == domain {
+				return true
+			}
+		}
+	}
+	return false
 }
