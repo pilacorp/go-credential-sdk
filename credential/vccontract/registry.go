@@ -67,6 +67,13 @@ var (
 	// ErrTxReverted is returned when the tx exists but failed, so it anchored
 	// nothing.
 	ErrTxReverted = errors.New("transaction reverted")
+	// ErrRootNotAnchored is returned when the tx succeeded but carries no root
+	// for the requested issuer and tree index.
+	//
+	// Deprecated: only GetAnchoredRoot returns it, and only from the legacy
+	// BatchTreesUpdated event. Kept because it shipped in v1.9.x and this module
+	// is still v1; nothing else in the package produces it.
+	ErrRootNotAnchored = errors.New("transaction did not anchor a root for this issuer and tree index")
 	// ErrUntrustedContract is returned when a caller pins verification to a
 	// contract address this client was not configured to trust. Believing an
 	// address supplied per-call would defeat the point of checking the emitter at
@@ -282,7 +289,7 @@ func (v *CredentialRegistry) VerifyVCHashByTx(ctx context.Context, req *VerifyBy
 	// Fold first, then ask. An anchoring is recorded as (issuer, root) and nothing
 	// else, so the root the caller's proof produces is the only handle there is for
 	// finding it — there is no tree index left to look one up by.
-	anchored, err := v.rootAnchoredForRequest(ctx, req, common.Hash(txHash), foldProof(leaf, proof))
+	anchored, err := v.rootAnchoredForRequest(ctx, req, common.Hash(txHash), FoldProof(leaf, proof))
 
 	switch {
 	// A reverted transaction anchored nothing, so it cannot attest the leaf: a
@@ -321,6 +328,89 @@ func (v *CredentialRegistry) rootAnchoredForRequest(ctx context.Context, req *Ve
 		root,
 		common.HexToAddress(req.ContractAddress),
 	)
+}
+
+// GetAnchoredRoot returns the Merkle root that txHash anchored on-chain for the
+// given issuer and tree index, read from the legacy BatchTreesUpdated logs of the
+// transaction's receipt.
+//
+// Deprecated: reads the legacy BatchTreesUpdated event only; against the current
+// contract it returns ErrRootNotAnchored. Use IsRootAnchored.
+//
+// The current contract records an anchoring as (issuer, root) and emits no tree
+// index at all, so there is nothing here to match a tree index against — which is
+// why a root anchored by it can never be found through this function. Roots
+// anchored by the previous contract still are, exactly as before.
+//
+// Kept rather than removed because it shipped in v1.9.x and this module is still
+// v1: dropping an exported symbol without moving to /v2 breaks `go get -u` for
+// anyone who called it, at compile time, through no fault of their own.
+//
+// Returns ErrTxNotFound when no receipt exists (unknown or unmined), ErrTxReverted
+// when the transaction failed, and ErrRootNotAnchored when it succeeded but
+// recorded no root for this issuer and tree index.
+func (v *CredentialRegistry) GetAnchoredRoot(ctx context.Context, txHash common.Hash, issuer common.Address, treeIndex uint64) ([32]byte, error) {
+	var root [32]byte
+
+	if v.receipts == nil {
+		return root, errors.New("registry is not initialized")
+	}
+
+	receipt, err := v.receipts.TransactionReceipt(ctx, txHash)
+	if err != nil {
+		if errors.Is(err, ethereum.NotFound) {
+			return root, ErrTxNotFound
+		}
+
+		return root, fmt.Errorf("failed to get transaction receipt: %w", err)
+	}
+
+	if receipt == nil {
+		return root, fmt.Errorf("receipt source returned no receipt and no error for tx %s", txHash.Hex())
+	}
+
+	if receipt.Status != types.ReceiptStatusSuccessful {
+		return root, ErrTxReverted
+	}
+
+	eventID := v.abi.Events[legacyBatchEvent].ID
+	treeIndexBig := new(big.Int).SetUint64(treeIndex)
+
+	for _, log := range receipt.Logs {
+		// Unpacking a log does not check which contract emitted it, so a lookalike
+		// event from any other address must be rejected here. v1.9.x believed only
+		// the configured address; the trusted set is used now, which for a caller
+		// that passes no alsoTrust is the same set.
+		if !v.trusts(log.Address) {
+			continue
+		}
+
+		if len(log.Topics) == 0 || log.Topics[0] != eventID {
+			continue
+		}
+
+		var event struct {
+			Issuers     []common.Address
+			TreeIndices []*big.Int
+			NewRoots    [][32]byte
+		}
+
+		if v.abi.UnpackIntoInterface(&event, legacyBatchEvent, log.Data) != nil {
+			continue
+		}
+
+		if len(event.Issuers) != len(event.TreeIndices) || len(event.Issuers) != len(event.NewRoots) {
+			continue
+		}
+
+		for i := range event.Issuers {
+			if event.Issuers[i] == issuer && event.TreeIndices[i].Cmp(treeIndexBig) == 0 {
+				return event.NewRoots[i], nil
+			}
+		}
+	}
+
+	return root, ErrRootNotAnchored
 }
 
 // IsRootAnchored reports whether txHash records issuer anchoring root.
@@ -611,17 +701,27 @@ func (v *CredentialRegistry) HasTree(ctx context.Context, issuerAddress string, 
 // be checked against a historical root recovered from a transaction's receipt. An
 // empty proof means a single-leaf tree, where the root equals the leaf.
 func verifyMerkleProof(leaf [32]byte, proof [][32]byte, root [32]byte) bool {
-	return foldProof(leaf, proof) == root
+	return FoldProof(leaf, proof) == root
 }
 
-// foldProof folds leaf together with its sibling path and returns the root it
+// FoldProof folds a leaf together with its sibling path and returns the root it
 // produces.
 //
-// verifyMerkleProof answers "does this fold to the root I already have?", which
-// is the wrong question once the root is what has to be looked up: the anchoring
-// log is searched *by* root, so the root has to exist before the lookup. Folding
-// first and asking about the result inverts that order.
-func foldProof(leaf [32]byte, proof [][32]byte) [32]byte {
+// Exported because IsRootAnchored is keyed on the root, not on the leaf: anything
+// that wants to ask the chain directly — an auditing tool, an operator script,
+// anyone who needs to tell a reverted transaction from a proof that simply does
+// not match — has to fold first. The alternative is every caller reimplementing
+// the rule, and a fold that differs in any detail produces a different root with
+// nothing to signal it.
+//
+// The rule: sibling pairs are hashed in ascending byte order with keccak256, and
+// leaves are not hashed. An empty path means a single-leaf tree, whose root is
+// the leaf itself.
+//
+// Note what this does not establish. A leaf and an inner node are both 32 bytes
+// and the fold cannot tell them apart, so an inner node folds to the root too —
+// see VerifyByTxRequest.Leaf. Fold a hash you computed from the credential.
+func FoldProof(leaf [32]byte, proof [][32]byte) [32]byte {
 	computed := leaf
 	for _, sibling := range proof {
 		computed = hashPair(computed, sibling)

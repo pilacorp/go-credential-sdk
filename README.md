@@ -1090,7 +1090,9 @@ to trust).
 
 A caller that needs to tell a reverted transaction apart from a proof that simply
 does not match calls `IsRootAnchored` directly — the layer below, which returns
-`ErrTxReverted` unchanged.
+`ErrTxReverted` unchanged. It is keyed on the root rather than the leaf, so fold
+first with the exported `FoldProof`; reimplementing that rule risks a fold that
+differs in some detail and produces a different root with nothing to signal it.
 
 ### Why the transaction hash is required
 
@@ -1127,6 +1129,7 @@ still keeps roots in storage.
 - `(*CredentialRegistry) VerifyVCHashOnChain(ctx, *VerifyRequest) (bool, error)`
 - `(*CredentialRegistry) GetTreeRoot(ctx, issuer string, treeIndex uint64) ([32]byte, error)`
 - `(*CredentialRegistry) HasTree(ctx, issuer string, treeIndex uint64) (bool, error)`
+- `(*CredentialRegistry) GetAnchoredRoot(ctx, txHash, issuer, treeIndex uint64) ([32]byte, error)` — kept for source compatibility with v1.9.x. Reads the legacy `BatchTreesUpdated` event only, so a root anchored by the current contract is never found through it (`ErrRootNotAnchored`). Use `IsRootAnchored`.
 
 > Reuse a single `CredentialRegistry` across calls (it holds a live,
 > concurrency-safe RPC client) and `Close()` it on shutdown rather than creating

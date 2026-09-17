@@ -535,3 +535,64 @@ func TestIsRootAnchoredRejectsABatchLogWithMismatchedArrays(t *testing.T) {
 		})
 	}
 }
+
+// TestGetAnchoredRootStillServesLegacyAnchorings covers the deprecated function
+// kept for source compatibility.
+//
+// It shipped in v1.9.x and this module is still v1, so removing it would break
+// `go get -u` at compile time for anyone who called it. Keeping it is only worth
+// something if it still does what it did: a root anchored by the previous
+// contract must still come back, by issuer and tree index, exactly as before.
+func TestGetAnchoredRootStillServesLegacyAnchorings(t *testing.T) {
+	t.Parallel()
+
+	want := mkLeaf(0xbb)
+
+	registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(
+		legacyBatchLog(t, registryAddress,
+			[]common.Address{otherIssuer, issuerAddress},
+			[][32]byte{mkLeaf(0x01), want}),
+	)})
+
+	// legacyBatchLog numbers the indices from legacyTreeIndex, so this entry is
+	// the second one.
+	got, err := registry.GetAnchoredRoot(
+		context.Background(), common.Hash{}, issuerAddress, legacyTreeIndex+1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got != want {
+		t.Fatalf("got root %x, want %x", got, want)
+	}
+}
+
+// The other half of the deprecation notice: against the current contract it
+// cannot find anything, because those events carry no tree index to match. The
+// notice says so, and this is what keeps that honest.
+func TestGetAnchoredRootFindsNothingInCurrentEvents(t *testing.T) {
+	t.Parallel()
+
+	want := mkLeaf(0xbb)
+
+	for _, tc := range []struct {
+		name string
+		log  *types.Log
+	}{
+		{"current single", singleLog(t, registryAddress, issuerAddress, want)},
+		{"current cross-issuer batch", batchLog(t, registryAddress,
+			[]common.Address{issuerAddress}, [][32]byte{want})},
+		{"current issuer batch", issuerBatchLog(t, registryAddress, issuerAddress,
+			[][32]byte{want})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := newTestRegistry(t, stubReceipts{receipt: successReceipt(tc.log)})
+
+			_, err := registry.GetAnchoredRoot(
+				context.Background(), common.Hash{}, issuerAddress, legacyTreeIndex)
+			if !errors.Is(err, ErrRootNotAnchored) {
+				t.Fatalf("err = %v, want ErrRootNotAnchored", err)
+			}
+		})
+	}
+}

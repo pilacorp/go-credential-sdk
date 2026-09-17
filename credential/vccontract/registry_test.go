@@ -219,12 +219,12 @@ func TestAnInnerNodeAlsoFoldsToTheRoot(t *testing.T) {
 	root := hashPair(left, right)
 
 	// A real leaf with its full path.
-	if got := foldProof(a, [][32]byte{b, right}); got != root {
+	if got := FoldProof(a, [][32]byte{b, right}); got != root {
 		t.Fatalf("a real leaf folded to %x, want the root %x", got, root)
 	}
 
 	// The inner node, with what remains of the path, reaches the same root.
-	if got := foldProof(left, [][32]byte{right}); got != root {
+	if got := FoldProof(left, [][32]byte{right}); got != root {
 		t.Fatalf("an inner node folded to %x, want the root %x", got, root)
 	}
 }

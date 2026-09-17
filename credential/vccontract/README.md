@@ -164,6 +164,26 @@ operator script — call `IsRootAnchored` directly. It is the layer below and
 returns `ErrTxReverted` unchanged. `VerifyVCHashByTx` exists to give a verdict;
 `IsRootAnchored` exists to report what the chain said.
 
+It is keyed on the root rather than the leaf, so fold first. `FoldProof` is
+exported for exactly this: reimplementing the rule risks a fold that differs in
+some detail and produces a different root with nothing to signal it.
+
+```go
+root := vccontract.FoldProof(leaf, proof) // [32]byte, [][32]byte
+
+anchored, err := registry.IsRootAnchored(ctx, txHash, issuer, root)
+switch {
+case errors.Is(err, vccontract.ErrTxReverted):
+    // the anchoring transaction failed — an operational problem, not a bad proof
+case errors.Is(err, vccontract.ErrTxNotFound):
+    // unknown or not yet mined — retry
+case err != nil:
+    // could not reach the chain
+case !anchored:
+    // the chain was asked, and this transaction does not carry that root
+}
+```
+
 ## API
 
 - `NewCredentialRegistry(rpcURL, contractAddress string, alsoTrust ...string) (*CredentialRegistry, error)` —
@@ -182,6 +202,10 @@ returns `ErrTxReverted` unchanged. `VerifyVCHashByTx` exists to give a verdict;
 - `(*CredentialRegistry) IsRootAnchoredAtContract(ctx, txHash, issuer, root, contractAddress) (bool, error)` —
   the same, restricted to one deployment. The address must already be trusted:
   pinning narrows what is believed and can never widen it.
+- `(*CredentialRegistry) GetAnchoredRoot(ctx, txHash, issuer, treeIndex) ([32]byte, error)` —
+  **deprecated**, kept for source compatibility with v1.9.x. Reads the legacy
+  `BatchTreesUpdated` event only, so a root anchored by the current contract is
+  never found through it (`ErrRootNotAnchored`). Use `IsRootAnchored`.
 - `(*CredentialRegistry) GetTreeRoot(...)`, `HasTree(...)` — **deprecated**, see
   `VerifyVCHashOnChain` above.
 - `(*CredentialRegistry) Close()` — release the RPC connection.
