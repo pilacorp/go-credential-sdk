@@ -1053,7 +1053,7 @@ A runnable example lives in [`credential/examples/vccontract/verifybytx`](creden
 
 A `true` means exactly one thing:
 
-> **this issuer address anchored a tree, and this leaf is in it.**
+> **an anchoring of this root was recorded under this issuer address — by the issuer itself or by a WRITER of a trusted deployment — and this leaf is in it.**
 
 Two of the inputs decide what that sentence is *about*, and neither can be taken
 from whoever is presenting the credential.
