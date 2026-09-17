@@ -12,10 +12,10 @@ import (
 // The caller supplies a complete proof configuration — the proof options
 // without proofValue, plus the securing document's @context — so both
 // cryptosuites build that configuration from one place and only the hashing
-// differs. CanonicalizeNative rejects a configuration whose terms no context
+// differs. Canonicalize rejects a configuration whose terms no context
 // defines, rather than hashing an empty N-Quads set.
 func hashProofConfig(proofConfig map[string]interface{}) ([]byte, error) {
-	nquads, err := processor.CanonicalizeNative(proofConfig)
+	nquads, err := processor.Canonicalize(proofConfig)
 	if err != nil {
 		return nil, fmt.Errorf("ecdsasd: hash proof config: %w", err)
 	}

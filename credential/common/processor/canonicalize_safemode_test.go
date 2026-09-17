@@ -71,11 +71,11 @@ func TestCanonicalizeWithIdMap_RejectsUndefinedTerm(t *testing.T) {
 
 // Both signing entry points must refuse a document whose @type would be
 // dropped, or the signature would not commit to it. Split by entry point
-// because CanonicalizeNative (ecdsa-rdfc-2019) and CanonicalizeWithIdMap
+// because Canonicalize (ecdsa-rdfc-2019) and CanonicalizeWithIdMap
 // (ecdsa-sd-2023) share the expand step but not the test coverage.
 func TestCanonicalize_RejectsUndefinedType(t *testing.T) {
-	t.Run("CanonicalizeNative", func(t *testing.T) {
-		_, err := CanonicalizeNative(docWithUndefinedType())
+	t.Run("Canonicalize", func(t *testing.T) {
+		_, err := Canonicalize(docWithUndefinedType())
 		if err == nil {
 			t.Fatal("expected an error for a type outside @context, got nil")
 		}
@@ -99,8 +99,8 @@ func TestCanonicalize_RejectsUndefinedType(t *testing.T) {
 	t.Run("defined type passes", func(t *testing.T) {
 		doc := docWithUndefinedType()
 		doc["type"] = []interface{}{"VerifiableCredential"}
-		if _, err := CanonicalizeNative(doc); err != nil {
-			t.Errorf("CanonicalizeNative: %v", err)
+		if _, err := Canonicalize(doc); err != nil {
+			t.Errorf("Canonicalize: %v", err)
 		}
 		if _, _, err := CanonicalizeWithIdMap(doc); err != nil {
 			t.Errorf("CanonicalizeWithIdMap: %v", err)

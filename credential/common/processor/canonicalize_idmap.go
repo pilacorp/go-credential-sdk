@@ -39,13 +39,13 @@ func toRDFDataset(doc map[string]interface{}) (*ld.RDFDataset, error) {
 	return dataset, nil
 }
 
-// CanonicalizeNative returns doc's canonical N-Quads as a single byte string.
+// Canonicalize returns doc's canonical N-Quads as a single byte string.
 // Unlike CanonicalizeDocument it keeps JSON number types (xsd:integer /
 // xsd:double instead of xsd:string), so a signature over the result commits to
 // them, and it fails on undefined terms instead of silently returning nothing.
 // Both Data Integrity cryptosuites (ecdsa-rdfc-2019 and ecdsa-sd-2023) hash
 // their documents and proof configurations through here.
-func CanonicalizeNative(doc map[string]interface{}) ([]byte, error) {
+func Canonicalize(doc map[string]interface{}) ([]byte, error) {
 	nquads, err := canonicalizeNQuads(doc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize document: %w", err)

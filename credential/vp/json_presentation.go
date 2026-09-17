@@ -2,6 +2,7 @@ package vp
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 
@@ -120,16 +121,22 @@ func (e *JSONPresentation) resolveSigningVMEntry(opts ...PresentationOpt) (*veri
 // a presentation proof. See vc.resolveVerificationMethodURL for resolution
 // rules — the only difference is the default purpose (authentication).
 //
-// GetSigningInput returns the canonicalized hash of the document body.
-// IMPORTANT: To generate a valid ecdsa-rdfc-2019 proof, you MUST pass this hash
-// into CreateProofSigning(docHash, proof) before sending it to the external signer.
+// GetSigningInput returns the SHA-256 digest of the canonicalized document
+// body. For an ecdsa-rdfc-2019 proof, pass it to CreateProofSigning to obtain
+// the digest the external signer signs.
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.presentationData).DocumentDigest()
 }
 
-// CreateProofSigning combines the document hash and proof options into the final digest to be signed.
+// CreateProofSigning returns the 32-byte digest the external signer signs:
+// SHA-256 of the section 3.2.4 hashData built from docHash and the proof options.
 func (e *JSONPresentation) CreateProofSigning(docHash []byte, proof *dto.Proof) ([]byte, error) {
-	return (*jsonmap.JSONMap)(&e.presentationData).CreateProofSigning(docHash, proof)
+	hashData, err := (*jsonmap.JSONMap)(&e.presentationData).CreateProofSigning(docHash, proof)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(hashData)
+	return digest[:], nil
 }
 
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
