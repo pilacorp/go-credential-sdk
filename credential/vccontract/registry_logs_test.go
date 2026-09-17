@@ -2,6 +2,7 @@ package vccontract
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math/big"
 	"testing"
@@ -594,5 +595,65 @@ func TestGetAnchoredRootFindsNothingInCurrentEvents(t *testing.T) {
 				t.Fatalf("err = %v, want ErrRootNotAnchored", err)
 			}
 		})
+	}
+}
+
+// receiptWithNilLog builds the receipt an RPC response of "logs":[null] produces.
+//
+// receipt.Logs is []*types.Log, so a JSON null unmarshals to a nil element. It is
+// built by decoding real JSON rather than by writing []*types.Log{nil} directly,
+// so the test keeps proving that this shape is reachable from the wire and not
+// just constructible in Go.
+func receiptWithNilLog(t *testing.T) *types.Receipt {
+	t.Helper()
+
+	const zeroBloom = "0x" + "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+	body := `{"status":"0x1","gasUsed":"0x0","cumulativeGasUsed":"0x0",` +
+		`"logsBloom":"` + zeroBloom + `",` +
+		`"transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000000",` +
+		`"logs":[null]}`
+
+	var receipt types.Receipt
+	if err := json.Unmarshal([]byte(body), &receipt); err != nil {
+		t.Fatalf("unmarshal receipt: %v", err)
+	}
+
+	if len(receipt.Logs) != 1 || receipt.Logs[0] != nil {
+		t.Fatalf("fixture did not produce a nil log entry: %#v", receipt.Logs)
+	}
+
+	return &receipt
+}
+
+// A nil entry in receipt.Logs must be skipped, not dereferenced. Reading Address
+// off it panics before any emitter check can run — taking down the process on a
+// verification request, because of what the other side sent.
+func TestIsRootAnchoredSkipsNilLogs(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t, stubReceipts{receipt: receiptWithNilLog(t)})
+
+	ok, err := anchoredFor(t, registry, mkLeaf(0xbb))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ok {
+		t.Fatal("a nil log was read as an anchoring")
+	}
+}
+
+// The same loop exists in the deprecated GetAnchoredRoot, and was missed there
+// too.
+func TestGetAnchoredRootSkipsNilLogs(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t, stubReceipts{receipt: receiptWithNilLog(t)})
+
+	_, err := registry.GetAnchoredRoot(
+		context.Background(), common.Hash{}, issuerAddress, legacyTreeIndex)
+	if !errors.Is(err, ErrRootNotAnchored) {
+		t.Fatalf("err = %v, want ErrRootNotAnchored", err)
 	}
 }

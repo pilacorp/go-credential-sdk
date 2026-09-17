@@ -377,6 +377,14 @@ func (v *CredentialRegistry) GetAnchoredRoot(ctx context.Context, txHash common.
 	treeIndexBig := new(big.Int).SetUint64(treeIndex)
 
 	for _, log := range receipt.Logs {
+		// receipt.Logs is []*types.Log, so a JSON null in the response unmarshals to
+		// a nil element. A node that sends "logs":[null] — or anything in front of
+		// one that rewrites the response — reaches this loop, and reading Address
+		// off it panics before any check can run.
+		if log == nil {
+			continue
+		}
+
 		// Unpacking a log does not check which contract emitted it, so a lookalike
 		// event from any other address must be rejected here. v1.9.x believed only
 		// the configured address; the trusted set is used now, which for a caller
@@ -481,6 +489,14 @@ func (v *CredentialRegistry) rootAnchored(ctx context.Context, txHash common.Has
 	}
 
 	for _, log := range receipt.Logs {
+		// receipt.Logs is []*types.Log, so a JSON null in the response unmarshals to
+		// a nil element. A node that sends "logs":[null] — or anything in front of
+		// one that rewrites the response — reaches this loop, and reading Address
+		// off it panics before any check can run.
+		if log == nil {
+			continue
+		}
+
 		// Unpacking a log does not check which contract emitted it, and anyone
 		// can deploy a contract emitting these exact signatures, so a log from an
 		// address that is not believed must be dropped before it is decoded.
