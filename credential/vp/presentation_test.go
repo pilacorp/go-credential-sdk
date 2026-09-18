@@ -834,6 +834,35 @@ func TestPresentation_LegacyExternalSigningFlow(t *testing.T) {
 			t.Fatalf("expected proof field")
 		}
 	})
+
+	// The proofValue carries the signature; this release issues base58btc only,
+	// and an empty value is not "not hex" — it is no signature at all.
+	t.Run("JSON AddCustomProof rejects a proofValue that is not base58btc", func(t *testing.T) {
+		for name, proofValue := range map[string]string{"hex": "deadbeef", "empty": ""} {
+			t.Run(name, func(t *testing.T) {
+				p, err := vp.NewJSONPresentation(vpc)
+				if err != nil {
+					t.Fatalf("NewJSONPresentation: %v", err)
+				}
+
+				err = p.AddCustomProof(&dto.Proof{
+					Type:               "DataIntegrityProof",
+					Created:            "2024-01-01T00:00:00Z",
+					VerificationMethod: vpc.Holder + "#key-1",
+					ProofPurpose:       "authentication",
+					Cryptosuite:        "ecdsa-rdfc-2019",
+					ProofValue:         proofValue,
+				})
+				if err == nil || !strings.Contains(err.Error(), "base58btc") {
+					t.Fatalf("AddCustomProof: err = %v, want a base58btc proofValue error", err)
+				}
+
+				if _, err := p.Serialize(); err == nil {
+					t.Fatalf("Serialize: a rejected proof must not be attached")
+				}
+			})
+		}
+	})
 }
 
 func TestJSONPresentationFlow(t *testing.T) {

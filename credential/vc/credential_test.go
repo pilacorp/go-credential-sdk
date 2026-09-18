@@ -1022,6 +1022,30 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 		assert.Contains(t, credMap, "proof")
 	})
 
+	// The proofValue carries the signature; this release issues base58btc only,
+	// and an empty value is not "not hex" — it is no signature at all.
+	t.Run("JSON AddCustomProof rejects a proofValue that is not base58btc", func(t *testing.T) {
+		for name, proofValue := range map[string]string{"hex": "deadbeef", "empty": ""} {
+			t.Run(name, func(t *testing.T) {
+				cred, err := NewJSONCredential(contents)
+				assert.NoError(t, err)
+
+				err = cred.AddCustomProof(&dto.Proof{
+					Type:               "DataIntegrityProof",
+					Created:            "2024-01-01T00:00:00Z",
+					VerificationMethod: issuerDID + "#key-1",
+					ProofPurpose:       "assertionMethod",
+					Cryptosuite:        "ecdsa-rdfc-2019",
+					ProofValue:         proofValue,
+				})
+				assert.ErrorContains(t, err, "base58btc")
+
+				_, err = cred.Serialize()
+				assert.Error(t, err, "a rejected proof must not be attached")
+			})
+		}
+	})
+
 	t.Run("JSON AddCustomProof(nil) errors", func(t *testing.T) {
 		cred, err := NewJSONCredential(contents)
 		assert.NoError(t, err)
