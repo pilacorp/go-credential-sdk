@@ -4,11 +4,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
@@ -391,5 +394,71 @@ func TestJWTVP_ChallengeDomain_SetAtSignTime(t *testing.T) {
 	}
 	if err := pres.Verify(vp.WithResolver(resolver), vp.WithExpectedChallenge("stale")); err == nil {
 		t.Fatal("stale challenge must not verify")
+	}
+}
+
+// Data Integrity § 2.1 allows domain to be a set of strings, e.g. a
+// presentation a wallet may show to any of several relying parties. Such a
+// proof must verify, and satisfy WithExpectedDomain for every listed domain.
+func TestVP_ChallengeDomain_AcceptsDomainSet(t *testing.T) {
+	const holder = "did:example:vp-domain-set"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("p256: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(holder,
+		mustP256VM(t, holder, "key-1", &priv.PublicKey)))
+
+	var m jsonmap.JSONMap
+	if err := json.Unmarshal(vpDoc(holder), &m); err != nil {
+		t.Fatalf("unmarshal vp: %v", err)
+	}
+	proof := &dto.Proof{
+		Type:               jsonmap.DataIntegrityProof,
+		Cryptosuite:        jsonmap.ECDSARDFC2019,
+		Created:            "2026-01-01T00:00:00Z",
+		VerificationMethod: holder + "#key-1",
+		ProofPurpose:       "authentication",
+		Challenge:          "nonce-123",
+		Domain:             dto.StringOrStrings{"rp-a.example", "rp-b.example"},
+	}
+
+	docHash, err := m.DocumentDigest()
+	if err != nil {
+		t.Fatalf("document digest: %v", err)
+	}
+	hashData, err := m.ProofHashData(docHash, proof)
+	if err != nil {
+		t.Fatalf("proof hash data: %v", err)
+	}
+	digest := sha256.Sum256(hashData)
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	proof.ProofValue = vmpkg.EncodeMultibaseKey(sig)
+	if err := m.AddCustomProof(proof); err != nil {
+		t.Fatalf("attach proof: %v", err)
+	}
+
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	pres, err := vp.ParseJSONPresentation(raw)
+	if err != nil {
+		t.Fatalf("parse vp: %v", err)
+	}
+
+	for _, domain := range []string{"rp-a.example", "rp-b.example"} {
+		if err := pres.Verify(vp.WithResolver(resolver), vp.WithExpectedDomain(domain)); err != nil {
+			t.Fatalf("verify with expected domain %q: %v", domain, err)
+		}
+	}
+	if err := pres.Verify(vp.WithResolver(resolver), vp.WithExpectedDomain("evil.example")); err == nil {
+		t.Fatal("a domain outside the set must not verify")
 	}
 }

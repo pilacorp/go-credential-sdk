@@ -162,6 +162,15 @@ func WithDomain(domain string) ProofOpt {
 	return func(o *proofOptions) { o.domain = domain }
 }
 
+// domainValue renders the domain option as the proof value: absent when empty,
+// a single string otherwise.
+func domainValue(domain string) dto.StringOrStrings {
+	if domain == "" {
+		return nil
+	}
+	return dto.StringOrStrings{domain}
+}
+
 func newProofOptions(opts ...ProofOpt) *proofOptions {
 	o := &proofOptions{}
 	for _, opt := range opts {
@@ -198,7 +207,7 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 		ProofPurpose:       proofPurpose,
 		Cryptosuite:        ECDSARDFC2019,
 		Challenge:          options.challenge,
-		Domain:             options.domain,
+		Domain:             domainValue(options.domain),
 	}
 
 	hashData, err := m.ecdsaHashData(proof)
@@ -412,11 +421,14 @@ func (m *JSONMap) ecdsaProofConfig(proof *dto.Proof) (map[string]interface{}, er
 	}
 
 	cfg := JSONMap(proof.ToMap())
-	// The signature cannot cover itself: proofValue per § 3.2.5, and jws, the
-	// signature carrier of JsonWebSignature2020 proofs.
+	// The signature cannot cover itself: § 3.2.5 removes proofValue, and only
+	// proofValue.
 	delete(cfg, "proofValue")
-	delete(cfg, "jws")
-	cfg["@context"] = ctx
+	// A proof issued elsewhere may carry its own @context; overwriting it would
+	// canonicalize the configuration differently than the signer did.
+	if _, ok := cfg["@context"]; !ok {
+		cfg["@context"] = ctx
+	}
 
 	// Round-trip through JSON: normalizes @context to plain JSON types and
 	// copies it, leaving the document's own untouched.
