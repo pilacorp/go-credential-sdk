@@ -11,7 +11,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 type JWTPresentation struct {
@@ -19,6 +18,7 @@ type JWTPresentation struct {
 	payloadData  PresentationData       // Parsed payload as PresentationData
 	jwtClaims    map[string]interface{} // Top-level JWT claims (iss, aud, nonce, ...)
 	signature    string                 // JWT signature (if signed)
+	headerVM     jwt.SigningKey         // Verification method the header names; zero for a parsed presentation
 }
 
 var _ Presentation = (*JWTPresentation)(nil)
@@ -71,24 +71,16 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JWT
 
 	// Resolve the VM so alg reflects the key it actually holds, and so a kid
 	// that does not exist or is not granted authentication is caught here.
-	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vpc.Holder,
-		"authentication", options.verificationMethodKey, options.resolver)
+	headerVM, err := jwt.ResolveSigningKey(context.Background(), vpc.Holder, "authentication",
+		options.verificationMethodKey, options.resolver)
 	if err != nil {
-		return nil, fmt.Errorf("resolve verification method: %w", err)
-	}
-	kind, ok := verificationmethod.VMKeyKind(vm)
-	if !ok {
-		return nil, fmt.Errorf("verification method %q has an unrecognized key type", kid)
-	}
-	alg, err := jwt.AlgForKeyKind(kind)
-	if err != nil {
-		return nil, fmt.Errorf("verification method %q: %w", kid, err)
+		return nil, err
 	}
 
 	header := map[string]interface{}{
 		"typ": "JWT",
-		"alg": alg,
-		"kid": kid,
+		"alg": headerVM.Alg,
+		"kid": headerVM.ID,
 	}
 
 	// Encode header and payload
@@ -112,6 +104,7 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JWT
 		payloadData:  payloadData,
 		jwtClaims:    payload,
 		signature:    "",
+		headerVM:     headerVM,
 	}
 
 	// Return JWTPresentation
@@ -193,12 +186,9 @@ func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opt
 		return err
 	}
 
-	jwtSigner := jwt.NewJWTSigner(provider)
-
-	// Sign the existing signing input
-	signature, err := jwtSigner.SignString(j.signingInput)
+	signature, err := j.headerVM.Sign(provider, j.signingInput)
 	if err != nil {
-		return fmt.Errorf("failed to sign signing input: %w", err)
+		return err
 	}
 
 	j.signature = signature

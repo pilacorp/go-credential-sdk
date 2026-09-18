@@ -14,7 +14,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -25,6 +24,7 @@ type JWTCredential struct {
 	payloadData  CredentialData // Parsed payload as CredentialData
 	signature    string         // JWT signature (if signed)
 	disclosures  []string       // Optional SD-JWT disclosures (when issuing/holding SD-JWT)
+	headerVM     jwt.SigningKey // Verification method the header names; zero for a parsed credential
 }
 
 var _ Credential = (*JWTCredential)(nil)
@@ -79,24 +79,16 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 
 	// Resolve the VM so alg reflects the key it actually holds, and so a kid
 	// that does not exist or is not granted assertionMethod is caught here.
-	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vcc.Issuer,
-		"assertionMethod", options.verificationMethodKey, options.resolver)
+	headerVM, err := jwt.ResolveSigningKey(context.Background(), vcc.Issuer, "assertionMethod",
+		options.verificationMethodKey, options.resolver)
 	if err != nil {
-		return nil, fmt.Errorf("resolve verification method: %w", err)
-	}
-	kind, ok := verificationmethod.VMKeyKind(vm)
-	if !ok {
-		return nil, fmt.Errorf("verification method %q has an unrecognized key type", kid)
-	}
-	alg, err := jwt.AlgForKeyKind(kind)
-	if err != nil {
-		return nil, fmt.Errorf("verification method %q: %w", kid, err)
+		return nil, err
 	}
 
 	header := map[string]interface{}{
 		"typ": "JWT",
-		"alg": alg,
-		"kid": kid,
+		"alg": headerVM.Alg,
+		"kid": headerVM.ID,
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -118,6 +110,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 		payloadData:  payloadData,
 		signature:    "",
 		disclosures:  disclosures,
+		headerVM:     headerVM,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -206,10 +199,9 @@ func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider,
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
-	jwtSigner := jwt.NewJWTSigner(signerProvider)
-	signature, err := jwtSigner.SignString(j.signingInput)
+	signature, err := j.headerVM.Sign(signerProvider, j.signingInput)
 	if err != nil {
-		return fmt.Errorf("failed to sign signing input: %w", err)
+		return err
 	}
 
 	j.signature = signature

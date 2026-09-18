@@ -506,7 +506,6 @@ func TestCreatePresentationJWT(t *testing.T) {
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
 	// Test data
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create a test credential first
@@ -534,7 +533,7 @@ func TestCreatePresentationJWT(t *testing.T) {
 	}
 
 	// Add proof to the presentation
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
+	err = presentation.AddProofByProvider(mustP256Signer(t))
 	if err != nil {
 		t.Fatalf("Failed to sign presentation as JWT: %v", err)
 	}
@@ -596,7 +595,6 @@ func TestPresentationSignatureFlows(t *testing.T) {
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
 	// Test data
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
@@ -654,7 +652,7 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 
 		// Add proof using AddProofByProvider method
-		err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
+		err = presentation.AddProofByProvider(mustP256Signer(t))
 		if err != nil {
 			t.Fatalf("Failed to add proof to JWT presentation: %v", err)
 		}
@@ -1122,7 +1120,6 @@ func TestJWTPresentationWithTimeFields(t *testing.T) {
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
@@ -1155,7 +1152,7 @@ func TestJWTPresentationWithTimeFields(t *testing.T) {
 	}
 
 	// Add proof
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
+	err = presentation.AddProofByProvider(mustP256Signer(t))
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1256,7 +1253,6 @@ func TestJWTPresentationWithoutTimeFields(t *testing.T) {
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
@@ -1284,7 +1280,7 @@ func TestJWTPresentationWithoutTimeFields(t *testing.T) {
 	}
 
 	// Add proof
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
+	err = presentation.AddProofByProvider(mustP256Signer(t))
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1340,7 +1336,6 @@ func TestParsePresentationWithTimeFields(t *testing.T) {
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
@@ -1373,7 +1368,7 @@ func TestParsePresentationWithTimeFields(t *testing.T) {
 	}
 
 	// Add proof
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
+	err = presentation.AddProofByProvider(mustP256Signer(t))
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1500,4 +1495,75 @@ func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) vmpkg.
 		t.Fatalf("NewP256VM(%s, %s): %v", did, fragment, err)
 	}
 	return entry
+}
+
+// A signer that does not hold the key the JWT header names still produces a
+// well-formed signature; it must be refused when signing, not discovered by the
+// verifier. testResolver's key-1 is secp256k1 and key-2 (the default) P-256.
+//
+// Each refused case is also checked independently: the token that signer would
+// have produced is assembled without the code under test and handed to the
+// SDK's existing JWT verifier, which must reject it too.
+func TestJWTPresentation_SignerMustHoldTheHeaderKey(t *testing.T) {
+	vpc := vp.PresentationContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:      "urn:uuid:jwt-signer-key-test",
+		Types:   []string{"VerifiablePresentation"},
+		Holder:  testDID,
+	}
+	resolver := testResolver(t)
+
+	cases := []struct {
+		name   string
+		pin    string
+		signer signer.SignerProvider
+		wantOK bool
+	}{
+		{"default key-2 (P-256), P-256 signer", "", mustP256Signer(t), true},
+		{"default key-2 (P-256), secp256k1 signer", "", mustDefaultSigner(t, testSecpPrivHex), false},
+		{"pinned key-1 (secp256k1), secp256k1 signer", "#key-1", mustDefaultSigner(t, testSecpPrivHex), true},
+		{"pinned key-1 (secp256k1), P-256 signer", "#key-1", mustP256Signer(t), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := []vp.PresentationOpt{vp.WithResolver(resolver)}
+			if tc.pin != "" {
+				opts = append(opts, vp.WithVerificationMethodKey(tc.pin))
+			}
+			p, err := vp.NewJWTPresentation(vpc, opts...)
+			if err != nil {
+				t.Fatalf("NewJWTPresentation: %v", err)
+			}
+
+			signingInput, err := p.GetSigningInput()
+			if err != nil {
+				t.Fatalf("GetSigningInput: %v", err)
+			}
+
+			err = p.AddProofByProvider(tc.signer)
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("sign: %v", err)
+				}
+				if err := p.Verify(vp.WithResolver(resolver)); err != nil {
+					t.Fatalf("verify: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "does not hold that key") {
+				t.Fatalf("sign err = %v, want a key mismatch error", err)
+			}
+			if serialized, _ := p.Serialize(); strings.Count(serialized.(string), ".") != 1 {
+				t.Fatalf("a refused signature must not be attached, got %q", serialized)
+			}
+
+			unchecked, err := jwt.NewJWTSigner(tc.signer).SignString(string(signingInput))
+			if err != nil {
+				t.Fatalf("sign unchecked: %v", err)
+			}
+			if err := jwt.NewJWTVerifier(resolver).VerifyJWT(string(signingInput) + "." + unchecked); err == nil {
+				t.Fatal("the existing verifier accepts this token, so refusing it would be wrong")
+			}
+		})
+	}
 }
