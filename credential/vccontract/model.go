@@ -65,15 +65,24 @@ func (r *VerifyRequest) Validate() error {
 		return errors.New("verify request is required")
 	}
 
-	if !common.IsHexAddress(r.IssuerAddress) {
-		return fmt.Errorf("invalid issuer address: %q", r.IssuerAddress)
+	return validateProofFields(r.IssuerAddress, r.Leaf, r.Proof)
+}
+
+// validateProofFields checks the three fields both verify requests carry.
+//
+// Shared rather than written twice so the two entry points cannot drift: a check
+// tightened on one path but not the other would leave the same malformed input
+// rejected by one function and accepted by the other.
+func validateProofFields(issuerAddress, leaf string, proof []string) error {
+	if !common.IsHexAddress(issuerAddress) {
+		return fmt.Errorf("invalid issuer address: %q", issuerAddress)
 	}
 
-	if err := validateHash32(r.Leaf); err != nil {
+	if err := validateHash32(leaf); err != nil {
 		return fmt.Errorf("invalid leaf: %w", err)
 	}
 
-	for i, p := range r.Proof {
+	for i, p := range proof {
 		if err := validateHash32(p); err != nil {
 			return fmt.Errorf("invalid proof element at index %d: %w", i, err)
 		}
@@ -140,18 +149,8 @@ func (r *VerifyByTxRequest) Validate() error {
 		return errors.New("verify request is required")
 	}
 
-	if !common.IsHexAddress(r.IssuerAddress) {
-		return fmt.Errorf("invalid issuer address: %q", r.IssuerAddress)
-	}
-
-	if err := validateHash32(r.Leaf); err != nil {
-		return fmt.Errorf("invalid leaf: %w", err)
-	}
-
-	for i, p := range r.Proof {
-		if err := validateHash32(p); err != nil {
-			return fmt.Errorf("invalid proof element at index %d: %w", i, err)
-		}
+	if err := validateProofFields(r.IssuerAddress, r.Leaf, r.Proof); err != nil {
+		return err
 	}
 
 	if err := validateHash32(r.TxHash); err != nil {

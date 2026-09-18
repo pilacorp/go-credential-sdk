@@ -228,3 +228,13 @@ func TestAnInnerNodeAlsoFoldsToTheRoot(t *testing.T) {
 		t.Fatalf("an inner node folded to %x, want the root %x", got, root)
 	}
 }
+
+// verifyMerkleProof reports whether leaf, folded together with its sibling path,
+// reproduces root.
+//
+// It lives here because only the tests fold-and-compare in one step: production
+// code asks the chain about the folded root instead, so keeping this in the
+// package proper left a second name for FoldProof that nothing called.
+func verifyMerkleProof(leaf [32]byte, proof [][32]byte, root [32]byte) bool {
+	return FoldProof(leaf, proof) == root
+}

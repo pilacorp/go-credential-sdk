@@ -36,16 +36,19 @@ func main() {
 		contractAddress = "0x7F58Eb7eaEe52768970EC3796bdD146286EF82C6"
 	)
 
-	// Once a new deployment replaces the one above, it becomes contractAddress and
-	// this one moves here, to the list of earlier deployments whose anchorings must
-	// keep verifying:
+	// The second argument is the eth_call target, which only the deprecated view
+	// functions need. This example reads logs, so it passes "" rather than invent a
+	// contract to call; every address after it is one whose anchoring logs are
+	// believed.
 	//
-	//	registry, err := vccontract.NewCredentialRegistry(rpcURL, newAddress, contractAddress)
+	// When a new deployment replaces the one above, add it — do not replace:
+	//
+	//	registry, err := vccontract.NewCredentialRegistry(rpcURL, "", newAddress, contractAddress)
 	//
 	// A tree stays verifiable only at the contract that anchored it, and nothing
-	// re-anchors it — so an address left out of that list makes every credential
-	// anchored by it read as never anchored.
-	registry, err := vccontract.NewCredentialRegistry(rpcURL, contractAddress)
+	// re-anchors it, so an address left out makes every credential anchored by it
+	// read as never anchored — false, with no error to say why.
+	registry, err := vccontract.NewCredentialRegistry(rpcURL, "", contractAddress)
 	if err != nil {
 		log.Fatalf("failed to create registry: %v", err)
 	}

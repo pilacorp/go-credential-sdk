@@ -83,6 +83,30 @@ func TestVerifyVCHashByTx(t *testing.T) {
 			wantErr: ErrTxNotFound,
 		},
 		{
+			// The whole reason this function replaces VerifyVCHashOnChain: a leaf
+			// anchored by the previous contract has to keep verifying through it,
+			// because that contract's storage is gone and nothing will re-anchor
+			// those trees. IsRootAnchored is tested against every event shape, but
+			// only this path also folds the proof from hex, so the two legacy
+			// shapes are exercised here end to end rather than assumed.
+			name: "a leaf anchored by the previous contract's single event",
+			receipt: func(t *testing.T) *types.Receipt {
+				return successReceipt(legacySingleLog(t, legacyAddress, issuerAddress, root))
+			},
+			alsoTrust: []common.Address{legacyAddress},
+			want:      true,
+		},
+		{
+			name: "a leaf anchored by the previous contract's batch event",
+			receipt: func(t *testing.T) *types.Receipt {
+				return successReceipt(legacyBatchLog(t, legacyAddress,
+					[]common.Address{otherIssuer, issuerAddress},
+					[][32]byte{mkLeaf(0x01), root}))
+			},
+			alsoTrust: []common.Address{legacyAddress},
+			want:      true,
+		},
+		{
 			name:      "pinned to the deployment that emitted the log",
 			receipt:   func(t *testing.T) *types.Receipt { return anchoring(t, legacyAddress) },
 			alsoTrust: []common.Address{legacyAddress},

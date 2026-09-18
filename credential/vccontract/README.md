@@ -22,9 +22,13 @@ why there are two verification paths.
 - **`VerifyVCHashByTx`** — the one to use. It folds the proof locally
   (sorted-pair keccak256) and asks whether that exact root appears in the logs of
   the given transaction, emitted by a trusted contract for that issuer.
-- **`VerifyVCHashOnChain`** — **deprecated**. It calls `verifyVC(...)`, which the
-  current contract does not have, so against it this can only fail. It works
-  solely against an older deployment that still keeps roots in storage.
+- **`VerifyVCHashOnChain`** — **deprecated, old contract only**. It calls
+  `verifyVC(...)`, which the current contract does not have, so against it this
+  can only fail. It works solely against an older deployment that still keeps
+  roots in storage.
+
+`GetTreeRoot`, `HasTree` and `GetAnchoredRoot` are old-contract-only for the same
+reason — see the table under [API](#api).
 
 ### Why the by-tx path asks about a root instead of fetching one
 
@@ -49,9 +53,31 @@ Two things must be true for this to hold:
 1. The embedded ABI keeps all five events. It is a **hand-merged** file — the
    current contract's ABI does not contain the legacy two, so regenerating it
    blindly silently breaks every pre-upgrade credential.
-2. The previous deployment's address is passed to `NewCredentialRegistry` via
-   `alsoTrust`. The current contract is at a new address, so without this its
-   predecessor's logs are dropped at the emitter check.
+2. Every deployment that ever anchored is named to `NewCredentialRegistry` —
+   `contractAddress`, `alsoTrust`, or both; position does not matter, only
+   membership. An address left out has its logs dropped at the emitter check, and
+   every credential anchored by it verifies as `false` **with no error**.
+
+### ⚠️ Naming no address at all turns the emitter check off
+
+Pass no address in either parameter and **every log is believed, whichever
+contract emitted it**. This is allowed on purpose, so a caller who does not want
+to enumerate deployments is not forced to. Understand what it costs.
+
+The event signatures are public. With the check off, an attacker:
+
+1. builds a Merkle tree over leaves they invented;
+2. deploys their own contract that emits `TreeRootAnchored(issuer, root)`;
+3. calls it naming **an issuer address they do not control** and their own root;
+4. hands you a proof bundle pointing at that transaction.
+
+It verifies as `true`. There is no other check standing between a real anchoring
+and that one — the emitter is the whole of it.
+
+So: name at least one address in anything that accepts a credential from outside.
+An empty trusted set is for a local experiment, or for exploring a chain whose
+deployments you are still discovering — cases where a `true` does not have to mean
+anything.
 
 ## Inputs
 
@@ -69,6 +95,14 @@ authen-service API). They typically come from the authen-service proof endpoint
   folds to the anchored root, so an unverified leaf proves nothing.
 - `Proof` — ordered sibling hashes (32-byte hex each; empty for a single-leaf tree)
 - `TxHash` — hash of the anchoring transaction (32-byte hex) — **`VerifyVCHashByTx` only**
+- `ContractAddress` — optional, **`VerifyVCHashByTx` only.** The deployment that
+  anchored this proof, as the proof API reported it for that anchoring. Leave it
+  empty and any trusted deployment may supply the root; set it and only that one
+  may. Setting it is strictly safer, and it must name an address already passed
+  to `NewCredentialRegistry` — pinning narrows what is believed and can never
+  widen it (`ErrUntrustedContract`). It travels with `TxHash` rather than with the
+  tree, because a tree left open across a migration is anchored first at one
+  address and later at another.
 
 ### What this package proves, and what it does not
 
@@ -104,9 +138,13 @@ pin — so cap retries on `ErrTxNotFound` when the hash came from the holder.
 ```go
 registry, err := vccontract.NewCredentialRegistry(
     "https://rpc.example.com",
+    // Who to call. Only the three deprecated view functions call anything, so
+    // pass "" unless you use them — there is no placeholder address to invent.
+    "",
+    // Whose logs to believe. Every deployment whose anchorings must keep
+    // verifying, including the current one. Leave one out and every credential
+    // anchored by it reads as never anchored — false, with no error.
     "0x...CredentialRegistry",
-    // Every earlier deployment whose anchorings must keep verifying. Leave one
-    // out and every credential anchored by it reads as never anchored.
     "0x...PreviousDeployment",
 )
 if err != nil {
@@ -142,10 +180,15 @@ whole contract of this call:
 | `(false, nil)` | **The chain was asked, and it does not.** |
 | `(_, err)` | **The chain could not be asked.** Nothing was established either way. |
 
-A `false` is a verdict, not a failure. It covers both of these:
+A `false` is a verdict, not a failure. It covers all three of these:
 
 - the proof does not fold to any root this transaction anchored for this issuer;
-- the transaction **reverted**, and so anchored nothing at all.
+- the transaction **reverted**, and so anchored nothing at all;
+- the proof folds to an **all-zero root**, which no transaction can ever have
+  anchored — the contract rejects an empty root with `EmptyRoot`, so it never
+  reaches a log. The receipt is not even fetched. (`FoldProof` returns the leaf
+  unchanged when the path is empty, so a caller asking about the zero hash with
+  no siblings lands here: a well-formed question whose answer is simply no.)
 
 The second one is deliberately not an error. A reverted transaction did run, and
 it wrote nothing — so "this transaction does not attest the leaf" is the true and
@@ -187,9 +230,52 @@ case !anchored:
 
 ## API
 
+### Which contract each function works against
+
+| Function | Old contract | Current contract |
+| --- | --- | --- |
+| `VerifyVCHashByTx` | ✅ | ✅ |
+| `IsRootAnchored`, `IsRootAnchoredAtContract` | ✅ | ✅ |
+| `FoldProof` | — pure computation, no chain | — |
+| `VerifyVCHashOnChain` | ✅ | ❌ `eth_call` fails — no `verifyVC` |
+| `GetTreeRoot` | ✅ | ❌ `eth_call` fails — no `getTreeRoot` |
+| `HasTree` | ✅ | ❌ `eth_call` fails — no `treeExists` |
+| `GetAnchoredRoot` | ✅ | ❌ always `ErrRootNotAnchored` |
+
+The four marked ❌ all resolve `(issuer, treeIndex)`, and the current contract
+records no tree index anywhere — not in storage, not in an event. So there is no
+replacement that takes one, and none can be written: `(issuer, treeIndex) → root`
+is not derivable from chain data any more. That mapping now lives off-chain, in
+the issuer service's database.
+
+Which is why migrating off them splits in two:
+
+- **A caller that can carry a tx hash** uses `VerifyVCHashByTx`. The proof API
+  already returns one alongside the proof, so usually nothing extra is needed.
+- **A caller that must keep the old call shape** — issuer, tree index, leaf,
+  proof — goes through the issuer service's `POST /api/v1/credentials/verify-hash`
+  instead. It holds the database that still maps a tree index to its anchoring
+  transaction; this package has no database and cannot.
+
+`GetAnchoredRoot` fails differently from the other three, and worse: they fail at
+the RPC layer, while it returns a **well-formed negative**, so a caller that
+reads `ErrRootNotAnchored` as "not anchored" reports every valid credential as
+unanchored, silently.
+
+`alsoTrust` does not bridge this. It widens whose *logs* are believed and never
+changes which address is called — `eth_call` always goes to `contractAddress`.
+Serving both the view functions and log reading needs **two `CredentialRegistry`
+instances**, one per deployment.
+
 - `NewCredentialRegistry(rpcURL, contractAddress string, alsoTrust ...string) (*CredentialRegistry, error)` —
-  connect to the chain (RPC connection is required). `alsoTrust` names earlier
-  deployments whose anchoring logs are still to be believed.
+  connect to the chain (RPC connection is required). The two address parameters
+  answer two different questions: `contractAddress` is **who to call**, needed
+  only by the three view functions, and `alsoTrust` is **whose logs to believe** —
+  those addresses are never called. Both feed the trusted set and position in it
+  means nothing. The zero address is refused in either position
+  (`common.IsHexAddress` accepts it, so an unset variable arrives looking valid).
+  Naming **no** address is allowed and turns the emitter check off — see the
+  warning below.
 - `(*CredentialRegistry) VerifyVCHashByTx(ctx, *VerifyByTxRequest) (bool, error)` —
   verify a VC hash against the anchoring transaction it belongs to.
 - `(*CredentialRegistry) VerifyVCHashOnChain(ctx, *VerifyRequest) (bool, error)` —

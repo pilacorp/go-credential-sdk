@@ -424,17 +424,6 @@ func TestIsRootAnchoredTruncatedTopics(t *testing.T) {
 	}
 }
 
-// An empty root folds out of a malformed proof and would otherwise be looked up
-// like any other. Nothing anchors it, but failing loudly beats searching for a
-// value that can never be there.
-func TestIsRootAnchoredRejectsAnEmptyRoot(t *testing.T) {
-	registry := newTestRegistry(t, stubReceipts{receipt: successReceipt()})
-
-	if _, err := anchoredFor(t, registry, [32]byte{}); err == nil {
-		t.Fatal("looking up an empty root was accepted")
-	}
-}
-
 func TestIsRootAnchoredReceiptOutcomes(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -655,5 +644,45 @@ func TestGetAnchoredRootSkipsNilLogs(t *testing.T) {
 		context.Background(), common.Hash{}, issuerAddress, legacyTreeIndex)
 	if !errors.Is(err, ErrRootNotAnchored) {
 		t.Fatalf("err = %v, want ErrRootNotAnchored", err)
+	}
+}
+
+// A zero root is what FoldProof returns for the zero leaf with no siblings, so it
+// arrives from ordinary callers rather than from anything malformed. The answer is
+// no — the contract rejects an empty root with EmptyRoot, so none was ever
+// anchored — and it has to come back as that answer.
+//
+// This used to be reported as an error, which surfaced as a 500 in the service
+// built on this SDK and left the caller unable to tell a wrong proof from a broken
+// service.
+func TestIsRootAnchoredAnswersNoForAnEmptyRoot(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t, stubReceipts{receipt: successReceipt()})
+
+	found, err := anchoredFor(t, registry, [32]byte{})
+	if err != nil {
+		t.Fatalf("an empty root should be a verdict, not an error: %v", err)
+	}
+
+	if found {
+		t.Error("an empty root was reported as anchored")
+	}
+}
+
+// The receipt is never fetched for an empty root: the answer is known before any
+// RPC call. A source that fails on every call proves the short circuit is real.
+func TestIsRootAnchoredEmptyRootSkipsTheReceiptLookup(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t, stubReceipts{err: errors.New("receipt source must not be called")})
+
+	found, err := anchoredFor(t, registry, [32]byte{})
+	if err != nil {
+		t.Fatalf("empty root reached the receipt source: %v", err)
+	}
+
+	if found {
+		t.Error("an empty root was reported as anchored")
 	}
 }

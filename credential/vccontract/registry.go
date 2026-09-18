@@ -61,6 +61,10 @@ var (
 )
 
 var (
+	// ErrNoContractAddress is returned by the view functions when the client was
+	// built without a contractAddress. They are the only operations that call the
+	// contract, so they are the only ones that need one; reading logs does not.
+	ErrNoContractAddress = errors.New("no contract address configured")
 	// ErrTxNotFound is returned when the chain has no receipt for the tx hash,
 	// either because it is unknown or because it has not been mined yet.
 	ErrTxNotFound = errors.New("transaction not found")
@@ -108,47 +112,92 @@ func loadABI() (abi.ABI, error) {
 type CredentialRegistry struct {
 	client   *ethclient.Client
 	receipts receiptSource
+	// contract is the eth_call target, nil when no contractAddress was given. Only
+	// the view functions use it, and they check it first.
 	contract *bind.BoundContract
 	abi      abi.ABI
-	address  common.Address
+	// address is contract's address, zero when there is none.
+	address common.Address
 	// trusted holds every contract address whose logs this client will believe:
-	// address plus alsoTrust. A log from anywhere else is ignored, whatever it
-	// claims to be.
+	// alsoTrust, plus contractAddress when one was given. A log from anywhere else
+	// is ignored, whatever it claims to be.
+	//
+	// Empty means believe every emitter, which is why trusts() is the only reader:
+	// ranging over this map directly would silently treat "trust everyone" as
+	// "trust no one".
 	trusted map[common.Address]struct{}
 }
 
 // NewCredentialRegistry connects to the chain and returns a client for the
-// Credential Registry contract at contractAddress.
+// Credential Registry contract.
 //
-// rpcURL and contractAddress are required. Unlike a transaction client, a working
-// RPC connection is mandatory here because every operation is an on-chain read.
+// rpcURL is required. Unlike a transaction client, a working RPC connection is
+// mandatory here because every operation is an on-chain read.
 //
-// alsoTrust names further contract addresses whose anchoring logs are to be
-// believed. A tree stays verifiable at the contract that anchored it, so a
-// deployment that moves to a new address keeps verifying older anchorings by
-// listing the previous address here. Only contractAddress is ever called
-// directly: the view functions (VerifyVCHashOnChain, GetTreeRoot, HasTree) exist
-// only on the storage-keeping contract, while the alsoTrust addresses are read
-// through their logs alone.
+// The two address parameters answer two different questions, and only the second
+// one matters to most callers:
+//
+//   - contractAddress — who to call. It is the target of every eth_call, so it is
+//     needed only by the view functions (VerifyVCHashOnChain, GetTreeRoot,
+//     HasTree), which exist only on the deployment that keeps roots in storage.
+//     Pass "" when you do not use them; those three then return
+//     ErrNoContractAddress instead of making a call that could only fail.
+//   - alsoTrust — whose logs to believe. These addresses are never called. A tree
+//     stays verifiable at the contract that anchored it, so a deployment that
+//     moves to a new address keeps verifying older anchorings by listing the
+//     previous address here.
+//
+// Both feed the trusted set, contractAddress included, and position within it
+// carries no meaning — the set is consulted as a set.
+//
+// # Naming no address at all disables the emitter check
+//
+// Pass no address in either parameter and every log is believed, whichever
+// contract emitted it. Nothing is then verified in any meaningful sense: the
+// event signatures are public, so anyone can deploy a contract, emit
+// TreeRootAnchored naming an issuer they do not control and a root over leaves
+// they invented, and hand over a proof bundle pointing at that transaction. It
+// verifies as true.
+//
+// The check is the whole security of this package. Name at least one address
+// unless a true answer does not need to mean anything — a local experiment, or
+// exploring a chain whose deployments you are still discovering. Never in
+// anything that accepts a credential from outside.
+//
+// # One client cannot do both jobs
+//
+// Because contractAddress does double duty as call target, a client pointed at
+// the storage-keeping deployment for the view functions is not the one that reads
+// the current contract's logs. Build two.
 func NewCredentialRegistry(rpcURL, contractAddress string, alsoTrust ...string) (*CredentialRegistry, error) {
 	if rpcURL == "" {
 		return nil, errors.New("RPC URL is required")
 	}
 
-	if !common.IsHexAddress(contractAddress) {
-		return nil, fmt.Errorf("invalid contract address: %q", contractAddress)
-	}
+	var address common.Address
 
-	address := common.HexToAddress(contractAddress)
+	trusted := make(map[common.Address]struct{}, 1+len(alsoTrust))
 
-	trusted := map[common.Address]struct{}{address: {}}
-
-	for i, extra := range alsoTrust {
-		if !common.IsHexAddress(extra) {
-			return nil, fmt.Errorf("invalid contract address in alsoTrust at index %d: %q", i, extra)
+	// An empty contractAddress is a caller saying they only read logs. The view
+	// functions then have nothing to call and say so; everything else is unaffected,
+	// because reading a log needs the ABI and the trusted set, never a call target.
+	if contractAddress != "" {
+		parsed, err := parseContractAddress(contractAddress)
+		if err != nil {
+			return nil, fmt.Errorf("invalid contract address: %w", err)
 		}
 
-		trusted[common.HexToAddress(extra)] = struct{}{}
+		address = parsed
+		trusted[address] = struct{}{}
+	}
+
+	for i, extra := range alsoTrust {
+		parsed, err := parseContractAddress(extra)
+		if err != nil {
+			return nil, fmt.Errorf("invalid contract address in alsoTrust at index %d: %w", i, err)
+		}
+
+		trusted[parsed] = struct{}{}
 	}
 
 	client, err := ethclient.Dial(rpcURL)
@@ -162,24 +211,63 @@ func NewCredentialRegistry(rpcURL, contractAddress string, alsoTrust ...string) 
 		return nil, fmt.Errorf("failed to load contract ABI: %w", err)
 	}
 
-	return &CredentialRegistry{
+	registry := &CredentialRegistry{
 		client:   client,
 		receipts: client,
 		address:  address,
 		abi:      contractABI,
 		trusted:  trusted,
-		contract: bind.NewBoundContract(
+	}
+
+	// Left nil when there is no address, which is what the view functions check.
+	// Binding to the zero address instead would let them make a call that can only
+	// fail, and report it as an RPC error rather than as the missing configuration
+	// it is.
+	if address != (common.Address{}) {
+		registry.contract = bind.NewBoundContract(
 			address,
 			contractABI,
 			client,
 			client,
 			client,
-		),
-	}, nil
+		)
+	}
+
+	return registry, nil
+}
+
+// parseContractAddress reads one configured deployment address.
+//
+// The zero address is rejected on top of the format check, because
+// common.IsHexAddress accepts it: an unset environment variable reaching
+// common.HexToAddress arrives here as a well-formed address that no contract can
+// ever be at. As contractAddress it produces a client whose every call goes
+// nowhere; in alsoTrust it is inert, but a value that can only be a mistake is
+// worth refusing in both places rather than explaining as a special case.
+func parseContractAddress(value string) (common.Address, error) {
+	if !common.IsHexAddress(value) {
+		return common.Address{}, fmt.Errorf("%q is not a 20-byte hex address", value)
+	}
+
+	address := common.HexToAddress(value)
+	if address == (common.Address{}) {
+		return common.Address{}, errors.New("the zero address names no deployment")
+	}
+
+	return address, nil
 }
 
 // trusts reports whether logs emitted by address may be believed.
+//
+// An empty trusted set believes every emitter. That is a deliberate choice for
+// callers who do not want to enumerate deployments, and it removes the only check
+// that distinguishes a real anchoring from a forged one — see the warning on
+// NewCredentialRegistry before relying on it.
 func (v *CredentialRegistry) trusts(address common.Address) bool {
+	if len(v.trusted) == 0 {
+		return true
+	}
+
 	_, ok := v.trusted[address]
 
 	return ok
@@ -199,11 +287,18 @@ func (v *CredentialRegistry) Close() {
 // does not validate (both with a nil error). A non-nil error means the call
 // itself failed — malformed input, RPC failure, or the tree does not exist.
 //
+// Returns ErrNoContractAddress when the client was built without a
+// contractAddress, since there is then nothing to call.
+//
 // Deprecated: the current contract does not have verifyVC at all, so against it
 // this can only fail — it works solely against an older deployment that still
 // keeps roots in storage. Use VerifyVCHashByTx, which reads the anchoring out of
 // the transaction's logs and works against both.
 func (v *CredentialRegistry) VerifyVCHashOnChain(ctx context.Context, req *VerifyRequest) (bool, error) {
+	if v.contract == nil {
+		return false, fmt.Errorf("%w: verifyVC is a call on the contract that keeps roots in storage, so its address must be passed to NewCredentialRegistry", ErrNoContractAddress)
+	}
+
 	if err := req.Validate(); err != nil {
 		return false, err
 	}
@@ -462,8 +557,15 @@ func (v *CredentialRegistry) rootAnchored(ctx context.Context, txHash common.Has
 		return false, errors.New("registry is not initialized")
 	}
 
+	// A zero root is a verdict, not a failure. FoldProof returns the leaf itself
+	// when there are no siblings, so a caller asking about the zero hash with an
+	// empty proof lands here — a well-formed question whose answer is simply no.
+	// No transaction can have anchored it: the contract rejects an empty root with
+	// EmptyRoot, so one never reaches a log. Reporting an error instead left the
+	// caller unable to tell "this proof is wrong" from "the service is broken",
+	// which surfaced as a 500 in the service built on this.
 	if root == ([32]byte{}) {
-		return false, errors.New("cannot look up an empty root")
+		return false, nil
 	}
 
 	receipt, err := v.receipts.TransactionReceipt(ctx, txHash)
@@ -641,11 +743,18 @@ func containsRoot(roots [][32]byte, root [32]byte) bool {
 // GetTreeRoot returns the on-chain Merkle root for the given issuer and tree
 // index. A zero value means no such tree has been anchored.
 //
+// Returns ErrNoContractAddress when the client was built without a
+// contractAddress, since there is then nothing to call.
+//
 // Deprecated: the current contract does not have getTreeRoot at all, so against
 // it this can only fail. There is no replacement that returns a root: an
 // anchoring is identified by (issuer, root) now, so ask IsRootAnchored whether a
 // root you already hold was anchored.
 func (v *CredentialRegistry) GetTreeRoot(ctx context.Context, issuerAddress string, treeIndex uint64) ([32]byte, error) {
+	if v.contract == nil {
+		return [32]byte{}, fmt.Errorf("%w: getTreeRoot is a call on the contract that keeps roots in storage, so its address must be passed to NewCredentialRegistry", ErrNoContractAddress)
+	}
+
 	if !common.IsHexAddress(issuerAddress) {
 		return [32]byte{}, fmt.Errorf("invalid issuer address: %q", issuerAddress)
 	}
@@ -676,10 +785,17 @@ func (v *CredentialRegistry) GetTreeRoot(ctx context.Context, issuerAddress stri
 
 // HasTree reports whether the issuer has an anchored tree at the given index.
 //
+// Returns ErrNoContractAddress when the client was built without a
+// contractAddress, since there is then nothing to call.
+//
 // Deprecated: the current contract does not have treeExists at all, so against
 // it this can only fail. An anchoring is evidenced by its transaction now, not by
 // contract state — see IsRootAnchored.
 func (v *CredentialRegistry) HasTree(ctx context.Context, issuerAddress string, treeIndex uint64) (bool, error) {
+	if v.contract == nil {
+		return false, fmt.Errorf("%w: treeExists is a call on the contract that keeps roots in storage, so its address must be passed to NewCredentialRegistry", ErrNoContractAddress)
+	}
+
 	if !common.IsHexAddress(issuerAddress) {
 		return false, fmt.Errorf("invalid issuer address: %q", issuerAddress)
 	}
@@ -706,18 +822,6 @@ func (v *CredentialRegistry) HasTree(ctx context.Context, issuerAddress string, 
 	}
 
 	return exists, nil
-}
-
-// verifyMerkleProof reports whether leaf, folded together with its sibling path,
-// reproduces root.
-//
-// The tree hashes each sibling pair in sorted order with keccak256 and does not
-// re-hash the leaves, so the fold is independent of the leaf's position and needs
-// no leaf index. This mirrors the contract's own verifyVC folding, letting a proof
-// be checked against a historical root recovered from a transaction's receipt. An
-// empty proof means a single-leaf tree, where the root equals the leaf.
-func verifyMerkleProof(leaf [32]byte, proof [][32]byte, root [32]byte) bool {
-	return FoldProof(leaf, proof) == root
 }
 
 // FoldProof folds a leaf together with its sibling path and returns the root it
