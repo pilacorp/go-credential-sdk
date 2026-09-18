@@ -102,6 +102,10 @@ type SchemaLoaderFunc func(schemaID string) ([]byte, error)
 // are silently ignored there (e.g. WithVerificationMethodKey on
 // NewJSONCredential, which only signing reads). Splitting into per-operation
 // option sets is planned; until then each option documents where it applies.
+// On the signing calls a verify-only option is ignored. JWT signing refuses the
+// options only NewJWTCredential applies (kid, SD-JWT); AddCustomProof refuses
+// the ones already inside the signed proof. JSON-LD AddProofByProvider applies
+// the kid.
 type CredentialOpt func(*credentialOptions)
 
 // credentialOptions holds configuration for credential processing.
@@ -120,6 +124,12 @@ type credentialOptions struct {
 	loadedSchemaLoader      SchemaLoaderFunc
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
+}
+
+// hasSDOptions reports whether any SD-JWT option was set. Kept beside the
+// fields so a new sd* field is added here too.
+func (o *credentialOptions) hasSDOptions() bool {
+	return len(o.sdDisclosures) > 0 || len(o.sdSelectivePaths) > 0 || o.sdAlg != "" || o.sdShuffle || len(o.sdDecoys) > 0
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -152,7 +162,8 @@ func WithBaseURL(baseURL string) CredentialOpt {
 // For JSON credentials pass it to AddProofByProvider / AddProof; the
 // constructors and Parse functions ignore it (see the TODO on CredentialOpt).
 // For JWT credentials pass it to NewJWTCredential, which builds the header
-// from it.
+// from it; the JWT signing calls refuse it, since the kid is already fixed.
+// AddCustomProof (JSON or JWT) refuses it too: the proof arrives signed.
 func WithVerificationMethodKey(key string) CredentialOpt {
 	return func(c *credentialOptions) {
 		if key == "" {
@@ -170,6 +181,8 @@ func WithSchemaValidation() CredentialOpt {
 }
 
 // WithVerifyProof enables proof verification during credential parsing.
+// Signing calls ignore it; to check a proof added with AddCustomProof, call
+// Verify afterwards.
 func WithVerifyProof() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isVerifyProof = true
@@ -248,6 +261,16 @@ func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.resolver = resolver
 	}
+}
+
+// signingOptions returns opts for a signing call, minus proof verification:
+// there is no signature to verify before signing, and the signing paths check
+// the fresh signature against the verification method's key. The other
+// options (schema, expiration, revocation) check the content, so they run
+// before the signer is called. The three-index slice makes append allocate,
+// so the caller's slice is never written to.
+func signingOptions(opts []CredentialOpt) []CredentialOpt {
+	return append(opts[:len(opts):len(opts)], func(c *credentialOptions) { c.isVerifyProof = false })
 }
 
 // getOptions returns the credential options.

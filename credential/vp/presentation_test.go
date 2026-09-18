@@ -14,6 +14,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwttest"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
 )
@@ -506,7 +507,6 @@ func TestCreatePresentationJWT(t *testing.T) {
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
 	// Test data
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create a test credential first
@@ -534,9 +534,15 @@ func TestCreatePresentationJWT(t *testing.T) {
 	}
 
 	// Add proof to the presentation
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
+	err = presentation.AddProofByProvider(mustP256Signer(t))
 	if err != nil {
 		t.Fatalf("Failed to sign presentation as JWT: %v", err)
+	}
+
+	// The signature must verify against the header key, not just be well-formed.
+	err = presentation.Verify(vp.WithResolver(testResolver(t)))
+	if err != nil {
+		t.Fatalf("Failed to verify presentation: %v", err)
 	}
 
 	// Serialize to get JWT token
@@ -596,7 +602,6 @@ func TestPresentationSignatureFlows(t *testing.T) {
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
 	// Test data
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
@@ -654,9 +659,15 @@ func TestPresentationSignatureFlows(t *testing.T) {
 		}
 
 		// Add proof using AddProofByProvider method
-		err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
+		err = presentation.AddProofByProvider(mustP256Signer(t))
 		if err != nil {
 			t.Fatalf("Failed to add proof to JWT presentation: %v", err)
+		}
+
+		// The signature must verify against the header key, not just be well-formed.
+		err = presentation.Verify(vp.WithResolver(testResolver(t)))
+		if err != nil {
+			t.Fatalf("Failed to verify presentation: %v", err)
 		}
 
 		// Serialize to get JWT token
@@ -728,9 +739,12 @@ func TestPresentation_LegacyExternalSigningFlow(t *testing.T) {
 		Types:   []string{"VerifiablePresentation"},
 		Holder:  "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce",
 	}
+	// The signer holds key-1 (secp256k1); pin it and resolve locally, so the
+	// header names the key that signs instead of whatever the live DID's latest VM is.
+	legacyOpts := []vp.PresentationOpt{vp.WithResolver(testResolver(t)), vp.WithVerificationMethodKey("key-1")}
 
 	t.Run("JWT GetSigningInput + AddCustomProof", func(t *testing.T) {
-		p, err := vp.NewJWTPresentation(vpc)
+		p, err := vp.NewJWTPresentation(vpc, legacyOpts...)
 		if err != nil {
 			t.Fatalf("NewJWTPresentation: %v", err)
 		}
@@ -762,11 +776,11 @@ func TestPresentation_LegacyExternalSigningFlow(t *testing.T) {
 	})
 
 	t.Run("JWT AddCustomProof equals AddProofByProvider", func(t *testing.T) {
-		p1, err := vp.NewJWTPresentation(vpc)
+		p1, err := vp.NewJWTPresentation(vpc, legacyOpts...)
 		if err != nil {
 			t.Fatalf("NewJWTPresentation: %v", err)
 		}
-		p2, err := vp.NewJWTPresentation(vpc)
+		p2, err := vp.NewJWTPresentation(vpc, legacyOpts...)
 		if err != nil {
 			t.Fatalf("NewJWTPresentation: %v", err)
 		}
@@ -1151,7 +1165,6 @@ func TestJWTPresentationWithTimeFields(t *testing.T) {
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
@@ -1184,9 +1197,15 @@ func TestJWTPresentationWithTimeFields(t *testing.T) {
 	}
 
 	// Add proof
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
+	err = presentation.AddProofByProvider(mustP256Signer(t))
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
+	}
+
+	// The signature must verify against the header key, not just be well-formed.
+	err = presentation.Verify(vp.WithResolver(testResolver(t)))
+	if err != nil {
+		t.Fatalf("Failed to verify presentation: %v", err)
 	}
 
 	// Serialize to get JWT token
@@ -1285,7 +1304,6 @@ func TestJWTPresentationWithoutTimeFields(t *testing.T) {
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
@@ -1313,9 +1331,15 @@ func TestJWTPresentationWithoutTimeFields(t *testing.T) {
 	}
 
 	// Add proof
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
+	err = presentation.AddProofByProvider(mustP256Signer(t))
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
+	}
+
+	// The signature must verify against the header key, not just be well-formed.
+	err = presentation.Verify(vp.WithResolver(testResolver(t)))
+	if err != nil {
+		t.Fatalf("Failed to verify presentation: %v", err)
 	}
 
 	// Serialize to get JWT token
@@ -1369,7 +1393,6 @@ func TestParsePresentationWithTimeFields(t *testing.T) {
 	vp.Init("https://auth-dev.pila.vn/api/v1/did")
 	vc.Init("https://auth-dev.pila.vn/api/v1/did")
 
-	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create test credentials
@@ -1402,9 +1425,15 @@ func TestParsePresentationWithTimeFields(t *testing.T) {
 	}
 
 	// Add proof
-	err = presentation.AddProofByProvider(mustDefaultSigner(t, privateKeyHex))
+	err = presentation.AddProofByProvider(mustP256Signer(t))
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
+	}
+
+	// The signature must verify against the header key, not just be well-formed.
+	err = presentation.Verify(vp.WithResolver(testResolver(t)))
+	if err != nil {
+		t.Fatalf("Failed to verify presentation: %v", err)
 	}
 
 	// Serialize to get JWT token
@@ -1529,4 +1558,83 @@ func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) vmpkg.
 		t.Fatalf("NewP256VM(%s, %s): %v", did, fragment, err)
 	}
 	return entry
+}
+
+// A signer that does not hold the key the JWT header names still produces a
+// well-formed signature; it must be refused before it is attached, whether the
+// SDK signs (AddProofByProvider) or the signature was made outside it
+// (AddCustomProof). testResolver's key-1 is secp256k1 and key-2 (the default)
+// P-256.
+//
+// Each refused case is also checked independently: the token that signature
+// would have produced is assembled by hand and handed to the SDK's existing
+// JWT verifier, which must reject it too.
+func TestJWTPresentation_SignerMustHoldTheHeaderKey(t *testing.T) {
+	vpc := vp.PresentationContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:      "urn:uuid:jwt-signer-key-test",
+		Types:   []string{"VerifiablePresentation"},
+		Holder:  testDID,
+	}
+	resolver := testResolver(t)
+	secp, p256 := mustDefaultSigner(t, testSecpPrivHex), mustP256Signer(t)
+
+	cases := []struct {
+		name   string
+		pin    string
+		signer signer.SignerProvider
+		custom bool // AddCustomProof with an externally made signature
+		wantOK bool
+	}{
+		{"default key-2 (P-256), P-256 signer", "", p256, false, true},
+		{"default key-2 (P-256), secp256k1 signer", "", secp, false, false},
+		{"pinned key-1 (secp256k1), secp256k1 signer", "#key-1", secp, false, true},
+		{"pinned key-1 (secp256k1), P-256 signer", "#key-1", p256, false, false},
+		{"custom: default key-2 (P-256), P-256 signature", "", p256, true, true},
+		{"custom: pinned key-1 (secp256k1), 65-byte secp256k1 signature", "#key-1", secp, true, true},
+		{"custom: default key-2 (P-256), secp256k1 signature", "", secp, true, false},
+		{"custom: pinned key-1 (secp256k1), P-256 signature", "#key-1", p256, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := []vp.PresentationOpt{vp.WithResolver(resolver)}
+			if tc.pin != "" {
+				opts = append(opts, vp.WithVerificationMethodKey(tc.pin))
+			}
+			p, err := vp.NewJWTPresentation(vpc, opts...)
+			if err != nil {
+				t.Fatalf("NewJWTPresentation: %v", err)
+			}
+			signingInput, err := p.GetSigningInput()
+			if err != nil {
+				t.Fatalf("GetSigningInput: %v", err)
+			}
+			external := jwttest.SignExternally(t, tc.signer, string(signingInput))
+
+			if tc.custom {
+				err = p.AddCustomProof(&dto.Proof{Signature: external})
+			} else {
+				err = p.AddProofByProvider(tc.signer)
+			}
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("sign: %v", err)
+				}
+				if err := p.Verify(vp.WithResolver(resolver)); err != nil {
+					t.Fatalf("verify: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "does not verify against verification method") {
+				t.Fatalf("sign err = %v, want a key mismatch error", err)
+			}
+			if serialized, _ := p.Serialize(); strings.Count(serialized.(string), ".") != 1 {
+				t.Fatalf("a refused signature must not be attached, got %q", serialized)
+			}
+
+			if err := jwttest.VerifyByHand(resolver, string(signingInput), external); err == nil {
+				t.Fatal("the existing verifier accepts this token, so refusing it would be wrong")
+			}
+		})
+	}
 }

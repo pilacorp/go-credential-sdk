@@ -110,7 +110,7 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
-	if err := e.executeOptions(opts...); err != nil {
+	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
 
@@ -188,8 +188,13 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 		!strings.HasPrefix(proof.ProofValue, jsonmap.MultibaseBase58BTCPrefix) {
 		return fmt.Errorf("proofValue must be multibase base58btc (%q prefix); hex proofs are no longer issued", jsonmap.MultibaseBase58BTCPrefix)
 	}
+	// The proof arrives signed: its verificationMethod is part of the proof
+	// configuration the signature covers, so an option cannot change it here.
+	if getOptions(opts...).verificationMethodKey != "" {
+		return fmt.Errorf("WithVerificationMethodKey cannot be applied by AddCustomProof: set proof.VerificationMethod on the proof you sign")
+	}
 
-	if err := e.executeOptions(opts...); err != nil {
+	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
 
