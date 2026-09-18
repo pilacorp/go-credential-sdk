@@ -145,7 +145,7 @@ func TestJSONMap_AddECDSAProof_RoundTripsThroughSpecConformantBranch(t *testing.
 	if err != nil {
 		t.Fatalf("parse proof: %v", err)
 	}
-	if !strings.HasPrefix(proof.ProofValue, multibaseBase58BTCPrefix) {
+	if !strings.HasPrefix(proof.ProofValue, MultibaseBase58BTCPrefix) {
 		t.Fatalf("proofValue is not multibase base58btc: %s", proof.ProofValue)
 	}
 

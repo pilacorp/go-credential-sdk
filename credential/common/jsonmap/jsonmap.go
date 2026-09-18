@@ -32,9 +32,9 @@ const (
 	ECDSARDFC2019               string = "ecdsa-rdfc-2019"
 	ECDSASECPKEY                string = "EcdsaSecp256k1VerificationKey2019"
 
-	// multibaseBase58BTCPrefix is base58btc's multibase code, and the
+	// MultibaseBase58BTCPrefix is base58btc's multibase code, and the
 	// discriminator against legacy hex proofValues (whose alphabet has no "z").
-	multibaseBase58BTCPrefix string = "z"
+	MultibaseBase58BTCPrefix string = "z"
 )
 
 // ToJSON serializes the JSONMap to JSON.
@@ -109,7 +109,7 @@ func (m *JSONMap) HasMultibaseProof() bool {
 		return false
 	}
 	pv, _ := proof["proofValue"].(string)
-	return strings.HasPrefix(pv, multibaseBase58BTCPrefix) || strings.HasPrefix(pv, "u")
+	return strings.HasPrefix(pv, MultibaseBase58BTCPrefix) || strings.HasPrefix(pv, "u")
 }
 
 // CanonicalizeFull canonicalizes the full JSONMap, including the proof field,
@@ -378,7 +378,7 @@ func didFromVMURL(vm string) string {
 // spec-conformant path, anything else the legacy hex path (secp256k1 proofs
 // issued by SDK <= v1.7.0, which also carry cryptosuite ecdsa-rdfc-2019).
 func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, error) {
-	if strings.HasPrefix(proof.ProofValue, multibaseBase58BTCPrefix) {
+	if strings.HasPrefix(proof.ProofValue, MultibaseBase58BTCPrefix) {
 		// Only the P-256 profile of ecdsa-rdfc-2019 is implemented; reject
 		// other curves up front so a P-384 key gets a clear error, not a
 		// length mismatch.

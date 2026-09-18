@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -139,20 +140,27 @@ func (e *JSONPresentation) CreateProofSigning(docHash []byte, proof *dto.Proof) 
 	return digest[:], nil
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
+// AddCustomProof attaches a proof signed outside the SDK, the last step of
+// GetSigningInput → CreateProofSigning → sign → AddCustomProof.
+//
+// The proof is attached as given, apart from the proofValue encoding: this
+// release issues base58btc ("z") values only, and the legacy hex form is
+// refused.
+//
+// TODO(next PR): verify the signature against the verification method before
+// attaching, so a proof signed over the wrong digest or by the wrong key fails
+// here instead of at the verifier.
 func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
 
-	if proof.Type == "DataIntegrityProof" && proof.Cryptosuite == "ecdsa-rdfc-2019" {
-		if len(proof.ProofValue) > 0 && proof.ProofValue[0] != 'z' {
-			return fmt.Errorf("SDK v1.7.x does not support issuing new Hex proofs. Please format as Base58btc ('z' prefix)")
-		}
+	if proof.Type == jsonmap.DataIntegrityProof && proof.Cryptosuite == jsonmap.ECDSARDFC2019 &&
+		!strings.HasPrefix(proof.ProofValue, jsonmap.MultibaseBase58BTCPrefix) {
+		return fmt.Errorf("proofValue must be multibase base58btc (%q prefix); hex proofs are no longer issued", jsonmap.MultibaseBase58BTCPrefix)
 	}
 
-	err := e.executeOptions(opts...)
-	if err != nil {
+	if err := e.executeOptions(opts...); err != nil {
 		return err
 	}
 
