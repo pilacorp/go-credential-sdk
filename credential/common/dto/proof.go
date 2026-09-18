@@ -22,7 +22,7 @@ type Proof struct {
 	ProofPurpose       string          `json:"proofPurpose,omitempty"`
 	Cryptosuite        string          `json:"cryptosuite,omitempty"`
 	Challenge          string          `json:"challenge,omitempty"`
-	Domain             string          `json:"domain,omitempty"`
+	Domain             StringOrStrings `json:"domain,omitempty"`
 	Nonce              string          `json:"nonce,omitempty"`
 	PreviousProof      StringOrStrings `json:"previousProof,omitempty"`
 	ProofValue         string          `json:"proofValue,omitempty"`
@@ -40,7 +40,7 @@ type Proof struct {
 }
 
 // StringOrStrings is the "string or set of strings" value shape § 2.1 allows
-// for previousProof. A single value round-trips as a plain string.
+// for domain and previousProof. A single value round-trips as a plain string.
 type StringOrStrings []string
 
 func (s *StringOrStrings) UnmarshalJSON(data []byte) error {

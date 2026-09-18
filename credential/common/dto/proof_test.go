@@ -26,7 +26,7 @@ func TestProofFromMap_FillsEveryDataIntegrityProperty(t *testing.T) {
 		Id: "urn:uuid:p1", Type: "DataIntegrityProof", Created: "2024-01-01T00:00:00Z",
 		Expires: "2030-01-01T00:00:00Z", VerificationMethod: "did:example:issuer#key-1",
 		ProofPurpose: "assertionMethod", Cryptosuite: "ecdsa-rdfc-2019", Challenge: "c1",
-		Domain: "d.example", Nonce: "n1", PreviousProof: StringOrStrings{"urn:uuid:p0"}, ProofValue: "zabc",
+		Domain: StringOrStrings{"d.example"}, Nonce: "n1", PreviousProof: StringOrStrings{"urn:uuid:p0"}, ProofValue: "zabc",
 	}
 	if !reflect.DeepEqual(p, want) {
 		t.Fatalf("ProofFromMap = %+v, want %+v", p, want)
@@ -44,16 +44,15 @@ func TestProof_RoundTripKeepsUnknownAndOddlyShapedProperties(t *testing.T) {
 		"proofPurpose":       "assertionMethod",
 		"cryptosuite":        "ecdsa-rdfc-2019",
 		"proofValue":         "zabc",
-		// § 2.1 allows a set of strings for domain; the typed field holds
-		// only a string, so the array must survive through Extra.
+		// § 2.1 allows a set of strings for domain.
 		"domain":        []interface{}{"a.example", "b.example"},
 		"previousProof": []interface{}{"urn:uuid:p0", "urn:uuid:p-1"},
 		"customTerm":    map[string]interface{}{"nested": []interface{}{"x", 1.0}},
 	}
 
 	p := ProofFromMap(in)
-	if p.Domain != "" {
-		t.Fatalf("array domain must not be coerced into the string field, got %q", p.Domain)
+	if !reflect.DeepEqual(p.Domain, StringOrStrings{"a.example", "b.example"}) {
+		t.Fatalf("domain = %v, want both entries", p.Domain)
 	}
 	if !reflect.DeepEqual(p.PreviousProof, StringOrStrings{"urn:uuid:p0", "urn:uuid:p-1"}) {
 		t.Fatalf("previousProof = %v", p.PreviousProof)

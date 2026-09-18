@@ -223,8 +223,12 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 
 // checkChallengeAndDomain enforces WithExpectedChallenge / WithExpectedDomain
 // on the proofs VerifyProof just validated: every checked proof (or only the
-// WithProofVerificationMethod one) must carry the expected values. Runs after
-// signature verification, so the values compared are the signed ones.
+// WithProofVerificationMethod one) must carry the expected values.
+//
+// It runs after signature verification, but only an ecdsa-rdfc-2019 proof signs
+// its challenge and domain. A legacy hex or JsonWebSignature2020 signature
+// covers the document alone, so on those proofs these values are not bound to
+// the signer and prove nothing about who the presentation was made for.
 func (e *JSONPresentation) checkChallengeAndDomain(options *presentationOptions) error {
 	if options.expectedChallenge == "" && options.expectedDomain == "" {
 		return nil
@@ -240,9 +244,21 @@ func (e *JSONPresentation) checkChallengeAndDomain(options *presentationOptions)
 		if options.expectedChallenge != "" && p.Challenge != options.expectedChallenge {
 			return fmt.Errorf("proof (%s): challenge %q does not match expected %q", p.VerificationMethod, p.Challenge, options.expectedChallenge)
 		}
-		if options.expectedDomain != "" && p.Domain != options.expectedDomain {
-			return fmt.Errorf("proof (%s): domain %q does not match expected %q", p.VerificationMethod, p.Domain, options.expectedDomain)
+		if options.expectedDomain != "" && !domainContains(p.Domain, options.expectedDomain) {
+			return fmt.Errorf("proof (%s): domain %v does not match expected %q", p.VerificationMethod, p.Domain, options.expectedDomain)
 		}
 	}
 	return nil
+}
+
+// domainContains reports whether the proof's domain covers expected. Data
+// Integrity § 2.1 allows domain to be a single string or a set, so a
+// presentation bound to several relying parties satisfies any one of them.
+func domainContains(domain dto.StringOrStrings, expected string) bool {
+	for _, d := range domain {
+		if d == expected {
+			return true
+		}
+	}
+	return false
 }

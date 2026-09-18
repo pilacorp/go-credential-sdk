@@ -34,7 +34,7 @@ func TestExternalSigningFlow_VP(t *testing.T) {
 		VerificationMethod: "did:example:123#key-1",
 		ProofPurpose:       "authentication",
 		Challenge:          "12345-challenge",
-		Domain:             "example.com",
+		Domain:             dto.StringOrStrings{"example.com"},
 	}
 
 	docHash, err := presentation.GetSigningInput()
