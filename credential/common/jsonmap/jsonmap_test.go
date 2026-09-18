@@ -415,8 +415,10 @@ func TestJSONMap_ECDSAProofConfig_ContainsExactlyTheSignedOptions(t *testing.T) 
 }
 
 // TestECDSAProofConfig_ExcludesProofValue guards section 3.2.5: the signature
-// cannot cover itself, so proofValue must never reach the proof config.
-func TestJSONMap_ECDSAProofConfig_ExcludesProofValue(t *testing.T) {
+// cannot cover itself, so proofValue must never reach the proof config —
+// and nothing else is dropped, or a proof issued elsewhere hashes differently
+// here than it did at its signer.
+func TestJSONMap_ECDSAProofConfig_ExcludesProofValueOnly(t *testing.T) {
 	m := JSONMap{"@context": proofConfigTestContext}
 
 	proof := testProof()
@@ -428,10 +430,30 @@ func TestJSONMap_ECDSAProofConfig_ExcludesProofValue(t *testing.T) {
 		t.Fatalf("ecdsaProofConfig: %v", err)
 	}
 
-	for _, k := range []string{"proofValue", "jws"} {
-		if _, present := cfg[k]; present {
-			t.Errorf("%q must not appear in the proof config: %#v", k, cfg)
-		}
+	if _, present := cfg["proofValue"]; present {
+		t.Errorf("proofValue must not appear in the proof config: %#v", cfg)
+	}
+	if cfg["jws"] != "header..signature" {
+		t.Errorf("jws = %v, want it kept: only proofValue is removed", cfg["jws"])
+	}
+}
+
+// A proof issued by another implementation may carry its own @context. Replacing
+// it with the document's would canonicalize the configuration differently than
+// the signer did, so a valid proof would fail to verify.
+func TestJSONMap_ECDSAProofConfig_KeepsProofOwnContext(t *testing.T) {
+	m := JSONMap{"@context": proofConfigTestContext}
+
+	const proofContext = "https://w3id.org/security/data-integrity/v2"
+	proof := testProof()
+	proof.Extra = map[string]interface{}{"@context": proofContext}
+
+	cfg, err := m.ecdsaProofConfig(proof)
+	if err != nil {
+		t.Fatalf("ecdsaProofConfig: %v", err)
+	}
+	if cfg["@context"] != proofContext {
+		t.Errorf("@context = %v, want the proof's own %q", cfg["@context"], proofContext)
 	}
 }
 
@@ -536,7 +558,7 @@ func TestJSONMap_ECDSAProofConfig_KeepsEveryProofProperty(t *testing.T) {
 	proof.Nonce = "n-1"
 	proof.PreviousProof = dto.StringOrStrings{"urn:uuid:proof-0"}
 	proof.Challenge = "c-1"
-	proof.Domain = "d.example"
+	proof.Domain = dto.StringOrStrings{"d.example"}
 	proof.ProofValue = "zSHOULD-BE-REMOVED"
 	proof.Extra = map[string]interface{}{"customTerm": "custom-value"}
 
@@ -1358,7 +1380,7 @@ func TestJSONMap_AddECDSAProof_SignsChallengeAndDomain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse proof: %v", err)
 	}
-	if proof.Challenge != "nonce-123" || proof.Domain != "verifier.example" {
+	if proof.Challenge != "nonce-123" || !reflect.DeepEqual(proof.Domain, dto.StringOrStrings{"verifier.example"}) {
 		t.Fatalf("ParseRawToProof dropped challenge/domain: %+v", proof)
 	}
 	if ok, err := m.verifyECDSA(pub, &proof); err != nil || !ok {
@@ -1371,12 +1393,12 @@ func TestJSONMap_AddECDSAProof_SignsChallengeAndDomain(t *testing.T) {
 		t.Fatal("changed challenge verified successfully")
 	}
 	tampered = proof
-	tampered.Domain = "attacker.example"
+	tampered.Domain = dto.StringOrStrings{"attacker.example"}
 	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
 		t.Fatal("changed domain verified successfully")
 	}
 	tampered = proof
-	tampered.Challenge, tampered.Domain = "", ""
+	tampered.Challenge, tampered.Domain = "", nil
 	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
 		t.Fatal("stripped challenge/domain verified successfully")
 	}
