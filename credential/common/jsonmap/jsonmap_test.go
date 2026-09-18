@@ -82,5 +82,3 @@ func TestJSONMap_AddECDSAProof_RejectsNonECDSASignature(t *testing.T) {
 		t.Fatalf("expected error for non-64/65-byte signature")
 	}
 }
-
-

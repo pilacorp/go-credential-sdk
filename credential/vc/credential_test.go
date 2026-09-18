@@ -1824,7 +1824,6 @@ func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T
 	assert.Contains(t, err.Error(), "schema is empty")
 }
 
-
 func TestJSONCredentialHash_RequiresProof(t *testing.T) {
 	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
 	cred, err := NewJSONCredential(contents, WithVerificationMethodKey("key-1"))

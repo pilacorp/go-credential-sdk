@@ -13,7 +13,7 @@ type TargetKind int
 const (
 	TargetKindObjectField    TargetKind = iota // object field (e.g., "name")
 	TargetKindArrayContainer                   // array field (e.g., "emails" as whole array)
-	TargetKindArrayElem                       // array element (e.g., "emails[0]")
+	TargetKindArrayElem                        // array element (e.g., "emails[0]")
 )
 
 // String returns the string representation of TargetKind.
@@ -48,11 +48,11 @@ type disclosureInfo struct {
 
 // resolvedTarget holds the result of resolvePath.
 type resolvedTarget struct {
-	parent    interface{}  // The parent container (map or array)
+	parent    interface{}             // The parent container (map or array)
 	parentMap *map[string]interface{} // Reference to parent map for write-back
-	parentKey string      // Key name in parent map (for write-back)
-	kind      TargetKind  // Type of target
-	fieldName string      // Key name (for object fields)
-	index     int         // Array index (for array elements)
-	value     interface{} // The actual value at this location
+	parentKey string                  // Key name in parent map (for write-back)
+	kind      TargetKind              // Type of target
+	fieldName string                  // Key name (for object fields)
+	index     int                     // Array index (for array elements)
+	value     interface{}             // The actual value at this location
 }

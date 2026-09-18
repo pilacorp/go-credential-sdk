@@ -99,4 +99,3 @@ func TestWithHTTPClient_NilDoesNotOverride(t *testing.T) {
 	client := NewClient(WithHTTPClient(nil))
 	assert.Equal(t, defaultHTTPClient, client.client)
 }
-

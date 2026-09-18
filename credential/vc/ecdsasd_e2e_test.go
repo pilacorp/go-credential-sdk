@@ -26,7 +26,9 @@ const (
 )
 
 // memResolver is an offline ResolverProvider for tests.
-type memResolver struct{ docs map[string]*verificationmethod.DIDDocument }
+type memResolver struct {
+	docs map[string]*verificationmethod.DIDDocument
+}
 
 func (r *memResolver) ResolveDocument(_ context.Context, did string) (*verificationmethod.DIDDocument, error) {
 	if doc, ok := r.docs[did]; ok {
