@@ -117,10 +117,6 @@ func (e *JSONPresentation) resolveSigningVMEntry(opts ...PresentationOpt) (*veri
 	return verificationmethod.ResolveSigningVM(context.Background(), holder, "authentication", options.verificationMethodKey, options.resolver)
 }
 
-// resolveVerificationMethodURL returns the full verification method URL for
-// a presentation proof. See vc.resolveVerificationMethodURL for resolution
-// rules — the only difference is the default purpose (authentication).
-//
 // GetSigningInput returns the SHA-256 digest of the canonicalized document
 // body. For an ecdsa-rdfc-2019 proof, pass it to CreateProofSigning to obtain
 // the digest the external signer signs.
