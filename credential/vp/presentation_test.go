@@ -2,6 +2,7 @@ package vp_test
 
 import (
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -1498,12 +1499,14 @@ func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) vmpkg.
 }
 
 // A signer that does not hold the key the JWT header names still produces a
-// well-formed signature; it must be refused when signing, not discovered by the
-// verifier. testResolver's key-1 is secp256k1 and key-2 (the default) P-256.
+// well-formed signature; it must be refused before it is attached, whether the
+// SDK signs (AddProofByProvider) or the signature was made outside it
+// (AddCustomProof). testResolver's key-1 is secp256k1 and key-2 (the default)
+// P-256.
 //
-// Each refused case is also checked independently: the token that signer would
-// have produced is assembled without the code under test and handed to the
-// SDK's existing JWT verifier, which must reject it too.
+// Each refused case is also checked independently: the token that signature
+// would have produced is assembled by hand and handed to the SDK's existing
+// JWT verifier, which must reject it too.
 func TestJWTPresentation_SignerMustHoldTheHeaderKey(t *testing.T) {
 	vpc := vp.PresentationContents{
 		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
@@ -1512,17 +1515,23 @@ func TestJWTPresentation_SignerMustHoldTheHeaderKey(t *testing.T) {
 		Holder:  testDID,
 	}
 	resolver := testResolver(t)
+	secp, p256 := mustDefaultSigner(t, testSecpPrivHex), mustP256Signer(t)
 
 	cases := []struct {
 		name   string
 		pin    string
 		signer signer.SignerProvider
+		custom bool // AddCustomProof with an externally made signature
 		wantOK bool
 	}{
-		{"default key-2 (P-256), P-256 signer", "", mustP256Signer(t), true},
-		{"default key-2 (P-256), secp256k1 signer", "", mustDefaultSigner(t, testSecpPrivHex), false},
-		{"pinned key-1 (secp256k1), secp256k1 signer", "#key-1", mustDefaultSigner(t, testSecpPrivHex), true},
-		{"pinned key-1 (secp256k1), P-256 signer", "#key-1", mustP256Signer(t), false},
+		{"default key-2 (P-256), P-256 signer", "", p256, false, true},
+		{"default key-2 (P-256), secp256k1 signer", "", secp, false, false},
+		{"pinned key-1 (secp256k1), secp256k1 signer", "#key-1", secp, false, true},
+		{"pinned key-1 (secp256k1), P-256 signer", "#key-1", p256, false, false},
+		{"custom: default key-2 (P-256), P-256 signature", "", p256, true, true},
+		{"custom: pinned key-1 (secp256k1), 65-byte secp256k1 signature", "#key-1", secp, true, true},
+		{"custom: default key-2 (P-256), secp256k1 signature", "", secp, true, false},
+		{"custom: pinned key-1 (secp256k1), P-256 signature", "#key-1", p256, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1534,13 +1543,21 @@ func TestJWTPresentation_SignerMustHoldTheHeaderKey(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewJWTPresentation: %v", err)
 			}
-
 			signingInput, err := p.GetSigningInput()
 			if err != nil {
 				t.Fatalf("GetSigningInput: %v", err)
 			}
+			digest := sha256.Sum256(signingInput)
+			external, err := tc.signer.Sign(digest[:])
+			if err != nil {
+				t.Fatalf("external sign: %v", err)
+			}
 
-			err = p.AddProofByProvider(tc.signer)
+			if tc.custom {
+				err = p.AddCustomProof(&dto.Proof{Signature: external})
+			} else {
+				err = p.AddProofByProvider(tc.signer)
+			}
 			if tc.wantOK {
 				if err != nil {
 					t.Fatalf("sign: %v", err)
@@ -1550,18 +1567,18 @@ func TestJWTPresentation_SignerMustHoldTheHeaderKey(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), "does not hold that key") {
+			if err == nil || !strings.Contains(err.Error(), "does not verify against verification method") {
 				t.Fatalf("sign err = %v, want a key mismatch error", err)
 			}
 			if serialized, _ := p.Serialize(); strings.Count(serialized.(string), ".") != 1 {
 				t.Fatalf("a refused signature must not be attached, got %q", serialized)
 			}
 
-			unchecked, err := jwt.NewJWTSigner(tc.signer).SignString(string(signingInput))
-			if err != nil {
-				t.Fatalf("sign unchecked: %v", err)
+			if len(external) == 65 {
+				external = external[:64]
 			}
-			if err := jwt.NewJWTVerifier(resolver).VerifyJWT(string(signingInput) + "." + unchecked); err == nil {
+			token := string(signingInput) + "." + base64.RawURLEncoding.EncodeToString(external)
+			if err := jwt.NewJWTVerifier(resolver).VerifyJWT(token); err == nil {
 				t.Fatal("the existing verifier accepts this token, so refusing it would be wrong")
 			}
 		})

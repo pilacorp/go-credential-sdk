@@ -31,9 +31,14 @@ func (s *JWTSigner) SignString(signingString string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("jwt signer: failed to sign digest: %w", err)
 	}
-	if len(signature) == 65 {
-		signature = signature[:64]
-	}
+	return base64.RawURLEncoding.EncodeToString(trimRecoveryID(signature)), nil
+}
 
-	return base64.RawURLEncoding.EncodeToString(signature), nil
+// trimRecoveryID drops the recovery byte a secp256k1 signer appends (r||s||v);
+// a JWS signature is r||s.
+func trimRecoveryID(signature []byte) []byte {
+	if len(signature) == 65 {
+		return signature[:64]
+	}
+	return signature
 }

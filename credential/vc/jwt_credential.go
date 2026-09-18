@@ -231,7 +231,11 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) 
 		return err
 	}
 
-	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
+	signature, err := j.headerVM.Accept(j.signingInput, proof.Signature)
+	if err != nil {
+		return err
+	}
+	j.signature = signature
 	return nil
 }
 

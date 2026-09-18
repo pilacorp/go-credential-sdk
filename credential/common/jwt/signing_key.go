@@ -43,25 +43,29 @@ func ResolveSigningKey(ctx context.Context, did, purpose, pinnedKey string, reso
 }
 
 // Sign signs signingInput (header.payload) with provider and returns the
-// base64url signature. The signature is checked against the key first: a signer
-// that does not hold it still produces a well-formed signature, which would
-// otherwise fail only at the verifier. A zero SigningKey (a parsed token) skips
-// the check.
+// base64url signature, checked by Accept.
 func (k SigningKey) Sign(provider signer.SignerProvider, signingInput string) (string, error) {
 	signature, err := NewJWTSigner(provider).SignString(signingInput)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign signing input: %w", err)
 	}
-	if k.PublicKey == nil {
-		return signature, nil
-	}
-
 	raw, err := base64.RawURLEncoding.DecodeString(signature)
 	if err != nil {
 		return "", fmt.Errorf("invalid signature encoding: %w", err)
 	}
-	if err := VerifyECDSA(signingInput, raw, k.PublicKey); err != nil {
-		return "", fmt.Errorf("the signature does not verify against verification method %q; the signer does not hold that key — pass WithVerificationMethodKey to NewJWTCredential / NewJWTPresentation: %w", k.ID, err)
+	return k.Accept(signingInput, raw)
+}
+
+// Accept checks a raw signature over signingInput against the key and returns
+// it base64url-encoded for the token. A signer that does not hold the key still
+// produces a well-formed signature, which would otherwise fail only at the
+// verifier. A zero SigningKey (a parsed token) skips the check.
+func (k SigningKey) Accept(signingInput string, signature []byte) (string, error) {
+	signature = trimRecoveryID(signature)
+	if k.PublicKey != nil {
+		if err := VerifyECDSA(signingInput, signature, k.PublicKey); err != nil {
+			return "", fmt.Errorf("the signature does not verify against verification method %q: it was made by another key or over data other than the signing input — to sign with another key, pass WithVerificationMethodKey to NewJWTCredential / NewJWTPresentation: %w", k.ID, err)
+		}
 	}
-	return signature, nil
+	return base64.RawURLEncoding.EncodeToString(signature), nil
 }
