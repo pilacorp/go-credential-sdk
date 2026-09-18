@@ -151,6 +151,62 @@ func TestW3CRDFC_Phase2_CanonicalizeProofConfig(t *testing.T) {
 	}
 }
 
+// Phase 2b: the production builder must produce that same configuration from
+// the signed document's proof. Phase 2 only exercises the canonicalizer,
+// because it reads the published configuration; this one exercises
+// ecdsaProofConfig, the code the signer and verifier actually call.
+func TestW3CRDFC_Phase2b_BuildProofConfig(t *testing.T) {
+	doc := rdfcSignedDoc(t)
+
+	cfg, err := doc.ecdsaProofConfig(rdfcProof(t))
+	if err != nil {
+		t.Fatalf("ecdsaProofConfig: %v", err)
+	}
+	got, err := processor.Canonicalize(cfg)
+	if err != nil {
+		t.Fatalf("canonicalize proof configuration: %v", err)
+	}
+	if want := rdfcRead(t, "proofCanonECDSAP256.txt"); string(got) != string(want) {
+		t.Fatalf("built proof configuration mismatch\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// Section 3.2.5 step 4: "Set proofConfig.@context to unsecuredDocument.@context."
+// The published vectors cannot cover this step — their proof carries no
+// @context, so any rule would pass. A proof that does carry one must still be
+// hashed under the document's context, or this SDK signs credentials that no
+// conforming verifier can check.
+func TestW3CRDFC_ProofConfigContextComesFromDocument(t *testing.T) {
+	doc := rdfcSignedDoc(t)
+
+	proof := rdfcProof(t)
+	proof.Extra = map[string]interface{}{"@context": "https://w3id.org/security/data-integrity/v2"}
+
+	cfg, err := doc.ecdsaProofConfig(proof)
+	if err != nil {
+		t.Fatalf("ecdsaProofConfig: %v", err)
+	}
+	wantCtx, err := json.Marshal(doc["@context"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCtx, err := json.Marshal(cfg["@context"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotCtx) != string(wantCtx) {
+		t.Fatalf("proof configuration @context = %s, want the document's %s", gotCtx, wantCtx)
+	}
+
+	got, err := processor.Canonicalize(cfg)
+	if err != nil {
+		t.Fatalf("canonicalize proof configuration: %v", err)
+	}
+	if want := rdfcRead(t, "proofCanonECDSAP256.txt"); string(got) != string(want) {
+		t.Fatalf("a proof carrying its own @context changed the hashed bytes\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // Phase 3 (section 3.2.4, Hashing): SHA-256 of each canonical form.
 func TestW3CRDFC_Phase3_Hashes(t *testing.T) {
 	docCanon, err := processor.Canonicalize(rdfcUnsignedDoc(t))
