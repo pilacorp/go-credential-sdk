@@ -424,11 +424,10 @@ func (m *JSONMap) ecdsaProofConfig(proof *dto.Proof) (map[string]interface{}, er
 	// The signature cannot cover itself: § 3.2.5 removes proofValue, and only
 	// proofValue.
 	delete(cfg, "proofValue")
-	// A proof issued elsewhere may carry its own @context; overwriting it would
-	// canonicalize the configuration differently than the signer did.
-	if _, ok := cfg["@context"]; !ok {
-		cfg["@context"] = ctx
-	}
+	// Proof Configuration (ecdsa-rdfc-2019), step 4: set the proof
+	// configuration's @context to the unsecured document's, whatever the proof
+	// itself carries.
+	cfg["@context"] = ctx
 
 	// Round-trip through JSON: normalizes @context to plain JSON types and
 	// copies it, leaving the document's own untouched.
