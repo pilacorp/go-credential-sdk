@@ -1,6 +1,7 @@
 package vp
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -227,8 +228,21 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 		return ParseJSONPresentation(rawPresentation, opts...)
 	}
 
-	valStr := string(rawPresentation)
+	valStr := strings.TrimSpace(strings.Trim(string(rawPresentation), "\""))
 	if isJWTPresentation(valStr) {
+		parts := strings.Split(valStr, ".")
+		if len(parts) >= 2 {
+			if headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0]); err == nil {
+				var header map[string]interface{}
+				if err := json.Unmarshal(headerBytes, &header); err == nil {
+					if typ, ok := header["typ"].(string); ok {
+						if typ == "vp+jwt" || typ == "application/vp+jwt" {
+							return ParseJOSEPresentation(valStr, opts...)
+						}
+					}
+				}
+			}
+		}
 		return ParseJWTPresentation(valStr, opts...)
 	}
 
@@ -260,6 +274,11 @@ func isJSONPresentation(rawPresentation []byte) bool {
 
 func isJWTPresentation(valStr string) bool {
 	valStr = strings.Trim(valStr, "\"")
+	// If it contains '~', it could be an SD-JWT presentation with disclosures and/or KB-JWT
+	if strings.Contains(valStr, "~") {
+		parts := strings.Split(valStr, "~")
+		valStr = parts[0]
+	}
 	regex := `^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$`
 	match, _ := regexp.MatchString(regex, valStr)
 	return match
