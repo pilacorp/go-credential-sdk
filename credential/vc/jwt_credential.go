@@ -14,7 +14,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -25,6 +24,7 @@ type JWTCredential struct {
 	payloadData  CredentialData // Parsed payload as CredentialData
 	signature    string         // JWT signature (if signed)
 	disclosures  []string       // Optional SD-JWT disclosures (when issuing/holding SD-JWT)
+	signingKey   jwt.SigningKey // Verification method the header names; zero for a parsed credential
 }
 
 var _ Credential = (*JWTCredential)(nil)
@@ -79,24 +79,16 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 
 	// Resolve the VM so alg reflects the key it actually holds, and so a kid
 	// that does not exist or is not granted assertionMethod is caught here.
-	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vcc.Issuer,
-		"assertionMethod", options.verificationMethodKey, options.resolver)
+	signingKey, err := jwt.ResolveSigningKey(context.Background(), vcc.Issuer, "assertionMethod",
+		options.verificationMethodKey, options.resolver)
 	if err != nil {
-		return nil, fmt.Errorf("resolve verification method: %w", err)
-	}
-	kind, ok := verificationmethod.VMKeyKind(vm)
-	if !ok {
-		return nil, fmt.Errorf("verification method %q has an unrecognized key type", kid)
-	}
-	alg, err := jwt.AlgForKeyKind(kind)
-	if err != nil {
-		return nil, fmt.Errorf("verification method %q: %w", kid, err)
+		return nil, err
 	}
 
 	header := map[string]interface{}{
 		"typ": "JWT",
-		"alg": alg,
-		"kid": kid,
+		"alg": signingKey.Alg,
+		"kid": signingKey.ID,
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -118,6 +110,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 		payloadData:  payloadData,
 		signature:    "",
 		disclosures:  disclosures,
+		signingKey:   signingKey,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -205,27 +198,34 @@ func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider,
 	if signerProvider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
+	if err := rejectBuildTimeOptions(getOptions(opts...)); err != nil {
+		return err
+	}
 
-	jwtSigner := jwt.NewJWTSigner(signerProvider)
-	signature, err := jwtSigner.SignString(j.signingInput)
+	if err := j.executeOptions(signingOptions(opts)...); err != nil {
+		return err
+	}
+
+	digest := sha256.Sum256([]byte(j.signingInput))
+	raw, err := signerProvider.Sign(digest[:])
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
-
-	j.signature = signature
-	if err := j.executeOptions(opts...); err != nil {
-		j.signature = ""
+	signature, err := j.signingKey.Accept(j.signingInput, raw)
+	if err != nil {
 		return err
 	}
+	j.signature = signature
 	return nil
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTCredential) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
+// AddCustomProof attaches a signature made outside the SDK over GetSigningInput.
+// It is held to the same check as every signing path: the signature must be
+// 64-byte r||s and verify against the verification method the header names.
 func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -233,13 +233,19 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) 
 	if len(proof.Signature) == 0 {
 		return fmt.Errorf("proof signature cannot be empty")
 	}
-
-	err := j.executeOptions(opts...)
-	if err != nil {
+	if err := rejectBuildTimeOptions(getOptions(opts...)); err != nil {
 		return err
 	}
 
-	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
+	if err := j.executeOptions(signingOptions(opts)...); err != nil {
+		return err
+	}
+
+	signature, err := j.signingKey.Accept(j.signingInput, proof.Signature)
+	if err != nil {
+		return err
+	}
+	j.signature = signature
 	return nil
 }
 
@@ -376,5 +382,18 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 		}
 	}
 
+	return nil
+}
+
+// rejectBuildTimeOptions refuses options that only NewJWTCredential applies —
+// the header's kid and the SD-JWT options — so a signing call does not drop
+// them silently.
+func rejectBuildTimeOptions(o *credentialOptions) error {
+	if o.verificationMethodKey != "" {
+		return fmt.Errorf("WithVerificationMethodKey cannot be applied when signing a JWT: the header's kid was fixed when the token was built — pass the option to NewJWTCredential")
+	}
+	if o.hasSDOptions() {
+		return fmt.Errorf("SD-JWT options cannot be applied when signing: the disclosures were fixed when the token was built — pass them to NewJWTCredential")
+	}
 	return nil
 }

@@ -383,7 +383,7 @@ credential, err := vc.ParseCredential(data, vc.WithBaseURL("https://custom-did-r
 
 Sets the verification method key to sign with (e.g. `"key-2"`). When omitted, the SDK resolves the DID and uses its only verification method, or the latest active one listed for the proof purpose (`assertionMethod` for VCs, `authentication` for VPs).
 
-For JSON credentials pass it when signing (`AddProofByProvider`); `NewJSONCredential` / `ParseJSONCredential` ignore it. For JWT credentials pass it to `NewJWTCredential`.
+For JSON credentials pass it when signing (`AddProofByProvider`); `NewJSONCredential` / `ParseJSONCredential` ignore it. For JWT credentials pass it to `NewJWTCredential`; the JWT signing calls refuse it, since the header's `kid` is already fixed.
 
 ```go
 // Use custom verification method key
@@ -858,7 +858,7 @@ err = presentation.Verify(vp.WithBaseURL("https://did-resolver.prod.company.com/
 
 Sets the verification method key to sign with (e.g. `"key-2"`). When omitted, the SDK resolves the DID and uses its only verification method, or the latest active one listed for the proof purpose (`assertionMethod` for VCs, `authentication` for VPs).
 
-For JSON presentations pass it when signing (`AddProofByProvider`); `NewJSONPresentation` / `ParseJSONPresentation` ignore it. For JWT presentations pass it to `NewJWTPresentation`.
+For JSON presentations pass it when signing (`AddProofByProvider`); `NewJSONPresentation` / `ParseJSONPresentation` ignore it. For JWT presentations pass it to `NewJWTPresentation`; the JWT signing calls refuse it, since the header's `kid` is already fixed.
 
 ```go
 // Use custom verification method key
@@ -1204,9 +1204,10 @@ pres, err := vp.ParsePresentationWithValidation(data)
 
 ```go
 // Create credential with multiple options
-credential, err := vc.NewJSONCredential(contents,
-    vc.WithSchemaValidation(),
-    vc.WithVerificationMethodKey("key-2"))
+credential, err := vc.NewJSONCredential(contents, vc.WithSchemaValidation())
+// WithVerificationMethodKey applies where the proof is made: AddProofByProvider
+// for JSON credentials, NewJWTCredential for JWT credentials.
+err = credential.AddProofByProvider(signer, vc.WithVerificationMethodKey("key-2"))
 
 // Parse credential with all validation options
 credential, err := vc.ParseCredential(data,
@@ -1215,9 +1216,8 @@ credential, err := vc.ParseCredential(data,
     vc.WithBaseURL("https://custom-resolver.com/api/v1/did"))
 
 // Create presentation with VC validation
-presentation, err := vp.NewJSONPresentation(contents,
-    vp.WithVCValidation(),
-    vp.WithVerificationMethodKey("key-3"))
+presentation, err := vp.NewJSONPresentation(contents, vp.WithVCValidation())
+err = presentation.AddProofByProvider(signer, vp.WithVerificationMethodKey("key-3"))
 ```
 
 #### **Using ParseCredentialWithValidation and ParsePresentationWithValidation**

@@ -2,6 +2,7 @@ package vp
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 type JWTPresentation struct {
@@ -19,6 +19,7 @@ type JWTPresentation struct {
 	payloadData  PresentationData       // Parsed payload as PresentationData
 	jwtClaims    map[string]interface{} // Top-level JWT claims (iss, aud, nonce, ...)
 	signature    string                 // JWT signature (if signed)
+	signingKey   jwt.SigningKey         // Verification method the header names; zero for a parsed presentation
 }
 
 var _ Presentation = (*JWTPresentation)(nil)
@@ -71,24 +72,16 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JWT
 
 	// Resolve the VM so alg reflects the key it actually holds, and so a kid
 	// that does not exist or is not granted authentication is caught here.
-	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vpc.Holder,
-		"authentication", options.verificationMethodKey, options.resolver)
+	signingKey, err := jwt.ResolveSigningKey(context.Background(), vpc.Holder, "authentication",
+		options.verificationMethodKey, options.resolver)
 	if err != nil {
-		return nil, fmt.Errorf("resolve verification method: %w", err)
-	}
-	kind, ok := verificationmethod.VMKeyKind(vm)
-	if !ok {
-		return nil, fmt.Errorf("verification method %q has an unrecognized key type", kid)
-	}
-	alg, err := jwt.AlgForKeyKind(kind)
-	if err != nil {
-		return nil, fmt.Errorf("verification method %q: %w", kid, err)
+		return nil, err
 	}
 
 	header := map[string]interface{}{
 		"typ": "JWT",
-		"alg": alg,
-		"kid": kid,
+		"alg": signingKey.Alg,
+		"kid": signingKey.ID,
 	}
 
 	// Encode header and payload
@@ -112,6 +105,7 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JWT
 		payloadData:  payloadData,
 		jwtClaims:    payload,
 		signature:    "",
+		signingKey:   signingKey,
 	}
 
 	// Return JWTPresentation
@@ -186,36 +180,40 @@ func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opt
 	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
+	o := getOptions(opts...)
+	if err := rejectBuildTimeOptions(o, false); err != nil {
+		return err
+	}
 
 	// WithChallenge/WithDomain may be given at signing time, as with JSON
 	// presentations; they overwrite nonce/aud and the payload is re-encoded.
-	if err := j.applyChallengeDomain(getOptions(opts...)); err != nil {
+	if err := j.applyChallengeDomain(o); err != nil {
+		return err
+	}
+	if err := j.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
 
-	jwtSigner := jwt.NewJWTSigner(provider)
-
-	// Sign the existing signing input
-	signature, err := jwtSigner.SignString(j.signingInput)
+	digest := sha256.Sum256([]byte(j.signingInput))
+	raw, err := provider.Sign(digest[:])
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
-
-	j.signature = signature
-	if err := j.executeOptions(opts...); err != nil {
-		j.signature = ""
+	signature, err := j.signingKey.Accept(j.signingInput, raw)
+	if err != nil {
 		return err
 	}
-
+	j.signature = signature
 	return nil
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JWTPresentation) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
+// AddCustomProof attaches a signature made outside the SDK over GetSigningInput.
+// It is held to the same check as every signing path: the signature must be
+// 64-byte r||s and verify against the verification method the header names.
 func (j *JWTPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -224,12 +222,19 @@ func (j *JWTPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationO
 		return fmt.Errorf("proof signature cannot be empty")
 	}
 
-	err := j.executeOptions(opts...)
-	if err != nil {
+	if err := rejectBuildTimeOptions(getOptions(opts...), true); err != nil {
 		return err
 	}
 
-	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
+	if err := j.executeOptions(signingOptions(opts)...); err != nil {
+		return err
+	}
+
+	signature, err := j.signingKey.Accept(j.signingInput, proof.Signature)
+	if err != nil {
+		return err
+	}
+	j.signature = signature
 	return nil
 }
 
@@ -357,4 +362,17 @@ func audContains(aud interface{}, domain string) bool {
 		}
 	}
 	return false
+}
+
+// rejectBuildTimeOptions refuses options a signing call can no longer apply:
+// the header's kid always; nonce/aud too when the signature was made outside
+// the SDK (signedOutside), since it already covers the signing input.
+func rejectBuildTimeOptions(o *presentationOptions, signedOutside bool) error {
+	if o.verificationMethodKey != "" {
+		return fmt.Errorf("WithVerificationMethodKey cannot be applied when signing a JWT: the header's kid was fixed when the token was built — pass the option to NewJWTPresentation")
+	}
+	if signedOutside && (o.challenge != "" || o.domain != "") {
+		return fmt.Errorf("WithChallenge / WithDomain cannot be applied by AddCustomProof: the signature already covers the signing input — pass them to NewJWTPresentation before GetSigningInput, or sign with AddProofByProvider")
+	}
+	return nil
 }

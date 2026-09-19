@@ -73,7 +73,7 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
-	if err := e.executeOptions(opts...); err != nil {
+	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
 
@@ -155,8 +155,14 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 		!strings.HasPrefix(proof.ProofValue, jsonmap.MultibaseBase58BTCPrefix) {
 		return fmt.Errorf("proofValue must be multibase base58btc (%q prefix); hex proofs are no longer issued", jsonmap.MultibaseBase58BTCPrefix)
 	}
+	// The proof arrives signed: challenge, domain and verificationMethod are
+	// part of the proof configuration the signature covers, so an option
+	// cannot change them here.
+	if o := getOptions(opts...); o.challenge != "" || o.domain != "" || o.verificationMethodKey != "" {
+		return fmt.Errorf("WithChallenge / WithDomain / WithVerificationMethodKey cannot be applied by AddCustomProof: set proof.Challenge, proof.Domain and proof.VerificationMethod on the proof you sign")
+	}
 
-	if err := e.executeOptions(opts...); err != nil {
+	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
 

@@ -948,9 +948,17 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 			return t
 		}(),
 	}
+	// Publish the signer's own key as key-1 and resolve locally, so the header
+	// names the key that signs instead of whatever the live DID's latest VM is.
+	issuerKey, err := ethcrypto.HexToECDSA(issuerPriv)
+	if err != nil {
+		t.Fatalf("issuer key: %v", err)
+	}
+	legacyResolver := WithResolver(verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(issuerDID,
+		verificationmethod.NewSecp256k1VM(issuerDID, "key-1", hex.EncodeToString(ethcrypto.FromECDSAPub(&issuerKey.PublicKey))))))
 
 	t.Run("JWT GetSigningInput + AddCustomProof", func(t *testing.T) {
-		cred, err := NewJWTCredential(contents)
+		cred, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
 
 		signingInput, err := cred.GetSigningInput()
@@ -972,9 +980,9 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 	})
 
 	t.Run("JWT AddCustomProof equals AddProofByProvider", func(t *testing.T) {
-		cred1, err := NewJWTCredential(contents)
+		cred1, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
-		cred2, err := NewJWTCredential(contents)
+		cred2, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
 
 		defaultSigner, err := signer.NewDefaultProvider(issuerPriv)
@@ -996,7 +1004,7 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 	})
 
 	t.Run("JWT AddCustomProof(nil) errors", func(t *testing.T) {
-		cred, err := NewJWTCredential(contents)
+		cred, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
 		assert.Error(t, cred.AddCustomProof(nil))
 	})

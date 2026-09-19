@@ -62,7 +62,10 @@ type PresentationContents struct {
 // are silently ignored there (e.g. WithVerificationMethodKey on
 // NewJSONPresentation, which only signing reads). Splitting into
 // per-operation option sets is planned; until then each option documents
-// where it applies.
+// where it applies. On the signing calls a verify-only option (WithVerifyProof,
+// WithExpected*) is ignored. JWT signing refuses the kid, which NewJWTPresentation
+// fixes; AddCustomProof refuses what the signed proof already carries (kid, and
+// challenge/domain). JSON-LD AddProofByProvider applies kid, challenge, domain.
 type PresentationOpt func(*presentationOptions)
 
 // presentationOptions holds configuration for presentation processing.
@@ -128,7 +131,9 @@ func WithBaseURL(baseURL string) PresentationOpt {
 // For JSON presentations pass it to AddProofByProvider / AddProof; the
 // constructors and Parse functions ignore it (see the TODO on
 // PresentationOpt). For JWT presentations pass it to NewJWTPresentation, which
-// builds the header from it.
+// builds the header from it; the JWT signing calls refuse it, since the kid is
+// already fixed. AddCustomProof (JSON or JWT) refuses it too: the proof
+// arrives signed.
 func WithVerificationMethodKey(key string) PresentationOpt {
 	return func(p *presentationOptions) {
 		if key == "" {
@@ -139,6 +144,8 @@ func WithVerificationMethodKey(key string) PresentationOpt {
 }
 
 // WithVerifyProof enables proof verification during presentation parsing.
+// Signing calls ignore it; to check a proof added with AddCustomProof, call
+// Verify afterwards.
 func WithVerifyProof() PresentationOpt {
 	return func(p *presentationOptions) {
 		p.isVerifyProof = true
@@ -154,7 +161,9 @@ func WithCheckExpiration() PresentationOpt {
 
 // WithChallenge (signing) binds the presentation proof to the nonce the
 // verifier issued, so the presentation cannot be replayed. It is signed as part
-// of the proof configuration (Data Integrity § 3.2.5).
+// of the proof configuration (Data Integrity § 3.2.5). JWT: nonce claim, set by
+// NewJWTPresentation or AddProofByProvider. AddCustomProof (JWT or JSON) refuses
+// it: the proof arrives signed — for JSON set proof.Challenge before signing.
 func WithChallenge(challenge string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.challenge = challenge
@@ -162,7 +171,7 @@ func WithChallenge(challenge string) PresentationOpt {
 }
 
 // WithDomain (signing) binds the presentation proof to the relying party it is
-// intended for. Signed alongside challenge.
+// intended for. Signed alongside challenge; JWT: aud claim, same placement rule.
 func WithDomain(domain string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.domain = domain
@@ -172,6 +181,7 @@ func WithDomain(domain string) PresentationOpt {
 // WithExpectedChallenge (verifying) requires every verified proof to carry this
 // challenge; a missing or different value fails verification. Implies
 // WithVerifyProof, since the challenge is only trustworthy on a verified proof.
+// Signing calls ignore it, as every verify-only option; use WithChallenge there.
 func WithExpectedChallenge(challenge string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.expectedChallenge = challenge
@@ -182,6 +192,7 @@ func WithExpectedChallenge(challenge string) PresentationOpt {
 // WithExpectedDomain (verifying) requires every verified proof to carry this
 // domain; a missing or different value fails verification. Implies
 // WithVerifyProof, since the domain is only trustworthy on a verified proof.
+// Signing calls ignore it, as every verify-only option; use WithDomain there.
 func WithExpectedDomain(domain string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.expectedDomain = domain
@@ -194,6 +205,17 @@ func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt 
 	return func(p *presentationOptions) {
 		p.resolver = resolver
 	}
+}
+
+// signingOptions returns opts for a signing call, minus proof verification:
+// there is no signature to verify before signing, and the signing paths check
+// the fresh signature against the verification method's key. The other
+// options (expiration, embedded VC validation) check the content, so they run
+// before the signer is called. Verify-only options (WithExpected*) imply
+// verification, so clearing the flag leaves them without effect here. The three-index slice makes append allocate,
+// so the caller's slice is never written to.
+func signingOptions(opts []PresentationOpt) []PresentationOpt {
+	return append(opts[:len(opts):len(opts)], func(p *presentationOptions) { p.isVerifyProof = false })
 }
 
 func getOptions(opts ...PresentationOpt) *presentationOptions {

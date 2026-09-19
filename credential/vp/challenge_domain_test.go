@@ -342,7 +342,10 @@ func TestJWTVP_P256VerificationMethod(t *testing.T) {
 
 // Verify-time options passed to AddProofByProvider run against the signed
 // token, and a failed check leaves the presentation unsigned.
-func TestJWTVP_AddProofByProvider_VerifyOptions(t *testing.T) {
+// WithExpectedChallenge is a verify-time question, so a signing call ignores
+// it (as every verify-only option); the challenge binding is made by
+// WithChallenge, and Verify is where the expectation is checked.
+func TestJWTVP_AddProofByProvider_IgnoresVerifyOptions(t *testing.T) {
 	resolver := testResolver(t)
 
 	pres, err := vp.NewJWTPresentation(jwtVPContents(),
@@ -352,19 +355,18 @@ func TestJWTVP_AddProofByProvider_VerifyOptions(t *testing.T) {
 	}
 
 	if err := pres.AddProofByProvider(mustDefaultSigner(t, testSecpPrivHex),
-		vp.WithResolver(resolver), vp.WithExpectedChallenge("wrong")); err == nil {
-		t.Fatal("expected sign+verify with wrong challenge to fail")
-	}
-	if serialized, _ := pres.Serialize(); strings.Count(serialized.(string), ".") != 1 {
-		t.Fatalf("presentation must stay unsigned after a failed check, got %q", serialized)
-	}
-
-	if err := pres.AddProofByProvider(mustDefaultSigner(t, testSecpPrivHex),
-		vp.WithResolver(resolver), vp.WithExpectedChallenge("nonce-123")); err != nil {
-		t.Fatalf("sign+verify: %v", err)
+		vp.WithResolver(resolver), vp.WithExpectedChallenge("wrong")); err != nil {
+		t.Fatalf("a verify-only option must not affect signing, got: %v", err)
 	}
 	if serialized, _ := pres.Serialize(); strings.Count(serialized.(string), ".") != 2 {
 		t.Fatalf("presentation must be signed, got %q", serialized)
+	}
+
+	if err := pres.Verify(vp.WithResolver(resolver), vp.WithExpectedChallenge("nonce-123")); err != nil {
+		t.Fatalf("verify with the challenge that was signed: %v", err)
+	}
+	if err := pres.Verify(vp.WithResolver(resolver), vp.WithExpectedChallenge("wrong")); err == nil {
+		t.Fatal("verify with another challenge must fail")
 	}
 }
 
