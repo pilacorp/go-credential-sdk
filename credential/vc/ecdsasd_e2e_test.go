@@ -13,6 +13,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -331,4 +332,148 @@ func TestECDSASDEndToEnd_InPresentation(t *testing.T) {
 	if err := presentation.Verify(vp.WithResolver(s.resolver)); err != nil {
 		t.Fatalf("verify presentation: %v", err)
 	}
+}
+
+func unsignedPresentationBytes(t *testing.T, s e2eSetup) []byte {
+	t.Helper()
+	baseBytes := issueBase(t, s)
+	derivedBytes := deriveAndSerialize(t, baseBytes, []string{"credentialSubject.name"})
+	var derivedMap map[string]interface{}
+	if err := json.Unmarshal(derivedBytes, &derivedMap); err != nil {
+		t.Fatalf("unmarshal derived: %v", err)
+	}
+	vpDoc := map[string]interface{}{
+		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"id":                   "urn:uuid:vp-custom-proof",
+		"type":                 []interface{}{"VerifiablePresentation"},
+		"holder":               e2eHolderDID,
+		"verifiableCredential": []interface{}{derivedMap},
+	}
+	b, err := json.Marshal(vpDoc)
+	if err != nil {
+		t.Fatalf("marshal vp: %v", err)
+	}
+	return b
+}
+
+func vpProofFromSerialized(t *testing.T, serialized any) *dto.Proof {
+	t.Helper()
+	m, ok := serialized.(map[string]interface{})
+	if !ok {
+		t.Fatalf("serialized type %T", serialized)
+	}
+	raw, err := json.Marshal(m["proof"])
+	if err != nil {
+		t.Fatalf("marshal proof: %v", err)
+	}
+	var proofs []dto.Proof
+	if err := json.Unmarshal(raw, &proofs); err == nil && len(proofs) > 0 {
+		p := proofs[0]
+		return &p
+	}
+	var p dto.Proof
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatalf("unmarshal proof: %v", err)
+	}
+	return &p
+}
+
+func TestJSONPresentationAddCustomProof_WithVerifyProof(t *testing.T) {
+	s := newE2E(t)
+	holderSigner, err := signer.NewDefaultProvider(e2eHolderPriv)
+	if err != nil {
+		t.Fatalf("holder signer: %v", err)
+	}
+	raw := unsignedPresentationBytes(t, s)
+
+	signCopy := func(t *testing.T) *dto.Proof {
+		t.Helper()
+		p, err := vp.ParseJSONPresentation(raw)
+		if err != nil {
+			t.Fatalf("parse copy: %v", err)
+		}
+		if err := p.AddProofByProvider(
+			holderSigner,
+			vp.WithVerificationMethodKey("key-1"),
+			vp.WithResolver(s.resolver),
+		); err != nil {
+			t.Fatalf("sign copy: %v", err)
+		}
+		serialized, err := p.Serialize()
+		if err != nil {
+			t.Fatalf("serialize copy: %v", err)
+		}
+		return vpProofFromSerialized(t, serialized)
+	}
+
+	garbage := &dto.Proof{
+		Type:               "DataIntegrityProof",
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: e2eHolderDID + "#key-1",
+		ProofPurpose:       "authentication",
+		Cryptosuite:        "ecdsa-rdfc-2019",
+		ProofValue:         "deadbeef",
+	}
+
+	t.Run("fresh document + valid proof + WithVerifyProof attaches and verifies", func(t *testing.T) {
+		p, err := vp.ParseJSONPresentation(raw)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if err := p.AddCustomProof(signCopy(t), vp.WithVerifyProof(), vp.WithResolver(s.resolver)); err != nil {
+			t.Fatalf("AddCustomProof: %v", err)
+		}
+		if err := p.Verify(vp.WithResolver(s.resolver)); err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+	})
+
+	t.Run("garbage proof + WithVerifyProof refused, document unchanged", func(t *testing.T) {
+		p, err := vp.ParseJSONPresentation(raw)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		before, _ := json.Marshal(p.ExtractField("proof"))
+		if err := p.AddCustomProof(garbage, vp.WithVerifyProof(), vp.WithResolver(s.resolver)); err == nil {
+			t.Fatal("expected AddCustomProof to refuse a garbage proof")
+		}
+		after, _ := json.Marshal(p.ExtractField("proof"))
+		if string(before) != string(after) {
+			t.Fatalf("proof field changed on failure: before=%s after=%s", before, after)
+		}
+	})
+
+	t.Run("no option attaches unverified", func(t *testing.T) {
+		p, err := vp.ParseJSONPresentation(raw)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if err := p.AddCustomProof(garbage); err != nil {
+			t.Fatalf("AddCustomProof without verify: %v", err)
+		}
+		if p.ExtractField("proof") == nil {
+			t.Fatal("expected proof field after unverified attach")
+		}
+	})
+
+	t.Run("existing valid proof + garbage + WithVerifyProof refused", func(t *testing.T) {
+		p, err := vp.ParseJSONPresentation(raw)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if err := p.AddCustomProof(signCopy(t)); err != nil {
+			t.Fatalf("attach valid: %v", err)
+		}
+		if err := p.Verify(vp.WithResolver(s.resolver)); err != nil {
+			t.Fatalf("verify valid: %v", err)
+		}
+		before, _ := json.Marshal(p.ExtractField("proof"))
+		if err := p.AddCustomProof(garbage, vp.WithVerifyProof(), vp.WithResolver(s.resolver)); err == nil {
+			t.Fatal("expected AddCustomProof to refuse garbage on top of a valid proof")
+		}
+		after, _ := json.Marshal(p.ExtractField("proof"))
+		if string(before) != string(after) {
+			t.Fatalf("proof field changed on failure: before=%s after=%s", before, after)
+		}
+	})
 }
