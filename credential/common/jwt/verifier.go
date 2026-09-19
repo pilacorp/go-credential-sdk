@@ -115,8 +115,8 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 
 	// Strict-purpose check (always on): JWT VCs use proofPurpose =
 	// assertionMethod, JWT VPs use authentication. Detect from the JWT
-	// body's first claim.
-	purpose, perr := jwtProofPurpose(parts[1])
+	// header typ or body's claims.
+	purpose, perr := jwtProofPurpose(header, parts[1])
 	if perr != nil {
 		return perr
 	}
@@ -130,11 +130,20 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	return nil
 }
 
-// jwtProofPurpose returns the proofPurpose to enforce for the JWT body —
-// assertionMethod for credentials (presence of "vc" claim) and
-// authentication for presentations ("vp"). Returns an error if neither is
-// present.
-func jwtProofPurpose(payloadB64 string) (string, error) {
+// jwtProofPurpose returns the proofPurpose to enforce for the JWT —
+// assertionMethod for credentials and authentication for presentations.
+// Detects from header typ (vc+jwt / vp+jwt per W3C vc-jose-cose) or
+// payload claims (vc / vp per W3C VC 1.1, or type array).
+func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, error) {
+	if typ, ok := header["typ"].(string); ok {
+		switch typ {
+		case "vc+jwt", "application/vc+jwt":
+			return "assertionMethod", nil
+		case "vp+jwt", "application/vp+jwt":
+			return "authentication", nil
+		}
+	}
+
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
 		return "", fmt.Errorf("invalid payload encoding: %w", err)
@@ -149,33 +158,70 @@ func jwtProofPurpose(payloadB64 string) (string, error) {
 	if _, ok := body["vp"]; ok {
 		return "authentication", nil
 	}
-	return "", fmt.Errorf("JWT body has neither vc nor vp claim; cannot determine proofPurpose")
+	if types, ok := body["type"].([]interface{}); ok {
+		for _, t := range types {
+			if str, ok := t.(string); ok {
+				if str == "VerifiableCredential" {
+					return "assertionMethod", nil
+				}
+				if str == "VerifiablePresentation" {
+					return "authentication", nil
+				}
+			}
+		}
+	} else if typeStr, ok := body["type"].(string); ok {
+		if typeStr == "VerifiableCredential" {
+			return "assertionMethod", nil
+		}
+		if typeStr == "VerifiablePresentation" {
+			return "authentication", nil
+		}
+	}
+	return "", fmt.Errorf("JWT has neither vc/vp claims nor vc+jwt/vp+jwt typ; cannot determine proofPurpose")
 }
 
-// jwtIssuer extracts the issuer DID from the `iss` claim in the JWT body.
-// Per W3C VC Data Model JWT encoding, both VC JWTs (issuer DID) and VP
-// JWTs (holder DID) put the signer DID in `iss`. The verifier resolves
-// the DID Document via this claim rather than the kid header so the
-// authoritative source is the signed body, not a key identifier hint.
+// jwtIssuer extracts the issuer DID from the JWT body.
+// Per W3C VC Data Model v1.1 JWT encoding, both VC JWTs (issuer DID) and VP
+// JWTs (holder DID) put the signer DID in `iss`.
+// Per W3C VC 2.0 vc-jose-cose, the unsecured VC/VP is the unencoded payload,
+// so the signer DID is in `issuer` (for VC) or `holder` (for VP) if `iss` is omitted.
 func jwtIssuer(payloadB64 string) (string, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
 		return "", fmt.Errorf("invalid payload encoding: %w", err)
 	}
-	var body struct {
-		Iss string `json:"iss"`
-	}
+	var body map[string]interface{}
 	if err := json.Unmarshal(payloadBytes, &body); err != nil {
 		return "", fmt.Errorf("invalid payload JSON: %w", err)
 	}
-	if body.Iss == "" {
-		return "", fmt.Errorf("JWT body is missing required `iss` claim")
+	// 1. Check standard JWT "iss" claim
+	if iss, ok := body["iss"].(string); ok && iss != "" {
+		return iss, nil
 	}
-	return body.Iss, nil
+	// 2. Check VC 2.0 "issuer" field
+	if issuer, ok := body["issuer"].(string); ok && issuer != "" {
+		return issuer, nil
+	}
+	if issuerObj, ok := body["issuer"].(map[string]interface{}); ok {
+		if id, ok := issuerObj["id"].(string); ok && id != "" {
+			return id, nil
+		}
+	}
+	// 3. Check VP 2.0 "holder" field
+	if holder, ok := body["holder"].(string); ok && holder != "" {
+		return holder, nil
+	}
+	if holderObj, ok := body["holder"].(map[string]interface{}); ok {
+		if id, ok := holderObj["id"].(string); ok && id != "" {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("JWT body is missing required signer identifier (iss/issuer/holder)")
 }
 
 // jwtIssuedAt extracts iat (issued at) as UTC time when present.
-// Returns (nil, nil) when iat is absent.
+// Fallbacks to validFrom when iat is absent.
+// Returns (nil, nil) when both are absent.
 func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
@@ -187,32 +233,42 @@ func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
 	}
 
 	raw, ok := body["iat"]
-	if !ok || raw == nil {
-		return nil, nil
-	}
-
-	var sec int64
-	switch t := raw.(type) {
-	case float64:
-		sec = int64(t)
-	case int64:
-		sec = t
-	case json.Number:
-		v, err := t.Int64()
-		if err != nil {
-			return nil, fmt.Errorf("invalid iat: %v", err)
+	if ok && raw != nil {
+		var sec int64
+		switch t := raw.(type) {
+		case float64:
+			sec = int64(t)
+		case int64:
+			sec = t
+		case json.Number:
+			var err error
+			sec, err = t.Int64()
+			if err != nil {
+				return nil, fmt.Errorf("invalid iat value: %w", err)
+			}
+		default:
+			return nil, fmt.Errorf("invalid iat type: %T", raw)
 		}
-		sec = v
-	default:
-		return nil, fmt.Errorf("invalid iat type: %T", raw)
+		if sec <= 0 {
+			return nil, fmt.Errorf("invalid iat value: %v", raw)
+		}
+		tm := time.Unix(sec, 0).UTC()
+		return &tm, nil
 	}
 
-	if sec <= 0 {
-		return nil, fmt.Errorf("invalid iat value: %v", raw)
+	// Fallback to validFrom if iat is absent (common in VC 2.0 vc-jose-cose)
+	if vf, ok := body["validFrom"].(string); ok && vf != "" {
+		if t, err := time.Parse(time.RFC3339Nano, vf); err == nil {
+			utc := t.UTC()
+			return &utc, nil
+		}
+		if t, err := time.Parse(time.RFC3339, vf); err == nil {
+			utc := t.UTC()
+			return &utc, nil
+		}
 	}
 
-	tm := time.Unix(sec, 0).UTC()
-	return &tm, nil
+	return nil, nil
 }
 
 // strictPurposeCheck mirrors the post-crypto checks used by jsonmap.VerifyProof
