@@ -126,18 +126,45 @@ func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
 	return (*jsonmap.JSONMap)(&e.presentationData).Canonicalize()
 }
 
+// cloneJSONValue deep-copies a JSON value so a failed AddCustomProof can restore
+// the previous proof field (map, array, or absent).
+func cloneJSONValue(v any) any {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return v
+	}
+	return out
+}
+
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
 	}
 
-	err := e.executeOptions(opts...)
-	if err != nil {
+	// Attach first so WithVerifyProof covers the new proof (and the rest of the
+	// set). executeOptions used to run before attach, so WithVerifyProof never
+	// saw the proof being added.
+	prev := cloneJSONValue(e.presentationData["proof"])
+	if err := (*jsonmap.JSONMap)(&e.presentationData).AddCustomProof(proof); err != nil {
 		return err
 	}
-
-	return (*jsonmap.JSONMap)(&e.presentationData).AddCustomProof(proof)
+	if err := e.executeOptions(opts...); err != nil {
+		if prev == nil {
+			delete(e.presentationData, "proof")
+		} else {
+			e.presentationData["proof"] = prev
+		}
+		return err
+	}
+	return nil
 }
 
 func (e *JSONPresentation) Verify(opts ...PresentationOpt) error {
