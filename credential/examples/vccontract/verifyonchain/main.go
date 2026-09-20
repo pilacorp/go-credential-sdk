@@ -1,10 +1,17 @@
-// Command verifyonchain demonstrates how a client verifies that a VC hash is
-// anchored on-chain using the vccontract.CredentialRegistry.
+// Command verifyonchain demonstrates VerifyVCHashOnChain, which asks the contract
+// itself to check a proof against the tree's current stored root.
+//
+// DEPRECATED, AND KEPT ONLY FOR OLDER DEPLOYMENTS. The current contract has no
+// verifyVC function and keeps no root in storage, so this call can only fail
+// against it. Use the verifybytx example instead: it works against every
+// deployment, current and past.
+//
+// The contract address below is a pre-upgrade deployment, which is the only kind
+// this example can run against.
 //
 // The proof components (issuer address, tree index, leaf, and sibling proof) are
 // assumed to already be in hand — for example, fetched from the authen-service
-// proof API (GetVCProofByHash / GetVCProofByID). This example only performs the
-// on-chain verification step.
+// proof API (GetVCProofByHash / GetVCProofByID).
 //
 // Run:
 //
