@@ -1,11 +1,14 @@
 package did
 
 import (
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // VerificationPurpose is a DID relationship purpose supported by Pila.
@@ -28,20 +31,24 @@ func (doc *DIDDocument) FindVerificationMethod(idOrFragment string) *Verificatio
 		return nil
 	}
 
+	target := canonicalVMID(doc.Id, idOrFragment)
 	for i := range doc.VerificationMethod {
 		vm := &doc.VerificationMethod[i]
-		if vm.Id == idOrFragment {
-			return vm
-		}
-		if strings.HasPrefix(idOrFragment, "#") && vm.Id == doc.Id+idOrFragment {
+		if canonicalVMID(doc.Id, vm.Id) == target {
 			return vm
 		}
 	}
+
 	return nil
 }
 
 // AddVerificationMethod appends a new VM and grants it the listed purposes.
-// If vm.Id is empty, it assigns the next sequential "did...#key-N" id.
+// If vm.Id is empty, it assigns the next sequential "did...#key-N" id; a
+// fragment id ("#key-3") is canonicalised to the full URL form.
+//
+// The VM must publish exactly one key material field: PublicKeyHex
+// (secp256k1) or PublicKeyMultibase (P-256 Multikey). An empty Type is
+// defaulted from that field; a Type that contradicts it is rejected.
 //
 // Returns the assigned VM id.
 func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []VerificationPurpose) (string, error) {
@@ -51,16 +58,29 @@ func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []
 	if doc.Id == "" {
 		return "", fmt.Errorf("document.id is required")
 	}
-	if vm.PublicKeyHex == "" {
-		return "", fmt.Errorf("verification method must have PublicKeyHex")
+
+	expectedType, err := vmTypeFor(vm)
+	if err != nil {
+		return "", err
+	}
+	// Validate purposes before touching the document: a later failure must
+	// not leave a half-added VM behind.
+	if err := validatePurposes(purposes); err != nil {
+		return "", err
 	}
 
 	if vm.Id == "" {
-		vm.Id = nextSequentialKid(*doc)
+		vm.Id = doc.nextSequentialKid()
 	}
+	vm.Id = canonicalVMID(doc.Id, vm.Id)
+
 	if vm.Type == "" {
-		vm.Type = "EcdsaSecp256k1VerificationKey2019"
+		vm.Type = expectedType
 	}
+	if vm.Type != expectedType {
+		return "", fmt.Errorf("verification method type %q does not match its key material: expected %s", vm.Type, expectedType)
+	}
+
 	if vm.Controller == "" {
 		vm.Controller = doc.Id
 	}
@@ -68,14 +88,11 @@ func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []
 	if doc.FindVerificationMethod(vm.Id) != nil {
 		return "", fmt.Errorf("verification method already exists: %s", vm.Id)
 	}
-	// Reject if the same PublicKeyHex is already registered under a
-	// different id — the caller is likely re-adding an existing key by
-	// mistake. Comparison is case-insensitive and "0x"-prefix tolerant.
-	normalizedKey := strings.ToLower(strings.TrimPrefix(vm.PublicKeyHex, "0x"))
-	for _, existing := range doc.VerificationMethod {
-		if strings.ToLower(strings.TrimPrefix(existing.PublicKeyHex, "0x")) == normalizedKey {
-			return "", fmt.Errorf("verification method with the same PublicKeyHex already exists: %s", existing.Id)
-		}
+	// Reject if the same key is already registered under a different id — the
+	// caller is likely re-adding an existing key by mistake. Comparison is per
+	// key material field, on the decoded key where that is possible.
+	if existing := doc.findByKeyFingerprint(keyFingerprint(vm)); existing != "" {
+		return "", fmt.Errorf("verification method with the same public key already exists: %s", existing)
 	}
 
 	doc.VerificationMethod = append(doc.VerificationMethod, vm)
@@ -90,7 +107,8 @@ func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []
 }
 
 // RotateVerificationMethod appends newVM, copies purposes from oldKid to it,
-// and marks oldKid revoked.
+// and marks oldKid revoked. The new VM must use the same suite as the old
+// one, so relying parties keep verifying the same way.
 //
 // Returns the new VM id.
 func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM VerificationMethod, reason string, revokedAt time.Time) (string, error) {
@@ -107,13 +125,20 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 		reason = "superseded"
 	}
 
+	newType, err := vmTypeFor(newVM)
+	if err != nil {
+		return "", err
+	}
+
 	oldIdx := -1
 	oldVMID := ""
+	target := canonicalVMID(doc.Id, oldKid)
 	for i := range doc.VerificationMethod {
 		vm := &doc.VerificationMethod[i]
-		if vm.Id == oldKid || (strings.HasPrefix(oldKid, "#") && vm.Id == doc.Id+oldKid) {
+		if canonicalVMID(doc.Id, vm.Id) == target {
 			oldIdx = i
 			oldVMID = vm.Id
+
 			break
 		}
 	}
@@ -122,6 +147,14 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 	}
 	if doc.VerificationMethod[oldIdx].Revoked != nil {
 		return "", fmt.Errorf("verification method %q is already revoked", oldVMID)
+	}
+
+	oldType, err := vmTypeFor(doc.VerificationMethod[oldIdx])
+	if err != nil {
+		return "", fmt.Errorf("verification method %q: %w", oldVMID, err)
+	}
+	if oldType != newType {
+		return "", fmt.Errorf("cannot rotate %q from %s to %s: the suite must stay the same", oldVMID, oldType, newType)
 	}
 
 	purposes := doc.purposesOfKid(oldVMID)
@@ -141,7 +174,10 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 	return newID, nil
 }
 
-// RevokeVerificationMethod marks a VM as revoked.
+// RevokeVerificationMethod marks a VM as revoked. The VM stays in the
+// relationship arrays on purpose: verifiers compare proof.created against the
+// revoked timestamp, so removing the reference would also invalidate
+// signatures made while the key was still active.
 func (doc *DIDDocument) RevokeVerificationMethod(kid string, reason string, revokedAt time.Time) error {
 	if doc == nil {
 		return fmt.Errorf("document is nil")
@@ -167,11 +203,13 @@ func (doc *DIDDocument) RevokeVerificationMethod(kid string, reason string, revo
 
 	vm.Revoked = &revokedAt
 	vm.RevocationReason = reason
+
 	return nil
 }
 
 // AddVerificationMethodPurposes grants the given purposes to a VM by adding
 // it to each relationship array. Idempotent: existing refs are not duplicated.
+// A revoked VM cannot be granted new purposes.
 func (doc *DIDDocument) AddVerificationMethodPurposes(kid string, purposes []VerificationPurpose) error {
 	if doc == nil {
 		return fmt.Errorf("document is nil")
@@ -182,8 +220,16 @@ func (doc *DIDDocument) AddVerificationMethodPurposes(kid string, purposes []Ver
 	if len(purposes) == 0 {
 		return fmt.Errorf("purposes is required")
 	}
-	if doc.FindVerificationMethod(kid) == nil {
+
+	vm := doc.FindVerificationMethod(kid)
+	if vm == nil {
 		return fmt.Errorf("verification method not found: %s", kid)
+	}
+	if vm.Revoked != nil {
+		return fmt.Errorf("verification method %q is revoked", vm.Id)
+	}
+	if err := validatePurposes(purposes); err != nil {
+		return err
 	}
 
 	for _, p := range purposes {
@@ -191,6 +237,7 @@ func (doc *DIDDocument) AddVerificationMethodPurposes(kid string, purposes []Ver
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -210,12 +257,99 @@ func (doc *DIDDocument) RemoveVerificationMethodPurposes(kid string, purposes []
 	if doc.FindVerificationMethod(kid) == nil {
 		return fmt.Errorf("verification method not found: %s", kid)
 	}
+	if err := validatePurposes(purposes); err != nil {
+		return err
+	}
 
 	for _, p := range purposes {
 		if err := doc.removePurpose(p, kid); err != nil {
 			return err
 		}
 	}
+
+	return nil
+}
+
+// vmTypeFor returns the suite a VM must be published under, derived from its
+// key material field: publicKeyHex is secp256k1, publicKeyMultibase is a
+// P-256 Multikey. A VM carrying neither, both, or the deprecated
+// publicKeyJwk is rejected (model.go declares the fields mutually exclusive).
+func vmTypeFor(vm VerificationMethod) (string, error) {
+	if len(vm.PublicKeyJwk) > 0 {
+		return "", fmt.Errorf("publicKeyJwk is not supported: publish secp256k1 as publicKeyHex or P-256 as publicKeyMultibase")
+	}
+
+	hasHex, hasMultibase := vm.PublicKeyHex != "", vm.PublicKeyMultibase != ""
+
+	switch {
+	case hasHex && hasMultibase:
+		return "", fmt.Errorf("verification method must have publicKeyHex or publicKeyMultibase, not both")
+	case hasHex:
+		return secp256k1VMType, nil
+	case hasMultibase:
+		return multikeyVMType, nil
+	default:
+		return "", fmt.Errorf("verification method must have either publicKeyHex or publicKeyMultibase")
+	}
+}
+
+// findByKeyFingerprint returns the id of the VM holding the same key, or "".
+func (doc *DIDDocument) findByKeyFingerprint(fp string) string {
+	if fp == "" {
+		return ""
+	}
+
+	for _, existing := range doc.VerificationMethod {
+		if keyFingerprint(existing) == fp {
+			return existing.Id
+		}
+	}
+
+	return ""
+}
+
+// keyFingerprint renders a VM's key material in a comparable form, namespaced
+// by field so an empty field never matches another empty one.
+func keyFingerprint(vm VerificationMethod) string {
+	switch {
+	case vm.PublicKeyHex != "":
+		return "publicKeyHex:" + normalizeSecp256k1Hex(vm.PublicKeyHex)
+	case vm.PublicKeyMultibase != "":
+		// base58btc is case-sensitive — compare verbatim.
+		return "publicKeyMultibase:" + vm.PublicKeyMultibase
+	}
+
+	return ""
+}
+
+// normalizeSecp256k1Hex reduces a hex key to its compressed point so the same
+// key does not slip in twice as 04... and 02.... Input that is not a valid
+// point is compared as lowercase hex without the "0x" prefix.
+func normalizeSecp256k1Hex(h string) string {
+	trimmed := strings.ToLower(strings.TrimPrefix(strings.ToLower(h), "0x"))
+
+	raw, err := hex.DecodeString(trimmed)
+	if err != nil {
+		return trimmed
+	}
+	if pub, err := crypto.UnmarshalPubkey(raw); err == nil {
+		return hex.EncodeToString(crypto.CompressPubkey(pub))
+	}
+	if pub, err := crypto.DecompressPubkey(raw); err == nil {
+		return hex.EncodeToString(crypto.CompressPubkey(pub))
+	}
+
+	return trimmed
+}
+
+// validatePurposes rejects unknown purposes before any mutation happens.
+func validatePurposes(purposes []VerificationPurpose) error {
+	for _, p := range purposes {
+		if !slices.Contains(supportedPurposes, p) {
+			return fmt.Errorf("unsupported purpose: %s", p)
+		}
+	}
+
 	return nil
 }
 
@@ -230,6 +364,7 @@ func (doc *DIDDocument) addPurpose(p VerificationPurpose, kid string) error {
 	case PurposeAssertionMethod:
 		doc.AssertionMethod = addRefNormalized(doc.AssertionMethod, kid, doc.Id)
 	}
+
 	return nil
 }
 
@@ -244,24 +379,18 @@ func (doc *DIDDocument) removePurpose(p VerificationPurpose, kid string) error {
 	case PurposeAssertionMethod:
 		doc.AssertionMethod = removeRefNormalized(doc.AssertionMethod, kid, doc.Id)
 	}
-	return nil
-}
 
-func canonRef(ref, did string) string {
-	if strings.HasPrefix(ref, "#") {
-		return did + ref
-	}
-	return ref
+	return nil
 }
 
 // addRefNormalized rewrites every entry in arr to canonical form, dedupes,
 // then appends `kid` (also canonicalised) if not already present.
 func addRefNormalized(arr []string, kid, did string) []string {
-	target := canonRef(kid, did)
+	target := canonicalVMID(did, kid)
 	seen := make(map[string]struct{}, len(arr)+1)
 	out := make([]string, 0, len(arr)+1)
 	for _, x := range arr {
-		c := canonRef(x, did)
+		c := canonicalVMID(did, x)
 		if _, dup := seen[c]; dup {
 			continue
 		}
@@ -271,6 +400,7 @@ func addRefNormalized(arr []string, kid, did string) []string {
 	if _, dup := seen[target]; !dup {
 		out = append(out, target)
 	}
+
 	return out
 }
 
@@ -278,11 +408,11 @@ func addRefNormalized(arr []string, kid, did string) []string {
 // any entry that matches kid (compared against canonical). Caller may pass
 // kid as fragment ("#key-2") or full URL — both resolve to the same VM.
 func removeRefNormalized(arr []string, kid, did string) []string {
-	target := canonRef(kid, did)
+	target := canonicalVMID(did, kid)
 	seen := make(map[string]struct{}, len(arr))
 	out := make([]string, 0, len(arr))
 	for _, x := range arr {
-		c := canonRef(x, did)
+		c := canonicalVMID(did, x)
 		if c == target {
 			continue
 		}
@@ -292,6 +422,7 @@ func removeRefNormalized(arr []string, kid, did string) []string {
 		seen[c] = struct{}{}
 		out = append(out, c)
 	}
+
 	return out
 }
 
@@ -305,29 +436,24 @@ func (doc *DIDDocument) purposesOfKid(kid string) []VerificationPurpose {
 	if containsKidRef(doc.AssertionMethod, kid, doc.Id) {
 		out = append(out, PurposeAssertionMethod)
 	}
+
 	return out
 }
 
 func containsKidRef(arr []string, kid, did string) bool {
-	full := kid
-	frag := kid
-	if strings.HasPrefix(kid, did+"#") {
-		frag = strings.TrimPrefix(kid, did)
-	}
-	if strings.HasPrefix(kid, "#") {
-		full = did + kid
-	}
+	target := canonicalVMID(did, kid)
 	for _, x := range arr {
-		if x == kid || x == full || x == frag {
+		if canonicalVMID(did, x) == target {
 			return true
 		}
 	}
+
 	return false
 }
 
 // nextSequentialKid returns the next sequential "#key-N" id based on the
 // highest N found in the document's verification methods.
-func nextSequentialKid(doc DIDDocument) string {
+func (doc *DIDDocument) nextSequentialKid() string {
 	maxN := 0
 	for _, vm := range doc.VerificationMethod {
 		frag := strings.TrimPrefix(vm.Id, doc.Id)
@@ -342,5 +468,6 @@ func nextSequentialKid(doc DIDDocument) string {
 			maxN = n
 		}
 	}
+
 	return doc.Id + fmt.Sprintf("#key-%d", maxN+1)
 }
