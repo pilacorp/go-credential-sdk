@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -299,18 +300,49 @@ func getOptions(opts ...CredentialOpt) *credentialOptions {
 // ParseCredential parses a credential from various formats into a Credential.
 func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, error) {
 	if len(rawCredential) == 0 {
-
 		return nil, fmt.Errorf("JSON string is empty")
 	}
 
 	if isJSONCredential(rawCredential) {
-
+		// Check for EnvelopedVerifiableCredential data URI per W3C VC 2.0 / vc-jose-cose
+		var peek map[string]interface{}
+		if err := json.Unmarshal(rawCredential, &peek); err == nil {
+			if idStr, ok := peek["id"].(string); ok {
+				if strings.HasPrefix(idStr, "data:application/vc+jwt,") {
+					jwtToken := strings.TrimPrefix(idStr, "data:application/vc+jwt,")
+					return ParseCredential([]byte(jwtToken), opts...)
+				}
+				if strings.HasPrefix(idStr, "data:application/vc+sd-jwt,") {
+					jwtToken := strings.TrimPrefix(idStr, "data:application/vc+sd-jwt,")
+					return ParseCredential([]byte(jwtToken), opts...)
+				}
+			}
+		}
 		return ParseJSONCredential(rawCredential, opts...)
 	}
 
-	valStr := string(rawCredential)
+	valStr := strings.TrimSpace(strings.Trim(string(rawCredential), "\""))
 	if sdjwt.IsSDJWT(valStr) || isJWTCredential(valStr) {
-
+		// Auto-detect vc-jose-cose (vc+jwt) vs legacy VC 1.1 JWT
+		baseJWT := valStr
+		if sdjwt.IsSDJWT(valStr) {
+			if parsed, err := sdjwt.Parse(valStr); err == nil {
+				baseJWT = parsed.BaseJWT
+			}
+		}
+		parts := strings.Split(baseJWT, ".")
+		if len(parts) >= 2 {
+			if headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0]); err == nil {
+				var header map[string]interface{}
+				if err := json.Unmarshal(headerBytes, &header); err == nil {
+					if typ, ok := header["typ"].(string); ok {
+						if typ == "vc+jwt" || typ == "application/vc+jwt" {
+							return ParseJOSECredential(valStr, opts...)
+						}
+					}
+				}
+			}
+		}
 		return ParseJWTCredential(valStr, opts...)
 	}
 
