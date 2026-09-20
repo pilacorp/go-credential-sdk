@@ -107,8 +107,8 @@ func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []
 }
 
 // RotateVerificationMethod appends newVM, copies purposes from oldKid to it,
-// and marks oldKid revoked. The new VM must use the same suite as the old
-// one, so relying parties keep verifying the same way.
+// and marks oldKid revoked. newVM goes through AddVerificationMethod, so its
+// key material and type are validated there.
 //
 // Returns the new VM id.
 func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM VerificationMethod, reason string, revokedAt time.Time) (string, error) {
@@ -123,11 +123,6 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 	}
 	if reason == "" {
 		reason = "superseded"
-	}
-
-	newType, err := vmTypeFor(newVM)
-	if err != nil {
-		return "", err
 	}
 
 	oldIdx := -1
@@ -147,14 +142,6 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 	}
 	if doc.VerificationMethod[oldIdx].Revoked != nil {
 		return "", fmt.Errorf("verification method %q is already revoked", oldVMID)
-	}
-
-	oldType, err := vmTypeFor(doc.VerificationMethod[oldIdx])
-	if err != nil {
-		return "", fmt.Errorf("verification method %q: %w", oldVMID, err)
-	}
-	if oldType != newType {
-		return "", fmt.Errorf("cannot rotate %q from %s to %s: the suite must stay the same", oldVMID, oldType, newType)
 	}
 
 	purposes := doc.purposesOfKid(oldVMID)

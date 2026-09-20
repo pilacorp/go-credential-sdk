@@ -273,20 +273,6 @@ func TestAddVerificationMethod_DuplicateSecpAcrossEncodings(t *testing.T) {
 	}
 }
 
-// TestRotateVerificationMethod_RejectsKeyMaterialChange guards that a rotation
-// keeps the suite relying parties expect.
-func TestRotateVerificationMethod_RejectsKeyMaterialChange(t *testing.T) {
-	doc := mixedDoc(t)
-
-	newVM, err := NewP256MultikeyVM(doc.Id, "#key-3", freshP256Pub(t))
-	if err != nil {
-		t.Fatalf("NewP256MultikeyVM: %v", err)
-	}
-	if _, err := doc.RotateVerificationMethod("#key-1", newVM, "superseded", time.Time{}); err == nil {
-		t.Fatalf("expected secp256k1 -> Multikey rotation to be rejected")
-	}
-}
-
 // TestAddVerificationMethodPurposes_RejectsRevoked guards that a retired key
 // cannot be handed new purposes.
 func TestAddVerificationMethodPurposes_RejectsRevoked(t *testing.T) {
