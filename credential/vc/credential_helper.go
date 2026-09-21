@@ -44,8 +44,10 @@ func extractFieldFromMap(m map[string]interface{}, path string) interface{} {
 	return current
 }
 
-// serializeCredentialContents serializes CredentialContents into a Credential.
-func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error) {
+// serializeCredentialContents serializes CredentialContents into a Credential
+// under the given data model, which decides the @context default and the names
+// of the validity period properties.
+func serializeCredentialContents(vcc *CredentialContents, model DataModel) (CredentialData, error) {
 	if vcc == nil {
 		return nil, fmt.Errorf("credential contents is nil")
 	}
@@ -55,9 +57,14 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 		return nil, fmt.Errorf("credential contents must have at least one of: context, ID, or issuer")
 	}
 
+	context, err := ContextForDataModel(vcc.Context, model)
+	if err != nil {
+		return nil, err
+	}
+
 	vcJSON := make(CredentialData)
-	if len(vcc.Context) > 0 {
-		validatedContext, err := util.SerializeContexts(vcc.Context)
+	if len(context) > 0 {
+		validatedContext, err := util.SerializeContexts(context)
 		if err != nil {
 			return nil, fmt.Errorf("invalid @context: %w", err)
 		}
@@ -102,12 +109,16 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 		vcJSON["termsOfUse"] = util.MapSlice(vcc.TermsOfUse, serializeTermsOfUse)
 	}
 
+	// VC 1.1 names the validity period issuanceDate / expirationDate; 2.0
+	// renamed them to validFrom / validUntil. The struct field is the same
+	// either way — only the wire name changes.
+	from, until := model.validityPropertyNames()
 	if !vcc.ValidFrom.IsZero() {
-		vcJSON["validFrom"] = vcc.ValidFrom.Format(time.RFC3339)
+		vcJSON[from] = vcc.ValidFrom.Format(time.RFC3339)
 	}
 
 	if !vcc.ValidUntil.IsZero() {
-		vcJSON["validUntil"] = vcc.ValidUntil.Format(time.RFC3339)
+		vcJSON[until] = vcc.ValidUntil.Format(time.RFC3339)
 	}
 
 	// Shared by NewJSONCredential and NewJWTCredential, so both reject a
@@ -307,22 +318,32 @@ func parseIssuer(c CredentialData, contents *CredentialContents) error {
 	return nil
 }
 
-// parseDates extracts validFrom and validUntil fields from a Credential.
+// parseDates extracts the validity period from a Credential, under either data
+// model: validFrom / validUntil (2.0) or issuanceDate / expirationDate (1.1).
+// Both land in the same CredentialContents fields, so a parsed credential reads
+// the same whichever model it was issued under. The 2.0 names win when a
+// document somehow carries both.
 func parseDates(c CredentialData, contents *CredentialContents) error {
-	if validFrom, ok := c["validFrom"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validFrom)
-		if err != nil {
-			return fmt.Errorf("failed to parse validFrom: %w", err)
-		}
-		contents.ValidFrom = t
+	dates := []struct {
+		property string
+		target   *time.Time
+	}{
+		{"issuanceDate", &contents.ValidFrom},
+		{"expirationDate", &contents.ValidUntil},
+		{"validFrom", &contents.ValidFrom},
+		{"validUntil", &contents.ValidUntil},
 	}
 
-	if validUntil, ok := c["validUntil"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validUntil)
-		if err != nil {
-			return fmt.Errorf("failed to parse validUntil: %w", err)
+	for _, d := range dates {
+		raw, ok := c[d.property].(string)
+		if !ok {
+			continue
 		}
-		contents.ValidUntil = t
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return fmt.Errorf("failed to parse %s: %w", d.property, err)
+		}
+		*d.target = t
 	}
 
 	return nil

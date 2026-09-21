@@ -2154,7 +2154,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 	t.Run("omitted when empty", func(t *testing.T) {
 		vcc := baseContents()
 
-		out, err := serializeCredentialContents(&vcc)
+		out, err := serializeCredentialContents(&vcc, DataModelUnset)
 		assert.NoError(t, err)
 
 		_, present := out["termsOfUse"]
@@ -2165,7 +2165,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 		vcc := baseContents()
 		vcc.TermsOfUse = []TermsOfUse{{Type: "PresentationRequiredPolicy"}}
 
-		out, err := serializeCredentialContents(&vcc)
+		out, err := serializeCredentialContents(&vcc, DataModelUnset)
 		assert.NoError(t, err)
 
 		terms, ok := out["termsOfUse"].([]CredentialData)
@@ -2181,7 +2181,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 			Type: "IssuerPolicy",
 		}}
 
-		out, err := serializeCredentialContents(&vcc)
+		out, err := serializeCredentialContents(&vcc, DataModelUnset)
 		assert.NoError(t, err)
 
 		terms := out["termsOfUse"].([]CredentialData)
@@ -2199,7 +2199,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 			{Type: "IssuerPolicy", ID: "https://example.com/policies/credential/4"},
 		}
 
-		out, err := serializeCredentialContents(&vcc)
+		out, err := serializeCredentialContents(&vcc, DataModelUnset)
 		assert.NoError(t, err)
 
 		terms := out["termsOfUse"].([]CredentialData)
@@ -2215,7 +2215,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 			{ID: "https://example.com/policies/credential/4"},
 		}
 
-		_, err := serializeCredentialContents(&vcc)
+		_, err := serializeCredentialContents(&vcc, DataModelUnset)
 		assert.EqualError(t, err, "termsOfUse[1].type is required")
 	})
 
@@ -2258,7 +2258,7 @@ func TestSerializeCredentialContents_CredentialStatusTypeRequired(t *testing.T) 
 			{ID: "https://example.com/status/0#1", StatusPurpose: "revocation"},
 		}
 
-		_, err := serializeCredentialContents(&vcc)
+		_, err := serializeCredentialContents(&vcc, DataModelUnset)
 		assert.EqualError(t, err, "credentialStatus[1].type is required")
 	})
 
@@ -2270,7 +2270,7 @@ func TestSerializeCredentialContents_CredentialStatusTypeRequired(t *testing.T) 
 			StatusPurpose: "revocation",
 		}}
 
-		out, err := serializeCredentialContents(&vcc)
+		out, err := serializeCredentialContents(&vcc, DataModelUnset)
 		assert.NoError(t, err)
 
 		status, ok := out["credentialStatus"].(CredentialData)
@@ -2298,7 +2298,7 @@ func TestTermsOfUse_CanonicalizationProducesAbsoluteIRIs(t *testing.T) {
 			},
 		}
 
-		out, err := serializeCredentialContents(&vcc)
+		out, err := serializeCredentialContents(&vcc, DataModelUnset)
 		assert.NoError(t, err)
 
 		return normalizeCredentialData(out)

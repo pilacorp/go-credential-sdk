@@ -49,7 +49,9 @@ func TestVP_MultiKey_SignVerify(t *testing.T) {
 		wantErr  string
 	}{
 		{
-			name: "secp256k1 rejected",
+			// The document is VC 2.0, whose Data Integrity cryptosuites do
+			// not cover secp256k1. The suite that does belongs to VC 1.1.
+			name: "secp256k1 rejected on a VC 2.0 document",
 			did:  "did:example:vp-secp",
 			provider: func(t *testing.T) signer.SignerProvider {
 				p, err := signer.NewDefaultProvider(holderSecp)
@@ -59,7 +61,7 @@ func TestVP_MultiKey_SignVerify(t *testing.T) {
 				return p
 			},
 			vm:      vmpkg.NewSecp256k1VM("did:example:vp-secp", "key-1", secpPubHex(t, holderSecp)),
-			wantErr: "unsupported key kind",
+			wantErr: "WithDataModel11",
 		},
 		{
 			name:     "P-256 JWK/ecdsa-rdfc-2019",
