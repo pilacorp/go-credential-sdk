@@ -26,7 +26,7 @@ var _ Presentation = (*JWTPresentation)(nil)
 
 func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JWTPresentation, error) {
 	// Convert PresentationContents to PresentationData
-	m, err := serializePresentationContents(&vpc)
+	m, err := serializePresentationContents(&vpc, getOptions(opts...).dataModel)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}

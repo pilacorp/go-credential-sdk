@@ -86,6 +86,7 @@ type presentationOptions struct {
 	// Verifying: every checked proof must carry exactly these values.
 	expectedChallenge string
 	expectedDomain    string
+	dataModel         vc.DataModel
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -204,6 +205,35 @@ func WithExpectedDomain(domain string) PresentationOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.resolver = resolver
+	}
+}
+
+// WithDataModel11 builds the presentation against VC Data Model 1.1 instead of
+// the 2.0 default: @context defaults to https://www.w3.org/2018/credentials/v1.
+//
+// Use it when the presentation will carry an EcdsaSecp256k1Signature2019 proof,
+// which the VC 1.1 context defines and the 2.0 one does not.
+//
+// VALIDITY PERIOD ON A PRESENTATION. Neither base context resolves validFrom /
+// validUntil on a presentation — both scope the validity terms under
+// VerifiableCredential. Setting ValidFrom / ValidUntil anyway is allowed, and
+// the data model is explicitly extensible, but @context must then define the
+// term or signing fails: Canonicalize refuses undefined terms rather than
+// dropping them, so the field can never end up in a signed presentation
+// without being covered by the signature. Two ways to define it:
+//
+//	{"@vocab": "https://example.com/vocab#"}          // your own IRI
+//	{"validUntil": {"@id": "https://www.w3.org/2018/credentials#expirationDate",
+//	                "@type": "http://www.w3.org/2001/XMLSchema#dateTime"}}
+//
+// The first is easier; note it makes the property yours, not the W3C one that
+// merely shares its name. Either way no verifier is specified to act on it —
+// this SDK's WithCheckExpiration does, reading the JSON before canonicalization.
+//
+// Read by the constructors only; signing and verification ignore it.
+func WithDataModel11() PresentationOpt {
+	return func(p *presentationOptions) {
+		p.dataModel = vc.DataModel11
 	}
 }
 

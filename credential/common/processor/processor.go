@@ -53,6 +53,12 @@ var w3cCredentialV1Context []byte
 //go:embed w3c.security.data-integrity.v2.json
 var w3cSecurityDataIntegrityV2Context []byte
 
+//go:embed w3c.security.v1.json
+var w3cSecurityV1Context []byte
+
+//go:embed w3c.security.v2.json
+var w3cSecurityV2Context []byte
+
 // Well-known W3C context URLs mapped to their embedded JSON bytes. These are
 // frozen, immutable published contexts, so serving them from embedded copies is
 // byte-for-byte equivalent to fetching them — it only removes the network
@@ -65,6 +71,12 @@ var wellKnownContexts = map[string][]byte{
 	"https://www.w3.org/ns/credentials/examples/v2":        w3cCredentialExamplesV2Context,
 	"https://www.w3.org/ns/credentials/examples/v2.jsonld": w3cCredentialExamplesV2Context,
 	"https://w3id.org/security/data-integrity/v2":          w3cSecurityDataIntegrityV2Context,
+	// security/v1 and /v2 define the VC 1.1 Linked Data Signature terms
+	// (EcdsaSecp256k1Signature2019, jws, proofPurpose, challenge, domain).
+	// v2 imports v1 by URL, so both must be served locally or the fetch of one
+	// still hits the network.
+	"https://w3id.org/security/v1": w3cSecurityV1Context,
+	"https://w3id.org/security/v2": w3cSecurityV2Context,
 }
 
 // localContextDocumentLoader wraps a default loader and checks for local context files first
