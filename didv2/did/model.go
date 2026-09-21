@@ -126,10 +126,12 @@ type KeyPair struct {
 }
 
 // Validate rejects a document whose verification methods cannot be published:
-// an empty or duplicate VM id, or an authentication / assertionMethod
-// reference to a VM the document does not carry. GenerateDIDTX runs it before
-// hashing so such a document never reaches the chain; callers building
-// documents with GenerateDIDDocument directly should call it themselves.
+// an empty or duplicate VM id, a VM whose key material is missing, ambiguous
+// or contradicts its type, or an authentication / assertionMethod reference
+// to a VM the document does not carry. GenerateDIDTX runs it before hashing
+// so such a document never reaches the chain; callers building documents with
+// GenerateDIDDocument directly, or unmarshalling one from a registrar or the
+// chain, should call it themselves.
 func (doc *DIDDocument) Validate() error {
 	if doc == nil {
 		return fmt.Errorf("DID document is nil")
@@ -143,6 +145,16 @@ func (doc *DIDDocument) Validate() error {
 			return fmt.Errorf("verificationMethod: duplicate id %s (#key-1 and #key-2 are reserved by GenerateDID)", vm.Id)
 		}
 		seen[vm.Id] = struct{}{}
+
+		// Same rule AddVerificationMethod enforces, applied here so a
+		// document built or unmarshalled by any other route is held to it too.
+		expectedType, err := vmTypeFor(vm)
+		if err != nil {
+			return fmt.Errorf("verificationMethod[%d] (%s): %w", i, vm.Id, err)
+		}
+		if vm.Type != expectedType {
+			return fmt.Errorf("verificationMethod[%d] (%s): type %q does not match its key material: expected %s", i, vm.Id, vm.Type, expectedType)
+		}
 	}
 	for _, rel := range []struct {
 		name string
