@@ -96,6 +96,9 @@ func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []
 	}
 
 	doc.VerificationMethod = append(doc.VerificationMethod, vm)
+	if vm.Type == multikeyVMType {
+		doc.ensureContext(cidContext)
+	}
 
 	for _, p := range purposes {
 		if err := doc.addPurpose(p, vm.Id); err != nil {
@@ -157,6 +160,7 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 	}
 	oldVM.Revoked = &revokedAt
 	oldVM.RevocationReason = reason
+	doc.ensureContext(cidContext)
 
 	return newID, nil
 }
@@ -190,6 +194,7 @@ func (doc *DIDDocument) RevokeVerificationMethod(kid string, reason string, revo
 
 	vm.Revoked = &revokedAt
 	vm.RevocationReason = reason
+	doc.ensureContext(cidContext)
 
 	return nil
 }
@@ -278,6 +283,18 @@ func vmTypeFor(vm VerificationMethod) (string, error) {
 	default:
 		return "", fmt.Errorf("verification method must have either publicKeyHex or publicKeyMultibase")
 	}
+}
+
+// ensureContext appends ctx to @context unless it is already there. Terms a
+// document uses must be defined by a context it declares: Multikey and
+// publicKeyMultibase, and revoked / revocationReason, all come from
+// cidContext, and GenerateDIDDocument only sees the VMs present at creation.
+func (doc *DIDDocument) ensureContext(ctx string) {
+	if slices.Contains(doc.Context, ctx) {
+		return
+	}
+
+	doc.Context = append(doc.Context, ctx)
 }
 
 // findByKeyFingerprint returns the id of the VM holding the same key, or "".

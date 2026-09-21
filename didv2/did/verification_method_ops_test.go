@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/hex"
+	"slices"
 	"testing"
 	"time"
 
@@ -333,5 +334,56 @@ func TestAddVerificationMethod_RejectsTypeKeyMaterialMismatch(t *testing.T) {
 	vm.Type = multikeyVMType
 	if _, err := doc.AddVerificationMethod(vm, nil); err != nil {
 		t.Fatalf("AddVerificationMethod with matching type: %v", err)
+	}
+}
+
+// TestAddVerificationMethod_PublishesCIDContext guards that adding a Multikey
+// VM to a document that had none also declares the context defining Multikey
+// and publicKeyMultibase — GenerateDIDDocument only sees the VMs present at
+// creation.
+func TestAddVerificationMethod_PublishesCIDContext(t *testing.T) {
+	doc := GenerateDIDDocument("0x02aa", testDID, "", testIssuer, DIDTypePeople, nil)
+
+	if slices.Contains(doc.Context, cidContext) {
+		t.Fatalf("a secp256k1-only document should not declare %s: %v", cidContext, doc.Context)
+	}
+
+	vm, err := NewP256MultikeyVM(doc.Id, "", freshP256Pub(t))
+	if err != nil {
+		t.Fatalf("NewP256MultikeyVM: %v", err)
+	}
+	if _, err := doc.AddVerificationMethod(vm, nil); err != nil {
+		t.Fatalf("AddVerificationMethod: %v", err)
+	}
+	if !slices.Contains(doc.Context, cidContext) {
+		t.Fatalf("expected %s in @context, got %v", cidContext, doc.Context)
+	}
+
+	// A second Multikey VM must not duplicate the entry.
+	second, err := NewP256MultikeyVM(doc.Id, "", freshP256Pub(t))
+	if err != nil {
+		t.Fatalf("NewP256MultikeyVM: %v", err)
+	}
+	if _, err := doc.AddVerificationMethod(second, nil); err != nil {
+		t.Fatalf("AddVerificationMethod: %v", err)
+	}
+	if n := slices.Index(doc.Context, cidContext); n < 0 || slices.Contains(doc.Context[n+1:], cidContext) {
+		t.Fatalf("expected %s exactly once, got %v", cidContext, doc.Context)
+	}
+	if doc.Context[0] != "https://www.w3.org/ns/did/v1" {
+		t.Fatalf("DID Core requires did/v1 first, got %v", doc.Context)
+	}
+}
+
+// TestRevokeVerificationMethod_PublishesCIDContext guards the same for the
+// revoked / revocationReason terms, which cidContext also defines.
+func TestRevokeVerificationMethod_PublishesCIDContext(t *testing.T) {
+	doc := GenerateDIDDocument("0x02aa", testDID, "", testIssuer, DIDTypePeople, nil)
+
+	if err := doc.RevokeVerificationMethod("#key-1", "keyCompromise", time.Time{}); err != nil {
+		t.Fatalf("RevokeVerificationMethod: %v", err)
+	}
+	if !slices.Contains(doc.Context, cidContext) {
+		t.Fatalf("expected %s in @context after revoke, got %v", cidContext, doc.Context)
 	}
 }
