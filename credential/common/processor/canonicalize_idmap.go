@@ -15,21 +15,77 @@ func CanonicalizeWithIdMap(doc map[string]interface{}) (nquads []string, idMap m
 		return nil, nil, fmt.Errorf("canonicalize: document is nil")
 	}
 	defer recoverJSONLD(&err, "canonicalize with id map")
-	std, err := standardizeForCanonicalization(doc)
+	dataset, err := toRDFDataset(doc)
 	if err != nil {
-		return nil, nil, fmt.Errorf("canonicalize: standardize: %w", err)
-	}
-	opts := sdOptions()
-	opts.Format = ""
-	rdf, err := ld.NewJsonLdProcessor().ToRDF(std, opts)
-	if err != nil {
-		return nil, nil, fmt.Errorf("canonicalize: to rdf: %w", err)
-	}
-	dataset, ok := rdf.(*ld.RDFDataset)
-	if !ok {
-		return nil, nil, fmt.Errorf("canonicalize: unexpected ToRDF type %T", rdf)
+		return nil, nil, err
 	}
 	return canonicalizeDatasetWithIdMap(dataset)
+}
+
+// toRDFDataset expands doc once and converts the expanded form to an RDF
+// dataset. ExpandJSONLD rejects input whose terms or types would be dropped
+// (legacy credentials take the CanonicalizeDocument path instead); its output
+// is fed straight to the low-level JsonLdApi.ToRDF, which unlike
+// JsonLdProcessor.ToRDF does not expand again.
+func toRDFDataset(doc map[string]interface{}) (*ld.RDFDataset, error) {
+	expanded, err := ExpandJSONLD(doc)
+	if err != nil {
+		return nil, err
+	}
+	dataset, err := ld.NewJsonLdApi().ToRDF(expanded, sdOptions())
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize: to rdf: %w", err)
+	}
+	return dataset, nil
+}
+
+// Canonicalize returns doc's canonical N-Quads as a single byte string.
+// Unlike CanonicalizeDocument it keeps JSON number types (xsd:integer /
+// xsd:double instead of xsd:string), so a signature over the result commits to
+// them, and it fails on undefined terms instead of silently returning nothing.
+// Both Data Integrity cryptosuites (ecdsa-rdfc-2019 and ecdsa-sd-2023) hash
+// their documents and proof configurations through here.
+func Canonicalize(doc map[string]interface{}) ([]byte, error) {
+	nquads, err := canonicalizeNQuads(doc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
+	}
+
+	// An empty dataset would make the signature commit to nothing.
+	canonical := []byte(strings.Join(nquads, ""))
+	if len(canonical) == 0 {
+		return nil, fmt.Errorf("canonicalization produced no N-Quads; the document has no @context or no JSON-LD terms")
+	}
+
+	return canonical, nil
+}
+
+// canonicalizeNQuads is CanonicalizeWithIdMap without the blank-node map, for
+// callers that only hash the result (ecdsa-rdfc-2019, proof configurations).
+func canonicalizeNQuads(doc map[string]interface{}) (nquads []string, err error) {
+	if doc == nil {
+		return nil, fmt.Errorf("canonicalize: document is nil")
+	}
+	defer recoverJSONLD(&err, "canonicalize")
+	// toRDFDataset rather than Normalize, which rebuilds options and drops
+	// SafeMode.
+	dataset, err := toRDFDataset(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	na := ld.NewNormalisationAlgorithm(ld.AlgorithmURDNA2015)
+	nopts := sdOptions()
+	nopts.Format = "application/n-quads"
+	res, err := na.Main(dataset, nopts)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize: normalize: %w", err)
+	}
+	nqStr, ok := res.(string)
+	if !ok {
+		return nil, fmt.Errorf("canonicalize: unexpected normalize type %T", res)
+	}
+	return splitNQuadsKeepNL(nqStr), nil
 }
 
 // CanonicalizeNQuadsWithIdMap canonicalizes an N-Quads dataset (the form used
@@ -91,6 +147,14 @@ func ExpandJSONLD(doc map[string]interface{}) (result []interface{}, err error) 
 	if err != nil {
 		return nil, fmt.Errorf("expand: %w", err)
 	}
+	// SafeMode above catches dropped properties; these catch dropped types
+	// and node identifiers.
+	if err := checkExpandedTypes(out); err != nil {
+		return nil, err
+	}
+	if err := rejectRelativeIDs(out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -149,6 +213,50 @@ func splitNQuadsKeepNL(s string) []string {
 	for _, p := range parts {
 		if strings.TrimSpace(p) != "" {
 			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// checkExpandedTypes reports `type` values RDF conversion would drop.
+func checkExpandedTypes(expanded interface{}) error {
+	if dropped := relativeKeywordValues(expanded, "@type", nil); len(dropped) > 0 {
+		return fmt.Errorf("json-ld: type %q is not defined by @context and would be dropped, leaving it unsigned", dropped[0])
+	}
+	return nil
+}
+
+// rejectRelativeIDs reports `id` values RDF conversion would drop. Expansion
+// resolves @id against the base IRI, and with none set a relative id stays
+// relative; ToRDF then skips the node, taking every statement about it (on the
+// root: type, issuer, validUntil, ...) out of the signed bytes.
+func rejectRelativeIDs(expanded interface{}) error {
+	if dropped := relativeKeywordValues(expanded, "@id", nil); len(dropped) > 0 {
+		return fmt.Errorf("json-ld: id %q is not an absolute IRI and would be dropped, leaving the node unsigned", dropped[0])
+	}
+	return nil
+}
+
+// relativeKeywordValues collects the string values of keyword (@type or @id)
+// that RDF conversion would drop: not a keyword, blank node, or absolute IRI,
+// the same test json-gold applies before emitting a quad.
+func relativeKeywordValues(v interface{}, keyword string, out []string) []string {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for k, val := range t {
+			if k != keyword {
+				out = relativeKeywordValues(val, keyword, out)
+				continue
+			}
+			for _, kv := range ld.Arrayify(val) {
+				if s, ok := kv.(string); ok && ld.IsRelativeIri(s) {
+					out = append(out, s)
+				}
+			}
+		}
+	case []interface{}:
+		for _, e := range t {
+			out = relativeKeywordValues(e, keyword, out)
 		}
 	}
 	return out

@@ -56,17 +56,36 @@ type PresentationContents struct {
 }
 
 // PresentationOpt configures presentation processing options.
+//
+// TODO(opts): one option type is reused across constructors, Parse, signing
+// and verification, so some options are meaningless in some call sites and
+// are silently ignored there (e.g. WithVerificationMethodKey on
+// NewJSONPresentation, which only signing reads). Splitting into
+// per-operation option sets is planned; until then each option documents
+// where it applies. On the signing calls a verify-only option (WithVerifyProof,
+// WithExpected*) is ignored. JWT signing refuses the kid, which NewJWTPresentation
+// fixes; AddCustomProof refuses what the signed proof already carries (kid, and
+// challenge/domain). JSON-LD AddProofByProvider applies kid, challenge, domain.
 type PresentationOpt func(*presentationOptions)
 
 // presentationOptions holds configuration for presentation processing.
 type presentationOptions struct {
-	isValidateVC            bool
+	isValidateVC bool
+	// vcOpts is forwarded to every embedded credential's Verify when
+	// isValidateVC is set; the presentation resolver is prepended.
+	vcOpts                  []vc.CredentialOpt
 	isVerifyProof           bool
 	isCheckExpiration       bool
 	didBaseURL              string
 	verificationMethodKey   string
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
+	// Signing: written into proof.challenge / proof.domain.
+	challenge string
+	domain    string
+	// Verifying: every checked proof must carry exactly these values.
+	expectedChallenge string
+	expectedDomain    string
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -78,10 +97,18 @@ func WithProofVerificationMethod(vm string) PresentationOpt {
 	}
 }
 
-// WithVCValidation enables validation for credentials in the presentation.
-func WithVCValidation() PresentationOpt {
+// WithVCValidation verifies every credential embedded in the presentation.
+// With no arguments only each credential's proof is verified; pass vc options
+// to add checks, which are forwarded to vc.Credential.Verify as given, e.g.
+//
+//	vp.WithVCValidation(vc.WithSchemaValidation(), vc.WithCheckRevocation())
+//
+// The presentation's resolver is passed along, so callers do not repeat
+// vc.WithResolver unless they want a different one for the credentials.
+func WithVCValidation(opts ...vc.CredentialOpt) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.isValidateVC = true
+		p.vcOpts = append(p.vcOpts, opts...)
 	}
 }
 
@@ -94,18 +121,31 @@ func WithBaseURL(baseURL string) PresentationOpt {
 
 // WithVerificationMethodKey sets the verification method fragment used when
 // signing — e.g. "key-2". When omitted, the SDK resolves the holder DID and
-// picks the latest active VM in the authentication relationship array.
+// picks its only VM, or the latest active VM in the authentication
+// relationship array.
 //
 // The cryptosuite is chosen from the bound VM's key type. If the DID holds
-// keys of DIFFERENT types, you MUST pin the VM here, otherwise the latest
-// active VM is used and may not match your signer.
+// keys of DIFFERENT types, you MUST pin the VM here, otherwise the selected
+// VM may not match your signer.
+//
+// For JSON presentations pass it to AddProofByProvider / AddProof; the
+// constructors and Parse functions ignore it (see the TODO on
+// PresentationOpt). For JWT presentations pass it to NewJWTPresentation, which
+// builds the header from it; the JWT signing calls refuse it, since the kid is
+// already fixed. AddCustomProof (JSON or JWT) refuses it too: the proof
+// arrives signed.
 func WithVerificationMethodKey(key string) PresentationOpt {
 	return func(p *presentationOptions) {
+		if key == "" {
+			return
+		}
 		p.verificationMethodKey = key
 	}
 }
 
 // WithVerifyProof enables proof verification during presentation parsing.
+// Signing calls ignore it; to check a proof added with AddCustomProof, call
+// Verify afterwards.
 func WithVerifyProof() PresentationOpt {
 	return func(p *presentationOptions) {
 		p.isVerifyProof = true
@@ -119,6 +159,47 @@ func WithCheckExpiration() PresentationOpt {
 	}
 }
 
+// WithChallenge (signing) binds the presentation proof to the nonce the
+// verifier issued, so the presentation cannot be replayed. It is signed as part
+// of the proof configuration (Data Integrity § 3.2.5). JWT: nonce claim, set by
+// NewJWTPresentation or AddProofByProvider. AddCustomProof (JWT or JSON) refuses
+// it: the proof arrives signed — for JSON set proof.Challenge before signing.
+func WithChallenge(challenge string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.challenge = challenge
+	}
+}
+
+// WithDomain (signing) binds the presentation proof to the relying party it is
+// intended for. Signed alongside challenge; JWT: aud claim, same placement rule.
+func WithDomain(domain string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.domain = domain
+	}
+}
+
+// WithExpectedChallenge (verifying) requires every verified proof to carry this
+// challenge; a missing or different value fails verification. Implies
+// WithVerifyProof, since the challenge is only trustworthy on a verified proof.
+// Signing calls ignore it, as every verify-only option; use WithChallenge there.
+func WithExpectedChallenge(challenge string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.expectedChallenge = challenge
+		p.isVerifyProof = true
+	}
+}
+
+// WithExpectedDomain (verifying) requires every verified proof to carry this
+// domain; a missing or different value fails verification. Implies
+// WithVerifyProof, since the domain is only trustworthy on a verified proof.
+// Signing calls ignore it, as every verify-only option; use WithDomain there.
+func WithExpectedDomain(domain string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.expectedDomain = domain
+		p.isVerifyProof = true
+	}
+}
+
 // WithResolver sets the document resolver for presentation signing/verification.
 func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt {
 	return func(p *presentationOptions) {
@@ -126,15 +207,23 @@ func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt 
 	}
 }
 
+// signingOptions returns opts for a signing call, minus proof verification:
+// there is no signature to verify before signing, and the signing paths check
+// the fresh signature against the verification method's key. The other
+// options (expiration, embedded VC validation) check the content, so they run
+// before the signer is called. Verify-only options (WithExpected*) imply
+// verification, so clearing the flag leaves them without effect here. The three-index slice makes append allocate,
+// so the caller's slice is never written to.
+func signingOptions(opts []PresentationOpt) []PresentationOpt {
+	return append(opts[:len(opts):len(opts)], func(p *presentationOptions) { p.isVerifyProof = false })
+}
+
 func getOptions(opts ...PresentationOpt) *presentationOptions {
 	options := &presentationOptions{
-		isValidateVC:      false,
-		isVerifyProof:     false,
-		isCheckExpiration: false,
-		didBaseURL:        config.BaseURL,
-		// verificationMethodKey is left empty so AddProof resolves the
-		// latest VM in the authentication array. Override with
-		// WithVerificationMethodKey to pin a specific kid.
+		isValidateVC:          false,
+		isVerifyProof:         false,
+		isCheckExpiration:     false,
+		didBaseURL:            config.BaseURL,
 		verificationMethodKey: "",
 		resolver:              nil,
 	}

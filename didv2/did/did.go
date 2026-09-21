@@ -7,12 +7,23 @@ package did
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"maps"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/crypto"
+)
+
+// Verification method types and contexts published by this package.
+const (
+	secp256k1VMType = "EcdsaSecp256k1VerificationKey2019"
+	multikeyVMType  = "Multikey"
+
+	// cidContext defines Multikey, publicKeyMultibase and revoked.
+	cidContext = "https://www.w3.org/ns/cid/v1"
 )
 
 // GenerateECDSAKeyPair generates a new ECDSA key pair for DID creation.
@@ -35,6 +46,29 @@ func GenerateECDSAKeyPair() (*KeyPair, error) {
 	}, nil
 }
 
+// GenerateDualCurveKeyPair generates one scalar on P-256 and exposes it as both a
+// secp256k1 key pair and a P-256 public key. P-256 first: n(P-256) < n(secp256k1).
+func GenerateDualCurveKeyPair() (*KeyPair, error) {
+	p256Priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate P-256 private key: %w", err)
+	}
+
+	scalar := make([]byte, 32)
+	p256Priv.D.FillBytes(scalar)
+
+	secpPriv, err := crypto.ToECDSA(scalar)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reuse P-256 scalar on secp256k1: %w", err)
+	}
+
+	return &KeyPair{
+		PublicKey:     &secpPriv.PublicKey,
+		PrivateKey:    secpPriv,
+		P256PublicKey: &p256Priv.PublicKey,
+	}, nil
+}
+
 // GenerateDIDDocument creates a W3C-compliant DID Document from the provided parameters.
 //
 // The DID Document is the core identity document that:
@@ -49,9 +83,14 @@ func GenerateECDSAKeyPair() (*KeyPair, error) {
 // The issuerDID parameter is the DID identifier of the Issuer (controller).
 // The didType parameter specifies the type of DID (People, Item, Location, Activity).
 // The metadata parameter contains additional key-value pairs for the document.
-//
-// Returns a DIDDocument that can be hashed and included in blockchain transactions.
-func GenerateDIDDocument(didPublicKey, did, hash, issuerDID string, didType DIDType, metadata map[string]any) *DIDDocument {
+// The extraVMs parameter publishes extra verification methods with the id and
+// purposes each spec sets; "#key-1" is reserved for didPublicKey.
+func GenerateDIDDocument(
+	didPublicKey, did, hash, issuerDID string,
+	didType DIDType,
+	metadata map[string]any,
+	extraVMs ...VerificationMethodSpec,
+) *DIDDocument {
 	docMetadata := make(map[string]any)
 	maps.Copy(docMetadata, metadata)
 
@@ -63,23 +102,110 @@ func GenerateDIDDocument(didPublicKey, did, hash, issuerDID string, didType DIDT
 		docMetadata["hash"] = hash
 	}
 
-	return &DIDDocument{
-		Context: []string{
-			"https://w3id.org/security/v1",
-			"https://www.w3.org/ns/did/v1",
-		},
-		Id:         did,
-		Controller: issuerDID,
-		VerificationMethod: []VerificationMethod{{
-			Id:           did + "#key-1",
-			Type:         "EcdsaSecp256k1VerificationKey2019",
-			Controller:   did,
-			PublicKeyHex: didPublicKey,
-		}},
-		Authentication:   []string{did + "#key-1"},
-		AssertionMethod:  []string{did + "#key-1"},
-		DocumentMetadata: docMetadata,
+	specs := append([]VerificationMethodSpec{NewSpec(NewSecp256k1VM(did, "#key-1", didPublicKey))}, extraVMs...)
+	vms, authentication, assertionMethod, err := NewVerificationMethods(specs...)
+	if err != nil {
+		return nil
 	}
+
+	return &DIDDocument{
+		Context:            documentContext(vms),
+		Id:                 did,
+		Controller:         issuerDID,
+		VerificationMethod: vms,
+		Authentication:     authentication,
+		AssertionMethod:    assertionMethod,
+		DocumentMetadata:   docMetadata,
+	}
+}
+
+// canonicalVMID expands a "#fragment" reference into a full DID URL.
+func canonicalVMID(did, idOrFragment string) string {
+	if strings.HasPrefix(idOrFragment, "#") {
+		return did + idOrFragment
+	}
+
+	return idOrFragment
+}
+
+// NewSpec pairs a VM with its purposes; no purpose means both.
+func NewSpec(vm VerificationMethod, purposes ...VerificationPurpose) VerificationMethodSpec {
+	return VerificationMethodSpec{VM: vm, Purposes: purposes}
+}
+
+// NewVerificationMethods splits complete specs into the document's verification
+// methods and its two relationship arrays. It rejects any purpose outside
+// supportedPurposes instead of silently dropping the key from both arrays.
+func NewVerificationMethods(
+	specs ...VerificationMethodSpec,
+) (vms []VerificationMethod, authentication, assertionMethod []string, err error) {
+	vms = make([]VerificationMethod, 0, len(specs))
+	authentication = make([]string, 0, len(specs))
+	assertionMethod = make([]string, 0, len(specs))
+
+	for _, s := range specs {
+		vms = append(vms, s.VM)
+
+		for _, p := range s.purposes() {
+			switch p {
+			case PurposeAuthentication:
+				authentication = append(authentication, s.VM.Id)
+			case PurposeAssertionMethod:
+				assertionMethod = append(assertionMethod, s.VM.Id)
+			default:
+				return nil, nil, nil, fmt.Errorf("verification method %s: unsupported purpose: %q", s.VM.Id, p)
+			}
+		}
+	}
+
+	return vms, authentication, assertionMethod, nil
+}
+
+// documentContext builds @context: DID Core 1.0 §6.1 requires did/v1 first,
+// then the security context, plus the CID context when the document publishes
+// a Multikey VM.
+func documentContext(vms []VerificationMethod) []string {
+	ctx := []string{
+		"https://www.w3.org/ns/did/v1",
+		"https://w3id.org/security/v1",
+	}
+
+	for i := range vms {
+		if vms[i].Type == multikeyVMType {
+			return append(ctx, cidContext)
+		}
+	}
+
+	return ctx
+}
+
+// NewSecp256k1VM builds a complete secp256k1 VM from a "#name" fragment.
+func NewSecp256k1VM(did, fragment, publicKeyHex string) VerificationMethod {
+	return VerificationMethod{
+		Id:           canonicalVMID(did, fragment),
+		Type:         secp256k1VMType,
+		Controller:   did,
+		PublicKeyHex: publicKeyHex,
+	}
+}
+
+// NewP256MultikeyVM builds a complete Multikey VM from a "#name" fragment.
+func NewP256MultikeyVM(did, fragment string, pub *ecdsa.PublicKey) (VerificationMethod, error) {
+	if pub == nil || pub.Curve != elliptic.P256() {
+		return VerificationMethod{}, fmt.Errorf("NewP256MultikeyVM requires a P-256 public key")
+	}
+
+	multibase, err := encodePubMultibase(pub)
+	if err != nil {
+		return VerificationMethod{}, err
+	}
+
+	return VerificationMethod{
+		Id:                 canonicalVMID(did, fragment),
+		Type:               multikeyVMType,
+		Controller:         did,
+		PublicKeyMultibase: multibase,
+	}, nil
 }
 
 // AddressFromPublicKeyHex converts a hex-encoded public key to an Ethereum address.

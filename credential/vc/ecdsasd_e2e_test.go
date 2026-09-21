@@ -20,9 +20,8 @@ import (
 )
 
 const (
-	e2eIssuerDID  = "did:example:issuer"
-	e2eHolderPriv = "8da4ef21b864d2cc526dbdb2a120bd2874c36c9d0a1fb7f8c63d7f7a8b41de8f"
-	e2eHolderDID  = "did:example:holder"
+	e2eIssuerDID = "did:example:issuer"
+	e2eHolderDID = "did:example:holder"
 )
 
 // memResolver is an offline ResolverProvider for tests.
@@ -42,6 +41,7 @@ func (r *memResolver) ResolveDocument(_ context.Context, did string) (*verificat
 type e2eSetup struct {
 	resolver   *memResolver
 	issuerPriv *ecdsa.PrivateKey
+	holderPriv *ecdsa.PrivateKey
 }
 
 func newE2E(t *testing.T) e2eSetup {
@@ -50,11 +50,16 @@ func newE2E(t *testing.T) e2eSetup {
 	if err != nil {
 		t.Fatalf("issuer p256: %v", err)
 	}
+	// The holder signs presentations, which vp issues with a P-256 VM only.
+	holderPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("holder p256: %v", err)
+	}
 	resolver := &memResolver{docs: map[string]*verificationmethod.DIDDocument{
 		e2eIssuerDID: p256JWKDIDDoc(t, e2eIssuerDID, &issuerPriv.PublicKey),
-		e2eHolderDID: didDocFor(t, e2eHolderDID, e2eHolderPriv),
+		e2eHolderDID: p256JWKDIDDoc(t, e2eHolderDID, &holderPriv.PublicKey),
 	}}
-	return e2eSetup{resolver: resolver, issuerPriv: issuerPriv}
+	return e2eSetup{resolver: resolver, issuerPriv: issuerPriv, holderPriv: holderPriv}
 }
 
 // p256JWKDIDDoc builds an issuer DID document exposing a P-256 key as a
@@ -79,24 +84,6 @@ func p256JWKDIDDoc(t *testing.T, did string, pub *ecdsa.PublicKey) *verification
 				X:   base64.RawURLEncoding.EncodeToString(xb),
 				Y:   base64.RawURLEncoding.EncodeToString(yb),
 			},
-		}},
-		AssertionMethod: []string{vmID},
-		Authentication:  []string{vmID},
-	}
-}
-
-// didDocFor builds a secp256k1 DID document (used for the holder, who signs the
-// VP with ecdsa-rdfc-2019).
-func didDocFor(t *testing.T, did, privHex string) *verificationmethod.DIDDocument {
-	t.Helper()
-	vmID := did + "#key-1"
-	return &verificationmethod.DIDDocument{
-		ID: did,
-		VerificationMethod: []verificationmethod.VerificationMethodEntry{{
-			ID:           vmID,
-			Type:         "EcdsaSecp256k1VerificationKey2019",
-			Controller:   did,
-			PublicKeyHex: pubHex(t, privHex),
 		}},
 		AssertionMethod: []string{vmID},
 		Authentication:  []string{vmID},
@@ -224,6 +211,51 @@ func TestECDSASDEndToEnd_IssueDeriveVerify(t *testing.T) {
 	}
 }
 
+// The same flow with RFC 6901 JSON Pointers — the form the W3C spec and test
+// suites use — for both mandatory and selective paths, mixed with a dot path.
+func TestECDSASDEndToEnd_JSONPointerPaths(t *testing.T) {
+	s := newE2E(t)
+	issuerSigner, err := signer.NewP256Provider(s.issuerPriv)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+
+	base, err := vc.ParseECDSASDCredential(e2eCredentialJSON())
+	if err != nil {
+		t.Fatalf("parse base: %v", err)
+	}
+	if err := base.AddProofByProvider(issuerSigner,
+		[]string{"/issuer", "/validFrom", "/credentialSubject/id"},
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(s.resolver),
+	); err != nil {
+		t.Fatalf("add base proof with pointer paths: %v", err)
+	}
+	baseSerialized, err := base.Serialize()
+	if err != nil {
+		t.Fatalf("serialize base: %v", err)
+	}
+	baseBytes, _ := json.Marshal(baseSerialized)
+
+	derivedBytes := deriveAndSerialize(t, baseBytes,
+		[]string{"/credentialSubject/name", "credentialSubject.dob"})
+	derived, err := vc.ParseJSONCredential(derivedBytes)
+	if err != nil {
+		t.Fatalf("parse derived: %v", err)
+	}
+	if err := derived.Verify(vc.WithResolver(s.resolver)); err != nil {
+		t.Fatalf("verify derived: %v", err)
+	}
+	if got := derived.ExtractField("credentialSubject.name"); got != "Nguyen Van A" {
+		t.Errorf("revealed name = %v, want %q", got, "Nguyen Van A")
+	}
+	if got := derived.ExtractField("credentialSubject.dob"); got != "1990-01-01" {
+		t.Errorf("revealed dob = %v, want %q", got, "1990-01-01")
+	}
+	if got := derived.ExtractField("credentialSubject.email"); got != nil {
+		t.Errorf("email should not be revealed, got %v", got)
+	}
+}
+
 func TestECDSASDEndToEnd_RevealNothingExtra(t *testing.T) {
 	s := newE2E(t)
 	baseBytes := issueBase(t, s)
@@ -317,7 +349,7 @@ func TestECDSASDEndToEnd_InPresentation(t *testing.T) {
 		t.Fatalf("parse presentation: %v", err)
 	}
 
-	holderSigner, err := signer.NewDefaultProvider(e2eHolderPriv)
+	holderSigner, err := signer.NewP256Provider(s.holderPriv)
 	if err != nil {
 		t.Fatalf("holder signer: %v", err)
 	}

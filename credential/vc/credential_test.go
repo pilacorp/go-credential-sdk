@@ -1,6 +1,9 @@
 package vc
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -10,13 +13,16 @@ import (
 	"testing"
 	"time"
 
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 func TestParseCredential(t *testing.T) {
@@ -179,32 +185,20 @@ func TestCreateCredentialWithContents(t *testing.T) {
 		errorMsg    string
 	}{
 		{
-			name: "Valid JWT contents",
-			input: CredentialContents{
-				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
-				ID:      "urn:uuid:1234",
-				Issuer:  "did:example:issuer",
-			},
-			expected: CredentialData{
-				"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
-				"id":       "urn:uuid:1234",
-				"issuer":   "did:example:issuer",
-			},
-			expectError: false,
-		},
-		{
 			name: "Valid JSON contents",
 			input: CredentialContents{
 				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
 				ID:      "urn:uuid:1234",
 				Issuer:  "did:example:issuer",
 				Types:   []string{"VerifiableCredential"},
+				Subject: []Subject{{ID: "did:example:subject"}},
 			},
 			expected: CredentialData{
-				"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
-				"id":       "urn:uuid:1234",
-				"issuer":   "did:example:issuer",
-				"type":     "VerifiableCredential",
+				"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+				"id":                "urn:uuid:1234",
+				"issuer":            "did:example:issuer",
+				"type":              "VerifiableCredential",
+				"credentialSubject": CredentialData{"id": "did:example:subject"},
 			},
 			expectError: false,
 		},
@@ -213,6 +207,26 @@ func TestCreateCredentialWithContents(t *testing.T) {
 			input:       CredentialContents{},
 			expectError: true,
 			errorMsg:    "credential contents must have at least one of: context, ID, or issuer",
+		},
+		{
+			name: "Missing type",
+			input: CredentialContents{
+				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+				Issuer:  "did:example:issuer",
+				Subject: []Subject{{ID: "did:example:subject"}},
+			},
+			expectError: true,
+			errorMsg:    "credential is missing type",
+		},
+		{
+			name: "Missing credentialSubject",
+			input: CredentialContents{
+				Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+				Issuer:  "did:example:issuer",
+				Types:   []string{"VerifiableCredential"},
+			},
+			expectError: true,
+			errorMsg:    "credential is missing credentialSubject",
 		},
 	}
 
@@ -326,11 +340,29 @@ func TestParseTypes(t *testing.T) {
 }
 
 func TestParseIssuer(t *testing.T) {
-	credential := CredentialData{"issuer": "did:example:issuer"}
-	var contents CredentialContents
-	err := parseIssuer(credential, &contents)
-	assert.NoError(t, err)
-	assert.Equal(t, "did:example:issuer", contents.Issuer)
+	tests := []struct {
+		name     string
+		issuer   interface{}
+		expected string
+	}{
+		{"string", "did:example:issuer", "did:example:issuer"},
+		{"object with id", map[string]interface{}{"id": "did:example:issuer", "name": "Example"}, "did:example:issuer"},
+		{"object without id", map[string]interface{}{"name": "Example"}, ""},
+		{"empty string", "", ""},
+		{"missing", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			credential := CredentialData{}
+			if tt.issuer != nil {
+				credential["issuer"] = tt.issuer
+			}
+			var contents CredentialContents
+			err := parseIssuer(credential, &contents)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expected, contents.Issuer)
+		})
+	}
 }
 
 func TestParseDates(t *testing.T) {
@@ -813,15 +845,15 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		credential, err := NewJSONCredential(credentialContents)
 		assert.NoError(t, err, "Failed to create JSON credential")
 
-		// Add proof using AddProofByProvider method
-		defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
-		assert.NoError(t, err, "NewDefaultProvider failed")
+		// P-256, not the secp256k1 testnet key: JSON credentials sign with
+		// ecdsa-rdfc-2019. The JWT flow below keeps the secp256k1 key.
+		p256Signer, opts := p256TestIssuer(t, issuerDID)
 
-		err = credential.AddProofByProvider(defaultSigner)
+		err = credential.AddProofByProvider(p256Signer, opts...)
 		assert.NoError(t, err, "Failed to add proof to JSON credential")
 
 		// Verify the credential
-		err = credential.Verify()
+		err = credential.Verify(opts...)
 		assert.NoError(t, err, "Failed to verify JSON credential with proof")
 
 		// Serialize and verify it has proof
@@ -916,9 +948,17 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 			return t
 		}(),
 	}
+	// Publish the signer's own key as key-1 and resolve locally, so the header
+	// names the key that signs instead of whatever the live DID's latest VM is.
+	issuerKey, err := ethcrypto.HexToECDSA(issuerPriv)
+	if err != nil {
+		t.Fatalf("issuer key: %v", err)
+	}
+	legacyResolver := WithResolver(verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(issuerDID,
+		verificationmethod.NewSecp256k1VM(issuerDID, "key-1", hex.EncodeToString(ethcrypto.FromECDSAPub(&issuerKey.PublicKey))))))
 
 	t.Run("JWT GetSigningInput + AddCustomProof", func(t *testing.T) {
-		cred, err := NewJWTCredential(contents)
+		cred, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
 
 		signingInput, err := cred.GetSigningInput()
@@ -940,9 +980,9 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 	})
 
 	t.Run("JWT AddCustomProof equals AddProofByProvider", func(t *testing.T) {
-		cred1, err := NewJWTCredential(contents)
+		cred1, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
-		cred2, err := NewJWTCredential(contents)
+		cred2, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
 
 		defaultSigner, err := signer.NewDefaultProvider(issuerPriv)
@@ -964,7 +1004,7 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 	})
 
 	t.Run("JWT AddCustomProof(nil) errors", func(t *testing.T) {
-		cred, err := NewJWTCredential(contents)
+		cred, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
 		assert.Error(t, cred.AddCustomProof(nil))
 	})
@@ -979,7 +1019,7 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 			VerificationMethod: issuerDID + "#key-1",
 			ProofPurpose:       "assertionMethod",
 			Cryptosuite:        "ecdsa-rdfc-2019",
-			ProofValue:         "deadbeef",
+			ProofValue:         "zdeadbeef",
 		})
 		assert.NoError(t, err)
 
@@ -990,6 +1030,30 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 		assert.Contains(t, credMap, "proof")
 	})
 
+	// The proofValue carries the signature; this release issues base58btc only,
+	// and an empty value is not "not hex" — it is no signature at all.
+	t.Run("JSON AddCustomProof rejects a proofValue that is not base58btc", func(t *testing.T) {
+		for name, proofValue := range map[string]string{"hex": "deadbeef", "empty": ""} {
+			t.Run(name, func(t *testing.T) {
+				cred, err := NewJSONCredential(contents)
+				assert.NoError(t, err)
+
+				err = cred.AddCustomProof(&dto.Proof{
+					Type:               "DataIntegrityProof",
+					Created:            "2024-01-01T00:00:00Z",
+					VerificationMethod: issuerDID + "#key-1",
+					ProofPurpose:       "assertionMethod",
+					Cryptosuite:        "ecdsa-rdfc-2019",
+					ProofValue:         proofValue,
+				})
+				assert.ErrorContains(t, err, "base58btc")
+
+				_, err = cred.Serialize()
+				assert.Error(t, err, "a rejected proof must not be attached")
+			})
+		}
+	})
+
 	t.Run("JSON AddCustomProof(nil) errors", func(t *testing.T) {
 		cred, err := NewJSONCredential(contents)
 		assert.NoError(t, err)
@@ -998,7 +1062,6 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 }
 
 func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
-	issuerPrivateKey := "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
 	issuerDID := "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
 	schema := Schema{
 		ID:   "https://auth-dev.pila.vn/api/v1/schemas/7250251f-141e-47a2-aa5f-a5d3499d30da",
@@ -1038,18 +1101,15 @@ func TestCreateECDSACredentialWithValidateSchema(t *testing.T) {
 	}
 
 	// add proof
-	defaultSigner, err := signer.NewDefaultProvider(issuerPrivateKey)
-	if err != nil {
-		t.Fatalf("NewDefaultProvider failed: %v", err)
-	}
+	p256Signer, opts := p256TestIssuer(t, issuerDID)
 
-	err = embededCredential.AddProofByProvider(defaultSigner)
+	err = embededCredential.AddProofByProvider(p256Signer, opts...)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
 
 	// verify
-	err = embededCredential.Verify(WithSchemaValidation())
+	err = embededCredential.Verify(append(opts, WithSchemaValidation())...)
 	if err != nil {
 		t.Fatalf("Failed to verify JSON credential: %v", err)
 	}
@@ -1101,6 +1161,39 @@ const (
 	testIssuerPrivateKey = "5a369512f8f8a0e6973abd6241ce38103c232966c6153bf8377ac85582812aa4"
 	testIssuerDID        = "did:nda:testnet:0x084ce14ef7c6e76a5ff3d58c160de7e1d385d9ee"
 )
+
+// secpVMResolver publishes a secp256k1 key-1 for did, so NewJWTCredential can
+// resolve the VM it needs to pick the JWT alg without touching the network.
+func secpVMResolver(t *testing.T, did string) CredentialOpt {
+	t.Helper()
+	priv, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("secp256k1 keygen: %v", err)
+	}
+	pubHex := hex.EncodeToString(ethcrypto.FromECDSAPub(&priv.PublicKey))
+	return WithResolver(verificationmethod.NewStaticResolver(
+		verificationmethod.NewDIDDocument(did,
+			verificationmethod.NewSecp256k1VM(did, "key-1", pubHex))))
+}
+
+// p256TestIssuer returns a P-256 signer plus the options binding it to did's
+// key-1 through a static resolver. JSON credentials sign with ecdsa-rdfc-2019,
+// which is P-256 only, while the testnet DIDs above publish secp256k1 keys.
+func p256TestIssuer(t *testing.T, did string) (signer.SignerProvider, []CredentialOpt) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("p256 keygen: %v", err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+	resolver := verificationmethod.NewStaticResolver(
+		verificationmethod.NewDIDDocument(did,
+			mustP256VM(t, did, "key-1", &priv.PublicKey)))
+	return prov, []CredentialOpt{WithVerificationMethodKey("key-1"), WithResolver(resolver)}
+}
 
 func TestCreateJWTCredentialWithValidateSchema(t *testing.T) {
 	credentialContents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
@@ -1230,12 +1323,9 @@ func TestSerializeJSONCredential(t *testing.T) {
 		t.Fatalf("Failed to create JSON credential: %v", err)
 	}
 	// add proof
-	defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
-	if err != nil {
-		t.Fatalf("NewDefaultProvider failed: %v", err)
-	}
+	p256Signer, opts := p256TestIssuer(t, testIssuerDID)
 
-	err = jsonCredential.AddProofByProvider(defaultSigner)
+	err = jsonCredential.AddProofByProvider(p256Signer, opts...)
 	if err != nil {
 		t.Fatalf("Failed to add proof: %v", err)
 	}
@@ -1284,6 +1374,7 @@ func TestNewJWTCredential_WithSDDisclosures_SerializesSDJWT(t *testing.T) {
 		WithVerificationMethodKey("key-1"),
 		WithSDDisclosures(disclosures),
 		WithSDSelectivePaths(selectivePaths),
+		secpVMResolver(t, "did:example:issuer"),
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
@@ -1358,7 +1449,7 @@ func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 
 	selectivePaths := []string{"credentialSubject.emails[1]"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
@@ -1459,7 +1550,7 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 
 	selectivePaths := []string{"credentialSubject.profile.name"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
@@ -1560,7 +1651,7 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	}
 	selectivePaths := []string{"credentialSubject.firstname", "credentialSubject.email"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths))
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 	serialized, err := cred.Serialize()
 	assert.NoError(t, err)
@@ -1624,6 +1715,7 @@ func TestWithSDDecoyDigests_Array(t *testing.T) {
 		WithSDDecoyDigests([]Decoy{
 			{Path: "credentialSubject.emails[1]", Count: 1},
 		}),
+		secpVMResolver(t, "did:example:issuer"),
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
@@ -1692,7 +1784,7 @@ func TestExtractField(t *testing.T) {
 		ValidUntil: time.Now().Add(24 * time.Hour),
 	}
 
-	jwtCred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"))
+	jwtCred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), secpVMResolver(t, "did:example:issuer"))
 	assert.NoError(t, err)
 
 	// Test extracting from JWT credential
@@ -1730,13 +1822,13 @@ func TestExtractField_EdgeCases(t *testing.T) {
 	id := cred.ExtractField("id")
 	assert.Equal(t, "urn:uuid:edge-test", id)
 
-	// Test with empty credential
-	emptyJsonCred := `{}`
-	emptyCred, err := ParseCredential([]byte(emptyJsonCred))
-	assert.NoError(t, err)
+	// An empty document is not a credential; parsing rejects it.
+	_, err = ParseCredential([]byte(`{}`))
+	assert.Error(t, err)
 
-	emptyResult := emptyCred.ExtractField("any.path")
-	assert.Nil(t, emptyResult)
+	// ExtractField on an empty credential still yields nil rather than panics.
+	emptyCred := &JSONCredential{credentialData: CredentialData{}}
+	assert.Nil(t, emptyCred.ExtractField("any.path"))
 }
 
 func TestGetOptions_Defaults(t *testing.T) {
@@ -1747,8 +1839,7 @@ func TestGetOptions_Defaults(t *testing.T) {
 	assert.False(t, opts.isCheckExpiration)
 	assert.False(t, opts.isCheckRevocation)
 	assert.Equal(t, config.BaseURL, opts.didBaseURL)
-	// Multi-VM: default verificationMethodKey is empty so the SDK resolves
-	// the latest VM in the assertionMethod array at sign time.
+	// No kid pinned: signing resolves the DID and picks the default VM.
 	assert.Equal(t, "", opts.verificationMethodKey)
 	assert.Nil(t, opts.loadedSchemaLoader)
 	assert.NotNil(t, opts.resolver, "default resolver should not be nil")
@@ -1775,7 +1866,9 @@ func TestGetOptions_WithResolverOverridesDefault(t *testing.T) {
 func TestValidateCredential_WithCustomSchemaLoader_Succeeds(t *testing.T) {
 	// Minimal credential that satisfies validateCredential's required keys.
 	cred := CredentialData{
-		"type": []interface{}{"VerifiableCredential"},
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
 		"credentialSubject": map[string]interface{}{
 			"id": "did:example:123",
 		},
@@ -1802,7 +1895,9 @@ func TestValidateCredential_WithCustomSchemaLoader_Succeeds(t *testing.T) {
 
 func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T) {
 	cred := CredentialData{
-		"type": []interface{}{"VerifiableCredential"},
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
 		"credentialSubject": map[string]interface{}{
 			"id": "did:example:123",
 		},
@@ -1826,7 +1921,7 @@ func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T
 
 func TestJSONCredentialHash_RequiresProof(t *testing.T) {
 	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
-	cred, err := NewJSONCredential(contents, WithVerificationMethodKey("key-1"))
+	cred, err := NewJSONCredential(contents)
 	assert.NoError(t, err)
 
 	_, err = cred.Hash()
@@ -1866,6 +1961,34 @@ func TestJSONCredentialHash_StableAcrossSerializeParseRoundTrip(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, h1, h2, "hash must survive serialize/parse round trip")
+}
+
+// Hash keeps the legacy full-document digest for hex proofs (already anchored
+// on chain) and switches to the Data Integrity canonicalizer for multibase
+// proofs, so the two must differ for a body that carries numbers.
+func TestJSONCredentialHash_SelectsCanonicalizerByProofFormat(t *testing.T) {
+	legacyJSON := []byte(`{
+		"@context": ["https://www.w3.org/ns/credentials/v2"],
+		"id": "urn:uuid:1234",
+		"type": ["VerifiableCredential"],
+		"issuer": "did:example:issuer",
+		"credentialSubject": {"id": "did:example:subject1", "age": 10},
+		"proof": {"type": "DataIntegrityProof", "cryptosuite": "ecdsa-rdfc-2019", "created": "2025-08-05T10:00:00Z", "proofPurpose": "assertionMethod", "verificationMethod": "did:example:issuer#key-1", "proofValue": "abab"}
+	}`)
+	legacy, err := ParseJSONCredential(legacyJSON)
+	assert.NoError(t, err)
+	got, err := legacy.Hash()
+	assert.NoError(t, err)
+	want, err := (*jsonmap.JSONMap)(&legacy.credentialData).CanonicalizeFull()
+	assert.NoError(t, err)
+	assert.Equal(t, hex.EncodeToString(want), got, "hex proof must keep the legacy CanonicalizeFull digest")
+
+	modern := newSignedJSONCredential(t).(*JSONCredential)
+	got, err = modern.Hash()
+	assert.NoError(t, err)
+	legacyDigest, err := (*jsonmap.JSONMap)(&modern.credentialData).CanonicalizeFull()
+	assert.NoError(t, err)
+	assert.NotEqual(t, hex.EncodeToString(legacyDigest), got, "z proof must not use the legacy canonicalizer")
 }
 
 func TestJSONCredentialHash_IndependentOfKeyOrder(t *testing.T) {
@@ -1916,7 +2039,7 @@ func TestJSONCredentialHash_IncludesProof(t *testing.T) {
 
 	proof, ok := m["proof"].(map[string]interface{})
 	assert.True(t, ok, "expected proof to be a map, got %T", m["proof"])
-	proof["proofValue"] = "deadbeef"
+	proof["proofValue"] = "zdeadbeef"
 
 	raw, err := json.Marshal(m)
 	assert.NoError(t, err)
@@ -1993,11 +2116,12 @@ func newTestSigner(t *testing.T) *signer.DefaultProvider {
 func newSignedJSONCredential(t *testing.T) Credential {
 	t.Helper()
 	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
-	cred, err := NewJSONCredential(contents, WithVerificationMethodKey("key-1"))
+	cred, err := NewJSONCredential(contents)
 	if err != nil {
 		t.Fatalf("NewJSONCredential failed: %v", err)
 	}
-	if err := cred.AddProofByProvider(newTestSigner(t)); err != nil {
+	p256Signer, opts := p256TestIssuer(t, testIssuerDID)
+	if err := cred.AddProofByProvider(p256Signer, opts...); err != nil {
 		t.Fatalf("AddProofByProvider failed: %v", err)
 	}
 	return cred
@@ -2099,7 +2223,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 		vcc := baseContents()
 		vcc.TermsOfUse = []TermsOfUse{{Type: "PresentationRequiredPolicy"}}
 
-		cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"))
+		cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), secpVMResolver(t, "did:example:issuer"))
 		assert.NoError(t, err)
 
 		contents, err := cred.GetContents()
@@ -2209,4 +2333,14 @@ func TestTermsOfUse_CanonicalizationProducesAbsoluteIRIs(t *testing.T) {
 		assert.Contains(t, string(nq), "<PresentationRequiredPolicy>")
 		assert.Regexp(t, relativeIRIPattern, string(nq))
 	})
+}
+
+// mustP256VM builds a P-256 JsonWebKey2020 VM or fails the test.
+func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) verificationmethod.VerificationMethodEntry {
+	t.Helper()
+	entry, err := verificationmethod.NewP256VM(did, fragment, pub)
+	if err != nil {
+		t.Fatalf("NewP256VM(%s, %s): %v", did, fragment, err)
+	}
+	return entry
 }

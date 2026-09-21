@@ -89,9 +89,21 @@ func p256SignFunc(priv *ecdsa.PrivateKey) func([]byte) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("p256 sign: %w", err)
 		}
+		s = NormalizeLowS(priv.Curve, s)
 		out := make([]byte, 64)
 		r.FillBytes(out[:32])
 		s.FillBytes(out[32:])
 		return out, nil
 	}
+}
+
+// NormalizeLowS returns s if s <= n/2, otherwise n-s, so signatures are
+// accepted by verifiers that reject high-S (e.g. @noble/curves).
+func NormalizeLowS(curve elliptic.Curve, s *big.Int) *big.Int {
+	n := curve.Params().N
+	halfN := new(big.Int).Rsh(n, 1)
+	if s.Cmp(halfN) > 0 {
+		return new(big.Int).Sub(n, s)
+	}
+	return s
 }

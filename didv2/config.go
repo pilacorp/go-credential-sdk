@@ -1,8 +1,10 @@
 package didv2
 
 import (
+	"slices"
 	"strings"
 
+	"github.com/pilacorp/go-credential-sdk/didv2/did"
 	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
@@ -62,6 +64,9 @@ type DIDConfig struct {
 	// SyncNonce enables automatic synchronization of nonce from the blockchain.
 	// Requires a valid, accessible RPC URL. If RPC is invalid, set to false and use manual nonce.
 	SyncNonce bool
+	// ExtraVMs are verification methods published alongside the DID's secp256k1
+	// key at #key-1.
+	ExtraVMs []did.VerificationMethodSpec
 }
 
 // DIDOption is a functional option type for configuring DIDGenerator.
@@ -145,6 +150,11 @@ func WithCapID(capID string) DIDOption {
 	return func(c *DIDConfig) { c.CapID = capID }
 }
 
+// WithVerificationMethods publishes extra verification methods in the DID document.
+func WithVerificationMethods(specs ...did.VerificationMethodSpec) DIDOption {
+	return func(c *DIDConfig) { c.ExtraVMs = append(c.ExtraVMs, specs...) }
+}
+
 // WithDIDConfig sets the complete DID configuration from a DIDConfig struct.
 func WithDIDConfig(config *DIDConfig) DIDOption {
 	return func(c *DIDConfig) {
@@ -159,5 +169,6 @@ func WithDIDConfig(config *DIDConfig) DIDOption {
 		c.Nonce = config.Nonce
 		c.SyncEpoch = config.SyncEpoch
 		c.SyncNonce = config.SyncNonce
+		c.ExtraVMs = slices.Clone(config.ExtraVMs)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"math/big"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
 
 // ephemeralKey is the proof-scoped P-256 key pair; its public half is embedded
@@ -23,12 +25,6 @@ func newEphemeralKey() (*ephemeralKey, error) {
 	return &ephemeralKey{priv: priv}, nil
 }
 
-// publicKeyCompressed returns the 33-byte compressed SEC1 encoding of the
-// P-256 public key.
-func (e *ephemeralKey) publicKeyCompressed() []byte {
-	return elliptic.MarshalCompressed(elliptic.P256(), e.priv.PublicKey.X, e.priv.PublicKey.Y)
-}
-
 // signStatement signs SHA-256(statement) and returns the 64-byte R||S signature.
 func (e *ephemeralKey) signStatement(statement string) ([]byte, error) {
 	digest := sha256.Sum256([]byte(statement))
@@ -36,6 +32,7 @@ func (e *ephemeralKey) signStatement(statement string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sign statement: %w", err)
 	}
+	s = signer.NormalizeLowS(e.priv.Curve, s)
 	return encodeRS(r, s), nil
 }
 
