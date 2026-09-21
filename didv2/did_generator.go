@@ -122,21 +122,23 @@ func (d *DIDGenerator) GenerateDID(
 		return nil, fmt.Errorf("failed to create did signer: %w", err)
 	}
 
-	// 2. Publish the P-256 key at #key-2, for the W3C Data Integrity cryptosuites.
-	didAddr, err := did.AddressFromPublicKeyHex(keyPair.GetPublicKeyHex())
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert public key hex to address: %w", err)
-	}
+	options = append(options, WithDIDSignerProvider(didSigner))
 
-	p256VM, err := did.NewP256MultikeyVM(did.ToDID(cfg.Method, didAddr), "#key-2", keyPair.P256PublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build P-256 verification method: %w", err)
-	}
+	// 2. Publish the P-256 key at #key-2 only when asked; the scalar is the same
+	// either way, so #key-2 can be added later from the returned private key.
+	if cfg.EnableP256VM {
+		didAddr, err := did.AddressFromPublicKeyHex(keyPair.GetPublicKeyHex())
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert public key hex to address: %w", err)
+		}
 
-	options = append(options,
-		WithDIDSignerProvider(didSigner),
-		WithVerificationMethods(did.NewSpec(p256VM)),
-	)
+		p256VM, err := did.NewP256MultikeyVM(did.ToDID(cfg.Method, didAddr), "#key-2", keyPair.P256PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build P-256 verification method: %w", err)
+		}
+
+		options = append(options, WithVerificationMethods(did.NewSpec(p256VM)))
+	}
 
 	// 3. Generate DID TX.
 	didTx, err := d.GenerateDIDTX(ctx, didType, keyPair.GetPublicKeyHex(), hash, metadata, options...)
