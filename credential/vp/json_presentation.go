@@ -20,7 +20,7 @@ type JSONPresentation struct {
 var _ Presentation = (*JSONPresentation)(nil)
 
 func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JSONPresentation, error) {
-	m, err := serializePresentationContents(&vpc, getOptions(opts...).dataModel)
+	m, err := serializePresentationContents(&vpc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}
@@ -63,8 +63,9 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 // active authentication VM.
 //
 // The proof suite follows the verification method's key: a P-256 key produces
-// an ecdsa-rdfc-2019 proof, a secp256k1 key an EcdsaSecp256k1Signature2019 one
-// — the latter only on a VC 1.1 presentation, whose @context defines it.
+// an ecdsa-rdfc-2019 proof, a secp256k1 key an EcdsaSecp256k1Signature2019 one.
+// The second suite needs its terms defined, so its @context is added to the
+// presentation unless it already defines them.
 //
 // Verification stays permissive: secp256k1, hex proofValues and
 // JsonWebSignature2020 presentations issued by earlier versions still verify.
@@ -92,7 +93,7 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 
 	options := getOptions(opts...)
 	m := (*jsonmap.JSONMap)(&e.presentationData)
-	suite, err := m.SigningSuiteForKey(kind, vmURL)
+	suite, err := jsonmap.SigningSuiteForKey(kind)
 	if err != nil {
 		return err
 	}

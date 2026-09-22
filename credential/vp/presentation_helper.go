@@ -108,9 +108,8 @@ func verifyCredentials(jsonPresentation PresentationData, options *presentationO
 	return nil
 }
 
-// serializePresentationContents serializes PresentationContents into a JSON map
-// under the given data model, which decides the @context default.
-func serializePresentationContents(vpc *PresentationContents, model vc.DataModel) (PresentationData, error) {
+// serializePresentationContents serializes PresentationContents into a JSON map.
+func serializePresentationContents(vpc *PresentationContents) (PresentationData, error) {
 	if vpc == nil {
 		return nil, fmt.Errorf("presentation contents is nil")
 	}
@@ -119,15 +118,10 @@ func serializePresentationContents(vpc *PresentationContents, model vc.DataModel
 		return nil, fmt.Errorf("contents must have context, ID, or holder")
 	}
 
-	context, err := vc.ContextForDataModel(vpc.Context, model)
-	if err != nil {
-		return nil, err
-	}
-
 	vpJSON := make(PresentationData)
 
-	if len(context) > 0 {
-		validatedContext, err := util.SerializeContexts(context)
+	if len(vpc.Context) > 0 {
+		validatedContext, err := util.SerializeContexts(vpc.Context)
 		if err != nil {
 			return nil, fmt.Errorf("invalid @context: %w", err)
 		}
@@ -142,15 +136,6 @@ func serializePresentationContents(vpc *PresentationContents, model vc.DataModel
 	if vpc.Holder != "" {
 		vpJSON["holder"] = vpc.Holder
 	}
-	// The base contexts scope the validity period under VerifiableCredential,
-	// not VerifiablePresentation, so neither model resolves these terms on a
-	// presentation out of the box. That is not a prohibition: the data model is
-	// explicitly extensible, and a caller who defines the term in @context —
-	// with an @vocab, or by mapping it to an IRI — gets it canonicalized and
-	// therefore covered by the signature. A caller who does not gets a hard
-	// error from Canonicalize, which refuses undefined terms rather than
-	// dropping them, so nothing lands in a signed document unprotected.
-	// Either way the decision is the caller's, so no check here.
 	if !vpc.ValidFrom.IsZero() {
 		vpJSON["validFrom"] = vpc.ValidFrom.Format(time.RFC3339)
 	}

@@ -59,6 +59,9 @@ var w3cSecurityV1Context []byte
 //go:embed w3c.security.v2.json
 var w3cSecurityV2Context []byte
 
+//go:embed w3c.security.secp256k1-2019.v1.json
+var w3cSecuritySecp256k1V1Context []byte
+
 // Well-known W3C context URLs mapped to their embedded JSON bytes. These are
 // frozen, immutable published contexts, so serving them from embedded copies is
 // byte-for-byte equivalent to fetching them — it only removes the network
@@ -77,6 +80,10 @@ var wellKnownContexts = map[string][]byte{
 	// still hits the network.
 	"https://w3id.org/security/v1": w3cSecurityV1Context,
 	"https://w3id.org/security/v2": w3cSecurityV2Context,
+	// The narrow context for EcdsaSecp256k1Signature2019 alone. A VC 2.0
+	// document gets this one: credentials/v2 does not define the suite, and
+	// this defines nothing else that could collide with it.
+	"https://w3id.org/security/suites/secp256k1-2019/v1": w3cSecuritySecp256k1V1Context,
 }
 
 // localContextDocumentLoader wraps a default loader and checks for local context files first

@@ -215,7 +215,7 @@ credential type:
 | Credential / method | VM key type | Proof suite |
 |---|---|---|
 | `JSONCredential` / `JSONPresentation` | P-256 | `DataIntegrityProof` / `ecdsa-rdfc-2019` |
-| `JSONCredential` / `JSONPresentation` | secp256k1 | `EcdsaSecp256k1Signature2019` (VC 1.1 document only — see below) |
+| `JSONCredential` / `JSONPresentation` | secp256k1 | `EcdsaSecp256k1Signature2019` (detached JWS — see below) |
 | `ECDSASDCredential` | P-256 | `ecdsa-sd-2023` (selective disclosure) |
 | `JWTCredential` / `JWTPresentation` | secp256k1 | `ES256K` (JWT) |
 | `JWTCredential` / `JWTPresentation` | P-256 | `ES256` (JWT) |
@@ -224,20 +224,32 @@ Any other combination is rejected at signing time (`unsupported key kind ...`).
 The caller never names the suite: there is no option for it, because the key
 already decides which suites apply.
 
-**secp256k1 needs a VC 1.1 document.** VC 2.0 secures embedded proofs through
-Data Integrity, and [`vc-di-ecdsa`](https://www.w3.org/TR/vc-di-ecdsa/) defines
-its cryptosuites for P-256 and P-384 only — it says of the third curve that it
-"is not used by this specification". secp256k1 has an embedded-proof suite only
-in the VC 1.1 era, `EcdsaSecp256k1Signature2019`, which the VC 1.1 base context
-defines. So signing a secp256k1 key requires a document built on
-`https://www.w3.org/2018/credentials/v1` — see
-[VC Data Model 1.1 documents](#vc-data-model-11-documents). Signing a VC 2.0
-document with a secp256k1 key fails with an error naming `vc.WithDataModel11()`;
-the SDK will not quietly bolt a security context onto the document to make an
-unspecified combination look valid.
+**secp256k1 signs under `EcdsaSecp256k1Signature2019`.**
+[`vc-di-ecdsa`](https://www.w3.org/TR/vc-di-ecdsa/) defines its cryptosuites for
+P-256 and P-384 only — it says of the third curve that it "is not used by this
+specification" — so a secp256k1 key has no Data Integrity cryptosuite. What it
+does have is the suite the CCG published for it,
+[`EcdsaSecp256k1Signature2019`](https://w3c-ccg.github.io/lds-ecdsa-secp256k1-2019/):
+URDNA2015 canonicalization, SHA-256 digests, `ES256K`, and the signature in a
+detached JWS in `jws` rather than in `proofValue`.
 
-The reverse does not hold: a VC 1.1 document signs with **either** suite,
-whichever the bound key calls for.
+The suite names itself in `type`, so the proof carries no `cryptosuite`
+property. Data Integrity allows this: `cryptosuite` is required only when
+`type` is `DataIntegrityProof`.
+
+The suite needs its terms defined, and `credentials/v2` defines Data Integrity
+only. So the SDK appends `https://w3id.org/security/suites/secp256k1-2019/v1`,
+the narrow context for this suite alone, after the base context. The document
+keeps every 2.0 property it had, `BitstringStatusListEntry` included. Nothing
+is appended to a document that already defines the suite, such as one built on
+the VC 1.1 base context elsewhere: those terms are `@protected`, and a second
+definition is a redefinition error rather than a no-op. This SDK itself issues
+VC 2.0 documents only.
+
+The suite is a CCG report, not a W3C Recommendation, and it says of itself that
+it "is not fit for production deployment". Outside this deployment, expect
+verifiers to reject a secp256k1 embedded proof whichever suite it names — P-256
+with `ecdsa-rdfc-2019` is the interoperable path.
 
 P-384 is **not supported yet**: the ECDSA cryptosuites spec also defines a P-384
 profile (SHA-384, 96-byte signature), and the key-material helpers already parse
@@ -304,89 +316,6 @@ triples, so this does not change the statements being signed.
 > keep verifying unchanged and there is no re-issuance**. There is no option to
 > issue in the old format. Because an older SDK will reject the new format,
 > **upgrade every verifying component before any issuing component.**
-
-#### <a name="vc-data-model-11-documents"></a>VC Data Model 1.1 documents
-
-`vc.WithDataModel11()` / `vp.WithDataModel11()` build the document against VC
-Data Model 1.1 instead of the 2.0 default. It is read by the **constructors**,
-not the signing calls: the data model decides how the document is written, and
-by signing time the document is closed.
-
-```go
-cred, _ := vc.NewJSONCredential(contents, vc.WithDataModel11())
-// @context defaults to https://www.w3.org/2018/credentials/v1
-// ValidFrom / ValidUntil are written as issuanceDate / expirationDate
-```
-
-`CredentialContents` is unchanged — the same `ValidFrom` / `ValidUntil` fields
-feed either model, only the property names on the wire differ.
-
-A supplied `@context` is **never rewritten**: if it names the other model's base
-context the call fails instead. Swapping it silently would leave the rest of the
-document — `credentialStatus.type`, `credentialSchema.type`, any 2.0-only
-property — declaring a model the document no longer claims. Callers who pass no
-data model option keep whatever `@context` they always passed, unchecked.
-
-Properties **2.0 has and 1.1 does not**: `name`, `description`,
-`relatedResource`, `renderMethod`, `confidenceMethod`. `CredentialContents`
-cannot set any of them, so building from it loses nothing; a document parsed
-with `ParseJSONCredential` can carry them, and under the 1.1 context they are
-undefined terms. Several property **values** are versioned too, and this option
-deliberately does not touch them, because they name real external services:
-
-| Property | VC 2.0 | VC 1.1 |
-|---|---|---|
-| `credentialStatus.type` | `BitstringStatusListEntry` | `StatusList2021Entry` |
-| `credentialSchema.type` | `JsonSchema` | `JsonSchemaValidator2018` |
-| `refreshService.type` | `VerifiableCredentialRefreshService2021` | `ManualRefreshService2018` |
-
-Set them to what the model you picked expects. Renaming them for you would
-misdeclare which specification a status list follows, and a verifier would then
-decode the bitstring wrongly — silently.
-
-##### `EcdsaSecp256k1Signature2019` proof format
-
-The suite follows the W3C CCG draft
-[Ecdsa Secp256k1 Signature 2019](https://w3c-ccg.github.io/lds-ecdsa-secp256k1-2019/);
-its terms are defined normatively by the VC 1.1 base context. It is a Linked
-Data Signature, not a Data Integrity cryptosuite, so it carries no
-`cryptosuite` property and the signature goes into `jws` rather than
-`proofValue`:
-
-```json
-"proof": {
-  "type": "EcdsaSecp256k1Signature2019",
-  "created": "2026-01-01T00:00:00Z",
-  "verificationMethod": "did:example:issuer#key-1",
-  "proofPurpose": "assertionMethod",
-  "jws": "eyJhbGciOiJFUzI1NksiLCJiNjQiOmZhbHNlLCJjcml0IjpbImI2NCJdfQ..<sig>"
-}
-```
-
-`jws` is a detached JWS ([RFC 7797](https://www.rfc-editor.org/rfc/rfc7797),
-header `{"alg":"ES256K","b64":false,"crit":["b64"]}`, empty payload segment).
-Its payload is the same `proofConfigHash || transformedDocumentHash` the Data
-Integrity suite signs, so `created`, `challenge`, `domain` and `proofPurpose`
-are covered by the signature — rewriting any of them after issuance fails
-verification.
-
-The signature is the raw 64-byte `r||s` that
-[RFC 7518 § 3.4](https://www.rfc-editor.org/rfc/rfc7518.html#section-3.4)
-mandates ("The JWS Signature value MUST be a 64-octet sequence"), not a
-DER structure. `NewDefaultProvider` returns 65 bytes (`r||s||v`); the recovery
-byte is dropped when the JWS is built.
-
-> **Interop.** Digital Bazaar's reference implementation
-> (`ecdsa-secp256k1-signature-2019` + `secp256k1-key-pair@1.1.0`) DER-encodes
-> the signature in both directions, so it neither verifies proofs from this SDK
-> nor produces proofs this SDK accepts. That library is non-conformant to
-> RFC 7518 on this point; this SDK follows the RFC and does not accept DER.
-
-> **Verification and the legacy format.** The same proof `type` was used by a
-> pre-v1.8.0 in-house format carrying a hex `proofValue`. Verification picks the
-> path from the proof shape — a `jws` selects the suite above, a `proofValue`
-> the legacy one — so **already-issued credentials keep verifying unchanged**.
-> Only the new format is issued.
 
 #### JsonWebSignature2020 (RSA) — verify-only
 
@@ -498,7 +427,7 @@ Supported Proof:
 
 - type: DataIntegrityProof
   - cryptosuite: ecdsa-rdfc-2019 (standard signing, P-256 only; `proofValue` is multibase base58btc — see above), ecdsa-sd-2023 (selective disclosure for JSON-LD, P-256 only — see below)
-- type: EcdsaSecp256k1Signature2019 (secp256k1, detached JWS in `jws`; VC 1.1 documents only — see above)
+- type: EcdsaSecp256k1Signature2019 (secp256k1, detached JWS in `jws`; either data model — see above)
 - type: JsonWebSignature2020 (RSA, detached JWS — verify-only, see above)
 
 ### <a name="sd-jwt-selective-disclosure"></a>SD-JWT (Selective Disclosure)

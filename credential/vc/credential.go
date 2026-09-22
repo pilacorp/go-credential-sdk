@@ -124,7 +124,6 @@ type credentialOptions struct {
 	loadedSchemaLoader      SchemaLoaderFunc
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
-	dataModel               DataModel
 }
 
 // hasSDOptions reports whether any SD-JWT option was set. Kept beside the
@@ -261,45 +260,6 @@ func WithSchemaLoader(loader SchemaLoaderFunc) CredentialOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.resolver = resolver
-	}
-}
-
-// WithDataModel11 builds the credential against VC Data Model 1.1 instead of
-// the 2.0 default: @context defaults to credentials/v1, and the validity period
-// is written as issuanceDate / expirationDate.
-//
-// Use it when the credential will carry an EcdsaSecp256k1Signature2019 proof.
-// That suite is defined by the VC 1.1 context; the 2.0 Data Integrity
-// cryptosuites cover P-256 and P-384 only, so a secp256k1 embedded proof has no
-// place in a 2.0 document. A VC 1.1 credential can still be signed with a P-256
-// key and ecdsa-rdfc-2019 — the key picks the suite, not the data model.
-//
-// PROPERTIES VC 1.1 DOES NOT HAVE. The 1.1 base context defines none of the
-// properties 2.0 added:
-//
-//	name, description, relatedResource, renderMethod, confidenceMethod
-//
-// CredentialContents cannot set any of them, so building from it loses nothing.
-// But a document parsed with ParseJSONCredential can carry them, and under the
-// 1.1 context they are undefined terms: canonicalization refuses the document
-// unless @context also supplies a definition (an @vocab, say) — and a
-// definition you supply is your own IRI, not the W3C one 2.0 gives them.
-// Drop those properties, or stay on 2.0.
-//
-// Beyond the base context, several property VALUES are also versioned and this
-// option does NOT touch them, because they name real external services:
-//
-//	credentialStatus.type   BitstringStatusListEntry (2.0) / StatusList2021Entry (1.1)
-//	credentialSchema.type   JsonSchema (2.0)               / JsonSchemaValidator2018 (1.1)
-//	refreshService.type     VerifiableCredentialRefreshService2021 / ManualRefreshService2018
-//
-// Set them to the values the data model you chose expects.
-//
-// Read by the constructors (NewJSONCredential, NewJWTCredential) only; the
-// signing and verification calls ignore it.
-func WithDataModel11() CredentialOpt {
-	return func(c *credentialOptions) {
-		c.dataModel = DataModel11
 	}
 }
 

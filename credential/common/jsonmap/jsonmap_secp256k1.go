@@ -1,6 +1,7 @@
 package jsonmap
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -12,12 +13,13 @@ import (
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
-// ===== EcdsaSecp256k1Signature2019 (Linked Data Signatures, VC 1.1) =====
+// ===== EcdsaSecp256k1Signature2019 (Linked Data Signatures) =====
 //
 // secp256k1 has no Data Integrity cryptosuite: ecdsa-rdfc-2019 is defined for
-// P-256 and P-384 only. The VC 1.1 era instead defines a whole Linked Data
-// Signature suite per curve, and EcdsaSecp256k1Signature2019 is the secp256k1
-// one — https://w3c-ccg.github.io/lds-ecdsa-secp256k1-2019/.
+// P-256 and P-384 only. The generation of suites before Data Integrity named
+// one suite per curve, and EcdsaSecp256k1Signature2019 is the secp256k1 one —
+// https://w3c-ccg.github.io/lds-ecdsa-secp256k1-2019/. It binds to no data
+// model; what it needs is an @context that defines its terms.
 //
 // Unlike a Data Integrity proof, the signature lives in `jws` (a detached JWS
 // with b64:false, per RFC 7797) rather than in `proofValue`.
@@ -27,23 +29,27 @@ const (
 	// secp256k1 with SHA-256.
 	AlgES256K string = "ES256K"
 
-	// Secp256k1SuiteContext defines EcdsaSecp256k1Signature2019 and the proof
-	// terms it uses (jws, proofPurpose, challenge, domain). Added only to a
-	// document whose own @context defines none of them; without a definition
-	// the canonicalizer cannot expand the proof and SafeMode rejects it.
+	// Secp256k1SuiteContext is the broad security context, which defines this
+	// suite among many other terms. The SDK never adds it — it adds the narrow
+	// one below — but a caller may have put it on the document already, and
+	// then it is what defines the suite and no second context is needed.
 	Secp256k1SuiteContext string = "https://w3id.org/security/v2"
 
-	// credentialsV1Context is the VC 1.1 base context. It already defines
-	// EcdsaSecp256k1Signature2019 with a type-scoped context covering jws,
-	// created, challenge, domain, proofPurpose and verificationMethod — and its
-	// terms are @protected, so layering another security context on top is a
-	// protected-term redefinition, not a no-op.
+	// credentialsV1Context is the VC 1.1 base context. This SDK issues VC 2.0
+	// documents only, but a document built elsewhere can arrive on 1.1, and
+	// that context already defines the suite with its own @protected terms.
+	// Recognising it is what stops the SDK from adding a second definition and
+	// turning a signable document into a redefinition error.
 	credentialsV1Context string = "https://www.w3.org/2018/credentials/v1"
 
-	// secp256k1SuiteContextAlt is the narrower context Digital Bazaar
-	// publishes for the same suite. Accepted when a caller already put it on
-	// the document, never added by this SDK.
-	secp256k1SuiteContextAlt string = "https://w3id.org/security/suites/secp256k1-2019/v1"
+	// Secp256k1SuiteContextNarrow defines this suite and nothing else. It is
+	// what the SDK adds to a document that does not already define the suite —
+	// a VC 2.0 document, whose base context covers Data Integrity only. The
+	// narrow context is preferred over security/v2 because it brings in far
+	// fewer terms — though not none: it defines proof at the document root,
+	// which is why signing checks the document still says the same thing
+	// after the context is added.
+	Secp256k1SuiteContextNarrow string = "https://w3id.org/security/suites/secp256k1-2019/v1"
 )
 
 // SigningSuiteForKey resolves the proof suite to issue from the key the
@@ -51,24 +57,18 @@ const (
 // decides which suites are applicable at all:
 //
 //	P-256      → DataIntegrityProof / ecdsa-rdfc-2019
-//	secp256k1  → EcdsaSecp256k1Signature2019, but only when the document's
-//	             @context defines it — a VC 1.1 document. Otherwise there is no
-//	             applicable suite and the caller is told what to build instead.
+//	secp256k1  → EcdsaSecp256k1Signature2019
 //
-// The data model cannot decide this on its own: a VC 1.1 document signs with
-// either suite, depending on the key.
-func (m *JSONMap) SigningSuiteForKey(kind verificationmethod.KeyKind, vmURL string) (string, error) {
+// The data model does not decide this: either data model signs with either
+// suite, depending on the key. What the data model decides is whether the
+// suite's @context has to be added — see ensureSecp256k1SuiteContext.
+func SigningSuiteForKey(kind verificationmethod.KeyKind) (string, error) {
 	switch kind {
 	case verificationmethod.KeyP256:
 		return DataIntegrityProof, nil
 
 	case verificationmethod.KeySecp256k1:
-		if m.definesSecp256k1Suite() {
-			return EcdsaSecp256k1Signature2019, nil
-		}
-		return "", fmt.Errorf(
-			"verification method %q holds a secp256k1 key, which ecdsa-rdfc-2019 does not cover; %s does, but the document's @context does not define it — build the credential as VC Data Model 1.1 (vc.WithDataModel11())",
-			vmURL, EcdsaSecp256k1Signature2019)
+		return EcdsaSecp256k1Signature2019, nil
 
 	default:
 		return "", fmt.Errorf("unsupported key kind %v for JSON-LD signing", kind)
@@ -80,7 +80,7 @@ func (m *JSONMap) SigningSuiteForKey(kind verificationmethod.KeyKind, vmURL stri
 //
 // The signer must hold a secp256k1 key. go-ethereum's signer returns 65 bytes
 // (r||s||v); JOSE wants the bare 64-byte r||s, so the recovery byte is dropped.
-func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string, opts ...ProofOpt) error {
+func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string, opts ...ProofOpt) (err error) {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
@@ -94,9 +94,18 @@ func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, v
 		return fmt.Errorf("jsonmap: proof purpose is required")
 	}
 
+	// The document is only mutated on the way to a signature; a failure must
+	// leave the caller's document exactly as it was.
+	restoreContext := m.contextSnapshot()
+	defer func() {
+		if err != nil {
+			restoreContext()
+		}
+	}()
+
 	// The proof configuration is canonicalized against the document's
 	// @context, which must define the suite's terms.
-	if err := m.requireSecp256k1SuiteContext(); err != nil {
+	if err = m.addSuiteContextWithoutChangingMeaning(); err != nil {
 		return fmt.Errorf("jsonmap: %w", err)
 	}
 
@@ -110,7 +119,11 @@ func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, v
 		Domain:             domainValue(options.domain),
 	}
 
-	signingInput, err := m.secp256k1SigningInput(proof)
+	encHeader, err := encodeDetachedJWSHeader(AlgES256K)
+	if err != nil {
+		return fmt.Errorf("jsonmap: %w", err)
+	}
+	signingInput, err := m.secp256k1SigningInput(proof, encHeader)
 	if err != nil {
 		return fmt.Errorf("jsonmap: %w", err)
 	}
@@ -132,10 +145,6 @@ func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, v
 		}
 	}
 
-	encHeader, err := encodeDetachedJWSHeader(AlgES256K)
-	if err != nil {
-		return err
-	}
 	proof.JWS = encHeader + ".." + base64.RawURLEncoding.EncodeToString(signature)
 	m.appendProof(*proof)
 
@@ -180,15 +189,20 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 	if err != nil {
 		return false, fmt.Errorf("decode jws signature: %w", err)
 	}
-	if signature, err = joseSecp256k1Signature(signature); err != nil {
-		return false, err
+	// RFC 7518 § 3.4: an ES256K signature in a JWS is exactly 64 bytes. The
+	// signing side trims go-ethereum's recovery byte; here a 65th byte is a
+	// byte nobody signed, and accepting it would give one credential many
+	// byte forms that all verify — and many different hashes.
+	if l := len(signature); l != 64 {
+		return false, fmt.Errorf(
+			"%s: jws signature is %d bytes, want 64 (r||s)",
+			EcdsaSecp256k1Signature2019, l)
 	}
 
-	// The signature cannot cover itself: the proof configuration is the proof
-	// with jws removed.
-	cfg := *proof
-	cfg.JWS = ""
-	signingInput, err := m.secp256k1SigningInput(&cfg)
+	// RFC 7797 signs the header that travels with the proof, so the one from
+	// the jws is what goes back into the signing input — not a freshly built
+	// one, which would leave every other header field uncovered.
+	signingInput, err := m.secp256k1SigningInput(proof, encHeader)
 	if err != nil {
 		return false, err
 	}
@@ -212,18 +226,12 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 // (created, challenge, domain, proofPurpose) is covered by the signature. The
 // alternative, hashing the document alone, would leave those options free to
 // be rewritten after issuance.
-func (m *JSONMap) secp256k1SigningInput(proof *dto.Proof) ([]byte, error) {
-	if proof.JWS != "" {
-		return nil, fmt.Errorf("proof configuration must not carry jws")
-	}
+func (m *JSONMap) secp256k1SigningInput(proof *dto.Proof, encHeader string) ([]byte, error) {
 	hashData, err := m.ecdsaHashData(proof)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build hash data: %w", err)
 	}
-	encHeader, err := encodeDetachedJWSHeader(AlgES256K)
-	if err != nil {
-		return nil, err
-	}
+
 	return jwsSigningInput(encHeader, hashData), nil
 }
 
@@ -242,24 +250,92 @@ func joseSecp256k1Signature(sig []byte) ([]byte, error) {
 	}
 }
 
-// requireSecp256k1SuiteContext reports whether the document's @context defines
-// EcdsaSecp256k1Signature2019, and refuses to sign when it does not.
+// contextSnapshot returns a function that puts @context back the way it is
+// now. Signing adds the suite context before it knows whether it will succeed.
+func (m *JSONMap) contextSnapshot() func() {
+	previous, had := (*m)["@context"]
+
+	return func() {
+		if had {
+			(*m)["@context"] = previous
+
+			return
+		}
+		delete(*m, "@context")
+	}
+}
+
+// addSuiteContextWithoutChangingMeaning adds the suite context and refuses if
+// doing so changed what the document says.
 //
-// The SDK deliberately does NOT append the suite context to a document that
-// lacks it. EcdsaSecp256k1Signature2019 belongs to VC Data Model 1.1, whose
-// base context defines it; the 2.0 Data Integrity cryptosuites cover P-256 and
-// P-384 only, and vc-di-ecdsa says of secp256k1 that it "is not used by this
-// specification". Quietly bolting a security context onto a 2.0 document would
-// manufacture a combination no specification covers and make it look valid —
-// exactly the class of mistake this suite exists to correct. The caller is
-// told to build on the right data model instead.
-func (m *JSONMap) requireSecp256k1SuiteContext() error {
+// The suite context defines proof at the document root, while credentials/v2
+// scopes that term to the credential itself. So a document using its own term
+// named proof — under an @vocab, say — has that term redefined underneath it:
+// the value either lands on a different property or stops expanding at all.
+// Either way the issuer would sign something other than what it built, so the
+// signature is refused instead.
+func (m *JSONMap) addSuiteContextWithoutChangingMeaning() error {
+	before, err := m.DocumentDigest()
+	if err != nil {
+		return fmt.Errorf("failed to canonicalize the document: %w", err)
+	}
+	if err := m.ensureSecp256k1SuiteContext(); err != nil {
+		return err
+	}
+	after, err := m.DocumentDigest()
+	if err != nil {
+		return fmt.Errorf(
+			"adding %q, which %s needs, stopped the document from canonicalizing; a term it defines collides with one this document uses — rename that term, or define the suite in @context yourself: %w",
+			Secp256k1SuiteContextNarrow, EcdsaSecp256k1Signature2019, err)
+	}
+	if !bytes.Equal(before, after) {
+		return fmt.Errorf(
+			"adding %q, which %s needs, changed what the document says; it defines proof at the root, so a term of that name used elsewhere in this document is redefined — rename that term, or define the suite in @context yourself",
+			Secp256k1SuiteContextNarrow, EcdsaSecp256k1Signature2019)
+	}
+
+	return nil
+}
+
+// ensureSecp256k1SuiteContext makes the document's @context define the suite,
+// adding the narrow suite context when it does not.
+//
+// The canonicalizer runs in SafeMode: a proof whose terms no context defines
+// does not expand, and signing fails. The two data models arrive here in
+// different shapes. VC 1.1 already defines the suite in its base context, and
+// those terms are @protected, so layering another security context on top is a
+// protected-term redefinition — nothing is added. VC 2.0 defines Data
+// Integrity only, so the suite context is appended; that combination
+// canonicalizes cleanly and keeps every 2.0 property, credentialStatus
+// included.
+func (m *JSONMap) ensureSecp256k1SuiteContext() error {
+	if m == nil {
+		return fmt.Errorf("JSONMap is nil")
+	}
 	if m.definesSecp256k1Suite() {
 		return nil
 	}
-	return fmt.Errorf(
-		"%s is a VC Data Model 1.1 suite, but the document's @context does not define it; build the credential on %q (issuanceDate / expirationDate) — with vc.WithDataModel11() — or add %q to @context explicitly",
-		EcdsaSecp256k1Signature2019, credentialsV1Context, Secp256k1SuiteContext)
+
+	switch c := (*m)["@context"].(type) {
+	case nil:
+		return fmt.Errorf(
+			"document has no @context, so %s cannot be expanded; build the credential through vc.NewJSONCredential or add %q yourself",
+			EcdsaSecp256k1Signature2019, Secp256k1SuiteContextNarrow)
+	case string:
+		(*m)["@context"] = []interface{}{c, Secp256k1SuiteContextNarrow}
+	case []interface{}:
+		(*m)["@context"] = append(append([]interface{}{}, c...), Secp256k1SuiteContextNarrow)
+	case []string:
+		out := make([]interface{}, 0, len(c)+1)
+		for _, s := range c {
+			out = append(out, s)
+		}
+		(*m)["@context"] = append(out, Secp256k1SuiteContextNarrow)
+	default:
+		return fmt.Errorf("document @context has unexpected type %T", c)
+	}
+
+	return nil
 }
 
 // definesSecp256k1Suite reports whether the document's @context defines
@@ -270,7 +346,7 @@ func (m *JSONMap) definesSecp256k1Suite() bool {
 	defines := func(s string) bool {
 		return s == credentialsV1Context ||
 			s == Secp256k1SuiteContext ||
-			s == secp256k1SuiteContextAlt
+			s == Secp256k1SuiteContextNarrow
 	}
 
 	switch c := (*m)["@context"].(type) {

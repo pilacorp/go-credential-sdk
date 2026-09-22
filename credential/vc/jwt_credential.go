@@ -30,7 +30,7 @@ type JWTCredential struct {
 var _ Credential = (*JWTCredential)(nil)
 
 func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCredential, error) {
-	m, err := serializeCredentialContents(&vcc, getOptions(opts...).dataModel)
+	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}

@@ -66,12 +66,12 @@ same output is checked against the W3C test vectors in
 to a P-256 verification method is rejected at signing time rather than producing
 a proof no conformant verifier would accept. P-384 is not implemented yet.
 
-## secp256k1 has its own suite, and no interop partner
+## secp256k1 has its own suite, and the two implementations disagree
 
-A secp256k1 key does sign JSON-LD — through `EcdsaSecp256k1Signature2019` on a
-VC 1.1 document, not through a Data Integrity cryptosuite. That path cannot be
-checked the way this example checks `ecdsa-rdfc-2019`, because the reference
-implementation disagrees with the spec.
+A secp256k1 key does sign JSON-LD — through `EcdsaSecp256k1Signature2019`, not
+through a Data Integrity cryptosuite. That path cannot be checked the way this
+example checks `ecdsa-rdfc-2019`, because the two published implementations do
+not agree on the signature format.
 
 `ecdsa-secp256k1-signature-2019` (via `secp256k1-key-pair@1.1.0`) DER-encodes the
 ECDSA signature it puts in `jws`, and decodes the same way when verifying.
@@ -82,5 +82,11 @@ the validation has failed." So the two do not interoperate in either direction:
 that library emits ~70 DER bytes this SDK refuses, and this SDK emits the
 64 raw bytes that library cannot parse.
 
-This SDK follows the RFC and does not accept DER. Nothing to fix here; the note
-exists so the next person does not rediscover it from a confusing length error.
+The other implementation, `lds-ecdsa-secp256k1-2019.js` from the Decentralized
+Identity Foundation, signs the compact 64-byte form and builds the same signing
+input this SDK does: header `{"alg":"ES256K","b64":false,"crit":["b64"]}`,
+then header + "." + hashData.
+
+This SDK follows the RFC, so it lines up with that second implementation and
+not with the Digital Bazaar one. The note exists so the next person does not
+rediscover it from a confusing length error.

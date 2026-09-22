@@ -23,7 +23,7 @@ type JSONCredential struct {
 var _ Credential = (*JSONCredential)(nil)
 
 func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (*JSONCredential, error) {
-	m, err := serializeCredentialContents(&vcc, getOptions(opts...).dataModel)
+	m, err := serializeCredentialContents(&vcc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize credential contents: %w", err)
 	}
@@ -102,9 +102,10 @@ func (e *JSONCredential) AddProof(priv string, opts ...CredentialOpt) error {
 // active assertionMethod VM.
 //
 // The proof suite follows the verification method's key: a P-256 key produces
-// an ecdsa-rdfc-2019 proof, a secp256k1 key an EcdsaSecp256k1Signature2019 one
-// — the latter only on a VC 1.1 document, whose @context defines that suite.
-// RSA is rejected either way.
+// an ecdsa-rdfc-2019 proof, a secp256k1 key an EcdsaSecp256k1Signature2019 one.
+// The second suite needs its terms defined, so its @context is added to the
+// document unless the document already defines them. RSA is rejected either
+// way.
 //
 // A resolver is REQUIRED at signing time: the SDK reads the VM's key type from
 // the resolved DID document. Provide one with WithResolver (a default HTTP
@@ -129,7 +130,7 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 	}
 
 	m := (*jsonmap.JSONMap)(&e.credentialData)
-	suite, err := m.SigningSuiteForKey(kind, vmURL)
+	suite, err := jsonmap.SigningSuiteForKey(kind)
 	if err != nil {
 		return err
 	}

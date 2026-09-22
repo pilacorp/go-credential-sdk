@@ -1,13 +1,19 @@
 package vp_test
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
 )
 
@@ -34,12 +40,11 @@ func suiteSecpSetup(t *testing.T, holder string) (signer.SignerProvider, vmpkg.R
 	return prov, resolver
 }
 
-// vp11Doc builds a VC 1.1 presentation — the data model whose context defines
-// EcdsaSecp256k1Signature2019. Note it carries no validity period: VC 1.1
-// defines none on a presentation.
-func vp11Doc(holder string) []byte {
+// vpSuiteDoc builds the VC 2.0 presentation these tests sign. It carries no
+// validity period: neither base context defines one on a presentation.
+func vpSuiteDoc(holder string) []byte {
 	return []byte(`{
-		"@context": ["https://www.w3.org/2018/credentials/v1"],
+		"@context": ["https://www.w3.org/ns/credentials/v2"],
 		"id": "urn:uuid:vp-secp-suite-001",
 		"type": ["VerifiablePresentation"],
 		"holder": "` + holder + `",
@@ -48,12 +53,12 @@ func vp11Doc(holder string) []byte {
 }
 
 // TestVPSecp256k1Suite_SignVerify signs a presentation with a secp256k1 holder
-// key under the VC 1.1 suite and verifies it.
+// key under the suite and verifies it.
 func TestVPSecp256k1Suite_SignVerify(t *testing.T) {
 	const holder = "did:example:vp-secp-suite"
 	prov, resolver := suiteSecpSetup(t, holder)
 
-	pres, err := vp.ParseJSONPresentation(vp11Doc(holder))
+	pres, err := vp.ParseJSONPresentation(vpSuiteDoc(holder))
 	if err != nil {
 		t.Fatalf("parse vp: %v", err)
 	}
@@ -82,7 +87,7 @@ func TestVPSecp256k1Suite_ChallengeDomain(t *testing.T) {
 	const holder = "did:example:vp-secp-suite-cd"
 	prov, resolver := suiteSecpSetup(t, holder)
 
-	pres, err := vp.ParseJSONPresentation(vp11Doc(holder))
+	pres, err := vp.ParseJSONPresentation(vpSuiteDoc(holder))
 	if err != nil {
 		t.Fatalf("parse vp: %v", err)
 	}
@@ -124,7 +129,8 @@ func TestVPSecp256k1Suite_ChallengeDomain(t *testing.T) {
 }
 
 // TestVPSecp256k1Suite_ValidityPeriodIsExtensible pins what a presentation may
-// carry beyond the five properties VC 1.1 names. The data model is extensible,
+// carry beyond the properties the base context names. The data model is
+// extensible,
 // so a validity period is allowed — but only once @context defines the term.
 // Without a definition signing must fail rather than silently drop the field,
 // which would leave it sitting in a signed document that does not cover it.
@@ -139,16 +145,16 @@ func TestVPSecp256k1Suite_ValidityPeriodIsExtensible(t *testing.T) {
 	}{
 		{
 			name:    "term left undefined",
-			ctx:     `["https://www.w3.org/2018/credentials/v1"]`,
+			ctx:     `["https://www.w3.org/ns/credentials/v2"]`,
 			wantErr: true,
 		},
 		{
 			name: "defined through @vocab",
-			ctx:  `["https://www.w3.org/2018/credentials/v1", {"@vocab": "https://nda.vn/vocab#"}]`,
+			ctx:  `["https://www.w3.org/ns/credentials/v2", {"@vocab": "https://nda.vn/vocab#"}]`,
 		},
 		{
 			name: "mapped explicitly to the W3C IRI",
-			ctx: `["https://www.w3.org/2018/credentials/v1", {
+			ctx: `["https://www.w3.org/ns/credentials/v2", {
 			        "validUntil": {"@id": "https://www.w3.org/2018/credentials#expirationDate",
 			                       "@type": "http://www.w3.org/2001/XMLSchema#dateTime"}}]`,
 		},
@@ -187,5 +193,155 @@ func TestVPSecp256k1Suite_ValidityPeriodIsExtensible(t *testing.T) {
 				t.Errorf("validUntil = %v, want it preserved", got)
 			}
 		})
+	}
+}
+
+// A VC 2.0 presentation signed with a secp256k1 holder key. credentials/v2
+// does not define the suite, so the SDK adds its context; the challenge and
+// domain the verifier issued stay inside the signature.
+func TestVPSecp256k1Suite_SignsVC2Presentation(t *testing.T) {
+	const holder = "did:example:vp-secp-suite-vc2"
+	prov, resolver := suiteSecpSetup(t, holder)
+
+	raw := []byte(`{
+		"@context": ["https://www.w3.org/ns/credentials/v2"],
+		"id": "urn:uuid:vp-secp-suite-vc2-001",
+		"type": ["VerifiablePresentation"],
+		"holder": "` + holder + `",
+		"verifiableCredential": []
+	}`)
+
+	pres, err := vp.ParseJSONPresentation(raw)
+	if err != nil {
+		t.Fatalf("parse presentation: %v", err)
+	}
+	if err := pres.AddProofByProvider(prov,
+		vp.WithResolver(resolver), vp.WithVerificationMethodKey("key-1"),
+		vp.WithChallenge("nonce-vc2"), vp.WithDomain("https://verifier.example")); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if err := pres.Verify(vp.WithResolver(resolver),
+		vp.WithExpectedChallenge("nonce-vc2"),
+		vp.WithExpectedDomain("https://verifier.example")); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if err := pres.Verify(vp.WithResolver(resolver), vp.WithExpectedChallenge("other")); err == nil {
+		t.Fatal("verify accepted a challenge the holder never signed")
+	}
+
+	contents, err := pres.GetContents()
+	if err != nil {
+		t.Fatalf("contents: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(contents, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	proof, ok := doc["proof"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("proof is %T, want one object", doc["proof"])
+	}
+	if proof["type"] != "EcdsaSecp256k1Signature2019" {
+		t.Fatalf("proof type = %v", proof["type"])
+	}
+	if _, ok := proof["jws"].(string); !ok {
+		t.Fatalf("proof carries no jws: %v", proof)
+	}
+	ctx, _ := doc["@context"].([]interface{})
+	if len(ctx) == 0 || ctx[0] != "https://www.w3.org/ns/credentials/v2" {
+		t.Fatalf("the base context must stay first: %v", doc["@context"])
+	}
+}
+
+// The real shape of a presentation: it carries a credential. The embedded
+// credential keeps its own @context, so adding the suite context to the
+// presentation must not disturb it, and both signatures must hold.
+func TestVPSecp256k1Suite_CarriesACredential(t *testing.T) {
+	const holder = "did:example:vp-secp-with-vc"
+	prov, holderResolver := suiteSecpSetup(t, holder)
+
+	const issuer = "did:example:vc-issuer-p256"
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("p256 key: %v", err)
+	}
+	issuerVM, err := vmpkg.NewP256VM(issuer, "key-1", &p256Key.PublicKey)
+	if err != nil {
+		t.Fatalf("issuer vm: %v", err)
+	}
+	p256Signer, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 signer: %v", err)
+	}
+	issuerResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(issuer, issuerVM))
+
+	cred, err := vc.NewJSONCredential(vc.CredentialContents{
+		Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:        "urn:uuid:vp-embedded-vc",
+		Types:     []string{"VerifiableCredential"},
+		Issuer:    issuer,
+		ValidFrom: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Subject:   []vc.Subject{{ID: "did:example:subject"}},
+	})
+	if err != nil {
+		t.Fatalf("new credential: %v", err)
+	}
+	if err := cred.AddProofByProvider(p256Signer,
+		vc.WithResolver(issuerResolver), vc.WithVerificationMethodKey("key-1")); err != nil {
+		t.Fatalf("sign credential: %v", err)
+	}
+	credJSON, err := cred.GetContents()
+	if err != nil {
+		t.Fatalf("credential contents: %v", err)
+	}
+	var credMap map[string]interface{}
+	if err := json.Unmarshal(credJSON, &credMap); err != nil {
+		t.Fatalf("unmarshal credential: %v", err)
+	}
+
+	presDoc := map[string]interface{}{
+		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"id":                   "urn:uuid:vp-with-vc-001",
+		"type":                 []interface{}{"VerifiablePresentation"},
+		"holder":               holder,
+		"verifiableCredential": []interface{}{credMap},
+	}
+	presJSON, err := json.Marshal(presDoc)
+	if err != nil {
+		t.Fatalf("marshal presentation: %v", err)
+	}
+	pres, err := vp.ParseJSONPresentation(presJSON)
+	if err != nil {
+		t.Fatalf("parse presentation: %v", err)
+	}
+	if err := pres.AddProofByProvider(prov,
+		vp.WithResolver(holderResolver), vp.WithVerificationMethodKey("key-1"),
+		vp.WithChallenge("nonce-with-vc")); err != nil {
+		t.Fatalf("sign presentation: %v", err)
+	}
+	if err := pres.Verify(vp.WithResolver(holderResolver),
+		vp.WithExpectedChallenge("nonce-with-vc")); err != nil {
+		t.Fatalf("verify presentation: %v", err)
+	}
+
+	// The embedded credential must still verify on its own, untouched.
+	out, err := pres.GetContents()
+	if err != nil {
+		t.Fatalf("presentation contents: %v", err)
+	}
+	var outMap map[string]interface{}
+	if err := json.Unmarshal(out, &outMap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	embedded, err := json.Marshal(outMap["verifiableCredential"].([]interface{})[0])
+	if err != nil {
+		t.Fatalf("marshal embedded: %v", err)
+	}
+	parsedCred, err := vc.ParseJSONCredential(embedded)
+	if err != nil {
+		t.Fatalf("parse embedded: %v", err)
+	}
+	if err := parsedCred.Verify(vc.WithResolver(issuerResolver)); err != nil {
+		t.Fatalf("the embedded credential stopped verifying: %v", err)
 	}
 }

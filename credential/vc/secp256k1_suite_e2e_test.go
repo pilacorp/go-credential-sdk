@@ -4,12 +4,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -18,18 +20,19 @@ import (
 // A fixed secp256k1 scalar keeps these tests deterministic.
 const suiteSecpPriv = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 
-// mkVC11CredentialJSON builds a VC 1.1 document, the shape the
-// EcdsaSecp256k1Signature2019 suite belongs to.
-func mkVC11CredentialJSON(issuerDID string) []byte {
+// mkSuiteCredentialJSON builds the VC 2.0 document these tests sign. @vocab
+// keeps the custom credentialSubject terms defined so canonicalization stays
+// in SafeMode.
+func mkSuiteCredentialJSON(issuerDID string) []byte {
 	return []byte(fmt.Sprintf(`{
       "@context": [
-        "https://www.w3.org/2018/credentials/v1",
+        "https://www.w3.org/ns/credentials/v2",
         {"@vocab": "https://example.org/vocab#"}
       ],
       "id": "urn:uuid:secp-suite-vc-001",
       "type": ["VerifiableCredential", "IdentityCredential"],
       "issuer": %q,
-      "issuanceDate": "2026-01-01T00:00:00Z",
+      "validFrom": "2026-01-01T00:00:00Z",
       "credentialSubject": {
         "id": "did:example:subject",
         "name": "Nguyen Van A"
@@ -82,12 +85,12 @@ func secpProvider(t *testing.T) signer.SignerProvider {
 }
 
 // TestSecp256k1Suite_IssueVerify is the round trip the whole suite exists for:
-// a secp256k1 issuer key signs a VC 1.1 credential and the SDK verifies it.
+// a secp256k1 issuer key signs a credential and the SDK verifies it.
 func TestSecp256k1Suite_IssueVerify(t *testing.T) {
 	const did = "did:example:secp-suite-vc"
 	resolver := secpResolver(t, did)
 
-	cred, err := vc.ParseJSONCredential(mkVC11CredentialJSON(did))
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
 	if err != nil {
 		t.Fatalf("parse credential: %v", err)
 	}
@@ -111,7 +114,7 @@ func TestSecp256k1Suite_ProofShape(t *testing.T) {
 	const did = "did:example:secp-suite-shape"
 	resolver := secpResolver(t, did)
 
-	cred, err := vc.ParseJSONCredential(mkVC11CredentialJSON(did))
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
 	if err != nil {
 		t.Fatalf("parse credential: %v", err)
 	}
@@ -152,15 +155,28 @@ func TestSecp256k1Suite_ProofShape(t *testing.T) {
 	}
 }
 
-// TestSecp256k1Suite_ContextLeftAlone checks a VC 1.1 document keeps the
-// @context it was issued with. credentials/v1 already defines the suite, and
-// its terms are @protected, so layering another security context on top is a
-// redefinition the canonicalizer rejects outright.
+// TestSecp256k1Suite_ContextLeftAlone checks the SDK adds the suite context
+// only when the document does not already define the suite. A caller who put
+// security/v2 on the document themselves keeps exactly that: adding a second
+// definition of the same @protected terms is a redefinition the canonicalizer
+// rejects outright.
 func TestSecp256k1Suite_ContextLeftAlone(t *testing.T) {
 	const did = "did:example:secp-suite-ctx"
 	resolver := secpResolver(t, did)
 
-	cred, err := vc.ParseJSONCredential(mkVC11CredentialJSON(did))
+	raw := []byte(fmt.Sprintf(`{
+      "@context": [
+        "https://www.w3.org/ns/credentials/v2",
+        "https://w3id.org/security/v2"
+      ],
+      "id": "urn:uuid:secp-suite-ctx-001",
+      "type": ["VerifiableCredential"],
+      "issuer": %q,
+      "validFrom": "2026-01-01T00:00:00Z",
+      "credentialSubject": {"id": "did:example:subject"}
+    }`, did))
+
+	cred, err := vc.ParseJSONCredential(raw)
 	if err != nil {
 		t.Fatalf("parse credential: %v", err)
 	}
@@ -171,22 +187,25 @@ func TestSecp256k1Suite_ContextLeftAlone(t *testing.T) {
 	); err != nil {
 		t.Fatalf("add proof: %v", err)
 	}
+	if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
 
-	raw, err := cred.GetContents()
+	contents, err := cred.GetContents()
 	if err != nil {
 		t.Fatalf("contents: %v", err)
 	}
-	if strings.Contains(string(raw), "https://w3id.org/security/v2") {
-		t.Errorf("suite context was added to a VC 1.1 document that already defines the suite:\n%s", raw)
+	if strings.Contains(string(contents), "https://w3id.org/security/suites/secp256k1-2019/v1") {
+		t.Errorf("a second suite context was added to a document that already defines the suite:\n%s", contents)
 	}
-	if !strings.Contains(string(raw), "https://www.w3.org/2018/credentials/v1") {
-		t.Errorf("document lost its own @context:\n%s", raw)
+	if !strings.Contains(string(contents), "https://w3id.org/security/v2") {
+		t.Errorf("document lost the context it was built with:\n%s", contents)
 	}
 }
 
 // TestSecp256k1Suite_SuiteFollowsTheKey checks the suite is never named by the
 // caller:
-// on a VC 1.1 document the suite follows the verification method's key, because
+// on a document the suite follows the verification method's key, because
 // the key is what decides which suites apply at all. The data model cannot
 // decide it — a 1.1 document takes either suite.
 func TestSecp256k1Suite_SuiteFollowsTheKey(t *testing.T) {
@@ -213,7 +232,7 @@ func TestSecp256k1Suite_SuiteFollowsTheKey(t *testing.T) {
 			wantType: "EcdsaSecp256k1Signature2019",
 		},
 		{
-			name: "P-256 key on the same VC 1.1 document",
+			name: "P-256 key on the same document",
 			kid:  "key-p256",
 			provider: func(t *testing.T) signer.SignerProvider {
 				p, err := signer.NewP256Provider(p256Priv)
@@ -229,7 +248,7 @@ func TestSecp256k1Suite_SuiteFollowsTheKey(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cred, err := vc.ParseJSONCredential(mkVC11CredentialJSON("did:example:suite-by-key"))
+			cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON("did:example:suite-by-key"))
 			if err != nil {
 				t.Fatalf("parse credential: %v", err)
 			}
@@ -254,77 +273,35 @@ func TestSecp256k1Suite_SuiteFollowsTheKey(t *testing.T) {
 	}
 }
 
-// TestSecp256k1Suite_RejectsVC2Document is the spec boundary: the suite belongs
-// to VC Data Model 1.1, and the 2.0 Data Integrity cryptosuites cover P-256 and
-// P-384 only. Signing a 2.0 document with it must fail loudly rather than have
-// the SDK bolt a security context on and produce a combination no
-// specification covers.
-func TestSecp256k1Suite_RejectsVC2Document(t *testing.T) {
+// TestSecp256k1Suite_SignsVC2Document is the point of the whole change: the
+// deployment's keys are secp256k1 and its documents are VC 2.0. credentials/v2
+// defines Data Integrity only, so the SDK adds the suite's own context, and
+// the 2.0 properties the deployment depends on — BitstringStatusListEntry
+// above all — survive it.
+func TestSecp256k1Suite_SignsVC2Document(t *testing.T) {
 	const did = "did:example:secp-suite-vc2"
 	resolver := secpResolver(t, did)
 
-	cred, err := vc.ParseJSONCredential(mkCredentialJSON(did)) // VC 2.0 context
+	raw := []byte(fmt.Sprintf(`{
+      "@context": ["https://www.w3.org/ns/credentials/v2"],
+      "id": "urn:uuid:secp-suite-vc2-001",
+      "type": ["VerifiableCredential"],
+      "issuer": %q,
+      "validFrom": "2026-01-01T00:00:00Z",
+      "credentialStatus": {
+        "id": "https://example.org/status/1#94567",
+        "type": "BitstringStatusListEntry",
+        "statusPurpose": "revocation",
+        "statusListIndex": "94567",
+        "statusListCredential": "https://example.org/status/1"
+      },
+      "credentialSubject": {"id": "did:example:subject"}
+    }`, did))
+
+	cred, err := vc.ParseJSONCredential(raw)
 	if err != nil {
 		t.Fatalf("parse credential: %v", err)
 	}
-	err = cred.AddProofByProvider(
-		secpProvider(t),
-		vc.WithVerificationMethodKey("key-1"),
-		vc.WithResolver(resolver),
-	)
-	if err == nil {
-		t.Fatal("signed a VC 2.0 document with a VC 1.1 suite")
-	}
-	for _, want := range []string{"VC Data Model 1.1", "WithDataModel11"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error does not mention %q, so it does not tell the caller what to do: %v", want, err)
-		}
-	}
-}
-
-// TestSecp256k1Suite_DataModel11Builder covers the path a caller actually takes:
-// build the credential as VC 1.1 from CredentialContents, then sign it with the
-// suite — no hand-written JSON.
-func TestSecp256k1Suite_DataModel11Builder(t *testing.T) {
-	const did = "did:example:secp-suite-builder"
-	resolver := secpResolver(t, did)
-
-	cred, err := vc.NewJSONCredential(vc.CredentialContents{
-		// No @context: the data model supplies credentials/v1.
-		ID:         "urn:uuid:builder-001",
-		Types:      []string{"VerifiableCredential"},
-		Issuer:     did,
-		ValidFrom:  time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
-		ValidUntil: time.Date(2027, 9, 21, 0, 0, 0, 0, time.UTC),
-		Subject:    []vc.Subject{{ID: "did:example:subject"}},
-	}, vc.WithDataModel11())
-	if err != nil {
-		t.Fatalf("new credential: %v", err)
-	}
-
-	raw, err := cred.GetContents()
-	if err != nil {
-		t.Fatalf("contents: %v", err)
-	}
-	var doc map[string]interface{}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	// VC 1.1 names the validity period issuanceDate / expirationDate.
-	if got := doc["issuanceDate"]; got != "2026-09-21T00:00:00Z" {
-		t.Errorf("issuanceDate = %v, want the validFrom value", got)
-	}
-	if got := doc["expirationDate"]; got != "2027-09-21T00:00:00Z" {
-		t.Errorf("expirationDate = %v, want the validUntil value", got)
-	}
-	if _, ok := doc["validFrom"]; ok {
-		t.Error("document carries validFrom, a VC 2.0 property")
-	}
-	if !strings.Contains(string(raw), "https://www.w3.org/2018/credentials/v1") {
-		t.Errorf("@context is not the VC 1.1 base context:\n%s", raw)
-	}
-
 	if err := cred.AddProofByProvider(
 		secpProvider(t),
 		vc.WithVerificationMethodKey("key-1"),
@@ -335,25 +312,45 @@ func TestSecp256k1Suite_DataModel11Builder(t *testing.T) {
 	if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-}
 
-// TestSecp256k1Suite_DataModelContextMismatch checks the builder refuses to put
-// a 2.0 base context on a 1.1 document. Rewriting it instead would leave
-// credentialStatus.type, credentialSchema.type and any 2.0-only property
-// declaring a data model the document no longer claims.
-func TestSecp256k1Suite_DataModelContextMismatch(t *testing.T) {
-	_, err := vc.NewJSONCredential(vc.CredentialContents{
-		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
-		ID:      "urn:uuid:mismatch-001",
-		Types:   []string{"VerifiableCredential"},
-		Issuer:  "did:example:issuer",
-		Subject: []vc.Subject{{ID: "did:example:subject"}},
-	}, vc.WithDataModel11())
-	if err == nil {
-		t.Fatal("built a VC 1.1 credential on the VC 2.0 base context")
+	proof := proofOf(t, cred)
+	if proof["type"] != "EcdsaSecp256k1Signature2019" {
+		t.Fatalf("proof type = %v, want EcdsaSecp256k1Signature2019", proof["type"])
 	}
-	if !strings.Contains(err.Error(), "VC Data Model 1.1") {
-		t.Errorf("error does not name the mismatch: %v", err)
+	if _, ok := proof["jws"].(string); !ok {
+		t.Fatalf("proof carries no jws: %v", proof)
+	}
+	if _, ok := proof["cryptosuite"]; ok {
+		t.Fatalf("this suite names itself in type; cryptosuite must be absent: %v", proof)
+	}
+
+	contents, err := cred.GetContents()
+	if err != nil {
+		t.Fatalf("contents: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(contents, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	ctx, ok := doc["@context"].([]interface{})
+	if !ok {
+		t.Fatalf("@context is %T, want an array", doc["@context"])
+	}
+	if ctx[0] != "https://www.w3.org/ns/credentials/v2" {
+		t.Fatalf("the base context must stay first, got %v", ctx)
+	}
+	var hasSuite bool
+	for _, c := range ctx {
+		if c == "https://w3id.org/security/suites/secp256k1-2019/v1" {
+			hasSuite = true
+		}
+	}
+	if !hasSuite {
+		t.Fatalf("@context does not carry the suite context: %v", ctx)
+	}
+	status, ok := doc["credentialStatus"].(map[string]interface{})
+	if !ok || status["type"] != "BitstringStatusListEntry" {
+		t.Fatalf("the 2.0 status entry did not survive: %v", doc["credentialStatus"])
 	}
 }
 
@@ -406,7 +403,7 @@ func TestSecp256k1Suite_TamperedProofOptions(t *testing.T) {
 	const did = "did:example:secp-suite-tamper"
 	resolver := secpResolver(t, did)
 
-	cred, err := vc.ParseJSONCredential(mkVC11CredentialJSON(did))
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
 	if err != nil {
 		t.Fatalf("parse credential: %v", err)
 	}
@@ -470,7 +467,7 @@ func TestSecp256k1Suite_WrongCurveSigner(t *testing.T) {
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
 		vmpkg.NewSecp256k1VM(did, "key-1", pubHex(t, suiteSecpPriv))))
 
-	cred, err := vc.ParseJSONCredential(mkVC11CredentialJSON(did))
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
 	if err != nil {
 		t.Fatalf("parse credential: %v", err)
 	}
@@ -496,7 +493,7 @@ func TestSecp256k1Suite_WrongSignerRejected(t *testing.T) {
 		t.Fatalf("other provider: %v", err)
 	}
 
-	cred, err := vc.ParseJSONCredential(mkVC11CredentialJSON(did))
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
 	if err != nil {
 		t.Fatalf("parse credential: %v", err)
 	}
@@ -505,5 +502,318 @@ func TestSecp256k1Suite_WrongSignerRejected(t *testing.T) {
 		vc.WithResolver(resolver))
 	if err == nil || !strings.Contains(err.Error(), "does not verify against verification method") {
 		t.Fatalf("add proof err = %v, want the wrong-signer rejection", err)
+	}
+}
+
+// The suite signs with secp256k1, so a proof of this type pointing at a P-256
+// verification method is refused on the curve, before the signature is even
+// checked. Without that check the failure would still happen, but it would
+// read as a bad signature and send the reader looking in the wrong place.
+func TestSecp256k1Suite_ProofMustPointAtASecp256k1Method(t *testing.T) {
+	const did = "did:example:secp-suite-mixed"
+
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("p256 key: %v", err)
+	}
+	p256VM, err := vmpkg.NewP256VM(did, "key-2", &p256Key.PublicKey)
+	if err != nil {
+		t.Fatalf("p256 vm: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
+		vmpkg.NewSecp256k1VM(did, "key-1", pubHex(t, suiteSecpPriv)), p256VM))
+
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
+	if err != nil {
+		t.Fatalf("parse credential: %v", err)
+	}
+	if err := cred.AddProofByProvider(secpProvider(t),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	// Repoint the signed proof at the P-256 method on the same document.
+	raw, err := cred.GetContents()
+	if err != nil {
+		t.Fatalf("contents: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	proof, ok := doc["proof"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("proof is %T, want one object", doc["proof"])
+	}
+	proof["verificationMethod"] = did + "#key-2"
+	repointed, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	parsed, err := vc.ParseJSONCredential(repointed, vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("parse repointed: %v", err)
+	}
+	err = parsed.Verify(vc.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("verify accepted an EcdsaSecp256k1Signature2019 proof on a P-256 method")
+	}
+	if !strings.Contains(err.Error(), "does not hold a secp256k1 key") {
+		t.Fatalf("err = %v, want the curve named", err)
+	}
+}
+
+// The signature covers the whole proof except the field that holds it. A third
+// party adding proofValue — the slot the other suite signs into — must break
+// the signature, not sit in the document unnoticed while Verify stays green.
+func TestSecp256k1Suite_ProofValueIsCoveredBySignature(t *testing.T) {
+	const did = "did:example:secp-suite-slot"
+	resolver := secpResolver(t, did)
+
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
+	if err != nil {
+		t.Fatalf("parse credential: %v", err)
+	}
+	if err := cred.AddProofByProvider(secpProvider(t),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, ok := proofOf(t, cred)["proofValue"]; ok {
+		t.Fatal("this suite signs into jws; it must not write proofValue")
+	}
+
+	raw, err := cred.GetContents()
+	if err != nil {
+		t.Fatalf("contents: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	doc["proof"].(map[string]interface{})["proofValue"] = "z3FXQdeadbeef"
+	tampered, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	parsed, err := vc.ParseJSONCredential(tampered)
+	if err != nil {
+		t.Fatalf("parse tampered: %v", err)
+	}
+	if err := parsed.Verify(vc.WithResolver(resolver)); err == nil {
+		t.Fatal("verify accepted a proof with a second signature slot filled in")
+	}
+}
+
+// RFC 7797 signs the header that travels with the proof, so changing it after
+// issuance breaks the signature.
+func TestSecp256k1Suite_JWSHeaderIsCoveredBySignature(t *testing.T) {
+	const did = "did:example:secp-suite-header"
+	resolver := secpResolver(t, did)
+
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
+	if err != nil {
+		t.Fatalf("parse credential: %v", err)
+	}
+	if err := cred.AddProofByProvider(secpProvider(t),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	raw, err := cred.GetContents()
+	if err != nil {
+		t.Fatalf("contents: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	proof := doc["proof"].(map[string]interface{})
+	parts := strings.SplitN(proof["jws"].(string), "..", 2)
+	if len(parts) != 2 {
+		t.Fatalf("jws is not detached: %v", proof["jws"])
+	}
+	header, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatalf("decode header: %v", err)
+	}
+	var h map[string]interface{}
+	if err := json.Unmarshal(header, &h); err != nil {
+		t.Fatalf("unmarshal header: %v", err)
+	}
+	h["kid"] = did + "#key-1"
+	rebuilt, err := json.Marshal(h)
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	proof["jws"] = base64.RawURLEncoding.EncodeToString(rebuilt) + ".." + parts[1]
+
+	tampered, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	parsed, err := vc.ParseJSONCredential(tampered)
+	if err != nil {
+		t.Fatalf("parse tampered: %v", err)
+	}
+	if err := parsed.Verify(vc.WithResolver(resolver)); err == nil {
+		t.Fatal("verify accepted a jws whose header changed after signing")
+	}
+}
+
+// RFC 7518 fixes an ES256K signature at 64 bytes. A 65th byte is a byte nobody
+// signed, so accepting it would give one credential many byte forms that all
+// verify, and many different hashes.
+func TestSecp256k1Suite_JWSSignatureMustBe64Bytes(t *testing.T) {
+	const did = "did:example:secp-suite-siglen"
+	resolver := secpResolver(t, did)
+
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
+	if err != nil {
+		t.Fatalf("parse credential: %v", err)
+	}
+	if err := cred.AddProofByProvider(secpProvider(t),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	raw, err := cred.GetContents()
+	if err != nil {
+		t.Fatalf("contents: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	proof := doc["proof"].(map[string]interface{})
+	parts := strings.SplitN(proof["jws"].(string), "..", 2)
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	if len(signature) != 64 {
+		t.Fatalf("issued signature is %d bytes, want 64", len(signature))
+	}
+
+	for _, extra := range []byte{0x00, 0x1b, 0xff} {
+		padded := append(append([]byte{}, signature...), extra)
+		proof["jws"] = parts[0] + ".." + base64.RawURLEncoding.EncodeToString(padded)
+		tampered, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		parsed, err := vc.ParseJSONCredential(tampered)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if err := parsed.Verify(vc.WithResolver(resolver)); err == nil {
+			t.Fatalf("verify accepted a 65-byte signature ending in %#x", extra)
+		}
+	}
+}
+
+// The suite's context defines proof at the document root, while credentials/v2
+// scopes that term to the credential. A document using its own term of that
+// name would therefore be signed with a different meaning than it was built
+// with, so signing is refused and the document is left untouched.
+func TestSecp256k1Suite_RefusesWhenTheContextWouldChangeMeaning(t *testing.T) {
+	const did = "did:example:secp-suite-collide"
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
+		vmpkg.NewSecp256k1VM(did, "key-1", pubHex(t, suiteSecpPriv))))
+
+	raw := []byte(fmt.Sprintf(`{
+      "@context": [
+        "https://www.w3.org/ns/credentials/v2",
+        {"@vocab": "https://example.org/vocab#"}
+      ],
+      "id": "urn:uuid:secp-suite-collide-001",
+      "type": ["VerifiableCredential"],
+      "issuer": %q,
+      "validFrom": "2026-01-01T00:00:00Z",
+      "credentialSubject": {
+        "id": "did:example:subject",
+        "proof": "https://notary.example/record/1"
+      }
+    }`, did))
+
+	cred, err := vc.ParseJSONCredential(raw)
+	if err != nil {
+		t.Fatalf("parse credential: %v", err)
+	}
+	err = cred.AddProofByProvider(secpProvider(t),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("signed a document whose own proof term the suite context redefines")
+	}
+	if !strings.Contains(err.Error(), "changed what the document says") {
+		t.Fatalf("err = %v, want the collision named", err)
+	}
+	if cred.ExtractField("proof") != nil {
+		t.Fatal("a refused signature must not be attached")
+	}
+
+	// The document must come back exactly as the caller built it.
+	after, err := cred.GetContents()
+	if err != nil {
+		t.Fatalf("contents: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(after, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	ctx, ok := doc["@context"].([]interface{})
+	if !ok || len(ctx) != 2 {
+		t.Fatalf("@context was left modified: %v", doc["@context"])
+	}
+}
+
+// A signer that does not hold the method's key is refused, and the suite
+// context added along the way must not survive that refusal — the next signing
+// attempt, possibly under another suite, has to start from the document the
+// caller built.
+func TestSecp256k1Suite_FailedSigningLeavesNoContextBehind(t *testing.T) {
+	const did = "did:example:secp-suite-rollback"
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("p256 key: %v", err)
+	}
+	p256VM, err := vmpkg.NewP256VM(did, "key-2", &p256Key.PublicKey)
+	if err != nil {
+		t.Fatalf("p256 vm: %v", err)
+	}
+	// key-1 is a secp256k1 method whose key the signer below does not hold.
+	other, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("other key: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
+		vmpkg.NewSecp256k1VM(did, "key-1", hex.EncodeToString(ethcrypto.CompressPubkey(&other.PublicKey))),
+		p256VM))
+
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
+	if err != nil {
+		t.Fatalf("parse credential: %v", err)
+	}
+	if err := cred.AddProofByProvider(secpProvider(t),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)); err == nil {
+		t.Fatal("expected the wrong signer to be refused")
+	}
+
+	p256Signer, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 signer: %v", err)
+	}
+	if err := cred.AddProofByProvider(p256Signer,
+		vc.WithVerificationMethodKey("key-2"), vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign with P-256: %v", err)
+	}
+
+	raw, err := cred.GetContents()
+	if err != nil {
+		t.Fatalf("contents: %v", err)
+	}
+	if strings.Contains(string(raw), "secp256k1-2019") {
+		t.Fatalf("a failed secp256k1 signing left its context on an ecdsa-rdfc-2019 credential:\n%s", raw)
 	}
 }
