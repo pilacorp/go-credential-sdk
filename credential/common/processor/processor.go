@@ -74,10 +74,13 @@ var wellKnownContexts = map[string][]byte{
 	"https://www.w3.org/ns/credentials/examples/v2":        w3cCredentialExamplesV2Context,
 	"https://www.w3.org/ns/credentials/examples/v2.jsonld": w3cCredentialExamplesV2Context,
 	"https://w3id.org/security/data-integrity/v2":          w3cSecurityDataIntegrityV2Context,
-	// security/v1 and /v2 define the VC 1.1 Linked Data Signature terms
+	// security/v1 and /v2 define the Linked Data Signature terms
 	// (EcdsaSecp256k1Signature2019, jws, proofPurpose, challenge, domain).
-	// v2 imports v1 by URL, so both must be served locally or the fetch of one
-	// still hits the network.
+	// The SDK never writes either onto a document — it writes the narrow suite
+	// context below — but it accepts security/v2 when a caller put it there
+	// first, and then canonicalization has to load it. v2 imports v1 by URL, so
+	// dropping either one would send that load to the network, which is the one
+	// thing bundling these is for.
 	"https://w3id.org/security/v1": w3cSecurityV1Context,
 	"https://w3id.org/security/v2": w3cSecurityV2Context,
 	// The narrow context for EcdsaSecp256k1Signature2019 alone. A VC 2.0

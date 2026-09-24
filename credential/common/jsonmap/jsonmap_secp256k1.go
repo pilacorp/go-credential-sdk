@@ -29,11 +29,13 @@ const (
 	// secp256k1 with SHA-256.
 	AlgES256K string = "ES256K"
 
-	// Secp256k1SuiteContext is the broad security context, which defines this
-	// suite among many other terms. The SDK never adds it — it adds the narrow
-	// one below — but a caller may have put it on the document already, and
-	// then it is what defines the suite and no second context is needed.
-	Secp256k1SuiteContext string = "https://w3id.org/security/v2"
+	// Secp256k1SuiteContextAccepted is the broad security context, which defines
+	// this suite among many other terms. The SDK never WRITES it — the one it
+	// writes is Secp256k1SuiteContextNarrow below. This constant exists only to
+	// RECOGNISE it: a caller may have put it on the document already, and then
+	// it is what defines the suite and no second context is needed. The two are
+	// named for the direction they are used in, not for their breadth.
+	Secp256k1SuiteContextAccepted string = "https://w3id.org/security/v2"
 
 	// credentialsV1Context is the VC 1.1 base context. This SDK issues VC 2.0
 	// documents only, but a document built elsewhere can arrive on 1.1, and
@@ -42,8 +44,8 @@ const (
 	// turning a signable document into a redefinition error.
 	credentialsV1Context string = "https://www.w3.org/2018/credentials/v1"
 
-	// Secp256k1SuiteContextNarrow defines this suite and nothing else. It is
-	// what the SDK adds to a document that does not already define the suite —
+	// Secp256k1SuiteContextNarrow defines this suite and nothing else. It is the
+	// only context the SDK writes, and it goes onto a document that does not already define the suite —
 	// a VC 2.0 document, whose base context covers Data Integrity only. The
 	// narrow context is preferred over security/v2 because it brings in far
 	// fewer terms — though not none: it defines proof at the document root,
@@ -345,7 +347,7 @@ func (m *JSONMap) ensureSecp256k1SuiteContext() error {
 func (m *JSONMap) definesSecp256k1Suite() bool {
 	defines := func(s string) bool {
 		return s == credentialsV1Context ||
-			s == Secp256k1SuiteContext ||
+			s == Secp256k1SuiteContextAccepted ||
 			s == Secp256k1SuiteContextNarrow
 	}
 

@@ -92,11 +92,11 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 	}
 
 	options := getOptions(opts...)
-	m := (*jsonmap.JSONMap)(&e.presentationData)
 	suite, err := jsonmap.SigningSuiteForKey(kind)
 	if err != nil {
 		return err
 	}
+	m := (*jsonmap.JSONMap)(&e.presentationData)
 
 	vmPub, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {

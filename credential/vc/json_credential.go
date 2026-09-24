@@ -129,7 +129,6 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 		return fmt.Errorf("verification method %q has an unrecognized key type", vmURL)
 	}
 
-	m := (*jsonmap.JSONMap)(&e.credentialData)
 	suite, err := jsonmap.SigningSuiteForKey(kind)
 	if err != nil {
 		return err
@@ -139,6 +138,8 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 	if err != nil {
 		return fmt.Errorf("verification method %q: %w", vmURL, err)
 	}
+
+	m := (*jsonmap.JSONMap)(&e.credentialData)
 
 	if suite == jsonmap.EcdsaSecp256k1Signature2019 {
 		return m.AddEcdsaSecp256k1Proof(
