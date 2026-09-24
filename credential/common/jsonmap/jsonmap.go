@@ -229,12 +229,12 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 	// P-384 signer cannot reach this point. Wiring P-384 means hashing with
 	// SHA-384 here and in ecdsaHashData, accepting 96-byte signatures, and
 	// teaching VMKeyKind/VerifyECDSA the curve.
-	// secp256k1 has no Data Integrity cryptosuite: it exists solely in VC 1.1
-	// through the legacy EcdsaSecp256k1Signature2019 types, which this version
-	// of the SDK does not support. A 65-byte r||s||v therefore means a
-	// secp256k1 DefaultProvider (go-ethereum) was routed to a P-256 VM — reject
-	// it rather than trim it and bind the proof to a key the verifier will not
-	// accept. Any other length is not an ECDSA-256 signature at all.
+	// secp256k1 has no Data Integrity cryptosuite at all; it signs under
+	// EcdsaSecp256k1Signature2019 instead, and never reaches this function. A
+	// 65-byte r||s||v here therefore means a secp256k1 signer (go-ethereum)
+	// was routed to a P-256 VM — reject it rather than trim it and bind the
+	// proof to a key the verifier will not accept. Any other length is not an
+	// ECDSA-256 signature at all.
 	if l := len(signature); l != 64 {
 		return fmt.Errorf("jsonmap: ecdsa-rdfc-2019 expects a 64-byte P-256 signature (r||s) but the signer returned %d bytes; the signer does not match the verification method — pin the right VM with WithVerificationMethodKey", l)
 	}
@@ -336,6 +336,12 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 	case proof.Type == JwtProof2020:
 		return m.verifyJWTProof(doc, proof)
 
+	// A jws means the spec-conformant Linked Data Signature suite; the same
+	// type name with a hex proofValue is the pre-v1.8.0 in-house format below,
+	// which must keep verifying for credentials already issued.
+	case proof.Type == EcdsaSecp256k1Signature2019 && proof.JWS != "":
+		return m.verifyEcdsaSecp256k1Proof(doc, proof)
+
 	case proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY:
 		return m.verifyEcdsaProofLegacy()
 
@@ -405,6 +411,16 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, err
 
 // ===== ecdsa-rdfc-2019 (Data Integrity ECDSA Cryptosuites v1.0, section 3.2) =====
 
+// signatureField names the proof property that carries the signature for a
+// proof type, and so the one property the proof configuration leaves out.
+func signatureField(proofType string) string {
+	if proofType == EcdsaSecp256k1Signature2019 {
+		return "jws"
+	}
+
+	return "proofValue"
+}
+
 // ecdsaProofConfig builds the proof configuration of section 3.2.5: a copy of
 // the whole proof object with proofValue removed (Data Integrity § 4.4), plus
 // the document's @context. No property is filtered here — every option the
@@ -421,9 +437,12 @@ func (m *JSONMap) ecdsaProofConfig(proof *dto.Proof) (map[string]interface{}, er
 	}
 
 	cfg := JSONMap(proof.ToMap())
-	// The signature cannot cover itself: § 3.2.5 removes proofValue, and only
-	// proofValue.
-	delete(cfg, "proofValue")
+	// The signature cannot cover itself, so the field holding it comes out —
+	// and only that field. Which one it is depends on the suite: Data
+	// Integrity signs into proofValue (§ 3.2.5), EcdsaSecp256k1Signature2019
+	// into jws. Dropping the other suite's field too would leave a slot in the
+	// proof that no signature covers.
+	delete(cfg, signatureField(proof.Type))
 	// Proof Configuration (ecdsa-rdfc-2019), step 4: set the proof
 	// configuration's @context to the unsecured document's, whatever the proof
 	// itself carries.

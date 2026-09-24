@@ -96,7 +96,10 @@ func TestVC_MultiKey_IssueVerify(t *testing.T) {
 			wantErr: "unsupported key kind",
 		},
 		{
-			name: "secp256k1 rejected",
+			// VC 2.0 with a secp256k1 key: the Data Integrity cryptosuites do
+			// not cover that curve, so the document is signed with
+			// EcdsaSecp256k1Signature2019 and the SDK adds the suite context.
+			name: "secp256k1/EcdsaSecp256k1Signature2019 on a VC 2.0 document",
 			did:  "did:example:vc-secp",
 			provider: func(t *testing.T) signer.SignerProvider {
 				p, err := signer.NewDefaultProvider(secpPriv)
@@ -105,8 +108,7 @@ func TestVC_MultiKey_IssueVerify(t *testing.T) {
 				}
 				return p
 			},
-			vm:      vmpkg.NewSecp256k1VM("did:example:vc-secp", "key-1", pubHex(t, secpPriv)),
-			wantErr: "unsupported key kind",
+			vm: vmpkg.NewSecp256k1VM("did:example:vc-secp", "key-1", pubHex(t, secpPriv)),
 		},
 	}
 
