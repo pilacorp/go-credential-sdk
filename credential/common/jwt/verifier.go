@@ -65,11 +65,20 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("document resolver is not configured")
 	}
 
-	// Resolve the document by the issuer DID claimed in the JWT body, not
-	// by the DID prefix of `kid`. The `iss` claim is the authoritative
-	// identifier of the signer; FindVerificationMethod will reject if the
-	// kid does not actually belong to that issuer's document.
-	issuer, derr := jwtIssuer(parts[1])
+	// Which purpose the token claims decides which property names its signer:
+	// a credential is signed by its issuer, a presentation by its holder. So
+	// the purpose has to be known before the signer can be read, and both are
+	// read before any key is resolved.
+	purpose, perr := jwtProofPurpose(header, parts[1])
+	if perr != nil {
+		return perr
+	}
+
+	// Resolve the document by the signer DID the JWT body names, not by the
+	// DID prefix of `kid`. The body is the authoritative identifier;
+	// FindVerificationMethod will reject if the kid does not actually belong
+	// to that signer's document.
+	issuer, derr := jwtSigner(parts[1], purpose)
 	if derr != nil {
 		return derr
 	}
@@ -114,12 +123,8 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	}
 
 	// Strict-purpose check (always on): JWT VCs use proofPurpose =
-	// assertionMethod, JWT VPs use authentication. Detect from the JWT
-	// header typ or body's claims.
-	purpose, perr := jwtProofPurpose(header, parts[1])
-	if perr != nil {
-		return perr
-	}
+	// assertionMethod, JWT VPs use authentication. purpose was resolved
+	// before the signer, above.
 	issuedAt, ierr := jwtIssuedAt(parts[1])
 	if ierr != nil {
 		return ierr
@@ -180,12 +185,21 @@ func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, 
 	return "", fmt.Errorf("JWT has neither vc/vp claims nor vc+jwt/vp+jwt typ; cannot determine proofPurpose")
 }
 
-// jwtIssuer extracts the issuer DID from the JWT body.
-// Per W3C VC Data Model v1.1 JWT encoding, both VC JWTs (issuer DID) and VP
-// JWTs (holder DID) put the signer DID in `iss`.
-// Per W3C VC 2.0 vc-jose-cose, the unsecured VC/VP is the unencoded payload,
-// so the signer DID is in `issuer` (for VC) or `holder` (for VP) if `iss` is omitted.
-func jwtIssuer(payloadB64 string) (string, error) {
+// jwtSigner returns the DID whose key signed the JWT, and refuses a token
+// whose `iss` claim disagrees with the property that names the signer.
+//
+// Which property that is depends on what the token carries: a credential is
+// signed by its issuer, a presentation by its holder. Reading `issuer` off a
+// presentation would let anyone name a signer the presentation never had, so
+// the two are never crossed — hence the purpose argument.
+//
+// vc-jose-cose puts the unsecured VC/VP in the payload itself, so `iss` may be
+// absent and the property alone names the signer. When both are present they
+// MUST agree: "When issuer value is a string, iss value, if present, MUST
+// match issuer value" — and likewise against issuer.id when issuer is an
+// object. VC 1.1 nests the document under a vc/vp claim; the same rule applies
+// to the nested property.
+func jwtSigner(payloadB64, purpose string) (string, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
 		return "", fmt.Errorf("invalid payload encoding: %w", err)
@@ -194,29 +208,46 @@ func jwtIssuer(payloadB64 string) (string, error) {
 	if err := json.Unmarshal(payloadBytes, &body); err != nil {
 		return "", fmt.Errorf("invalid payload JSON: %w", err)
 	}
-	// 1. Check standard JWT "iss" claim
-	if iss, ok := body["iss"].(string); ok && iss != "" {
+
+	// A credential names its signer in issuer, a presentation in holder.
+	field := "holder"
+	if purpose == "assertionMethod" {
+		field = "issuer"
+	}
+
+	// VC 1.1 keeps the document under a vc/vp claim; read the property there
+	// when it exists, so a nested issuer cannot disagree with iss unnoticed.
+	claimed := didFromClaim(body[field])
+	if inner, ok := body["vc"].(map[string]interface{}); ok {
+		claimed = didFromClaim(inner["issuer"])
+	} else if inner, ok := body["vp"].(map[string]interface{}); ok {
+		claimed = didFromClaim(inner["holder"])
+	}
+
+	iss, _ := body["iss"].(string)
+	switch {
+	case iss != "" && claimed != "" && iss != claimed:
+		return "", fmt.Errorf("JWT iss %q does not match %s %q", iss, field, claimed)
+	case iss != "":
 		return iss, nil
+	case claimed != "":
+		return claimed, nil
 	}
-	// 2. Check VC 2.0 "issuer" field
-	if issuer, ok := body["issuer"].(string); ok && issuer != "" {
-		return issuer, nil
-	}
-	if issuerObj, ok := body["issuer"].(map[string]interface{}); ok {
-		if id, ok := issuerObj["id"].(string); ok && id != "" {
-			return id, nil
+	return "", fmt.Errorf("JWT names no signer: both iss and %s are absent", field)
+}
+
+// didFromClaim reads a DID out of a property the data model allows in two
+// shapes: a bare string, or an object carrying it under id.
+func didFromClaim(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case map[string]interface{}:
+		if id, ok := t["id"].(string); ok {
+			return id
 		}
 	}
-	// 3. Check VP 2.0 "holder" field
-	if holder, ok := body["holder"].(string); ok && holder != "" {
-		return holder, nil
-	}
-	if holderObj, ok := body["holder"].(map[string]interface{}); ok {
-		if id, ok := holderObj["id"].(string); ok && id != "" {
-			return id, nil
-		}
-	}
-	return "", fmt.Errorf("JWT body is missing required signer identifier (iss/issuer/holder)")
+	return ""
 }
 
 // jwtIssuedAt extracts iat (issued at) as UTC time when present.

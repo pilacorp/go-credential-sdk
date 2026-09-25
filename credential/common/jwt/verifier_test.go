@@ -3,6 +3,7 @@ package jwt
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -94,60 +95,135 @@ func TestJWTProofPurpose(t *testing.T) {
 	}
 }
 
-func TestJWTIssuer(t *testing.T) {
+func TestJWTSigner(t *testing.T) {
+	const (
+		vcPurpose = "assertionMethod"
+		vpPurpose = "authentication"
+	)
+
 	cases := []struct {
 		name       string
+		purpose    string
 		payload    map[string]interface{}
-		wantIssuer string
-		wantErr    bool
+		wantSigner string
+		wantErr    string
 	}{
 		{
-			name:       "iss claim",
+			name:       "iss claim alone",
+			purpose:    vcPurpose,
 			payload:    map[string]interface{}{"iss": "did:example:iss"},
-			wantIssuer: "did:example:iss",
+			wantSigner: "did:example:iss",
 		},
 		{
-			name:       "issuer string field",
+			name:       "issuer string field alone",
+			purpose:    vcPurpose,
 			payload:    map[string]interface{}{"issuer": "did:example:issuer-string"},
-			wantIssuer: "did:example:issuer-string",
+			wantSigner: "did:example:issuer-string",
 		},
 		{
 			name:       "issuer object field with id",
+			purpose:    vcPurpose,
 			payload:    map[string]interface{}{"issuer": map[string]interface{}{"id": "did:example:issuer-obj"}},
-			wantIssuer: "did:example:issuer-obj",
+			wantSigner: "did:example:issuer-obj",
 		},
 		{
-			name:       "holder string field",
+			name:       "holder string field alone",
+			purpose:    vpPurpose,
 			payload:    map[string]interface{}{"holder": "did:example:holder-string"},
-			wantIssuer: "did:example:holder-string",
+			wantSigner: "did:example:holder-string",
 		},
 		{
 			name:       "holder object field with id",
+			purpose:    vpPurpose,
 			payload:    map[string]interface{}{"holder": map[string]interface{}{"id": "did:example:holder-obj"}},
-			wantIssuer: "did:example:holder-obj",
+			wantSigner: "did:example:holder-obj",
 		},
 		{
-			name:    "missing issuer",
+			name:       "iss agrees with issuer",
+			purpose:    vcPurpose,
+			payload:    map[string]interface{}{"iss": "did:example:a", "issuer": "did:example:a"},
+			wantSigner: "did:example:a",
+		},
+		{
+			name:       "iss agrees with issuer.id",
+			purpose:    vcPurpose,
+			payload:    map[string]interface{}{"iss": "did:example:a", "issuer": map[string]interface{}{"id": "did:example:a"}},
+			wantSigner: "did:example:a",
+		},
+		{
+			name:       "VC 1.1: iss agrees with the nested vc.issuer",
+			purpose:    vcPurpose,
+			payload:    map[string]interface{}{"iss": "did:example:a", "vc": map[string]interface{}{"issuer": "did:example:a"}},
+			wantSigner: "did:example:a",
+		},
+
+		// The rule this function exists for: signing with one key while
+		// naming another party as the issuer must not verify.
+		{
+			name:    "iss contradicts issuer",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{"iss": "did:example:attacker", "issuer": "did:example:victim"},
+			wantErr: `iss "did:example:attacker" does not match issuer "did:example:victim"`,
+		},
+		{
+			name:    "iss contradicts issuer.id",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{"iss": "did:example:attacker", "issuer": map[string]interface{}{"id": "did:example:victim"}},
+			wantErr: `iss "did:example:attacker" does not match issuer "did:example:victim"`,
+		},
+		{
+			name:    "iss contradicts holder",
+			purpose: vpPurpose,
+			payload: map[string]interface{}{"iss": "did:example:attacker", "holder": "did:example:victim"},
+			wantErr: `iss "did:example:attacker" does not match holder "did:example:victim"`,
+		},
+		{
+			name:    "VC 1.1: iss contradicts the nested vc.issuer",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{"iss": "did:example:attacker", "vc": map[string]interface{}{"issuer": "did:example:victim"}},
+			wantErr: `iss "did:example:attacker" does not match issuer "did:example:victim"`,
+		},
+
+		// A presentation never takes its signer from issuer: doing so would
+		// let anyone name a holder the presentation never had.
+		{
+			name:    "presentation does not fall back to issuer",
+			purpose: vpPurpose,
+			payload: map[string]interface{}{"issuer": "did:example:attacker"},
+			wantErr: "both iss and holder are absent",
+		},
+		{
+			name:    "credential does not fall back to holder",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{"holder": "did:example:someone"},
+			wantErr: "both iss and issuer are absent",
+		},
+		{
+			name:    "no signer named at all",
+			purpose: vcPurpose,
 			payload: map[string]interface{}{"id": "urn:uuid:1"},
-			wantErr: true,
+			wantErr: "both iss and issuer are absent",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b64 := encodePayload(t, tc.payload)
-			issuer, err := jwtIssuer(b64)
-			if tc.wantErr {
+			signer, err := jwtSigner(b64, tc.purpose)
+			if tc.wantErr != "" {
 				if err == nil {
-					t.Fatalf("expected error, got issuer %q", issuer)
+					t.Fatalf("expected error, got signer %q", signer)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if issuer != tc.wantIssuer {
-				t.Fatalf("got issuer %q, want %q", issuer, tc.wantIssuer)
+			if signer != tc.wantSigner {
+				t.Fatalf("got signer %q, want %q", signer, tc.wantSigner)
 			}
 		})
 	}
