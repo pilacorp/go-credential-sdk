@@ -281,11 +281,19 @@ func TestJWTIssuedAt(t *testing.T) {
 		t.Fatalf("iat failed: got %v, err %v", tm1, err)
 	}
 
-	// Test with validFrom fallback
+	// validFrom is when the document starts being true, not when it was
+	// signed, so it must not stand in for iat: the soft-revocation check
+	// would then answer a different question without saying so.
 	p2 := map[string]interface{}{"validFrom": now.Format(time.RFC3339)}
 	tm2, err := jwtIssuedAt(encodePayload(t, p2))
-	if err != nil || tm2 == nil || tm2.Unix() != now.Unix() {
-		t.Fatalf("validFrom fallback failed: got %v, err %v", tm2, err)
+	if err != nil || tm2 != nil {
+		t.Fatalf("validFrom must not stand in for iat: got %v, err %v", tm2, err)
+	}
+
+	// A malformed iat is an error, not a silently absent signing time.
+	p2b := map[string]interface{}{"iat": "yesterday"}
+	if _, err := jwtIssuedAt(encodePayload(t, p2b)); err == nil {
+		t.Fatal("expected an error for a non-numeric iat")
 	}
 
 	// Test when absent

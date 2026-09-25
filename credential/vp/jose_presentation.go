@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
@@ -78,6 +79,10 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 	// "The JWT Claim Names vc and vp MUST NOT be present in any JWT Claims Set"
 	delete(payloadData, "vc")
 	delete(payloadData, "vp")
+
+	// Without iat the verifier has no signing time to compare a soft revocation
+	// against, and would have to guess one from validFrom — a different fact.
+	jwt.SetIssuedAt(payloadData, time.Now())
 
 	// Resolve the Verification Method and derive the JOSE alg
 	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vpc.Holder,
@@ -289,6 +294,12 @@ func (j *JOSEPresentation) executeOptions(opts ...PresentationOpt) error {
 
 			verifier := jwt.NewJWTVerifier(options.resolver)
 			if err := verifier.VerifyJWT(serialized.(string)); err != nil {
+				return fmt.Errorf("verify proof: %w", err)
+			}
+			// exp and nbf bound the signature, not the presentation, so they
+			// belong to this check and not to the optional expiry check on
+			// validFrom/validUntil.
+			if err := jwt.CheckTimeClaims(j.payloadData, time.Now()); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
 			if err := j.checkChallengeAndDomain(options); err != nil {

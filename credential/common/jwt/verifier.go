@@ -302,9 +302,15 @@ func didFromClaim(v interface{}) string {
 	return ""
 }
 
-// jwtIssuedAt extracts iat (issued at) as UTC time when present.
-// Fallbacks to validFrom when iat is absent.
-// Returns (nil, nil) when both are absent.
+// jwtIssuedAt extracts iat (issued at) as UTC time when present, and returns
+// (nil, nil) when it is absent.
+//
+// There is deliberately no fallback to validFrom. iat is when the token was
+// signed; validFrom is when the document starts being true. The only caller is
+// the soft-revocation check — "was this signed before the key was revoked" —
+// and a credential may state a validFrom long after it was signed, or long
+// before. Substituting one for the other answers a different question and
+// answers it silently.
 func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
@@ -315,43 +321,12 @@ func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
 		return nil, fmt.Errorf("invalid payload JSON: %w", err)
 	}
 
-	raw, ok := body["iat"]
-	if ok && raw != nil {
-		var sec int64
-		switch t := raw.(type) {
-		case float64:
-			sec = int64(t)
-		case int64:
-			sec = t
-		case json.Number:
-			var err error
-			sec, err = t.Int64()
-			if err != nil {
-				return nil, fmt.Errorf("invalid iat value: %w", err)
-			}
-		default:
-			return nil, fmt.Errorf("invalid iat type: %T", raw)
-		}
-		if sec <= 0 {
-			return nil, fmt.Errorf("invalid iat value: %v", raw)
-		}
-		tm := time.Unix(sec, 0).UTC()
-		return &tm, nil
+	sec, ok, err := numericClaim(body, "iat")
+	if err != nil || !ok {
+		return nil, err
 	}
-
-	// Fallback to validFrom if iat is absent (common in VC 2.0 vc-jose-cose)
-	if vf, ok := body["validFrom"].(string); ok && vf != "" {
-		if t, err := time.Parse(time.RFC3339Nano, vf); err == nil {
-			utc := t.UTC()
-			return &utc, nil
-		}
-		if t, err := time.Parse(time.RFC3339, vf); err == nil {
-			utc := t.UTC()
-			return &utc, nil
-		}
-	}
-
-	return nil, nil
+	tm := time.Unix(sec, 0).UTC()
+	return &tm, nil
 }
 
 // strictPurposeCheck mirrors the post-crypto checks used by jsonmap.VerifyProof

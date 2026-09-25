@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -69,6 +70,10 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 	// comprises a verifiable credential or a verifiable presentation."
 	delete(vcMap, "vc")
 	delete(vcMap, "vp")
+
+	// Without iat the verifier has no signing time to compare a soft revocation
+	// against, and would have to guess one from validFrom — a different fact.
+	jwt.SetIssuedAt(vcMap, time.Now())
 
 	payloadData := CredentialData(vcMap)
 
@@ -366,6 +371,12 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 			baseJWS := j.signingInput + "." + j.signature
 			verifier := jwt.NewJWTVerifier(options.resolver)
 			if err := verifier.VerifyJWT(baseJWS); err != nil {
+				return fmt.Errorf("verify proof: %w", err)
+			}
+			// exp and nbf bound the signature, not the credential, so they
+			// belong to this check and not to the optional expiry check on
+			// validFrom/validUntil.
+			if err := jwt.CheckTimeClaims(j.payloadData, time.Now()); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
 			return nil

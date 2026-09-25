@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	jwtpkg "github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -364,6 +365,156 @@ func TestParseCredential_EnvelopeRequiresEnvelopedType(t *testing.T) {
 	}
 }
 
+// iat must be when the token was signed. The soft-revocation check asks "was
+// this signed before the key was revoked", and a credential may state a
+// validFrom years away from its signing moment in either direction.
+func TestJOSECredential_EmitsIatAsSigningTime(t *testing.T) {
+	const did = "did:example:jose-time"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	contents := joseContents(did)
+	contents.ValidFrom = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	contents.ValidUntil = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	before := time.Now().Add(-time.Minute).Unix()
+	cred, err := vc.NewJOSECredential(contents, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jose cred: %v", err)
+	}
+	if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	payloadRaw, err := base64.RawURLEncoding.DecodeString(strings.Split(serialized.(string), ".")[1])
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+
+	iat, ok := payload["iat"].(float64)
+	if !ok {
+		t.Fatalf("iat = %v (%T), want a number", payload["iat"], payload["iat"])
+	}
+	if int64(iat) < before || int64(iat) > time.Now().Add(time.Minute).Unix() {
+		t.Fatalf("iat %v is not the signing time", int64(iat))
+	}
+	if int64(iat) == contents.ValidFrom.Unix() {
+		t.Fatal("iat was taken from validFrom instead of the signing time")
+	}
+	// exp/nbf describe the signature, which is a different fact from the
+	// credential's validity period, so they are not derived from it.
+	if _, ok := payload["exp"]; ok {
+		t.Fatalf("exp written from validUntil: %v", payload["exp"])
+	}
+	if _, ok := payload["nbf"]; ok {
+		t.Fatalf("nbf written from validFrom: %v", payload["nbf"])
+	}
+
+	if err := cred.Verify(vc.WithResolver(resolver), vc.WithCheckExpiration()); err != nil {
+		t.Fatalf("verify a credential inside its window: %v", err)
+	}
+}
+
+// exp bounds the signature, and RFC 7519 §4.1.4 says a JWT "MUST NOT be
+// accepted for processing" on or after it. Issuers on other implementations do
+// set it; nothing here read it before.
+func TestJOSECredential_ExpiredByExpClaimAlone(t *testing.T) {
+	const did = "did:example:jose-exp"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	vmEntry := mustP256VM(t, did, "key-1", &priv.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vmEntry))
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	// Hand-built so exp stands alone, with no validUntil beside it.
+	header, _ := json.Marshal(map[string]interface{}{"typ": "vc+jwt", "alg": "ES256", "kid": vmEntry.ID})
+	body, _ := json.Marshal(map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            did,
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+		"iat":               time.Now().Add(-48 * time.Hour).Unix(),
+		"exp":               time.Now().Add(-24 * time.Hour).Unix(),
+	})
+	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(body)
+	sig, err := jwtpkg.NewJWTSigner(prov).SignString(signingInput)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	parsed, err := vc.ParseJOSECredential(signingInput+"."+sig, vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// No WithCheckExpiration: an expired signature is a proof problem, so the
+	// bound holds on a plain Verify.
+	err = parsed.Verify(vc.WithResolver(resolver))
+	if err == nil || !strings.Contains(err.Error(), "signature expired at") {
+		t.Fatalf("error = %v, want the exp claim to be enforced", err)
+	}
+}
+
+// vc-jose-cose § Claims: exp is "the expiration time of the signature", and is
+// explicitly "different from the validFrom and validUntil properties". A
+// short-lived signature over a long-lived credential is well formed, so the two
+// must NOT be cross-checked.
+func TestJOSECredential_AllowsExpDifferentFromValidUntil(t *testing.T) {
+	const did = "did:example:jose-exp-differs"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	vmEntry := mustP256VM(t, did, "key-1", &priv.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vmEntry))
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	header, _ := json.Marshal(map[string]interface{}{"typ": "vc+jwt", "alg": "ES256", "kid": vmEntry.ID})
+	body, _ := json.Marshal(map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            did,
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+		"validUntil":        "2040-01-01T00:00:00Z",                // credential is long-lived
+		"exp":               time.Now().Add(24 * time.Hour).Unix(), // signature is not
+	})
+	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(body)
+	sig, err := jwtpkg.NewJWTSigner(prov).SignString(signingInput)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	parsed, err := vc.ParseJOSECredential(signingInput+"."+sig, vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := parsed.Verify(vc.WithResolver(resolver), vc.WithCheckExpiration()); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}
+
 func TestJOSECredential_EnvelopedCredential_Unwrap(t *testing.T) {
 	const secpPriv = "57600b3f2b7e1054094e14cd85c72a40dc74c4ee062bb381cea604b55ce56aec"
 	const did = "did:example:jose-enveloped"
@@ -409,5 +560,3 @@ func TestJOSECredential_EnvelopedCredential_Unwrap(t *testing.T) {
 		t.Fatalf("verify unpacked credential: %v", err)
 	}
 }
-
-
