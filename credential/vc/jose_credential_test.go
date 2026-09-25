@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	jwtpkg "github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
@@ -641,5 +643,105 @@ func TestParseCredential_RoutesBothJOSETyps(t *testing.T) {
 				t.Fatalf("parsed as %q, want JOSE", parsed.GetType())
 			}
 		})
+	}
+}
+
+// External signing: the caller takes GetSigningInput elsewhere, signs it, and
+// hands the raw signature back. WithVerifyProof on that call used to report
+// "credential is not signed" about the signature it was being given, because
+// the options ran before the signature was attached.
+func TestJOSECredential_AddCustomProofVerifiesTheProofItAttaches(t *testing.T) {
+	const (
+		p256DID = "did:example:jose-custom-p256"
+		secpDID = "did:example:jose-custom-secp"
+		secpKey = "57600b3f2b7e1054094e14cd85c72a40dc74c4ee062bb381cea604b55ce56aec"
+	)
+
+	p256Priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	p256Prov, err := signer.NewP256Provider(p256Priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+	secpProv, err := signer.NewDefaultProvider(secpKey)
+	if err != nil {
+		t.Fatalf("secp provider: %v", err)
+	}
+
+	cases := []struct {
+		name     string
+		did      string
+		vm       vmpkg.VerificationMethodEntry
+		provider signer.SignerProvider
+	}{
+		{"P-256", p256DID, mustP256VM(t, p256DID, "key-1", &p256Priv.PublicKey), p256Prov},
+		// secp256k1 signers append a recovery byte; RFC 7518 §3.4 wants the
+		// bare r||s pair, and the signing path already trims it.
+		{"secp256k1", secpDID, vmpkg.NewSecp256k1VM(secpDID, "key-1", pubHex(t, secpKey)), secpProv},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(tc.did, tc.vm))
+			cred, err := vc.NewJOSECredential(joseContents(tc.did),
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("new jose cred: %v", err)
+			}
+
+			input, err := cred.GetSigningInput()
+			if err != nil {
+				t.Fatalf("signing input: %v", err)
+			}
+			digest := sha256.Sum256(input)
+			raw, err := tc.provider.Sign(digest[:])
+			if err != nil {
+				t.Fatalf("external sign: %v", err)
+			}
+
+			if err := cred.AddCustomProof(&dto.Proof{Signature: raw},
+				vc.WithResolver(resolver), vc.WithVerifyProof()); err != nil {
+				t.Fatalf("AddCustomProof with WithVerifyProof: %v", err)
+			}
+			if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+				t.Fatalf("verify after AddCustomProof: %v", err)
+			}
+		})
+	}
+}
+
+// A proof that fails the options must leave the credential as it was, not
+// half-attached.
+func TestJOSECredential_AddCustomProofRollsBackOnFailure(t *testing.T) {
+	const did = "did:example:jose-custom-rollback"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	cred, err := vc.NewJOSECredential(joseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jose cred: %v", err)
+	}
+
+	junk := make([]byte, 64)
+	err = cred.AddCustomProof(&dto.Proof{Signature: junk}, vc.WithResolver(resolver), vc.WithVerifyProof())
+	if err == nil {
+		t.Fatal("expected a bad signature to be rejected")
+	}
+	if strings.Contains(err.Error(), "credential is not signed") {
+		t.Fatalf("the signature was not attached before the options ran: %v", err)
+	}
+
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	if strings.Count(serialized.(string), ".") != 1 {
+		t.Fatalf("a rejected proof was left attached: %q", serialized)
 	}
 }

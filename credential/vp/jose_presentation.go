@@ -256,19 +256,24 @@ func (j *JOSEPresentation) AddProofByProvider(signerProvider signer.SignerProvid
 	}
 
 	options := getOptions(opts...)
-	if err := j.applyChallengeDomain(options); err != nil {
+	payload, signingInput, err := j.pendingChallengeDomain(options)
+	if err != nil {
 		return err
 	}
 
 	jwtSigner := jwt.NewJWTSigner(signerProvider)
-	signature, err := jwtSigner.SignString(j.signingInput)
+	signature, err := jwtSigner.SignString(signingInput)
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
 
-	j.signature = signature
+	// Commit only once there is a signature to commit, and undo it if the
+	// options reject what was produced, so a failed call leaves the
+	// presentation exactly as it found it.
+	prevPayload, prevInput, prevSignature := j.payloadData, j.signingInput, j.signature
+	j.payloadData, j.signingInput, j.signature = payload, signingInput, signature
 	if err := j.executeOptions(opts...); err != nil {
-		j.signature = ""
+		j.payloadData, j.signingInput, j.signature = prevPayload, prevInput, prevSignature
 		return err
 	}
 	return nil
@@ -376,27 +381,39 @@ func (j *JOSEPresentation) executeOptions(opts ...PresentationOpt) error {
 	return nil
 }
 
-func (j *JOSEPresentation) applyChallengeDomain(options *presentationOptions) error {
+// pendingChallengeDomain returns the payload and signing input that this call's
+// challenge and domain would produce, WITHOUT writing them into j.
+//
+// Both go into the signed bytes, so they have to be applied before signing — but
+// applying them to j directly meant a signing failure left them behind, and the
+// next call, asking for neither, signed the previous attempt's nonce and aud
+// into a presentation addressed to a verifier the caller never named. The
+// caller commits the result only once signing has succeeded.
+func (j *JOSEPresentation) pendingChallengeDomain(options *presentationOptions) (PresentationData, string, error) {
 	if options.challenge == "" && options.domain == "" {
-		return nil
+		return j.payloadData, j.signingInput, nil
 	}
 	if j.payloadData == nil {
-		return fmt.Errorf("presentation has no payload data to update")
+		return nil, "", fmt.Errorf("presentation has no payload data to update")
+	}
+
+	payload := make(PresentationData, len(j.payloadData)+2)
+	for k, v := range j.payloadData {
+		payload[k] = v
 	}
 	if options.challenge != "" {
-		j.payloadData["nonce"] = options.challenge
+		payload["nonce"] = options.challenge
 	}
 	if options.domain != "" {
-		j.payloadData["aud"] = options.domain
+		payload["aud"] = options.domain
 	}
-	payloadJSON, err := json.Marshal(j.payloadData)
+
+	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
+		return nil, "", fmt.Errorf("failed to marshal payload: %w", err)
 	}
 	header, _, _ := strings.Cut(j.signingInput, ".")
-	j.signingInput = header + "." + base64.RawURLEncoding.EncodeToString(payloadJSON)
-	j.signature = ""
-	return nil
+	return payload, header + "." + base64.RawURLEncoding.EncodeToString(payloadJSON), nil
 }
 
 func (j *JOSEPresentation) checkChallengeAndDomain(options *presentationOptions) error {
@@ -406,8 +423,5 @@ func (j *JOSEPresentation) checkChallengeAndDomain(options *presentationOptions)
 			return fmt.Errorf("nonce %q does not match expected challenge %q", nonce, options.expectedChallenge)
 		}
 	}
-	if options.expectedDomain != "" && !audContains(j.payloadData["aud"], options.expectedDomain) {
-		return fmt.Errorf("aud %v does not match expected domain %q", j.payloadData["aud"], options.expectedDomain)
-	}
-	return nil
+	return checkAudience(j.payloadData["aud"], options)
 }

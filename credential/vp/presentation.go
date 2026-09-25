@@ -84,6 +84,9 @@ type presentationOptions struct {
 	// Verifying: every checked proof must carry exactly these values.
 	expectedChallenge string
 	expectedDomain    string
+	// requireAudience turns the aud claim from "checked only when the caller
+	// names itself" into "must be checked", per RFC 7519 §4.1.3.
+	requireAudience bool
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -186,6 +189,25 @@ func WithExpectedChallenge(challenge string) PresentationOpt {
 func WithExpectedDomain(domain string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.expectedDomain = domain
+		p.isVerifyProof = true
+	}
+}
+
+// WithRequireAudience (verifying) refuses a presentation that names an audience
+// when the caller has not said who is verifying. Use it together with
+// WithExpectedDomain, which is what actually names this verifier; on its own the
+// option only turns the silent skip into an error.
+//
+// RFC 7519 §4.1.3 requires exactly this — "If the principal processing the claim
+// does not identify itself with a value in the aud claim when this claim is
+// present, then the JWT MUST be rejected" — but enforcing it by default would
+// break every verifier that does not name itself today, so it is opt-in.
+//
+// Without it, a presentation minted for one verifier still verifies at another,
+// which is the replay the aud claim exists to prevent.
+func WithRequireAudience() PresentationOpt {
+	return func(p *presentationOptions) {
+		p.requireAudience = true
 		p.isVerifyProof = true
 	}
 }

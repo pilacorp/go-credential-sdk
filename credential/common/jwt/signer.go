@@ -31,9 +31,20 @@ func (s *JWTSigner) SignString(signingString string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("jwt signer: failed to sign digest: %w", err)
 	}
-	if len(signature) == 65 {
-		signature = signature[:64]
-	}
+	return base64.RawURLEncoding.EncodeToString(TrimRecoveryByte(signature)), nil
+}
 
-	return base64.RawURLEncoding.EncodeToString(signature), nil
+// TrimRecoveryByte drops the recovery id some secp256k1 signers append.
+//
+// RFC 7518 §3.4 defines the JWS ECDSA signature as the raw r||s pair — 64
+// octets on both P-256 and secp256k1. A 65th octet is a convention of the
+// signing library, not part of the signature, and a verifier reading the value
+// as r||s rejects it. Signing paths inside the SDK and the external-signing
+// entry points must agree on this, or the same key produces a token that
+// verifies one way and not the other.
+func TrimRecoveryByte(sig []byte) []byte {
+	if len(sig) == 65 {
+		return sig[:64]
+	}
+	return sig
 }

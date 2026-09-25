@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -539,6 +540,177 @@ func TestParsePresentation_RejectsSDJWTShape(t *testing.T) {
 			_, err := vp.ParsePresentation([]byte(token+suffix), vp.WithResolver(resolver))
 			if err == nil || !strings.Contains(err.Error(), "SD-JWT disclosures, which are not supported") {
 				t.Fatalf("error = %v, want the disclosures to be named while parsing", err)
+			}
+		})
+	}
+}
+
+// failingSigner stands in for a remote signer that is momentarily unavailable.
+type failingSigner struct{}
+
+func (failingSigner) Sign([]byte) ([]byte, error) {
+	return nil, fmt.Errorf("remote signer unavailable")
+}
+
+// challenge and domain are signed, so they must be applied before signing — but
+// a signing failure must not leave them behind. Otherwise the next call, asking
+// for neither, signs the previous attempt's nonce and aud into a presentation
+// addressed to a verifier the caller never named.
+func TestJOSEPresentation_FailedSigningLeavesNoChallengeOrDomain(t *testing.T) {
+	const did = "did:example:vp-rollback"
+	resolver, prov := joseVPFixture(t, did)
+
+	pres, err := vp.NewJOSEPresentation(joseVPContents(did),
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jose vp: %v", err)
+	}
+
+	err = pres.AddProofByProvider(failingSigner{},
+		vp.WithChallenge("nonce-session-A"), vp.WithDomain("https://bank-a.example"), vp.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("expected the failing signer to be reported")
+	}
+
+	// Second attempt asks for neither.
+	if err := pres.AddProofByProvider(prov, vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("second sign: %v", err)
+	}
+
+	payload := joseVPPayload(t, pres)
+	if nonce, ok := payload["nonce"]; ok {
+		t.Fatalf("nonce %v survived the failed attempt", nonce)
+	}
+	if aud, ok := payload["aud"]; ok {
+		t.Fatalf("aud %v survived the failed attempt", aud)
+	}
+	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}
+
+// The rollback must not cost the feature: a successful call still signs them in.
+func TestJOSEPresentation_ChallengeAndDomainAreSigned(t *testing.T) {
+	const did = "did:example:vp-challenge"
+	resolver, prov := joseVPFixture(t, did)
+
+	pres, err := vp.NewJOSEPresentation(joseVPContents(did),
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jose vp: %v", err)
+	}
+	if err := pres.AddProofByProvider(prov,
+		vp.WithChallenge("nonce-1"), vp.WithDomain("https://bank-a.example"), vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	payload := joseVPPayload(t, pres)
+	if payload["nonce"] != "nonce-1" {
+		t.Fatalf("nonce = %v, want nonce-1", payload["nonce"])
+	}
+	if payload["aud"] != "https://bank-a.example" {
+		t.Fatalf("aud = %v, want https://bank-a.example", payload["aud"])
+	}
+
+	// Signed in, not merely stored: verification checks them against the bytes.
+	if err := pres.Verify(vp.WithResolver(resolver),
+		vp.WithExpectedChallenge("nonce-1"), vp.WithExpectedDomain("https://bank-a.example")); err != nil {
+		t.Fatalf("verify with expectations: %v", err)
+	}
+}
+
+// RFC 7519 §4.1.3: a verifier that does not name itself must reject a
+// presentation that names an audience. Enforcing that by default would break
+// verifiers that never named themselves, so it is opt-in — and this test pins
+// both sides of that choice.
+func TestJOSEPresentation_RequireAudience(t *testing.T) {
+	const did = "did:example:vp-aud"
+	resolver, prov := joseVPFixture(t, did)
+
+	sign := func(domain string) string {
+		t.Helper()
+		pres, err := vp.NewJOSEPresentation(joseVPContents(did),
+			vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("new jose vp: %v", err)
+		}
+		opts := []vp.PresentationOpt{vp.WithResolver(resolver)}
+		if domain != "" {
+			opts = append(opts, vp.WithDomain(domain))
+		}
+		if err := pres.AddProofByProvider(prov, opts...); err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		serialized, err := pres.Serialize()
+		if err != nil {
+			t.Fatalf("serialize: %v", err)
+		}
+		return serialized.(string)
+	}
+
+	forBankA := sign("https://bank-a.example")
+	noAudience := sign("")
+
+	cases := []struct {
+		name    string
+		token   string
+		opts    []vp.PresentationOpt
+		wantErr string
+	}{
+		{
+			name:  "bank-a names itself",
+			token: forBankA,
+			opts:  []vp.PresentationOpt{vp.WithRequireAudience(), vp.WithExpectedDomain("https://bank-a.example")},
+		},
+		{
+			name:    "bank-b names itself",
+			token:   forBankA,
+			opts:    []vp.PresentationOpt{vp.WithRequireAudience(), vp.WithExpectedDomain("https://bank-b.example")},
+			wantErr: "does not match expected domain",
+		},
+		{
+			name:    "bank-b names nobody, with the option",
+			token:   forBankA,
+			opts:    []vp.PresentationOpt{vp.WithRequireAudience()},
+			wantErr: "did not name itself",
+		},
+		{
+			// The default is deliberately unchanged, so a verifier that never
+			// named itself keeps working across a version bump.
+			name:  "bank-b names nobody, without the option",
+			token: forBankA,
+			opts:  nil,
+		},
+		{
+			// Nothing to enforce when the presentation names no audience.
+			name:  "no aud at all, with the option",
+			token: noAudience,
+			opts:  []vp.PresentationOpt{vp.WithRequireAudience()},
+		},
+		{
+			name:    "no aud, but the verifier names itself",
+			token:   noAudience,
+			opts:    []vp.PresentationOpt{vp.WithExpectedDomain("https://bank-b.example")},
+			wantErr: "does not match expected domain",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := vp.ParsePresentation([]byte(tc.token), vp.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			opts := append(tc.opts, vp.WithResolver(resolver))
+			err = parsed.Verify(opts...)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
 			}
 		})
 	}

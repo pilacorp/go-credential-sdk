@@ -297,12 +297,17 @@ func (j *JOSECredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 		return fmt.Errorf("proof signature cannot be empty")
 	}
 
-	err := j.executeOptions(opts...)
-	if err != nil {
+	// Attach the signature before running the options, because WithVerifyProof
+	// is one of them and it reads j.signature: running the options first made it
+	// report "credential is not signed" about the very signature being attached.
+	// A rejected proof is rolled back, so a failed call leaves the credential as
+	// it found it.
+	previous := j.signature
+	j.signature = base64.RawURLEncoding.EncodeToString(jwt.TrimRecoveryByte(proof.Signature))
+	if err := j.executeOptions(opts...); err != nil {
+		j.signature = previous
 		return err
 	}
-
-	j.signature = base64.RawURLEncoding.EncodeToString(proof.Signature)
 	return nil
 }
 
