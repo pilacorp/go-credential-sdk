@@ -342,3 +342,168 @@ func TestJOSEPresentation_ChallengeDomain_ReplayProtection(t *testing.T) {
 		t.Fatalf("expected verification to fail due to domain mismatch (phishing)")
 	}
 }
+
+// joseVPFixture returns a DID whose single P-256 key is published, a resolver
+// for it, and a signer provider, for the credential-embedding tests below.
+func joseVPFixture(t *testing.T, did string) (vmpkg.ResolverProvider, signer.SignerProvider) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+	return vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey))), prov
+}
+
+func joseVPCredentialContents(issuerDID string) vc.CredentialContents {
+	return vc.CredentialContents{
+		Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		Types:     []string{"VerifiableCredential"},
+		Issuer:    issuerDID,
+		ValidFrom: time.Now().Add(-time.Hour),
+		Subject:   []vc.Subject{{ID: "did:example:subject"}},
+	}
+}
+
+// vc-jose-cose: "Verifiable Credentials secured in verifiable presentations
+// MUST use the Enveloped Verifiable Credential type", and VCDM 2.0 requires the
+// data: URL to express the credential "using an enveloping security scheme".
+// Data Integrity is not one — its proof lives inside the document — so such a
+// credential cannot be carried here at all, and a VC 1.1 JWT is not the scheme
+// the vc+jwt label names.
+func TestJOSEPresentation_RejectsNonEnvelopingCredential(t *testing.T) {
+	const did = "did:example:jose-vp-kinds"
+	resolver, prov := joseVPFixture(t, did)
+
+	jsonCred, err := vc.NewJSONCredential(joseVPCredentialContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new json cred: %v", err)
+	}
+	if err := jsonCred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign json cred: %v", err)
+	}
+
+	legacyCred, err := vc.NewJWTCredential(joseVPCredentialContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jwt cred: %v", err)
+	}
+	if err := legacyCred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign jwt cred: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		cred vc.Credential
+	}{
+		{"Data Integrity credential", jsonCred},
+		{"VC 1.1 JWT credential", legacyCred},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contents := joseVPContents(did)
+			contents.VerifiableCredentials = []vc.Credential{tc.cred}
+			_, err := vp.NewJOSEPresentation(contents,
+				vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
+			if err == nil || !strings.Contains(err.Error(), "can only carry enveloping-secured credentials") {
+				t.Fatalf("error = %v, want a refusal of a non-enveloping credential", err)
+			}
+		})
+	}
+}
+
+// "Credentials in verifiable presentations MUST be secured." An unsigned token
+// has two segments, and the data: URL would fail far from here.
+func TestJOSEPresentation_RejectsUnsignedCredential(t *testing.T) {
+	const did = "did:example:jose-vp-unsigned"
+	resolver, _ := joseVPFixture(t, did)
+
+	cred, err := vc.NewJOSECredential(joseVPCredentialContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jose cred: %v", err)
+	}
+
+	contents := joseVPContents(did)
+	contents.VerifiableCredentials = []vc.Credential{cred}
+	_, err = vp.NewJOSEPresentation(contents,
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
+	if err == nil || !strings.Contains(err.Error(), "is not signed") {
+		t.Fatalf("error = %v, want a refusal of an unsigned credential", err)
+	}
+}
+
+// The media type names the scheme that actually secured the credential, so an
+// embedded credential must round-trip through the parser that reads it back.
+func TestJOSEPresentation_LabelsEnvelopeByScheme(t *testing.T) {
+	const did = "did:example:jose-vp-label"
+	resolver, prov := joseVPFixture(t, did)
+
+	newSigned := func(opts ...vc.CredentialOpt) vc.Credential {
+		t.Helper()
+		opts = append(opts, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+		cred, err := vc.NewJOSECredential(joseVPCredentialContents(did), opts...)
+		if err != nil {
+			t.Fatalf("new jose cred: %v", err)
+		}
+		if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("sign jose cred: %v", err)
+		}
+		return cred
+	}
+
+	cases := []struct {
+		name       string
+		cred       vc.Credential
+		wantPrefix string
+	}{
+		{"plain JOSE credential", newSigned(), "data:application/vc+jwt,"},
+		{
+			name:       "SD-JWT credential",
+			cred:       newSigned(vc.WithSDSelectivePaths([]string{"credentialSubject.id"})),
+			wantPrefix: "data:application/vc+sd-jwt,",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			contents := joseVPContents(did)
+			contents.VerifiableCredentials = []vc.Credential{tc.cred}
+			pres, err := vp.NewJOSEPresentation(contents,
+				vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("new jose vp: %v", err)
+			}
+
+			body, err := pres.GetContents()
+			if err != nil {
+				t.Fatalf("contents: %v", err)
+			}
+			var m map[string]interface{}
+			if err := json.Unmarshal(body, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			list, ok := m["verifiableCredential"].([]interface{})
+			if !ok || len(list) != 1 {
+				t.Fatalf("verifiableCredential = %v, want one entry", m["verifiableCredential"])
+			}
+			entry, _ := list[0].(map[string]interface{})
+			id, _ := entry["id"].(string)
+			if !strings.HasPrefix(id, tc.wantPrefix) {
+				t.Fatalf("envelope id = %.40q..., want the %s prefix", id, tc.wantPrefix)
+			}
+
+			// The envelope must be readable by the parser its media type names.
+			raw, err := json.Marshal(entry)
+			if err != nil {
+				t.Fatalf("marshal entry: %v", err)
+			}
+			if _, err := vc.ParseCredential(raw, vc.WithResolver(resolver)); err != nil {
+				t.Fatalf("the presentation produced an envelope it cannot read back: %v", err)
+			}
+		})
+	}
+}

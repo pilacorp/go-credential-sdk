@@ -12,8 +12,10 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -43,25 +45,48 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 	payloadData := PresentationData(m)
 	options := getOptions(opts...)
 
-	// Transform embedded credentials into EnvelopedVerifiableCredential format per W3C vc-jose-cose § 3.1.2
+	// Transform embedded credentials into EnvelopedVerifiableCredential format.
+	//
+	// vc-jose-cose § Securing JSON-LD Verifiable Presentations with JOSE:
+	// "Verifiable Credentials secured in verifiable presentations MUST use the
+	// Enveloped Verifiable Credential type", and "Credentials in verifiable
+	// presentations MUST be secured". VCDM 2.0 § Enveloped Verifiable
+	// Credentials adds that the data: URL MUST express the credential "using an
+	// enveloping security scheme", so the media type names the scheme that
+	// actually secured it and cannot be a constant.
+	//
+	// Data Integrity is the other kind of securing mechanism — the proof lives
+	// inside the document, so there is nothing to envelope and no media type for
+	// it. Such a credential belongs in a JSON presentation, not this one; it is
+	// refused here rather than embedded raw, which would produce a presentation
+	// no conforming verifier accepts.
 	if len(vpc.VerifiableCredentials) > 0 {
 		envelopedList := make([]interface{}, len(vpc.VerifiableCredentials))
 		for i, cred := range vpc.VerifiableCredentials {
 			if cred == nil {
 				return nil, fmt.Errorf("credential at index %d is nil", i)
 			}
-			serialized, err := cred.Serialize()
+			joseCred, ok := cred.(*vc.JOSECredential)
+			if !ok {
+				return nil, fmt.Errorf("credential at index %d is %T: a vp+jwt presentation can only carry "+
+					"enveloping-secured credentials; use a JSON presentation for Data Integrity credentials", i, cred)
+			}
+			serialized, err := joseCred.Serialize()
 			if err != nil {
 				return nil, fmt.Errorf("failed to serialize credential at index %d: %w", i, err)
 			}
-			if credStr, ok := serialized.(string); ok {
-				envelopedList[i] = map[string]interface{}{
-					"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
-					"type":     []interface{}{"EnvelopedVerifiableCredential"},
-					"id":       fmt.Sprintf("data:application/vc+jwt,%s", credStr),
-				}
-			} else {
-				envelopedList[i] = serialized
+			credStr, ok := serialized.(string)
+			if !ok {
+				return nil, fmt.Errorf("credential at index %d serialized to %T, want a token string", i, serialized)
+			}
+			mediaType, err := envelopeMediaType(credStr)
+			if err != nil {
+				return nil, fmt.Errorf("credential at index %d: %w", i, err)
+			}
+			envelopedList[i] = map[string]interface{}{
+				"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+				"type":     []interface{}{"EnvelopedVerifiableCredential"},
+				"id":       fmt.Sprintf("data:application/%s,%s", mediaType, credStr),
 			}
 		}
 		payloadData["verifiableCredential"] = envelopedList
@@ -187,6 +212,28 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 	}
 
 	return e, e.executeOptions(opts...)
+}
+
+// envelopeMediaType names the scheme that secured a token, for the data: URL an
+// EnvelopedVerifiableCredential carries. Disclosures make it an SD-JWT, which
+// the spec envelopes under its own media type — labelling one vc+jwt tells the
+// verifier to parse a shape it does not have.
+//
+// It also refuses an unsigned token: a credential with no signature is not
+// secured, and a data: URL holding two segments instead of three fails far from
+// here, in whoever tries to read the presentation back.
+func envelopeMediaType(token string) (string, error) {
+	base := token
+	if i := strings.IndexByte(base, '~'); i >= 0 {
+		base = base[:i]
+	}
+	if parts := strings.Split(base, "."); len(parts) != 3 || parts[2] == "" {
+		return "", fmt.Errorf("credential is not signed; sign it before putting it in a presentation")
+	}
+	if sdjwt.IsSDJWT(token) {
+		return "vc+sd-jwt", nil
+	}
+	return "vc+jwt", nil
 }
 
 func (j *JOSEPresentation) AddProof(priv string, opts ...PresentationOpt) error {
