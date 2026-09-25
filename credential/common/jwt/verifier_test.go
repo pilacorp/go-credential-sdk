@@ -23,7 +23,7 @@ func TestJWTProofPurpose(t *testing.T) {
 		header      map[string]interface{}
 		payload     map[string]interface{}
 		wantPurpose string
-		wantErr     bool
+		wantErr     string
 	}{
 		{
 			name:        "vc+jwt header",
@@ -71,7 +71,46 @@ func TestJWTProofPurpose(t *testing.T) {
 			name:    "unknown payload and header",
 			header:  map[string]interface{}{"typ": "JWT"},
 			payload: map[string]interface{}{"foo": "bar"},
-			wantErr: true,
+			wantErr: "cannot determine proofPurpose",
+		},
+		// The header is written by the signer while the parsers route on the
+		// payload, so a typ that contradicts the payload is refused: honouring
+		// it would let an authentication-only key sign a credential.
+		{
+			name:    "vp+jwt typ over a legacy credential payload",
+			header:  map[string]interface{}{"typ": "vp+jwt"},
+			payload: map[string]interface{}{"vc": map[string]interface{}{}},
+			wantErr: `implies proofPurpose "authentication" but its payload is a credential`,
+		},
+		{
+			name:    "vp+jwt typ over a flat credential payload",
+			header:  map[string]interface{}{"typ": "vp+jwt"},
+			payload: map[string]interface{}{"type": []interface{}{"VerifiableCredential"}},
+			wantErr: `implies proofPurpose "authentication" but its payload is a credential`,
+		},
+		{
+			name:    "vc+jwt typ over a legacy presentation payload",
+			header:  map[string]interface{}{"typ": "vc+jwt"},
+			payload: map[string]interface{}{"vp": map[string]interface{}{}},
+			wantErr: `implies proofPurpose "assertionMethod" but its payload is a presentation`,
+		},
+		{
+			name:        "vc+jwt typ agreeing with a flat credential payload",
+			header:      map[string]interface{}{"typ": "vc+jwt"},
+			payload:     map[string]interface{}{"type": []interface{}{"VerifiableCredential"}},
+			wantPurpose: "assertionMethod",
+		},
+		{
+			name:        "vp+jwt typ agreeing with a flat presentation payload",
+			header:      map[string]interface{}{"typ": "application/vp+jwt"},
+			payload:     map[string]interface{}{"type": "VerifiablePresentation"},
+			wantPurpose: "authentication",
+		},
+		{
+			name:    "both vc and vp claims",
+			header:  map[string]interface{}{"typ": "JWT"},
+			payload: map[string]interface{}{"vc": map[string]interface{}{}, "vp": map[string]interface{}{}},
+			wantErr: "its kind is ambiguous",
 		},
 	}
 
@@ -79,9 +118,12 @@ func TestJWTProofPurpose(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b64 := encodePayload(t, tc.payload)
 			purpose, err := jwtProofPurpose(tc.header, b64)
-			if tc.wantErr {
+			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error, got purpose %q", purpose)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
 				}
 				return
 			}

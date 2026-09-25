@@ -137,18 +137,16 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 
 // jwtProofPurpose returns the proofPurpose to enforce for the JWT —
 // assertionMethod for credentials and authentication for presentations.
-// Detects from header typ (vc+jwt / vp+jwt per W3C vc-jose-cose) or
-// payload claims (vc / vp per W3C VC 1.1, or type array).
+//
+// The payload decides, not the header. `typ` is written by whoever signs the
+// token, while the parsers that later consume it route on the payload's own
+// vc/vp claim; letting `typ` win would let a key granted only authentication
+// sign a document every consumer then reads as a credential. `typ` is still
+// read — a `typ` that contradicts the payload is refused rather than ignored,
+// since a token that misrepresents its own kind should not be honoured either
+// way. When only one of the two speaks, that one answers: VC 1.1 signs with
+// typ "JWT", and a payload can carry its type inside an SD-JWT disclosure.
 func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, error) {
-	if typ, ok := header["typ"].(string); ok {
-		switch typ {
-		case "vc+jwt", "application/vc+jwt":
-			return "assertionMethod", nil
-		case "vp+jwt", "application/vp+jwt":
-			return "authentication", nil
-		}
-	}
-
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
 		return "", fmt.Errorf("invalid payload encoding: %w", err)
@@ -157,32 +155,86 @@ func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, 
 	if err := json.Unmarshal(payloadBytes, &body); err != nil {
 		return "", fmt.Errorf("invalid payload JSON: %w", err)
 	}
-	if _, ok := body["vc"]; ok {
-		return "assertionMethod", nil
+
+	carried, cerr := purposeFromBody(body)
+	if cerr != nil {
+		return "", cerr
 	}
-	if _, ok := body["vp"]; ok {
+	declared := purposeFromTyp(header)
+
+	switch {
+	case carried != "" && declared != "" && carried != declared:
+		return "", fmt.Errorf("JWT typ %q implies proofPurpose %q but its payload is a %s",
+			header["typ"], declared, documentKind(carried))
+	case carried != "":
+		return carried, nil
+	case declared != "":
+		return declared, nil
+	}
+	return "", fmt.Errorf("JWT has neither vc/vp claims nor vc+jwt/vp+jwt typ; cannot determine proofPurpose")
+}
+
+// purposeFromTyp reads the media types vc-jose-cose gives the two document
+// kinds. Anything else — including VC 1.1's "JWT" — says nothing and yields "".
+func purposeFromTyp(header map[string]interface{}) string {
+	typ, _ := header["typ"].(string)
+	switch typ {
+	case "vc+jwt", "application/vc+jwt":
+		return "assertionMethod"
+	case "vp+jwt", "application/vp+jwt":
+		return "authentication"
+	}
+	return ""
+}
+
+// purposeFromBody reads the kind out of the payload: the vc/vp claim of VC 1.1,
+// or the type property of a vc-jose-cose payload, which carries the unsecured
+// document flat. Carrying both claims is refused — the credential and the
+// presentation parsers would each accept such a token as its own kind, so no
+// single proofPurpose can be enforced for it.
+func purposeFromBody(body map[string]interface{}) (string, error) {
+	_, hasVC := body["vc"]
+	_, hasVP := body["vp"]
+	switch {
+	case hasVC && hasVP:
+		return "", fmt.Errorf("JWT carries both vc and vp claims; its kind is ambiguous")
+	case hasVC:
+		return "assertionMethod", nil
+	case hasVP:
 		return "authentication", nil
 	}
-	if types, ok := body["type"].([]interface{}); ok {
-		for _, t := range types {
-			if str, ok := t.(string); ok {
-				if str == "VerifiableCredential" {
-					return "assertionMethod", nil
-				}
-				if str == "VerifiablePresentation" {
-					return "authentication", nil
+
+	switch t := body["type"].(type) {
+	case []interface{}:
+		for _, v := range t {
+			if str, ok := v.(string); ok {
+				if p := purposeFromType(str); p != "" {
+					return p, nil
 				}
 			}
 		}
-	} else if typeStr, ok := body["type"].(string); ok {
-		if typeStr == "VerifiableCredential" {
-			return "assertionMethod", nil
-		}
-		if typeStr == "VerifiablePresentation" {
-			return "authentication", nil
-		}
+	case string:
+		return purposeFromType(t), nil
 	}
-	return "", fmt.Errorf("JWT has neither vc/vp claims nor vc+jwt/vp+jwt typ; cannot determine proofPurpose")
+	return "", nil
+}
+
+func purposeFromType(t string) string {
+	switch t {
+	case "VerifiableCredential":
+		return "assertionMethod"
+	case "VerifiablePresentation":
+		return "authentication"
+	}
+	return ""
+}
+
+// documentKind names a purpose the way the data model does, for error text.
+func documentKind(purpose string) string {
+	if purpose == "assertionMethod" {
+		return "credential"
+	}
+	return "presentation"
 }
 
 // jwtSigner returns the DID whose key signed the JWT, and refuses a token
