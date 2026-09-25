@@ -40,6 +40,11 @@ const (
 	TypeVCSDJWT = "vc+sd-jwt"
 )
 
+// TypeJOSE is what GetType reports for a credential secured with vc-jose-cose.
+// Consumers branch on this value, so it is exported rather than left as a
+// literal they have to spell correctly on both sides of a version bump.
+const TypeJOSE = "JOSE"
+
 var joseCredentialTyps = []string{
 	TypeVCJWT, "application/" + TypeVCJWT,
 	TypeVCSDJWT, "application/" + TypeVCSDJWT,
@@ -250,6 +255,7 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	return e, e.executeOptions(opts...)
 }
 
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JOSECredential) AddProof(priv string, opts ...CredentialOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -277,10 +283,12 @@ func (j *JOSECredential) AddProofByProvider(signerProvider signer.SignerProvider
 	return nil
 }
 
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JOSECredential) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JOSECredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -351,7 +359,7 @@ func (j *JOSECredential) GetContents() ([]byte, error) {
 }
 
 func (j *JOSECredential) GetType() string {
-	return "JOSE"
+	return TypeJOSE
 }
 
 func (j *JOSECredential) ExtractField(path string) any {

@@ -30,6 +30,11 @@ type JOSEPresentation struct {
 
 var _ Presentation = (*JOSEPresentation)(nil)
 
+// TypeJOSE is what GetType reports for a presentation secured with
+// vc-jose-cose. Exported for the same reason as its credential counterpart:
+// consumers branch on the value.
+const TypeJOSE = "JOSE"
+
 // NewJOSEPresentation creates a new Verifiable Presentation secured with JOSE per W3C vc-jose-cose.
 func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JOSEPresentation, error) {
 	// Ensure W3C VC 2.0 context is present if no context specified
@@ -236,6 +241,7 @@ func envelopeMediaType(token string) (string, error) {
 	return "vc+jwt", nil
 }
 
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JOSEPresentation) AddProof(priv string, opts ...PresentationOpt) error {
 	defaultSigner, err := signer.NewDefaultProvider(priv)
 	if err != nil {
@@ -268,6 +274,7 @@ func (j *JOSEPresentation) AddProofByProvider(signerProvider signer.SignerProvid
 	return nil
 }
 
+// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
 func (j *JOSEPresentation) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
@@ -308,7 +315,7 @@ func (j *JOSEPresentation) GetContents() ([]byte, error) {
 }
 
 func (j *JOSEPresentation) GetType() string {
-	return "JOSE"
+	return TypeJOSE
 }
 
 func (j *JOSEPresentation) ExtractField(path string) any {
@@ -404,4 +411,3 @@ func (j *JOSEPresentation) checkChallengeAndDomain(options *presentationOptions)
 	}
 	return nil
 }
-
