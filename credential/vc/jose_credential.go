@@ -32,9 +32,13 @@ var _ Credential = (*JOSECredential)(nil)
 
 // NewJOSECredential creates a new Verifiable Credential secured with JOSE per W3C vc-jose-cose.
 func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECredential, error) {
-	// Ensure W3C VC 2.0 context is present if no context specified
+	// The vc+jwt media type names version 2, so the document has to be one.
+	// Defaulting an empty context is a convenience; quietly signing a v1
+	// document under a v2 label is not, so that case is refused instead.
 	if len(vcc.Context) == 0 {
-		vcc.Context = []interface{}{"https://www.w3.org/ns/credentials/v2"}
+		vcc.Context = []interface{}{credentialsV2Context}
+	} else if err := requireV2Context(vcc.Context); err != nil {
+		return nil, err
 	}
 
 	m, err := serializeCredentialContents(&vcc)
@@ -183,6 +187,15 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", err)
 		}
 		vcMap = processed
+	}
+
+	// A signature proves who produced these bytes, not that the bytes are a
+	// credential. The typ header already promised one, so hold the payload to
+	// that promise here — otherwise a v1 document, a presentation, or a payload
+	// with no @context at all verifies to nil and is handed back as a VC.
+	// Checked after reconstruction, so a disclosed property still counts.
+	if err := requireJOSECredential(CredentialData(vcMap)); err != nil {
+		return nil, err
 	}
 
 	signingInput := headerEncoded + "." + payloadEncoded

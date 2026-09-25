@@ -281,17 +281,27 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 	}
 
 	if isJSONCredential(rawCredential) {
-		// Check for EnvelopedVerifiableCredential data URI per W3C VC 2.0 / vc-jose-cose
+		// Check for EnvelopedVerifiableCredential data URI per W3C VC 2.0 / vc-jose-cose.
+		//
+		// VCDM 2.0 §4.13 pairs the data: URI with the EnvelopedVerifiableCredential
+		// type, and both halves are load-bearing: unwrapping on the id alone lets
+		// any JSON borrow an id and be read as whatever that id points at, with its
+		// own type, issuer and subject silently discarded.
 		var peek map[string]interface{}
 		if err := json.Unmarshal(rawCredential, &peek); err == nil {
 			if idStr, ok := peek["id"].(string); ok {
-				if strings.HasPrefix(idStr, "data:application/vc+jwt,") {
-					jwtToken := strings.TrimPrefix(idStr, "data:application/vc+jwt,")
-					return ParseCredential([]byte(jwtToken), opts...)
-				}
-				if strings.HasPrefix(idStr, "data:application/vc+sd-jwt,") {
-					jwtToken := strings.TrimPrefix(idStr, "data:application/vc+sd-jwt,")
-					return ParseCredential([]byte(jwtToken), opts...)
+				for _, prefix := range []string{"data:application/vc+jwt,", "data:application/vc+sd-jwt,"} {
+					if !strings.HasPrefix(idStr, prefix) {
+						continue
+					}
+					if !hasType(peek["type"], "EnvelopedVerifiableCredential") {
+						return nil, fmt.Errorf("credential carries a %s id but its type is not EnvelopedVerifiableCredential", prefix)
+					}
+					// Parse the token as vc-jose-cose rather than recursing through
+					// ParseCredential: the envelope is defined to hold a vc+jwt, so
+					// this refuses a VC 1.1 JWT hidden inside a v2 envelope, and
+					// keeps the nesting to one level.
+					return ParseJOSECredential(strings.TrimPrefix(idStr, prefix), opts...)
 				}
 			}
 		}

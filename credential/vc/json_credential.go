@@ -71,6 +71,71 @@ func requireCredentialProperties(m CredentialData) error {
 	return nil
 }
 
+// credentialsV2Context is the @context VC Data Model 2.0 §4.2 requires first on
+// every credential. vc-jose-cose is defined against 2.0 only, so the JOSE paths
+// hold documents to it; the VC 1.1 paths do not, and keep their own context.
+const credentialsV2Context = "https://www.w3.org/ns/credentials/v2"
+
+// requireJOSECredential checks a payload really is the VC 2.0 credential its
+// vc+jwt media type claims: the properties every credential carries, the v2
+// @context, and a type that names a credential rather than something else.
+//
+// Per vc-jose-cose § Validation the verified payload must be a well-formed
+// credential; verifying the signature alone does not establish that.
+func requireJOSECredential(m CredentialData) error {
+	if err := requireCredentialProperties(m); err != nil {
+		return err
+	}
+	if err := requireV2Context(m["@context"]); err != nil {
+		return err
+	}
+	return requireCredentialType(m["type"])
+}
+
+// requireV2Context enforces VCDM 2.0 §4.2: the v2 URL comes first. The data
+// model asks for an ordered set, but a lone string means the same thing and is
+// accepted rather than turned into a second way to fail.
+func requireV2Context(v interface{}) error {
+	var first string
+	switch t := v.(type) {
+	case string:
+		first = t
+	case []interface{}:
+		if len(t) > 0 {
+			first, _ = t[0].(string)
+		}
+	}
+	if first != credentialsV2Context {
+		return fmt.Errorf("credential must name %q first in @context, got %q", credentialsV2Context, first)
+	}
+	return nil
+}
+
+// requireCredentialType keeps a presentation — or any other document — from
+// being read as a credential just because the header said vc+jwt.
+func requireCredentialType(v interface{}) error {
+	if hasType(v, "VerifiableCredential") {
+		return nil
+	}
+	return fmt.Errorf("credential type must include VerifiableCredential, got %v", v)
+}
+
+// hasType reports whether a type property names want. The property is an array
+// in the data model, but a single type is commonly written as a bare string.
+func hasType(v interface{}, want string) bool {
+	switch t := v.(type) {
+	case string:
+		return t == want
+	case []interface{}:
+		for _, e := range t {
+			if s, ok := e.(string); ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // isEmptyValue treats absent, null, "" and empty arrays/objects alike.
 func isEmptyValue(v interface{}) bool {
 	switch t := v.(type) {

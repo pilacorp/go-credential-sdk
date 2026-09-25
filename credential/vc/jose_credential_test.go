@@ -226,6 +226,144 @@ func TestJOSECredential_RejectsInvalidTyp(t *testing.T) {
 	}
 }
 
+// unsignedJOSEToken builds a token whose signature is a placeholder, for checks
+// that run while parsing and so never reach signature verification.
+func unsignedJOSEToken(t *testing.T, typ string, payload map[string]interface{}) string {
+	t.Helper()
+	hJSON, _ := json.Marshal(map[string]interface{}{"typ": typ, "alg": "ES256", "kid": "did:example:123#key-1"})
+	pJSON, _ := json.Marshal(payload)
+	return base64.RawURLEncoding.EncodeToString(hJSON) + "." +
+		base64.RawURLEncoding.EncodeToString(pJSON) + ".fakesig"
+}
+
+// A valid signature says who wrote the payload, not that the payload is a
+// credential — vc+jwt promises a VC 2.0 document, so the payload must be one.
+func TestJOSECredential_RejectsNonCredentialPayload(t *testing.T) {
+	subject := map[string]interface{}{"id": "did:example:subject"}
+
+	cases := []struct {
+		name    string
+		payload map[string]interface{}
+		wantErr string
+	}{
+		{
+			name: "VC 1.1 context under a vc+jwt label",
+			payload: map[string]interface{}{
+				"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+				"type":              []interface{}{"VerifiableCredential"},
+				"issuer":            "did:example:123",
+				"credentialSubject": subject,
+			},
+			wantErr: `must name "https://www.w3.org/ns/credentials/v2" first in @context`,
+		},
+		{
+			name: "no @context at all",
+			payload: map[string]interface{}{
+				"type":              []interface{}{"VerifiableCredential"},
+				"issuer":            "did:example:123",
+				"credentialSubject": subject,
+			},
+			wantErr: "missing @context",
+		},
+		{
+			name: "typed as a presentation",
+			payload: map[string]interface{}{
+				"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+				"type":              []interface{}{"VerifiablePresentation"},
+				"issuer":            "did:example:123",
+				"credentialSubject": subject,
+			},
+			wantErr: "type must include VerifiableCredential",
+		},
+		{
+			name: "no issuer",
+			payload: map[string]interface{}{
+				"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+				"type":              []interface{}{"VerifiableCredential"},
+				"credentialSubject": subject,
+			},
+			wantErr: "missing issuer",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := vc.ParseJOSECredential(unsignedJOSEToken(t, "vc+jwt", tc.payload))
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestNewJOSECredential_RejectsNonV2Context(t *testing.T) {
+	contents := joseContents("did:example:123")
+	contents.Context = []interface{}{"https://www.w3.org/2018/credentials/v1"}
+
+	_, err := vc.NewJOSECredential(contents)
+	if err == nil || !strings.Contains(err.Error(), "first in @context") {
+		t.Fatalf("error = %v, want a refusal of the v1 context", err)
+	}
+}
+
+// VCDM 2.0 §4.13 pairs the data: URI with the EnvelopedVerifiableCredential
+// type. Unwrapping on the id alone would let any JSON borrow an id and be read
+// as whatever it points at, its own type and issuer silently dropped.
+func TestParseCredential_EnvelopeRequiresEnvelopedType(t *testing.T) {
+	token := unsignedJOSEToken(t, "vc+jwt", map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            "did:example:123",
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+	})
+
+	envelope := func(typ interface{}, tok string) []byte {
+		m := map[string]interface{}{
+			"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+			"id":       "data:application/vc+jwt," + tok,
+		}
+		if typ != nil {
+			m["type"] = typ
+		}
+		b, _ := json.Marshal(m)
+		return b
+	}
+
+	cases := []struct {
+		name    string
+		raw     []byte
+		wantErr string
+	}{
+		{
+			name:    "no type",
+			raw:     envelope(nil, token),
+			wantErr: "not EnvelopedVerifiableCredential",
+		},
+		{
+			name:    "typed as a plain credential",
+			raw:     envelope([]interface{}{"VerifiableCredential"}, token),
+			wantErr: "not EnvelopedVerifiableCredential",
+		},
+		{
+			// The envelope is defined to hold a vc+jwt; a VC 1.1 JWT inside one
+			// is a document claiming a version it was never issued under.
+			name: "wrapping a VC 1.1 JWT",
+			raw: envelope([]interface{}{"EnvelopedVerifiableCredential"},
+				unsignedJOSEToken(t, "JWT", map[string]interface{}{"vc": map[string]interface{}{"id": "urn:uuid:1"}})),
+			wantErr: "invalid typ header",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := vc.ParseCredential(tc.raw)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestJOSECredential_EnvelopedCredential_Unwrap(t *testing.T) {
 	const secpPriv = "57600b3f2b7e1054094e14cd85c72a40dc74c4ee062bb381cea604b55ce56aec"
 	const did = "did:example:jose-enveloped"
