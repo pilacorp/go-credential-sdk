@@ -560,3 +560,86 @@ func TestJOSECredential_EnvelopedCredential_Unwrap(t *testing.T) {
 		t.Fatalf("verify unpacked credential: %v", err)
 	}
 }
+
+// vc-jose-cose gives each securing mechanism its own typ: "vc+jwt" for JWS and
+// "vc+sd-jwt" for SD-JWT. A verifier routes on it, so a token with disclosures
+// labelled vc+jwt is parsed as plain JWS and chokes on what trails the
+// signature.
+func TestJOSECredential_TypNamesTheSecuringMechanism(t *testing.T) {
+	const did = "did:example:jose-typ"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		opts    []vc.CredentialOpt
+		wantTyp string
+	}{
+		{name: "no disclosures", wantTyp: "vc+jwt"},
+		{
+			name:    "with disclosures",
+			opts:    []vc.CredentialOpt{vc.WithSDSelectivePaths([]string{"credentialSubject.name"})},
+			wantTyp: "vc+sd-jwt",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append(tc.opts, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+			cred, err := vc.NewJOSECredential(joseContents(did), opts...)
+			if err != nil {
+				t.Fatalf("new jose cred: %v", err)
+			}
+			if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+				t.Fatalf("add proof: %v", err)
+			}
+			if typ, _ := joseHeader(t, cred); typ != tc.wantTyp {
+				t.Fatalf("typ = %q, want %q", typ, tc.wantTyp)
+			}
+			// Whatever it labelled itself, it must read back and verify.
+			serialized, err := cred.Serialize()
+			if err != nil {
+				t.Fatalf("serialize: %v", err)
+			}
+			parsed, err := vc.ParseCredential([]byte(serialized.(string)), vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("parse back: %v", err)
+			}
+			if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+				t.Fatalf("verify: %v", err)
+			}
+		})
+	}
+}
+
+// A conforming vc+sd-jwt credential used to fall through to the VC 1.1 parser
+// and fail as "vc claim not found in JWT payload" — a VC 2.0 document told it
+// was a broken VC 1.1 one. Tokens this SDK issued earlier, with disclosures
+// under a vc+jwt typ, must keep parsing.
+func TestParseCredential_RoutesBothJOSETyps(t *testing.T) {
+	payload := map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            "did:example:123",
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+	}
+
+	for _, typ := range []string{"vc+sd-jwt", "application/vc+sd-jwt", "vc+jwt"} {
+		t.Run(typ, func(t *testing.T) {
+			parsed, err := vc.ParseCredential([]byte(unsignedJOSEToken(t, typ, payload)))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if parsed.GetType() != "JOSE" {
+				t.Fatalf("parsed as %q, want JOSE", parsed.GetType())
+			}
+		})
+	}
+}

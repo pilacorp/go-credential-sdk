@@ -246,6 +246,10 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 		return ParseJWTPresentation(valStr, opts...)
 	}
 
+	if isSDJWTShaped(valStr) {
+		return nil, fmt.Errorf("presentation carries SD-JWT disclosures, which are not supported for presentations")
+	}
+
 	return nil, fmt.Errorf("failed to parse presentation")
 }
 
@@ -272,14 +276,27 @@ func isJSONPresentation(rawPresentation []byte) bool {
 	return true
 }
 
+// isJWTPresentation reports whether the value has the three-segment shape of a
+// compact JWS.
+//
+// Disclosures are deliberately not tolerated here. Nothing in this package
+// reconstructs them — both presentation parsers split the raw string on "." and
+// take the third segment as the signature, so a token ending in "~..." yields a
+// signature with the disclosures glued on. Accepting the shape only moved the
+// failure from parsing, where it names the problem, to verification, where it
+// surfaces as "illegal base64 data".
 func isJWTPresentation(valStr string) bool {
 	valStr = strings.Trim(valStr, "\"")
-	// If it contains '~', it could be an SD-JWT presentation with disclosures and/or KB-JWT
-	if strings.Contains(valStr, "~") {
-		parts := strings.Split(valStr, "~")
-		valStr = parts[0]
-	}
 	regex := `^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$`
 	match, _ := regexp.MatchString(regex, valStr)
 	return match
+}
+
+// isSDJWTShaped reports whether the value looks like a compact JWS carrying
+// SD-JWT disclosures, so the caller can say so instead of reporting a generic
+// parse failure on something that is merely unsupported.
+func isSDJWTShaped(valStr string) bool {
+	valStr = strings.Trim(valStr, "\"")
+	head, _, found := strings.Cut(valStr, "~")
+	return found && isJWTPresentation(head)
 }

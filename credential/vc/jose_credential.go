@@ -31,6 +31,33 @@ type JOSECredential struct {
 
 var _ Credential = (*JOSECredential)(nil)
 
+// The typ header parameters vc-jose-cose defines for a secured credential. Which
+// one applies depends on the securing mechanism: JWS gives vc+jwt, SD-JWT gives
+// vc+sd-jwt. Both spellings of each are accepted when reading, since the media
+// type may be written in full.
+const (
+	TypeVCJWT   = "vc+jwt"
+	TypeVCSDJWT = "vc+sd-jwt"
+)
+
+var joseCredentialTyps = []string{
+	TypeVCJWT, "application/" + TypeVCJWT,
+	TypeVCSDJWT, "application/" + TypeVCSDJWT,
+}
+
+// isJOSECredentialTyp reports whether typ names a credential secured the way
+// vc-jose-cose defines. Tokens issued before the SD-JWT typ was written are
+// still read: the shape is carried by the disclosures, not by the label, so
+// refusing an old vc+jwt with disclosures would reject data that verifies.
+func isJOSECredentialTyp(typ string) bool {
+	for _, want := range joseCredentialTyps {
+		if typ == want {
+			return true
+		}
+	}
+	return false
+}
+
 // NewJOSECredential creates a new Verifiable Credential secured with JOSE per W3C vc-jose-cose.
 func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECredential, error) {
 	// The vc+jwt media type names version 2, so the document has to be one.
@@ -92,11 +119,18 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 		return nil, fmt.Errorf("verification method %q: %w", kid, err)
 	}
 
-	// Per W3C vc-jose-cose Section 3.1.1: typ MUST/SHOULD be "vc+jwt"
+	// typ names the securing mechanism, so it follows the disclosures rather
+	// than being fixed: vc-jose-cose says typ SHOULD be "vc+jwt" when securing
+	// with JWS, and "vc+sd-jwt" when securing with SD-JWT. A verifier routes on
+	// this, and one told "vc+jwt" will parse the token as plain JWS and choke on
+	// the disclosures trailing the signature.
 	header := map[string]interface{}{
-		"typ": "vc+jwt",
+		"typ": TypeVCJWT,
 		"alg": alg,
 		"kid": kid,
+	}
+	if len(disclosures) > 0 {
+		header["typ"] = TypeVCSDJWT
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -161,8 +195,9 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		return nil, fmt.Errorf("failed to unmarshal header: %w", err)
 	}
 	typ, _ := headerMap["typ"].(string)
-	if typ != "vc+jwt" && typ != "application/vc+jwt" {
-		return nil, fmt.Errorf("invalid typ header for JOSECredential: got %q, want 'vc+jwt' or 'application/vc+jwt'", typ)
+	if !isJOSECredentialTyp(typ) {
+		return nil, fmt.Errorf("invalid typ header for JOSECredential: got %q, want one of %s",
+			typ, strings.Join(joseCredentialTyps, ", "))
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadEncoded)

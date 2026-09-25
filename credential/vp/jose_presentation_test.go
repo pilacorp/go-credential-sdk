@@ -507,3 +507,39 @@ func TestJOSEPresentation_LabelsEnvelopeByScheme(t *testing.T) {
 		})
 	}
 }
+
+// Nothing in this package reconstructs disclosures — both presentation parsers
+// take the third dot-separated segment as the signature, so a token ending in
+// "~..." produces a signature with the disclosures glued on. Say that while
+// parsing instead of failing later as "illegal base64 data".
+func TestParsePresentation_RejectsSDJWTShape(t *testing.T) {
+	const did = "did:example:vp-sdjwt-shape"
+	resolver, prov := joseVPFixture(t, did)
+
+	pres, err := vp.NewJOSEPresentation(joseVPContents(did),
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jose vp: %v", err)
+	}
+	if err := pres.AddProofByProvider(prov, vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+	serialized, err := pres.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	token := serialized.(string)
+
+	if _, err := vp.ParsePresentation([]byte(token), vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("the unmodified presentation must still parse: %v", err)
+	}
+
+	for _, suffix := range []string{"~", "~WyJhIiwgImIiXQ", "~junk!!!"} {
+		t.Run("suffix "+suffix, func(t *testing.T) {
+			_, err := vp.ParsePresentation([]byte(token+suffix), vp.WithResolver(resolver))
+			if err == nil || !strings.Contains(err.Error(), "SD-JWT disclosures, which are not supported") {
+				t.Fatalf("error = %v, want the disclosures to be named while parsing", err)
+			}
+		})
+	}
+}

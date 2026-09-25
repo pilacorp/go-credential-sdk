@@ -323,7 +323,11 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 				var header map[string]interface{}
 				if err := json.Unmarshal(headerBytes, &header); err == nil {
 					if typ, ok := header["typ"].(string); ok {
-						if typ == "vc+jwt" || typ == "application/vc+jwt" {
+						// Both vc+jwt and vc+sd-jwt are vc-jose-cose; only the
+						// securing mechanism differs. Routing on vc+jwt alone
+						// sent a conforming SD-JWT credential down the VC 1.1
+						// path, where it failed as "vc claim not found".
+						if isJOSECredentialTyp(typ) {
 							return ParseJOSECredential(valStr, opts...)
 						}
 					}
