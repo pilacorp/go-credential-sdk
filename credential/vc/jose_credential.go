@@ -31,38 +31,6 @@ type JOSECredential struct {
 
 var _ Credential = (*JOSECredential)(nil)
 
-// The typ header parameters vc-jose-cose defines for a secured credential. Which
-// one applies depends on the securing mechanism: JWS gives vc+jwt, SD-JWT gives
-// vc+sd-jwt. Both spellings of each are accepted when reading, since the media
-// type may be written in full.
-const (
-	TypeVCJWT   = "vc+jwt"
-	TypeVCSDJWT = "vc+sd-jwt"
-)
-
-// TypeJOSE is what GetType reports for a credential secured with vc-jose-cose.
-// Consumers branch on this value, so it is exported rather than left as a
-// literal they have to spell correctly on both sides of a version bump.
-const TypeJOSE = "JOSE"
-
-var joseCredentialTyps = []string{
-	TypeVCJWT, "application/" + TypeVCJWT,
-	TypeVCSDJWT, "application/" + TypeVCSDJWT,
-}
-
-// isJOSECredentialTyp reports whether typ names a credential secured the way
-// vc-jose-cose defines. Tokens issued before the SD-JWT typ was written are
-// still read: the shape is carried by the disclosures, not by the label, so
-// refusing an old vc+jwt with disclosures would reject data that verifies.
-func isJOSECredentialTyp(typ string) bool {
-	for _, want := range joseCredentialTyps {
-		if typ == want {
-			return true
-		}
-	}
-	return false
-}
-
 // NewJOSECredential creates a new Verifiable Credential secured with JOSE per W3C vc-jose-cose.
 func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECredential, error) {
 	// The vc+jwt media type names version 2, so the document has to be one.
@@ -201,8 +169,8 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	}
 	typ, _ := headerMap["typ"].(string)
 	if !isJOSECredentialTyp(typ) {
-		return nil, fmt.Errorf("invalid typ header for JOSECredential: got %q, want one of %s",
-			typ, strings.Join(joseCredentialTyps, ", "))
+		return nil, fmt.Errorf("invalid typ header for JOSECredential: got %q, want %q or %q",
+			typ, TypeVCJWT, TypeVCSDJWT)
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadEncoded)
@@ -253,6 +221,34 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	}
 
 	return e, e.executeOptions(opts...)
+}
+
+// The media types vc-jose-cose gives a secured credential, named by the typ
+// header and by the data: URL of an EnvelopedVerifiableCredential. Which one
+// applies depends on the securing mechanism: JWS gives vc+jwt, SD-JWT gives
+// vc+sd-jwt.
+const (
+	TypeVCJWT       = "vc+jwt"
+	TypeVCSDJWT     = "vc+sd-jwt"
+	TypeEnvelopedVC = "EnvelopedVerifiableCredential"
+)
+
+// TypeJOSE is what GetType reports for a credential secured with vc-jose-cose.
+// Consumers branch on this value, so it is exported rather than left as a
+// literal they have to spell correctly on both sides of a version bump.
+const TypeJOSE = "JOSE"
+
+// isJOSECredentialTyp reports whether typ names a credential secured the way
+// vc-jose-cose defines, in either the short or the full media type spelling.
+// A vc+jwt carrying disclosures is still read: tokens issued before the SD-JWT
+// typ was written verify fine, and the shape is carried by the disclosures
+// rather than by the label.
+func isJOSECredentialTyp(typ string) bool {
+	switch typ {
+	case TypeVCJWT, "application/" + TypeVCJWT, TypeVCSDJWT, "application/" + TypeVCSDJWT:
+		return true
+	}
+	return false
 }
 
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.

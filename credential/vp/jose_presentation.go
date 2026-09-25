@@ -30,11 +30,6 @@ type JOSEPresentation struct {
 
 var _ Presentation = (*JOSEPresentation)(nil)
 
-// TypeJOSE is what GetType reports for a presentation secured with
-// vc-jose-cose. Exported for the same reason as its credential counterpart:
-// consumers branch on the value.
-const TypeJOSE = "JOSE"
-
 // NewJOSEPresentation creates a new Verifiable Presentation secured with JOSE per W3C vc-jose-cose.
 func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JOSEPresentation, error) {
 	// Ensure W3C VC 2.0 context is present if no context specified
@@ -50,21 +45,11 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 	payloadData := PresentationData(m)
 	options := getOptions(opts...)
 
-	// Transform embedded credentials into EnvelopedVerifiableCredential format.
-	//
-	// vc-jose-cose § Securing JSON-LD Verifiable Presentations with JOSE:
-	// "Verifiable Credentials secured in verifiable presentations MUST use the
-	// Enveloped Verifiable Credential type", and "Credentials in verifiable
-	// presentations MUST be secured". VCDM 2.0 § Enveloped Verifiable
-	// Credentials adds that the data: URL MUST express the credential "using an
-	// enveloping security scheme", so the media type names the scheme that
-	// actually secured it and cannot be a constant.
-	//
-	// Data Integrity is the other kind of securing mechanism — the proof lives
-	// inside the document, so there is nothing to envelope and no media type for
-	// it. Such a credential belongs in a JSON presentation, not this one; it is
-	// refused here rather than embedded raw, which would produce a presentation
-	// no conforming verifier accepts.
+	// Embedded credentials become EnvelopedVerifiableCredential entries, which
+	// vc-jose-cose requires ("Verifiable Credentials secured in verifiable
+	// presentations MUST use the Enveloped Verifiable Credential type"). Data
+	// Integrity secures the document from the inside, so there is nothing to
+	// envelope and no media type for it; those belong in a JSON presentation.
 	if len(vpc.VerifiableCredentials) > 0 {
 		envelopedList := make([]interface{}, len(vpc.VerifiableCredentials))
 		for i, cred := range vpc.VerifiableCredentials {
@@ -80,17 +65,14 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 			if err != nil {
 				return nil, fmt.Errorf("failed to serialize credential at index %d: %w", i, err)
 			}
-			credStr, ok := serialized.(string)
-			if !ok {
-				return nil, fmt.Errorf("credential at index %d serialized to %T, want a token string", i, serialized)
-			}
+			credStr, _ := serialized.(string)
 			mediaType, err := envelopeMediaType(credStr)
 			if err != nil {
 				return nil, fmt.Errorf("credential at index %d: %w", i, err)
 			}
 			envelopedList[i] = map[string]interface{}{
 				"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
-				"type":     []interface{}{"EnvelopedVerifiableCredential"},
+				"type":     []interface{}{vc.TypeEnvelopedVC},
 				"id":       fmt.Sprintf("data:application/%s,%s", mediaType, credStr),
 			}
 		}
@@ -131,7 +113,7 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 
 	// Per W3C vc-jose-cose Section 3.1.2: typ MUST/SHOULD be "vp+jwt"
 	header := map[string]interface{}{
-		"typ": "vp+jwt",
+		"typ": TypeVPJWT,
 		"alg": alg,
 		"kid": kid,
 	}
@@ -184,8 +166,8 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 		return nil, fmt.Errorf("failed to unmarshal header: %w", err)
 	}
 	typ, _ := headerMap["typ"].(string)
-	if typ != "vp+jwt" && typ != "application/vp+jwt" {
-		return nil, fmt.Errorf("invalid typ header for JOSEPresentation: got %q, want 'vp+jwt' or 'application/vp+jwt'", typ)
+	if !isJOSEPresentationTyp(typ) {
+		return nil, fmt.Errorf("invalid typ header for JOSEPresentation: got %q, want %q", typ, TypeVPJWT)
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadEncoded)
@@ -219,14 +201,26 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 	return e, e.executeOptions(opts...)
 }
 
+// TypeVPJWT is the media type vc-jose-cose gives a presentation secured with
+// JWS, named by the typ header. The full "application/" spelling means the same
+// and is accepted when reading.
+const TypeVPJWT = "vp+jwt"
+
+// TypeJOSE is what GetType reports for a presentation secured with
+// vc-jose-cose. Exported for the same reason as its credential counterpart:
+// consumers branch on the value.
+const TypeJOSE = "JOSE"
+
+// isJOSEPresentationTyp reports whether typ names a presentation secured the
+// way vc-jose-cose defines, in either media type spelling.
+func isJOSEPresentationTyp(typ string) bool {
+	return typ == TypeVPJWT || typ == "application/"+TypeVPJWT
+}
+
 // envelopeMediaType names the scheme that secured a token, for the data: URL an
-// EnvelopedVerifiableCredential carries. Disclosures make it an SD-JWT, which
-// the spec envelopes under its own media type — labelling one vc+jwt tells the
-// verifier to parse a shape it does not have.
-//
-// It also refuses an unsigned token: a credential with no signature is not
-// secured, and a data: URL holding two segments instead of three fails far from
-// here, in whoever tries to read the presentation back.
+// EnvelopedVerifiableCredential carries: disclosures make it an SD-JWT, which
+// the spec envelopes under its own media type. An unsigned token is refused
+// here rather than later, since it is not a secured credential at all.
 func envelopeMediaType(token string) (string, error) {
 	base := token
 	if i := strings.IndexByte(base, '~'); i >= 0 {
@@ -236,9 +230,9 @@ func envelopeMediaType(token string) (string, error) {
 		return "", fmt.Errorf("credential is not signed; sign it before putting it in a presentation")
 	}
 	if sdjwt.IsSDJWT(token) {
-		return "vc+sd-jwt", nil
+		return vc.TypeVCSDJWT, nil
 	}
-	return "vc+jwt", nil
+	return vc.TypeVCJWT, nil
 }
 
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.

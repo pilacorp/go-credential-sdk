@@ -135,17 +135,15 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	return nil
 }
 
-// jwtProofPurpose returns the proofPurpose to enforce for the JWT —
-// assertionMethod for credentials and authentication for presentations.
+// jwtProofPurpose returns the proofPurpose to enforce — assertionMethod for
+// credentials, authentication for presentations.
 //
-// The payload decides, not the header. `typ` is written by whoever signs the
-// token, while the parsers that later consume it route on the payload's own
-// vc/vp claim; letting `typ` win would let a key granted only authentication
-// sign a document every consumer then reads as a credential. `typ` is still
-// read — a `typ` that contradicts the payload is refused rather than ignored,
-// since a token that misrepresents its own kind should not be honoured either
-// way. When only one of the two speaks, that one answers: VC 1.1 signs with
-// typ "JWT", and a payload can carry its type inside an SD-JWT disclosure.
+// The payload decides, not the header: `typ` is written by whoever signs the
+// token while the parsers route on the payload's own vc/vp claim, so letting
+// `typ` win would let a key granted only authentication sign a document every
+// consumer then reads as a credential. A `typ` contradicting the payload is
+// refused rather than ignored; when only one of the two speaks, that one
+// answers.
 func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
@@ -188,10 +186,9 @@ func purposeFromTyp(header map[string]interface{}) string {
 }
 
 // purposeFromBody reads the kind out of the payload: the vc/vp claim of VC 1.1,
-// or the type property of a vc-jose-cose payload, which carries the unsecured
-// document flat. Carrying both claims is refused — the credential and the
-// presentation parsers would each accept such a token as its own kind, so no
-// single proofPurpose can be enforced for it.
+// or the type property of a vc-jose-cose payload. Carrying both claims is
+// refused — the credential and the presentation parsers would each accept such
+// a token as its own kind, so no single proofPurpose fits it.
 func purposeFromBody(body map[string]interface{}) (string, error) {
 	_, hasVC := body["vc"]
 	_, hasVP := body["vp"]
@@ -219,6 +216,7 @@ func purposeFromBody(body map[string]interface{}) (string, error) {
 	return "", nil
 }
 
+// purposeFromType maps one type value to the purpose its kind is signed under.
 func purposeFromType(t string) string {
 	switch t {
 	case "VerifiableCredential":
@@ -240,10 +238,9 @@ func documentKind(purpose string) string {
 // jwtSigner returns the DID whose key signed the JWT, and refuses a token
 // whose `iss` claim disagrees with the property that names the signer.
 //
-// Which property that is depends on what the token carries: a credential is
-// signed by its issuer, a presentation by its holder. Reading `issuer` off a
-// presentation would let anyone name a signer the presentation never had, so
-// the two are never crossed — hence the purpose argument.
+// A credential is signed by its issuer, a presentation by its holder. Reading
+// `issuer` off a presentation would let anyone name a signer the presentation
+// never had, so the two are never crossed — hence the purpose argument.
 //
 // vc-jose-cose puts the unsecured VC/VP in the payload itself, so `iss` may be
 // absent and the property alone names the signer. When both are present they

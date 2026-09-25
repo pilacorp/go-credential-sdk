@@ -334,6 +334,23 @@ func (j *JWTPresentation) checkChallengeAndDomain(options *presentationOptions) 
 	return checkAudience(j.jwtClaims["aud"], options)
 }
 
+// checkAudience applies RFC 7519 §4.1.3 to a presentation's aud claim: naming
+// this verifier is what checks it, and with WithRequireAudience a verifier that
+// names nobody refuses a presentation addressed to someone.
+func checkAudience(aud interface{}, options *presentationOptions) error {
+	if options.expectedDomain != "" {
+		if !audContains(aud, options.expectedDomain) {
+			return fmt.Errorf("aud %v does not match expected domain %q", aud, options.expectedDomain)
+		}
+		return nil
+	}
+	if options.requireAudience && audPresent(aud) {
+		return fmt.Errorf("presentation is addressed to %v, but this verifier did not name itself; "+
+			"pass WithExpectedDomain to say who is verifying", aud)
+	}
+	return nil
+}
+
 // audContains reports whether the aud claim (a string or array of strings per
 // RFC 7519 §4.1.3) includes domain.
 func audContains(aud interface{}, domain string) bool {
@@ -354,30 +371,6 @@ func audContains(aud interface{}, domain string) bool {
 		}
 	}
 	return false
-}
-
-// checkAudience applies RFC 7519 §4.1.3 to a presentation's aud claim.
-//
-// The RFC says a principal processing a JWT must identify itself with a value
-// in aud, and that the JWT must be rejected when it does not. This SDK cannot
-// enforce that by default without breaking every verifier that does not name
-// itself today, so the strict reading is opt-in through WithRequireAudience;
-// without it, an unnamed verifier keeps the old behaviour of ignoring aud.
-//
-// Naming the verifier at all is what actually checks the claim: with an
-// expected domain, aud must contain it, whether or not the option is set.
-func checkAudience(aud interface{}, options *presentationOptions) error {
-	if options.expectedDomain != "" {
-		if !audContains(aud, options.expectedDomain) {
-			return fmt.Errorf("aud %v does not match expected domain %q", aud, options.expectedDomain)
-		}
-		return nil
-	}
-	if options.requireAudience && audPresent(aud) {
-		return fmt.Errorf("presentation is addressed to %v, but this verifier did not name itself; "+
-			"pass WithExpectedDomain to say who is verifying", aud)
-	}
-	return nil
 }
 
 // audPresent reports whether an aud claim actually names anyone. An absent

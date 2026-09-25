@@ -258,7 +258,7 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 				var header map[string]interface{}
 				if err := json.Unmarshal(headerBytes, &header); err == nil {
 					if typ, ok := header["typ"].(string); ok {
-						if typ == "vp+jwt" || typ == "application/vp+jwt" {
+						if isJOSEPresentationTyp(typ) {
 							return ParseJOSEPresentation(valStr, opts...)
 						}
 					}
