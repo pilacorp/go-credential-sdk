@@ -359,13 +359,13 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 
 	if options.isVerifyProof {
 		g.Go(func() error {
-			serialized, err := j.Serialize()
-			if err != nil {
-				return fmt.Errorf("serialize credential: %w", err)
+			if j.signature == "" {
+				return fmt.Errorf("credential is not signed")
 			}
+			issuerJWT := j.signingInput + "." + j.signature
 
 			verifier := jwt.NewJWTVerifier(options.resolver)
-			if err := verifier.VerifyJWT(serialized.(string)); err != nil {
+			if err := verifier.VerifyJWT(issuerJWT); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
 			return nil
