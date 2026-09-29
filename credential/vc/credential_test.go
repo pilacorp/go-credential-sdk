@@ -948,9 +948,17 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 			return t
 		}(),
 	}
+	// Publish the signer's own key as key-1 and resolve locally, so the header
+	// names the key that signs instead of whatever the live DID's latest VM is.
+	issuerKey, err := ethcrypto.HexToECDSA(issuerPriv)
+	if err != nil {
+		t.Fatalf("issuer key: %v", err)
+	}
+	legacyResolver := WithResolver(verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(issuerDID,
+		verificationmethod.NewSecp256k1VM(issuerDID, "key-1", hex.EncodeToString(ethcrypto.FromECDSAPub(&issuerKey.PublicKey))))))
 
 	t.Run("JWT GetSigningInput + AddCustomProof", func(t *testing.T) {
-		cred, err := NewJWTCredential(contents)
+		cred, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
 
 		signingInput, err := cred.GetSigningInput()
@@ -972,9 +980,9 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 	})
 
 	t.Run("JWT AddCustomProof equals AddProofByProvider", func(t *testing.T) {
-		cred1, err := NewJWTCredential(contents)
+		cred1, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
-		cred2, err := NewJWTCredential(contents)
+		cred2, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
 
 		defaultSigner, err := signer.NewDefaultProvider(issuerPriv)
@@ -996,7 +1004,7 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 	})
 
 	t.Run("JWT AddCustomProof(nil) errors", func(t *testing.T) {
-		cred, err := NewJWTCredential(contents)
+		cred, err := NewJWTCredential(contents, legacyResolver)
 		assert.NoError(t, err)
 		assert.Error(t, cred.AddCustomProof(nil))
 	})
@@ -1621,6 +1629,132 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 
 	assert.Equal(t, "Alice", profile2["name"])
 	assert.Equal(t, float64(30), profile2["age"])
+}
+
+// Issue #78: an SD-JWT credential signed with the right key never passed
+// Verify(). Serialize appends "~<disclosure>" for an SD-JWT, and the proof check
+// fed that whole string to the JWT verifier, which splits on "." — so the
+// signature segment carried the disclosures and failed to base64-decode
+// ("illegal base64 data at input byte 86", the byte right after an 86-character
+// P-256 signature). Only the issuer-signed JWT may be verified.
+func TestJWTCredential_SDJWTSignVerifyRoundTrip(t *testing.T) {
+	const did = "did:example:sd-roundtrip"
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("p256 keygen: %v", err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+	resolver := WithResolver(verificationmethod.NewStaticResolver(
+		verificationmethod.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey))))
+	// The kid is fixed when the token is built, so the VM key binds at New and
+	// must not be passed again when signing.
+	buildOpts := []CredentialOpt{WithVerificationMethodKey("key-1"), resolver}
+
+	contents := func() CredentialContents {
+		return CredentialContents{
+			Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+			ID:        "urn:uuid:sd-roundtrip",
+			Issuer:    did,
+			Types:     []string{"VerifiableCredential"},
+			ValidFrom: time.Now().Add(-time.Hour),
+			Subject: []Subject{{
+				ID: "did:example:subject",
+				CustomFields: map[string]interface{}{
+					"name":      "Alice",
+					"bloodType": "O",
+				},
+			}},
+		}
+	}
+
+	sign := func(t *testing.T, extra ...CredentialOpt) *JWTCredential {
+		t.Helper()
+		cred, err := NewJWTCredential(contents(), append(append([]CredentialOpt{}, buildOpts...), extra...)...)
+		if err != nil {
+			t.Fatalf("new credential: %v", err)
+		}
+		if err := cred.AddProofByProvider(prov, resolver); err != nil {
+			t.Fatalf("add proof: %v", err)
+		}
+		return cred
+	}
+
+	t.Run("with disclosures", func(t *testing.T) {
+		cred := sign(t, WithSDSelectivePaths([]string{"credentialSubject.bloodType"}))
+
+		serialized, err := cred.Serialize()
+		if err != nil {
+			t.Fatalf("serialize: %v", err)
+		}
+		if !strings.Contains(serialized.(string), "~") {
+			t.Fatal("expected an SD-JWT with disclosures")
+		}
+
+		if err := cred.Verify(resolver); err != nil {
+			t.Fatalf("verify an SD-JWT signed with the matching key: %v", err)
+		}
+	})
+
+	t.Run("without disclosures still verifies", func(t *testing.T) {
+		if err := sign(t).Verify(resolver); err != nil {
+			t.Fatalf("verify a plain JWT credential: %v", err)
+		}
+	})
+
+	t.Run("holder presenting a subset", func(t *testing.T) {
+		cred := sign(t, WithSDSelectivePaths([]string{
+			"credentialSubject.name", "credentialSubject.bloodType",
+		}))
+		disclosures, err := cred.DecodedDisclosures()
+		if err != nil {
+			t.Fatalf("decode disclosures: %v", err)
+		}
+
+		var selected []string
+		for _, d := range disclosures {
+			if d.FieldName == "bloodType" {
+				selected = append(selected, d.Disclosure)
+			}
+		}
+		if len(selected) != 1 {
+			t.Fatalf("got %d bloodType disclosures, want 1", len(selected))
+		}
+
+		shown, err := cred.Present(selected)
+		if err != nil {
+			t.Fatalf("present: %v", err)
+		}
+		// The issuer's signature is untouched, so a subset must verify too.
+		if err := shown.Verify(resolver); err != nil {
+			t.Fatalf("verify a holder presentation: %v", err)
+		}
+
+		body, err := shown.GetContents()
+		if err != nil {
+			t.Fatalf("contents: %v", err)
+		}
+		if !strings.Contains(string(body), "bloodType") {
+			t.Fatal("the disclosed field is missing from the presented credential")
+		}
+		if strings.Contains(string(body), "Alice") {
+			t.Fatal("a withheld field leaked into the presented credential")
+		}
+	})
+
+	t.Run("unsigned credential is named as such", func(t *testing.T) {
+		cred, err := NewJWTCredential(contents(), buildOpts...)
+		if err != nil {
+			t.Fatalf("new credential: %v", err)
+		}
+		err = cred.Verify(resolver)
+		if err == nil || !strings.Contains(err.Error(), "not signed") {
+			t.Fatalf("error = %v, want it to name the missing signature", err)
+		}
+	})
 }
 
 func TestSDJWT_HolderFlow(t *testing.T) {

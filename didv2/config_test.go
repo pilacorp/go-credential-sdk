@@ -35,3 +35,22 @@ func TestWithVerificationMethods_Appends(t *testing.T) {
 		t.Fatalf("expected 2 specs, got %d", len(cfg.ExtraVMs))
 	}
 }
+
+// The P-256 VM is opt-in: a default config stays at one verification method.
+func TestEnableP256VM_OptIn(t *testing.T) {
+	var cfg DIDConfig
+	if cfg.EnableP256VM {
+		t.Fatal("EnableP256VM must default to false")
+	}
+
+	WithP256VerificationMethod()(&cfg)
+	if !cfg.EnableP256VM {
+		t.Fatal("WithP256VerificationMethod did not set the flag")
+	}
+
+	var dst DIDConfig
+	WithDIDConfig(&cfg)(&dst)
+	if !dst.EnableP256VM {
+		t.Fatal("EnableP256VM dropped by WithDIDConfig")
+	}
+}

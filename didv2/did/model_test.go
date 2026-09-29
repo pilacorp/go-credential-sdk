@@ -109,3 +109,45 @@ func TestGenerateDIDDocument_DefaultIsValid(t *testing.T) {
 		t.Fatalf("default generator document should validate: %v", err)
 	}
 }
+
+// TestDIDDocument_Validate_KeyMaterial guards that the key material rule
+// AddVerificationMethod enforces also covers documents built by other routes
+// — GenerateDIDDocument with caller-supplied VMs, or one unmarshalled from a
+// registrar or the chain.
+func TestDIDDocument_Validate_KeyMaterial(t *testing.T) {
+	tests := map[string]VerificationMethod{
+		"no key material": {
+			Id: testDID + "#key-1", Type: secp256k1VMType, Controller: testDID,
+		},
+		"both hex and multibase": {
+			Id: testDID + "#key-1", Type: secp256k1VMType, Controller: testDID,
+			PublicKeyHex:       "0x02aa",
+			PublicKeyMultibase: w3cP256PublicMultibase,
+		},
+		"deprecated jwk": {
+			Id: testDID + "#key-1", Type: "JsonWebKey2020", Controller: testDID,
+			PublicKeyJwk: map[string]any{"kty": "EC", "crv": "P-256"},
+		},
+		"multibase typed as secp256k1": {
+			Id: testDID + "#key-1", Type: secp256k1VMType, Controller: testDID,
+			PublicKeyMultibase: w3cP256PublicMultibase,
+		},
+		"hex typed as Multikey": {
+			Id: testDID + "#key-1", Type: multikeyVMType, Controller: testDID,
+			PublicKeyHex: "0x02aa",
+		},
+		"empty type": {
+			Id: testDID + "#key-1", Controller: testDID,
+			PublicKeyHex: "0x02aa",
+		},
+	}
+
+	for name, vm := range tests {
+		t.Run(name, func(t *testing.T) {
+			doc := &DIDDocument{Id: testDID, VerificationMethod: []VerificationMethod{vm}}
+			if err := doc.Validate(); err == nil {
+				t.Fatalf("expected Validate to reject %s", name)
+			}
+		})
+	}
+}

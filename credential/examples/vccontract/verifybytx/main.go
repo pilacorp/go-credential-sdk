@@ -1,16 +1,18 @@
 // Command verifybytx demonstrates how a client verifies that a VC hash is
 // anchored by a SPECIFIC transaction, using vccontract.CredentialRegistry.
 //
-// Unlike the verifyonchain example (which checks the tree's current root via
-// verifyVC), this folds the Merkle proof locally against the root that a given
-// transaction recorded on-chain. Use it for an unsealed tree whose current root
-// has since been overwritten by a later anchoring: the proof and the tx hash
-// must come from the same anchoring.
+// This is the way to verify. It folds the Merkle proof locally into a root, then
+// asks whether that exact root appears in the given transaction's logs, recorded
+// for this issuer by a contract the client trusts. The contract keeps no root in
+// storage, so those logs are the whole record of an anchoring.
 //
-// The proof components (issuer address, tree index, leaf, sibling proof, and the
-// anchoring tx hash) are assumed to already be in hand — for example, from the
-// authen-service proof API (GetVCProofByHash / GetVCProofByID), whose response
-// carries the TxHash of the anchoring.
+// The proof components (issuer address, leaf, sibling proof, and the anchoring tx
+// hash) are assumed to already be in hand — for example, from the authen-service
+// proof API (GetVCProofByHash / GetVCProofByID), whose response carries the
+// TxHash of the anchoring.
+//
+// No tree index is involved. The contract records an anchoring as (issuer, root),
+// so the folded root is what the lookup is keyed on.
 //
 // Run:
 //
@@ -28,11 +30,25 @@ import (
 
 func main() {
 	const (
-		rpcURL          = "https://rpc-testnet-new.pila.vn"
+		rpcURL = "https://rpc-testnet-new.pila.vn"
+		// The deployment on testnet today. The sample anchoring below was made by
+		// it, so this example runs as-is.
 		contractAddress = "0x7F58Eb7eaEe52768970EC3796bdD146286EF82C6"
 	)
 
-	registry, err := vccontract.NewCredentialRegistry(rpcURL, contractAddress)
+	// The second argument is the eth_call target, which only the deprecated view
+	// functions need. This example reads logs, so it passes "" rather than invent a
+	// contract to call; every address after it is one whose anchoring logs are
+	// believed.
+	//
+	// When a new deployment replaces the one above, add it — do not replace:
+	//
+	//	registry, err := vccontract.NewCredentialRegistry(rpcURL, "", newAddress, contractAddress)
+	//
+	// A tree stays verifiable only at the contract that anchored it, and nothing
+	// re-anchors it, so an address left out makes every credential anchored by it
+	// read as never anchored — false, with no error to say why.
+	registry, err := vccontract.NewCredentialRegistry(rpcURL, "", contractAddress)
 	if err != nil {
 		log.Fatalf("failed to create registry: %v", err)
 	}
@@ -42,7 +58,6 @@ func main() {
 	// authen-service proof endpoint).
 	req := &vccontract.VerifyByTxRequest{
 		IssuerAddress: "0xe4b13a02f5f06f4fc675550478208f39d1ee75bb",
-		TreeIndex:     6,
 		Leaf:          "0x01659e2bd15fe18252c9f07e0d948996e7d47a6c23c22db479a89caa87679e98",
 		Proof: []string{
 			"0x01659e2bd15fe18252c9f77e0d948996e7d47a6c23c22db479a89caa87679e98",

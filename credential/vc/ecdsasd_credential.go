@@ -49,7 +49,7 @@ func (e *ECDSASDCredential) AddProofByProvider(signerProvider signer.SignerProvi
 	if signerProvider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
-	if err := e.base.executeOptions(opts...); err != nil {
+	if err := e.base.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
 	vm, vmURL, err := e.base.resolveSigningVMEntry(opts...)
