@@ -296,6 +296,107 @@ func TestSecp256k1Suite_AcceptsJsonldSpellingOfTheV11Context(t *testing.T) {
 	}
 }
 
+// credentialsV2Context is the VC 2.0 base context. It defines Data Integrity
+// only, so a 2.0 document is the case where the suite context really is added.
+const credentialsV2Context = "https://www.w3.org/ns/credentials/v2"
+
+// benchCredential returns a document that canonicalizes under ctx: every term
+// it uses is defined by the credentials base context.
+func benchCredential(ctx interface{}) JSONMap {
+	return JSONMap{
+		"@context":          ctx,
+		"id":                "urn:uuid:noop",
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            "did:example:issuer",
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+	}
+}
+
+// When the suite is already defined, adding it is a no-op — and the digest pair
+// that guards the addition has nothing to guard. This pins the no-op half: the
+// document comes back byte-identical, in every @context shape and for every URL
+// that counts as defining the suite, so the early return in
+// addSuiteContextWithoutChangingMeaning cannot be hiding a rewrite.
+func TestSecp256k1Suite_AddSuiteContextIsANoOpWhenAlreadyDefined(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ctx  interface{}
+	}{
+		{"1.1 as a single string", credentialsV1Context},
+		{"1.1 as an array", []interface{}{credentialsV1Context}},
+		{"1.1 as []string", []string{credentialsV1Context}},
+		{"1.1 spelled .jsonld", []interface{}{credentialsV1Context + ".jsonld"}},
+		{"2.0 plus security/v2", []interface{}{credentialsV2Context, secp256k1SuiteContextAccepted}},
+		{"2.0 plus the narrow suite context", []interface{}{credentialsV2Context, secp256k1SuiteContextNarrow}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := benchCredential(tc.ctx)
+			before, err := json.Marshal(m)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+				t.Fatalf("a document that already defines the suite was refused: %v", err)
+			}
+
+			after, err := json.Marshal(m)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("document was rewritten:\n before %s\n after  %s", before, after)
+			}
+		})
+	}
+}
+
+// The other half: skipping the digest pair does not let a document that cannot
+// canonicalize through. It still fails — later, on the signing path, which
+// reports the same underlying cause.
+func TestSecp256k1Suite_UncanonicalizableDocumentStillFails(t *testing.T) {
+	m := JSONMap{
+		"@context":              []interface{}{credentialsV1Context},
+		"id":                    "urn:uuid:broken",
+		"type":                  []interface{}{"VerifiableCredential"},
+		"issuer":                "did:example:issuer",
+		"aTermNoContextDefines": "boom",
+	}
+
+	err := (&m).AddEcdsaSecp256k1Proof(&testSigner{sig: make([]byte, 64)},
+		"did:example:issuer#key-1", "assertionMethod")
+	if err == nil {
+		t.Fatal("a document that cannot canonicalize was signed")
+	}
+	if !strings.Contains(err.Error(), "canonicalize") {
+		t.Fatalf("err = %v, want one naming canonicalization", err)
+	}
+}
+
+// Why the early return is there. Run with:
+//
+//	go test ./credential/common/jsonmap/ -run '^$' -bench AddSuiteContext
+//
+// AlreadyDefined returns on a string comparison; NeedsAppending canonicalizes
+// twice, which is the check doing real work and must stay.
+func BenchmarkAddSuiteContext_AlreadyDefined(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		m := benchCredential([]interface{}{credentialsV1Context})
+		if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkAddSuiteContext_NeedsAppending(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		m := benchCredential([]interface{}{credentialsV2Context})
+		if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // The @context arrives in every shape JSON-LD allows. Only the two the VC data
 // model produces can be extended; the rest are refused rather than guessed at.
 func TestEnsureSecp256k1SuiteContext_Shapes(t *testing.T) {

@@ -302,6 +302,15 @@ func (m *JSONMap) contextSnapshot() func() {
 // Either way the issuer would sign something other than what it built, so the
 // signature is refused instead.
 func (m *JSONMap) addSuiteContextWithoutChangingMeaning() error {
+	// A document whose @context already defines the suite gets nothing added —
+	// ensureSecp256k1SuiteContext returns on this same condition — so the two
+	// digests below could only prove that nothing changed. They cost ~300µs
+	// together, against ~14ns for this comparison, and a VC 1.1 document always
+	// takes this path: its base context carries the suite already.
+	if m.definesSecp256k1Suite() {
+		return nil
+	}
+
 	before, err := m.DocumentDigest()
 	if err != nil {
 		return fmt.Errorf("failed to canonicalize the document: %w", err)
