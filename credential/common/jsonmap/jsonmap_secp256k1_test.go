@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
@@ -153,6 +154,44 @@ func TestSecp256k1Suite_RejectsHighS(t *testing.T) {
 	ok, err = m.verifyEcdsaSecp256k1Proof(doc, proof)
 	if ok || err == nil || !strings.Contains(err.Error(), "low-S") {
 		t.Fatalf("the (r, n-s) form of the same signature was accepted: ok=%v err=%v", ok, err)
+	}
+}
+
+// A valid signature is not a licence. The key below really did sign the
+// document — the signature is untouched — but the DID document grants it
+// authentication only, and this proof claims assertionMethod. This is the test
+// that goes red if the strictPurposeCheck call is ever dropped from the
+// secp256k1 verifier.
+func TestSecp256k1Suite_RejectsVMWithoutTheClaimedPurpose(t *testing.T) {
+	m, doc, proof := signedSecp256k1Proof(t)
+
+	// Keep the key resolvable and keep it in authentication; take away only
+	// the right to issue.
+	doc.Authentication = doc.AssertionMethod
+	doc.AssertionMethod = nil
+
+	ok, err := m.verifyEcdsaSecp256k1Proof(doc, proof)
+	if ok || err == nil || !strings.Contains(err.Error(), "is not granted purpose") {
+		t.Fatalf("a login-only key issued a credential: ok=%v err=%v", ok, err)
+	}
+}
+
+// The other half of the same guard: the key was revoked a month before this
+// proof was created. proof.Created is left exactly as signed — moving it would
+// break the signature and the test would stop at the wrong check.
+func TestSecp256k1Suite_RejectsProofSignedAfterRevocation(t *testing.T) {
+	m, doc, proof := signedSecp256k1Proof(t) // proof.Created = 2026-01-01
+
+	revoked, err := time.Parse(time.RFC3339, "2025-12-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	doc.VerificationMethod[0].Revoked = &revoked
+	doc.VerificationMethod[0].RevocationReason = verificationmethod.ReasonSuperseded
+
+	ok, err := m.verifyEcdsaSecp256k1Proof(doc, proof)
+	if ok || err == nil || !strings.Contains(err.Error(), "is not earlier") {
+		t.Fatalf("a revoked key issued a credential: ok=%v err=%v", ok, err)
 	}
 }
 
