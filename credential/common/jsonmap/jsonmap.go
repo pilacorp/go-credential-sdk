@@ -224,17 +224,19 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 	}
 	// ecdsa-rdfc-2019 is a VC 2.0 Data Integrity cryptosuite defined for P-256
 	// and P-384. This SDK implements the P-256 profile only (SHA-256, 64-byte
-	// r||s); P-384 (SHA-384, 96-byte r||s) is NOT supported yet — the key
-	// helpers can parse P-384 VMs, but VMKeyKind never reports them, so a
-	// P-384 signer cannot reach this point. Wiring P-384 means hashing with
-	// SHA-384 here and in ecdsaHashData, accepting 96-byte signatures, and
-	// teaching VMKeyKind/VerifyECDSA the curve.
-	// secp256k1 has no Data Integrity cryptosuite at all; it signs under
-	// EcdsaSecp256k1Signature2019 instead, and never reaches this function. A
-	// 65-byte r||s||v here therefore means a secp256k1 signer (go-ethereum)
-	// was routed to a P-256 VM — reject it rather than trim it and bind the
-	// proof to a key the verifier will not accept. Any other length is not an
-	// ECDSA-256 signature at all.
+	// r||s); P-384 (SHA-384, 96-byte r||s) is NOT supported yet. Wiring it means
+	// hashing with SHA-384 here and in ecdsaHashData, accepting 96-byte
+	// signatures, and teaching VMKeyKind/VerifyECDSA the curve. secp256k1 has no
+	// Data Integrity cryptosuite at all; it signs under
+	// EcdsaSecp256k1Signature2019 instead.
+	//
+	// AddProofByProvider routes on the key kind (SigningSuiteForKey), so neither
+	// a secp256k1 nor a P-384 signer arrives here through that path. This
+	// function is exported and called directly as well — examples/interop does —
+	// so the length check is what stands between a misrouted signer and a proof
+	// bound to a key the verifier will not accept. 65 bytes (r||s||v) means a
+	// go-ethereum secp256k1 signer; 96 means P-384; anything else is not an
+	// ECDSA signature at all. Reject rather than trim.
 	if l := len(signature); l != 64 {
 		return fmt.Errorf("jsonmap: ecdsa-rdfc-2019 expects a 64-byte P-256 signature (r||s) but the signer returned %d bytes; the signer does not match the verification method — pin the right VM with WithVerificationMethodKey", l)
 	}

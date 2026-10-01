@@ -47,7 +47,7 @@ func signedSecp256k1Proof(t *testing.T) (JSONMap, *verificationmethod.DIDDocumen
 		ProofPurpose:       "assertionMethod",
 	}
 
-	encHeader, err := encodeDetachedJWSHeader(AlgES256K)
+	encHeader, err := encodeDetachedJWSHeader(algES256K)
 	if err != nil {
 		t.Fatalf("header: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestSecp256k1Suite_AcceptsAHeaderWithExtraFields(t *testing.T) {
 
 	// A header with kid, the way another implementation might write it.
 	headerJSON, err := json.Marshal(map[string]interface{}{
-		"alg": AlgES256K, "b64": false, "crit": []string{"b64"}, "kid": did + "#key-1",
+		"alg": algES256K, "b64": false, "crit": []string{"b64"}, "kid": did + "#key-1",
 	})
 	if err != nil {
 		t.Fatalf("header: %v", err)
@@ -265,10 +265,41 @@ func TestSecp256k1Suite_AcceptsAHeaderWithExtraFields(t *testing.T) {
 	}
 }
 
+// W3C serves the 1.1 context under two URLs and the embedded loader maps both to
+// the same document, so both have to count as defining the suite. Miss the
+// ".jsonld" one and the narrow context gets appended on top of 1.1's @protected
+// terms: signing dies on a redefinition the caller did not cause and cannot fix,
+// and the error tells them to rename a term of their own that is not involved.
+func TestSecp256k1Suite_AcceptsJsonldSpellingOfTheV11Context(t *testing.T) {
+	for _, ctx := range []string{
+		credentialsV1Context,
+		credentialsV1Context + ".jsonld",
+	} {
+		t.Run(ctx, func(t *testing.T) {
+			m := testCredential()
+			m["@context"] = []interface{}{ctx, map[string]interface{}{
+				"age":  "https://schema.org/age",
+				"name": "https://schema.org/name",
+			}}
+
+			if !m.definesSecp256k1Suite() {
+				t.Fatalf("%s already defines the suite, but definesSecp256k1Suite said no", ctx)
+			}
+			if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+				t.Fatalf("a 1.1 document written as %s became unsignable: %v", ctx, err)
+			}
+			// Nothing was appended: the document already defined the suite.
+			if got := len(m["@context"].([]interface{})); got != 2 {
+				t.Fatalf("@context grew to %d entries, want 2 — a second definition was added", got)
+			}
+		})
+	}
+}
+
 // The @context arrives in every shape JSON-LD allows. Only the two the VC data
 // model produces can be extended; the rest are refused rather than guessed at.
 func TestEnsureSecp256k1SuiteContext_Shapes(t *testing.T) {
-	const narrow = Secp256k1SuiteContextNarrow
+	const narrow = secp256k1SuiteContextNarrow
 
 	for _, tc := range []struct {
 		name    string

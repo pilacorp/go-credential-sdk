@@ -27,17 +27,17 @@ import (
 // with b64:false, per RFC 7797) rather than in `proofValue`.
 
 const (
-	// AlgES256K is the only JOSE algorithm this suite admits: ECDSA on
+	// algES256K is the only JOSE algorithm this suite admits: ECDSA on
 	// secp256k1 with SHA-256.
-	AlgES256K string = "ES256K"
+	algES256K string = "ES256K"
 
-	// Secp256k1SuiteContextAccepted is the broad security context, which defines
+	// secp256k1SuiteContextAccepted is the broad security context, which defines
 	// this suite among many other terms. The SDK never WRITES it — the one it
-	// writes is Secp256k1SuiteContextNarrow below. This constant exists only to
+	// writes is secp256k1SuiteContextNarrow below. This constant exists only to
 	// RECOGNISE it: a caller may have put it on the document already, and then
 	// it is what defines the suite and no second context is needed. The two are
 	// named for the direction they are used in, not for their breadth.
-	Secp256k1SuiteContextAccepted string = "https://w3id.org/security/v2"
+	secp256k1SuiteContextAccepted string = "https://w3id.org/security/v2"
 
 	// credentialsV1Context is the VC 1.1 base context. This SDK issues VC 2.0
 	// documents only, but a document built elsewhere can arrive on 1.1, and
@@ -46,14 +46,14 @@ const (
 	// turning a signable document into a redefinition error.
 	credentialsV1Context string = "https://www.w3.org/2018/credentials/v1"
 
-	// Secp256k1SuiteContextNarrow defines this suite and nothing else. It is the
+	// secp256k1SuiteContextNarrow defines this suite and nothing else. It is the
 	// only context the SDK writes, and it goes onto a document that does not already define the suite —
 	// a VC 2.0 document, whose base context covers Data Integrity only. The
 	// narrow context is preferred over security/v2 because it brings in far
 	// fewer terms — though not none: it defines proof at the document root,
 	// which is why signing checks the document still says the same thing
 	// after the context is added.
-	Secp256k1SuiteContextNarrow string = "https://w3id.org/security/suites/secp256k1-2019/v1"
+	secp256k1SuiteContextNarrow string = "https://w3id.org/security/suites/secp256k1-2019/v1"
 )
 
 // SigningSuiteForKey resolves the proof suite to issue from the key the
@@ -123,7 +123,7 @@ func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, v
 		Domain:             domainValue(options.domain),
 	}
 
-	encHeader, err := encodeDetachedJWSHeader(AlgES256K)
+	encHeader, err := encodeDetachedJWSHeader(algES256K)
 	if err != nil {
 		return fmt.Errorf("jsonmap: %w", err)
 	}
@@ -183,10 +183,10 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 	if err != nil {
 		return false, err
 	}
-	if alg != AlgES256K {
+	if alg != algES256K {
 		return false, fmt.Errorf(
 			"%s: jws alg must be %s, got %q",
-			EcdsaSecp256k1Signature2019, AlgES256K, alg)
+			EcdsaSecp256k1Signature2019, algES256K, alg)
 	}
 
 	// Strict() rejects a final character whose unused bits are not zero. 64
@@ -313,12 +313,12 @@ func (m *JSONMap) addSuiteContextWithoutChangingMeaning() error {
 	if err != nil {
 		return fmt.Errorf(
 			"adding %q, which %s needs, stopped the document from canonicalizing; a term it defines collides with one this document uses — rename that term, or define the suite in @context yourself: %w",
-			Secp256k1SuiteContextNarrow, EcdsaSecp256k1Signature2019, err)
+			secp256k1SuiteContextNarrow, EcdsaSecp256k1Signature2019, err)
 	}
 	if !bytes.Equal(before, after) {
 		return fmt.Errorf(
 			"adding %q, which %s needs, changed what the document says; it defines proof at the root, so a term of that name used elsewhere in this document is redefined — rename that term, or define the suite in @context yourself",
-			Secp256k1SuiteContextNarrow, EcdsaSecp256k1Signature2019)
+			secp256k1SuiteContextNarrow, EcdsaSecp256k1Signature2019)
 	}
 
 	return nil
@@ -347,17 +347,17 @@ func (m *JSONMap) ensureSecp256k1SuiteContext() error {
 	case nil:
 		return fmt.Errorf(
 			"document has no @context, so %s cannot be expanded; build the credential through vc.NewJSONCredential or add %q yourself",
-			EcdsaSecp256k1Signature2019, Secp256k1SuiteContextNarrow)
+			EcdsaSecp256k1Signature2019, secp256k1SuiteContextNarrow)
 	case string:
-		(*m)["@context"] = []interface{}{c, Secp256k1SuiteContextNarrow}
+		(*m)["@context"] = []interface{}{c, secp256k1SuiteContextNarrow}
 	case []interface{}:
-		(*m)["@context"] = append(append([]interface{}{}, c...), Secp256k1SuiteContextNarrow)
+		(*m)["@context"] = append(append([]interface{}{}, c...), secp256k1SuiteContextNarrow)
 	case []string:
 		out := make([]interface{}, 0, len(c)+1)
 		for _, s := range c {
 			out = append(out, s)
 		}
-		(*m)["@context"] = append(out, Secp256k1SuiteContextNarrow)
+		(*m)["@context"] = append(out, secp256k1SuiteContextNarrow)
 	default:
 		return fmt.Errorf("document @context has unexpected type %T", c)
 	}
@@ -369,11 +369,19 @@ func (m *JSONMap) ensureSecp256k1SuiteContext() error {
 // EcdsaSecp256k1Signature2019 — either through the VC 1.1 base context, which
 // carries the suite's own scoped context, or through a security context the
 // caller added.
+//
+// The ".jsonld" spelling of the 1.1 context has to be recognised too, because
+// processor.wellKnownContexts maps it to the same embedded document: the loader
+// would see a context defining the suite while this function said it did not,
+// the narrow context would be appended on top of 1.1's @protected terms, and
+// signing would fail on a redefinition the caller cannot do anything about.
+// Adding a URL there means revisiting this list.
 func (m *JSONMap) definesSecp256k1Suite() bool {
 	defines := func(s string) bool {
 		return s == credentialsV1Context ||
-			s == Secp256k1SuiteContextAccepted ||
-			s == Secp256k1SuiteContextNarrow
+			s == credentialsV1Context+".jsonld" ||
+			s == secp256k1SuiteContextAccepted ||
+			s == secp256k1SuiteContextNarrow
 	}
 
 	switch c := (*m)["@context"].(type) {

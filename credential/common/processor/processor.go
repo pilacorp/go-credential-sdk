@@ -66,6 +66,12 @@ var w3cSecuritySecp256k1V1Context []byte
 // frozen, immutable published contexts, so serving them from embedded copies is
 // byte-for-byte equivalent to fetching them — it only removes the network
 // dependency (and avoids w3.org rate-limiting / 403s).
+//
+// Two URLs pointing at the same document is a fact callers outside this package
+// have to agree with: jsonmap.definesSecp256k1Suite decides whether a document
+// already defines the secp256k1 suite by comparing these URLs, so a spelling
+// known here but not there makes it append a context on top of @protected terms
+// and fail. Adding an entry means checking that list too.
 var wellKnownContexts = map[string][]byte{
 	"https://www.w3.org/2018/credentials/v1":               w3cCredentialV1Context,
 	"https://www.w3.org/2018/credentials/v1.jsonld":        w3cCredentialV1Context,
