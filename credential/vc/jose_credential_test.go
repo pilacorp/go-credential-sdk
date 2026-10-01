@@ -579,53 +579,64 @@ func TestJOSECredential_TypNamesTheSecuringMechanism(t *testing.T) {
 		t.Fatalf("p256 provider: %v", err)
 	}
 
-	cases := []struct {
-		name    string
-		opts    []vc.CredentialOpt
-		wantTyp string
-	}{
-		{name: "no disclosures", wantTyp: "vc+jwt"},
-		{
-			name:    "with disclosures",
-			opts:    []vc.CredentialOpt{vc.WithSDSelectivePaths([]string{"credentialSubject.name"})},
-			wantTyp: "vc+sd-jwt",
-		},
+	cred, err := vc.NewJOSECredential(joseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jose cred: %v", err)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			opts := append(tc.opts, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
-			cred, err := vc.NewJOSECredential(joseContents(did), opts...)
-			if err != nil {
-				t.Fatalf("new jose cred: %v", err)
-			}
-			if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
-				t.Fatalf("add proof: %v", err)
-			}
-			if typ, _ := joseHeader(t, cred); typ != tc.wantTyp {
-				t.Fatalf("typ = %q, want %q", typ, tc.wantTyp)
-			}
-			// Whatever it labelled itself, it must read back and verify.
-			serialized, err := cred.Serialize()
-			if err != nil {
-				t.Fatalf("serialize: %v", err)
-			}
-			parsed, err := vc.ParseCredential([]byte(serialized.(string)), vc.WithResolver(resolver))
-			if err != nil {
-				t.Fatalf("parse back: %v", err)
-			}
-			if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
-				t.Fatalf("verify: %v", err)
-			}
-		})
+	if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+	if typ, _ := joseHeader(t, cred); typ != "vc+jwt" {
+		t.Fatalf("typ = %q, want %q", typ, "vc+jwt")
+	}
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	if strings.ContainsRune(serialized.(string), '~') {
+		t.Fatalf("a vc+jwt token must not carry disclosures: %s", serialized)
+	}
+	parsed, err := vc.ParseCredential([]byte(serialized.(string)), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("parse back: %v", err)
+	}
+	if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify: %v", err)
 	}
 }
 
-// A conforming vc+sd-jwt credential used to fall through to the VC 1.1 parser
-// and fail as "vc claim not found in JWT payload" — a VC 2.0 document told it
-// was a broken VC 1.1 one. Tokens this SDK issued earlier, with disclosures
-// under a vc+jwt typ, must keep parsing.
-func TestParseCredential_RoutesBothJOSETyps(t *testing.T) {
+// Selective disclosure left this package with the SD-JWT work, because the rules
+// it needs are not settled here: which properties may be disclosed at all, what
+// media type the envelope in a presentation carries, how a key binding JWT is
+// checked. Until then every door is shut, and shut loudly — an option silently
+// ignored would produce a credential whose own verifier disagrees with it.
+func TestJOSECredential_RefusesSelectiveDisclosure(t *testing.T) {
+	const did = "did:example:jose-no-sd"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	t.Run("build with a selective path", func(t *testing.T) {
+		_, err := vc.NewJOSECredential(joseContents(did),
+			vc.WithSDSelectivePaths([]string{"credentialSubject.name"}),
+			vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+		if err == nil || !strings.Contains(err.Error(), "selective disclosure is not supported") {
+			t.Fatalf("err = %v, want the option to be refused", err)
+		}
+	})
+
+	t.Run("build with disclosures handed in", func(t *testing.T) {
+		_, err := vc.NewJOSECredential(joseContents(did),
+			vc.WithSDDisclosures([]string{"WyJzYWx0IiwibmFtZSIsIkFsaWNlIl0"}),
+			vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+		if err == nil || !strings.Contains(err.Error(), "selective disclosure is not supported") {
+			t.Fatalf("err = %v, want the option to be refused", err)
+		}
+	})
+
 	payload := map[string]interface{}{
 		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
 		"type":              []interface{}{"VerifiableCredential"},
@@ -633,14 +644,35 @@ func TestParseCredential_RoutesBothJOSETyps(t *testing.T) {
 		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
 	}
 
-	for _, typ := range []string{"vc+sd-jwt", "application/vc+sd-jwt", "vc+jwt"} {
-		t.Run(typ, func(t *testing.T) {
-			parsed, err := vc.ParseCredential([]byte(unsignedJOSEToken(t, typ, payload)))
-			if err != nil {
-				t.Fatalf("parse: %v", err)
-			}
-			if parsed.GetType() != "JOSE" {
-				t.Fatalf("parsed as %q, want JOSE", parsed.GetType())
+	t.Run("parse a token with disclosures attached", func(t *testing.T) {
+		token := unsignedJOSEToken(t, "vc+jwt", payload) + "~WyJzYWx0IiwibmFtZSIsIkFsaWNlIl0~"
+		if _, err := vc.ParseCredential([]byte(token)); err == nil ||
+			!strings.Contains(err.Error(), "does not support selective disclosure") {
+			t.Fatalf("err = %v, want the disclosures to be refused", err)
+		}
+	})
+
+	// The holder can also send no disclosure at all. Then there is nothing to
+	// name — only the digests left behind say that something was hidden.
+	t.Run("parse a token whose payload hides properties", func(t *testing.T) {
+		hidden := map[string]interface{}{}
+		for k, v := range payload {
+			hidden[k] = v
+		}
+		hidden["_sd"] = []interface{}{"X9x1bH-s0hxbXBEUl1x0B2EGLMLhKC0DdZH5tnGhxGQ"}
+		hidden["_sd_alg"] = "sha-256"
+
+		if _, err := vc.ParseCredential([]byte(unsignedJOSEToken(t, "vc+jwt", hidden))); err == nil ||
+			!strings.Contains(err.Error(), "does not support selective disclosure") {
+			t.Fatalf("err = %v, want the hidden properties to be refused", err)
+		}
+	})
+
+	// vc+sd-jwt is no longer a media type this package routes.
+	for _, typ := range []string{"vc+sd-jwt", "application/vc+sd-jwt"} {
+		t.Run("parse typ "+typ, func(t *testing.T) {
+			if _, err := vc.ParseCredential([]byte(unsignedJOSEToken(t, typ, payload))); err == nil {
+				t.Fatalf("typ %q was accepted", typ)
 			}
 		})
 	}

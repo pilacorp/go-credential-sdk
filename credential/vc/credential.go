@@ -313,7 +313,7 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 		var peek map[string]interface{}
 		if err := json.Unmarshal(rawCredential, &peek); err == nil {
 			if idStr, ok := peek["id"].(string); ok {
-				for _, prefix := range []string{"data:application/" + TypeVCJWT + ",", "data:application/" + TypeVCSDJWT + ","} {
+				for _, prefix := range []string{"data:application/" + TypeVCJWT + ","} {
 					if !strings.HasPrefix(idStr, prefix) {
 						continue
 					}
@@ -346,10 +346,11 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 				var header map[string]interface{}
 				if err := json.Unmarshal(headerBytes, &header); err == nil {
 					if typ, ok := header["typ"].(string); ok {
-						// Both vc+jwt and vc+sd-jwt are vc-jose-cose; only the
-						// securing mechanism differs. Routing on vc+jwt alone
-						// sent a conforming SD-JWT credential down the VC 1.1
-						// path, where it failed as "vc claim not found".
+						// A tilde still routes here, because VC 1.1 SD-JWT is a
+						// real shape this SDK issues — its typ is "JWT" and its
+						// claims live under vc. A vc+jwt never carries one;
+						// ParseJOSECredential refuses it rather than
+						// reconstructing a payload it cannot hold to the spec.
 						if isJOSECredentialTyp(typ) {
 							return ParseJOSECredential(valStr, opts...)
 						}

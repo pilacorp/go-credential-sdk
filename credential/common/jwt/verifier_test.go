@@ -112,6 +112,31 @@ func TestJWTProofPurpose(t *testing.T) {
 			payload: map[string]interface{}{"vc": map[string]interface{}{}, "vp": map[string]interface{}{}},
 			wantErr: "its kind is ambiguous",
 		},
+		// A media type no parser routes says nothing, the same as VC 1.1's "JWT".
+		// Answering for it would be a branch no entry point can reach — and the
+		// SD-JWT work that owned these two lives on its own branch now.
+		{
+			name:    "sd-jwt media type says nothing",
+			header:  map[string]interface{}{"typ": "vc+sd-jwt"},
+			payload: map[string]interface{}{"id": "urn:uuid:1"},
+			wantErr: "cannot determine proofPurpose",
+		},
+		// A type array naming both kinds is refused rather than resolved by
+		// order. Taking the first match let a credential be judged a
+		// presentation, so its signer passed as the holder and issuer was never
+		// compared.
+		{
+			name:    "type array names a presentation before a credential",
+			header:  map[string]interface{}{},
+			payload: map[string]interface{}{"type": []interface{}{"VerifiablePresentation", "VerifiableCredential"}},
+			wantErr: "names both a credential and a presentation",
+		},
+		{
+			name:    "type array names a credential before a presentation",
+			header:  map[string]interface{}{},
+			payload: map[string]interface{}{"type": []interface{}{"VerifiableCredential", "VerifiablePresentation"}},
+			wantErr: "names both a credential and a presentation",
+		},
 	}
 
 	for _, tc := range cases {

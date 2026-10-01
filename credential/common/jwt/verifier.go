@@ -174,6 +174,17 @@ func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, 
 
 // purposeFromTyp reads the media types vc-jose-cose gives the two document
 // kinds. Anything else — including VC 1.1's "JWT" — says nothing and yields "".
+//
+// This list must cover every typ the parsers accept: vc.isJOSECredentialTyp and
+// vp.isJOSEPresentationTyp. A typ they route but this one does not know yields
+// "", which drops the decision to the payload alone — and the payload is
+// attacker-written, so a token typed as a credential can be judged as a
+// presentation and have its issuer go unchecked. That is exactly how vc+sd-jwt
+// got through while only the parser knew it. Teaching a parser a new media type
+// means teaching this function the same one.
+//
+// The sd-jwt media types are absent because no parser routes them any more;
+// listing a typ nothing accepts would be a branch no entry point can reach.
 func purposeFromTyp(header map[string]interface{}) string {
 	typ, _ := header["typ"].(string)
 	switch typ {
@@ -203,13 +214,23 @@ func purposeFromBody(body map[string]interface{}) (string, error) {
 
 	switch t := body["type"].(type) {
 	case []interface{}:
+		// Every entry has to agree. Returning the first match would let the
+		// order of the array pick the purpose: ["VerifiablePresentation",
+		// "VerifiableCredential"] would be judged a presentation, so the signer
+		// would be taken for the holder and issuer never compared.
+		found := ""
 		for _, v := range t {
-			if str, ok := v.(string); ok {
-				if p := purposeFromType(str); p != "" {
-					return p, nil
-				}
+			str, _ := v.(string)
+			p := purposeFromType(str)
+			if p == "" {
+				continue
 			}
+			if found != "" && found != p {
+				return "", fmt.Errorf("JWT type names both a credential and a presentation; its kind is ambiguous")
+			}
+			found = p
 		}
+		return found, nil
 	case string:
 		return purposeFromType(t), nil
 	}

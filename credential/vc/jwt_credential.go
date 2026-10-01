@@ -165,12 +165,21 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 		return nil, fmt.Errorf("vc claim is not a valid JSON object")
 	}
 
+	signedVC := vcMap
 	if len(disclosures) > 0 {
-		processed, err := sdjwt.Reconstruct(vcMap, disclosures, true)
-		if err != nil {
-			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", err)
+		processed, rerr := sdjwt.Reconstruct(vcMap, disclosures, true)
+		if rerr != nil {
+			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rerr)
 		}
 		vcMap = processed
+	}
+
+	// Selective disclosure lives only on this path now, so this is the only place
+	// the rule is enforced: the claims a verifier decides on have to be inside the
+	// signature, not inside a disclosure the holder controls. Reconstruct
+	// deep-copies, so signedVC is still exactly what the signature covered.
+	if err := requireSecuredClaimsSigned(signedVC, vcMap); err != nil {
+		return nil, fmt.Errorf("invalid SD-JWT credential: %w", err)
 	}
 
 	signingInput := headerEncoded + "." + payloadEncoded

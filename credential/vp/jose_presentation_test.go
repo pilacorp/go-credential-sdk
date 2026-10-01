@@ -456,17 +456,15 @@ func TestJOSEPresentation_LabelsEnvelopeByScheme(t *testing.T) {
 		return cred
 	}
 
+	// Only JWS is secured here, so there is one label. An SD-JWT would need its
+	// own, and vc+jwt no longer produces one — see
+	// vc.TestJOSECredential_RefusesSelectiveDisclosure.
 	cases := []struct {
 		name       string
 		cred       vc.Credential
 		wantPrefix string
 	}{
 		{"plain JOSE credential", newSigned(), "data:application/vc+jwt,"},
-		{
-			name:       "SD-JWT credential",
-			cred:       newSigned(vc.WithSDSelectivePaths([]string{"credentialSubject.id"})),
-			wantPrefix: "data:application/vc+sd-jwt,",
-		},
 	}
 
 	for _, tc := range cases {

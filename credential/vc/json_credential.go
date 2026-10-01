@@ -92,6 +92,61 @@ func requireJOSECredential(m CredentialData) error {
 	return requireCredentialType(m["type"])
 }
 
+// securedClaims are the credential properties a verifier's decisions rest on:
+// who issued it, which data model it speaks, when its statement holds, and where
+// to look up revocation. Both the 1.1 and the 2.0 spelling of the validity window
+// is listed, because a 1.1 document is free to carry either.
+//
+// JWT-level claims (iss, exp, nbf, iat) are not here. The only caller passes the
+// vc claim of a VC 1.1 token, and those live outside it — vc._sd cannot hide
+// them. They would belong in this list again if a flat vc-jose-cose payload ever
+// carried disclosures.
+var securedClaims = []string{
+	"@context", "type",
+	"issuer",
+	"validFrom", "validUntil",
+	"issuanceDate", "expirationDate",
+	"credentialStatus",
+}
+
+// requireSecuredClaimsSigned refuses a token whose reconstruction introduced one
+// of those properties, or whose holder withheld the disclosure carrying one.
+//
+// Selective disclosure moves a property outside the signature: it is the
+// digest that is signed, and the value arrives separately, under the holder's
+// control. For a claim nobody checks that is the point. For these claims it is
+// not:
+//
+//   - Hiding issuer let an attacker sign with its own key and name itself in
+//     iss — which matched, because the signed payload had no issuer to compare
+//     against — and the credential handed back named the victim as issuer.
+//   - Withholding the disclosure for expirationDate or credentialStatus made an
+//     expired or revoked credential verify as neither, since the checks run on
+//     the reconstructed payload and found nothing to check.
+//
+// A disclosure the holder attached can be named, so the first loop says which
+// property it was. A disclosure the holder withheld cannot: the digest left
+// behind does not record what it stood for. What is still visible is that some
+// top-level property was made disclosable, and at the top level of a credential
+// there is nothing a verifier does not decide on — hence the second check.
+func requireSecuredClaimsSigned(signed, reconstructed map[string]interface{}) error {
+	for _, claim := range securedClaims {
+		if _, ok := signed[claim]; ok {
+			continue
+		}
+		if _, ok := reconstructed[claim]; ok {
+			return fmt.Errorf(
+				"%q was selectively disclosed; a verifier decides on it, so it must be part of the signed payload",
+				claim)
+		}
+	}
+	if _, ok := signed["_sd"]; ok {
+		return fmt.Errorf(
+			"the signed payload hides top-level properties behind _sd; selective disclosure is for claims inside credentialSubject")
+	}
+	return nil
+}
+
 // requireV2Context enforces VCDM 2.0 §4.2: the v2 URL comes first. The data
 // model asks for an ordered set, but a lone string means the same thing and is
 // accepted rather than turned into a second way to fail.
