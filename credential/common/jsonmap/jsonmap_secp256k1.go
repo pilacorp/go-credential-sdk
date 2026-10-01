@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"math/big"
 	"time"
 
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
@@ -187,11 +189,15 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 			EcdsaSecp256k1Signature2019, AlgES256K, alg)
 	}
 
-	signature, err := base64.RawURLEncoding.DecodeString(encSig)
+	// Strict() rejects a final character whose unused bits are not zero. 64
+	// bytes encode to 86 characters with 4 bits left over, so without this one
+	// signature has 16 spellings that all decode to the same bytes and all
+	// verify — while Hash() sees 16 different credentials.
+	signature, err := base64.RawURLEncoding.Strict().DecodeString(encSig)
 	if err != nil {
 		return false, fmt.Errorf("decode jws signature: %w", err)
 	}
-	// RFC 7518 § 3.4: an ES256K signature in a JWS is exactly 64 bytes. The
+	// RFC 8812 § 3.2: an ES256K signature in a JWS is exactly 64 bytes. The
 	// signing side trims go-ethereum's recovery byte; here a 65th byte is a
 	// byte nobody signed, and accepting it would give one credential many
 	// byte forms that all verify — and many different hashes.
@@ -199,6 +205,16 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 		return false, fmt.Errorf(
 			"%s: jws signature is %d bytes, want 64 (r||s)",
 			EcdsaSecp256k1Signature2019, l)
+	}
+	// The third door to the same room: (r, s) and (r, n-s) both verify under
+	// the same key, so every signature has two numeric forms. Low-S is the one
+	// the signer writes, and the one BIP-62 and FIPS 186-5 § 6.4.2 settled on.
+	// This suite has issued nothing yet, so refusing the other form now costs
+	// no compatibility.
+	halfN := new(big.Int).Rsh(pub.Curve.Params().N, 1)
+	if new(big.Int).SetBytes(signature[32:]).Cmp(halfN) > 0 {
+		return false, fmt.Errorf(
+			"%s: jws signature is not low-S", EcdsaSecp256k1Signature2019)
 	}
 
 	// RFC 7797 signs the header that travels with the proof, so the one from
@@ -237,19 +253,28 @@ func (m *JSONMap) secp256k1SigningInput(proof *dto.Proof, encHeader string) ([]b
 	return jwsSigningInput(encHeader, hashData), nil
 }
 
-// joseSecp256k1Signature normalizes a secp256k1 signature to the 64-byte r||s
-// JOSE expects, dropping go-ethereum's trailing recovery byte.
+// joseSecp256k1Signature normalizes a secp256k1 signature to the one 64-byte
+// r||s form JOSE expects: go-ethereum's trailing recovery byte is dropped, and
+// s is folded into the low half of the order. go-ethereum already signs low-S,
+// so the fold normally changes nothing — it is here so that a provider which
+// does not cannot produce a proof this SDK's own verifier refuses.
 func joseSecp256k1Signature(sig []byte) ([]byte, error) {
 	switch len(sig) {
 	case 65:
-		return sig[:64], nil
+		sig = sig[:64]
 	case 64:
-		return sig, nil
 	default:
 		return nil, fmt.Errorf(
 			"%s expects a 64-byte secp256k1 signature (r||s), got %d; the signer does not match the verification method — pin the right VM with WithVerificationMethodKey",
 			EcdsaSecp256k1Signature2019, len(sig))
 	}
+
+	lowS := signer.NormalizeLowS(ethcrypto.S256(), new(big.Int).SetBytes(sig[32:]))
+	out := make([]byte, 64)
+	copy(out[:32], sig[:32])
+	lowS.FillBytes(out[32:])
+
+	return out, nil
 }
 
 // contextSnapshot returns a function that puts @context back the way it is
