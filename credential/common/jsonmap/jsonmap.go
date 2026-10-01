@@ -338,9 +338,18 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 	case proof.Type == JwtProof2020:
 		return m.verifyJWTProof(doc, proof)
 
-	// A jws means the spec-conformant Linked Data Signature suite; the same
-	// type name with a hex proofValue is the pre-v1.8.0 in-house format below,
-	// which must keep verifying for credentials already issued.
+	// Two formats share this type name. The spec-conformant Linked Data
+	// Signature suite carries its signature in jws; the pre-v1.8.0 in-house
+	// format carries a hex proofValue and is handled by the case below. The jws
+	// is the only thing that tells them apart, which is why this condition
+	// exists — TestSecp256k1Suite_LegacyHexProofReachesTheLegacyVerifier turns
+	// red if it is dropped.
+	//
+	// Whether the legacy branch stays is an open question, not a settled one:
+	// #89 reports that it takes the public key from the proof rather than from
+	// the resolved DID document, and weighs deleting it against resolving the
+	// key properly. Read this routing as describing what is there today, not as
+	// a commitment to keep it.
 	case proof.Type == EcdsaSecp256k1Signature2019 && proof.JWS != "":
 		return m.verifyEcdsaSecp256k1Proof(doc, proof)
 

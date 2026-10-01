@@ -354,11 +354,13 @@ func TestSecp256k1Suite_SignsVC2Document(t *testing.T) {
 	}
 }
 
-// TestSecp256k1Suite_LegacyHexProofStillVerifies guards the compatibility
-// boundary: the same proof type name was used by the pre-v1.8.0 in-house
-// format, which carries a hex proofValue instead of a jws. Credentials already
-// issued that way must keep verifying.
-func TestSecp256k1Suite_LegacyHexProofStillVerifies(t *testing.T) {
+// TestSecp256k1Suite_LegacyHexProofReachesTheLegacyVerifier pins the routing,
+// not the outcome: the pre-v1.8.0 in-house format uses the same proof type name
+// and is told apart only by carrying a hex proofValue instead of a jws, so this
+// checks that a proof of that shape still lands in verifyEcdsaProofLegacy.
+//
+// It says nothing about whether that branch should exist — see #89.
+func TestSecp256k1Suite_LegacyHexProofReachesTheLegacyVerifier(t *testing.T) {
 	const did = "did:example:secp-suite-legacy"
 	resolver := secpResolver(t, did)
 
@@ -382,17 +384,19 @@ func TestSecp256k1Suite_LegacyHexProofStillVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse credential: %v", err)
 	}
-	// The signature is not valid, so this must fail — but it must fail inside
-	// the legacy verifier, not by being routed to the new suite verifier or by
-	// being rejected as an unknown proof type.
+	// "deadbeef" is not a hex-encoded public key, so the legacy verifier fails on
+	// it — and that message is produced nowhere else. Assert that one string
+	// rather than listing the errors other verifiers would give: a list of ways
+	// to be wrong always misses the one nobody thought of. Drop the `jws != ""`
+	// condition from verifyOneProof and this credential reaches the new suite
+	// verifier, which dies earlier on "failed to resolve verification method"
+	// instead — a string no such list contained.
 	err = cred.Verify(vc.WithResolver(resolver))
 	if err == nil {
 		t.Fatal("expected the bogus legacy signature to fail")
 	}
-	for _, wrong := range []string{"malformed detached JWS", "unsupported proof type", "does not hold a secp256k1 key"} {
-		if strings.Contains(err.Error(), wrong) {
-			t.Fatalf("legacy hex proof was routed to the new suite verifier: %v", err)
-		}
+	if !strings.Contains(err.Error(), "key is not in hex format") {
+		t.Fatalf("legacy hex proof did not reach the legacy verifier: %v", err)
 	}
 }
 
