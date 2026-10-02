@@ -8,6 +8,7 @@ import (
 
 	jwtpkg "github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
 )
@@ -185,6 +186,10 @@ func TestJOSEPresentation_RefusesBareCredentials(t *testing.T) {
 		"id":       "data:application/vc+jwt," + token,
 	}
 
+	// VCDM 2.0 allows verifiableCredential to be a single value, so every case
+	// runs both ways. Reading only the array form folded "no credentials" together
+	// with "one credential, unwrapped", and the same bare credential was refused
+	// inside brackets and accepted without them.
 	for _, tc := range []struct {
 		name    string
 		item    interface{}
@@ -201,31 +206,47 @@ func TestJOSEPresentation_RefusesBareCredentials(t *testing.T) {
 			wantErr: true,
 		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			vpToken := signJOSEVP(t, prov, kid, map[string]interface{}{
+		for _, shape := range []struct {
+			name string
+			wrap func(interface{}) interface{}
+		}{
+			{"in an array", func(v interface{}) interface{} { return []interface{}{v} }},
+			{"as a single value", func(v interface{}) interface{} { return v }},
+		} {
+			runCase(t, tc.name+" "+shape.name, tc.wantErr, signJOSEVP(t, prov, kid, map[string]interface{}{
 				"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
 				"type":                 []interface{}{"VerifiablePresentation"},
 				"holder":               did,
-				"verifiableCredential": []interface{}{tc.item},
-			})
-
-			pres, err := vp.ParseJOSEPresentation(vpToken, vp.WithResolver(resolver))
-			if tc.wantErr {
-				if err == nil {
-					t.Fatal("a bare credential inside a vp+jwt was accepted")
-				}
-				if !strings.Contains(err.Error(), "EnvelopedVerifiableCredential") {
-					t.Fatalf("err = %v, want one naming the envelope type", err)
-				}
-
-				return
-			}
-			if err != nil {
-				t.Fatalf("a correctly enveloped credential was refused: %v", err)
-			}
-			if err := pres.Verify(vp.WithResolver(resolver), vp.WithVCValidation()); err != nil {
-				t.Fatalf("verify: %v", err)
-			}
-		})
+				"verifiableCredential": shape.wrap(tc.item),
+			}), resolver)
+		}
 	}
+}
+
+// runCase parses vpToken and asserts the shape check's verdict on it.
+func runCase(t *testing.T, name string, wantErr bool, vpToken string, resolver vmpkg.ResolverProvider) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) {
+
+		pres, err := vp.ParseJOSEPresentation(vpToken, vp.WithResolver(resolver))
+		if wantErr {
+			if err == nil {
+				t.Fatal("a bare credential inside a vp+jwt was accepted")
+			}
+			if !strings.Contains(err.Error(), "EnvelopedVerifiableCredential") {
+				t.Fatalf("err = %v, want one naming the envelope type", err)
+			}
+
+			return
+		}
+		if err != nil {
+			t.Fatalf("a correctly enveloped credential was refused: %v", err)
+		}
+		// And the credential inside is actually reached, in both shapes: a single
+		// value used to leave verifyCredentials reporting "credential input is
+		// nil" about a presentation that carried one.
+		if err := pres.Verify(vp.WithResolver(resolver), vp.WithVCValidation()); err != nil {
+			t.Fatalf("verify: %v", err)
+		}
+	})
 }

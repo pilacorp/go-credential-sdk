@@ -253,9 +253,18 @@ func parseDates(vp PresentationData, contents *PresentationContents) error {
 
 // parseVerifiableCredentials extracts the verifiableCredential field from a Presentation.
 func parseVerifiableCredentials(vp PresentationData, contents *PresentationContents) error {
-	vcs, ok := vp["verifiableCredential"].([]interface{})
-	if !ok {
+	// Same shape rule as requireEnvelopedCredentials: a single value is valid
+	// VCDM 2.0. Reading only the array form left a one-credential presentation
+	// looking empty, and verifyCredentials then reported "credential input is
+	// nil" about a presentation that carried one.
+	var vcs []interface{}
+	switch v := vp["verifiableCredential"].(type) {
+	case nil:
 		return nil // No verifiable credentials field
+	case []interface{}:
+		vcs = v
+	default:
+		vcs = []interface{}{v}
 	}
 
 	for i, vcItem := range vcs {

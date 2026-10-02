@@ -284,9 +284,18 @@ func requireJOSEPresentation(m PresentationData) error {
 // This cannot live in verifyCredentials, which the VP-JWT 1.1 and JSON-LD paths
 // share: those carry their credentials bare, and legitimately so.
 func requireEnvelopedCredentials(m PresentationData) error {
-	items, ok := m["verifiableCredential"].([]interface{})
-	if !ok {
+	// VCDM 2.0 lets verifiableCredential be a single value, not only an array.
+	// Reading it as []interface{} and returning nil on a failed assertion folded
+	// "no credentials" together with "one credential, unwrapped", so the same bare
+	// credential was refused inside brackets and accepted without them.
+	var items []interface{}
+	switch v := m["verifiableCredential"].(type) {
+	case nil:
 		return nil // No credentials to hold to anything.
+	case []interface{}:
+		items = v
+	default:
+		items = []interface{}{v}
 	}
 
 	for i, item := range items {

@@ -288,11 +288,26 @@ func jwtSigner(payloadB64, purpose string) (string, error) {
 
 	// VC 1.1 keeps the document under a vc/vp claim; read the property there
 	// when it exists, so a nested issuer cannot disagree with iss unnoticed.
-	claimed := didFromClaim(body[field])
+	// Picked before reading, so presence and value come from the same map.
+	doc := body
 	if inner, ok := body["vc"].(map[string]interface{}); ok {
-		claimed = didFromClaim(inner["issuer"])
+		doc = inner
 	} else if inner, ok := body["vp"].(map[string]interface{}); ok {
-		claimed = didFromClaim(inner["holder"])
+		doc = inner
+	}
+
+	// Two different questions, and conflating them opened a third door to the
+	// forgery the switch below exists to stop. A field that is absent leaves the
+	// signer to iss, which is fine. A field that is present but holds no DID —
+	// an array, an object without a string id — is a document naming a signer
+	// this function cannot compare, and treating that as absent let an attacker
+	// sign with its own key, put its own DID in iss, and name the victim in
+	// issuer: the mismatch branch needs claimed != "" and never ran.
+	raw, present := doc[field]
+	claimed := didFromClaim(raw)
+	if present && claimed == "" {
+		return "", fmt.Errorf("JWT %s must be a string or an object with a string id, got %T",
+			field, raw)
 	}
 
 	iss, _ := body["iss"].(string)

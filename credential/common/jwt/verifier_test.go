@@ -271,6 +271,64 @@ func TestJWTSigner(t *testing.T) {
 			payload: map[string]interface{}{"id": "urn:uuid:1"},
 			wantErr: "both iss and issuer are absent",
 		},
+		// A field that is present but holds no DID is a document naming a signer
+		// this function cannot compare. Treating that as absent let the mismatch
+		// branch — which needs claimed != "" — never run, so an attacker signed
+		// with its own key, named itself in iss, and named the victim in issuer.
+		{
+			name:    "issuer as an array",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{
+				"iss":    "did:example:attacker",
+				"issuer": []interface{}{"did:example:victim"},
+			},
+			wantErr: "issuer must be a string or an object with a string id",
+		},
+		{
+			name:    "issuer as an object without an id",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{
+				"iss":    "did:example:attacker",
+				"issuer": map[string]interface{}{"name": "did:example:victim"},
+			},
+			wantErr: "issuer must be a string or an object with a string id",
+		},
+		{
+			name:    "issuer as an object whose id is not a string",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{
+				"iss":    "did:example:attacker",
+				"issuer": map[string]interface{}{"id": 123},
+			},
+			wantErr: "issuer must be a string or an object with a string id",
+		},
+		{
+			name:    "holder as an array on a presentation",
+			purpose: vpPurpose,
+			payload: map[string]interface{}{
+				"iss":    "did:example:attacker",
+				"holder": []interface{}{"did:example:victim"},
+			},
+			wantErr: "holder must be a string or an object with a string id",
+		},
+		{
+			// The VC 1.1 shape: the document lives under vc, so that is the map
+			// both presence and value are read from.
+			name:    "vc.issuer as an array",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{
+				"iss": "did:example:attacker",
+				"vc":  map[string]interface{}{"issuer": []interface{}{"did:example:victim"}},
+			},
+			wantErr: "issuer must be a string or an object with a string id",
+		},
+		{
+			// Absent is still fine: iss alone names the signer.
+			name:       "no issuer at all, iss alone",
+			purpose:    vcPurpose,
+			payload:    map[string]interface{}{"iss": "did:example:attacker"},
+			wantSigner: "did:example:attacker",
+		},
 	}
 
 	for _, tc := range cases {

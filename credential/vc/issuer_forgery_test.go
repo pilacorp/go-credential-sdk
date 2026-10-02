@@ -382,3 +382,112 @@ func TestVC_IssuerForgeryThroughTheSignerBinding(t *testing.T) {
 		})
 	}
 }
+
+// didFromClaim reads a DID from a string or from an object with a string id.
+// Anything else returned "" — and "" was indistinguishable from "the field is
+// absent", which is the one case that legitimately leaves the signer to iss. So
+// an issuer the function could not read was treated as an issuer that was not
+// there, and the mismatch branch never ran.
+//
+// Three shapes, on both token layouts, through the entry point a consumer uses.
+func TestVC_IssuerShapesThatNameNoDID(t *testing.T) {
+	const (
+		attackerDID = "did:example:shape-attacker"
+		victimDID   = "did:example:shape-victim"
+	)
+
+	attackerKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen attacker key: %v", err)
+	}
+	victimKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen victim key: %v", err)
+	}
+	attackerVM := mustP256VM(t, attackerDID, "key-1", &attackerKey.PublicKey)
+	victimVM := mustP256VM(t, victimDID, "key-1", &victimKey.PublicKey)
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(attackerDID, attackerVM),
+		vmpkg.NewDIDDocument(victimDID, victimVM),
+	)
+	prov, err := signer.NewP256Provider(attackerKey)
+	if err != nil {
+		t.Fatalf("attacker provider: %v", err)
+	}
+
+	shapes := map[string]interface{}{
+		"an array":                       []interface{}{victimDID},
+		"an object without an id":        map[string]interface{}{"name": victimDID},
+		"an object whose id is a number": map[string]interface{}{"id": 123},
+	}
+
+	for shapeName, issuer := range shapes {
+		for _, layout := range []struct {
+			name    string
+			typ     string
+			payload func(interface{}) map[string]interface{}
+		}{
+			{
+				name: "vc+jwt",
+				typ:  "vc+jwt",
+				payload: func(iss interface{}) map[string]interface{} {
+					return map[string]interface{}{
+						"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+						"type":              []interface{}{"VerifiableCredential"},
+						"iss":               attackerDID,
+						"issuer":            iss,
+						"credentialSubject": map[string]interface{}{"id": "did:example:subject", "role": "admin"},
+					}
+				},
+			},
+			{
+				name: "VC 1.1",
+				typ:  "JWT",
+				payload: func(iss interface{}) map[string]interface{} {
+					return map[string]interface{}{
+						"iss": attackerDID,
+						"vc": map[string]interface{}{
+							"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+							"type":              []interface{}{"VerifiableCredential"},
+							"issuer":            iss,
+							"credentialSubject": map[string]interface{}{"id": "did:example:subject", "role": "admin"},
+						},
+					}
+				},
+			},
+		} {
+			t.Run(layout.name+"/"+shapeName, func(t *testing.T) {
+				header, err := json.Marshal(map[string]interface{}{
+					"typ": layout.typ, "alg": "ES256", "kid": attackerVM.ID,
+				})
+				if err != nil {
+					t.Fatalf("marshal header: %v", err)
+				}
+				body, err := json.Marshal(layout.payload(issuer))
+				if err != nil {
+					t.Fatalf("marshal body: %v", err)
+				}
+				signingInput := base64.RawURLEncoding.EncodeToString(header) + "." +
+					base64.RawURLEncoding.EncodeToString(body)
+				sig, err := jwtpkg.NewJWTSigner(prov).SignString(signingInput)
+				if err != nil {
+					t.Fatalf("sign: %v", err)
+				}
+
+				cred, err := vc.ParseCredential([]byte(signingInput+"."+sig), vc.WithResolver(resolver))
+				if err != nil {
+					return // refused at parse is also a refusal
+				}
+
+				err = cred.Verify(vc.WithResolver(resolver))
+				if err == nil {
+					t.Fatalf("a credential signed by %s verified as issued by %v",
+						attackerDID, cred.ExtractField("issuer"))
+				}
+				if !strings.Contains(err.Error(), "must be a string or an object with a string id") {
+					t.Fatalf("refused, but not for the unreadable issuer: %v", err)
+				}
+			})
+		}
+	}
+}
