@@ -121,11 +121,20 @@ func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, v
 	// low-S fold below honest: that fold uses secp256k1's order, and folding a
 	// P-256 s by the wrong order would quietly corrupt the signature.
 	//
+	// Compared by the curve's order, not by the Curve value. elliptic.Curve is an
+	// interface, so != compares the dynamic type and pointer: go-ethereum hands
+	// back *secp256k1.BitCurve and btcec/decred *secp256k1.KoblitzCurve, two
+	// objects describing the same curve. Comparing them refused a correct key,
+	// and said so in a sentence that contradicted itself — "needs a secp256k1
+	// key, but ... holds a secp256k1 key". The order identifies the curve and
+	// every implementation agrees on it.
+	//
 	// Only checkable when the caller named the key. Both paths inside this SDK
 	// do (WithVMPublicKey from vc.JSONCredential and vp.JSONPresentation); a
 	// caller reaching this exported method directly without it gets the
 	// verifier's refusal instead.
-	if vmPub := options.vmPub; vmPub != nil && vmPub.Curve != ethcrypto.S256() {
+	if vmPub := options.vmPub; vmPub != nil &&
+		vmPub.Curve.Params().N.Cmp(ethcrypto.S256().Params().N) != 0 {
 		return fmt.Errorf(
 			"jsonmap: %s needs a secp256k1 key, but verification method %q holds a %s key",
 			EcdsaSecp256k1Signature2019, verificationMethod, vmPub.Curve.Params().Name)

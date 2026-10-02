@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	btcec "github.com/btcsuite/btcd/btcec/v2"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -459,6 +460,48 @@ func TestEnsureSecp256k1SuiteContext_Shapes(t *testing.T) {
 				t.Fatalf("@context = %#v, want %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+// elliptic.Curve is an interface, so comparing it with != compares the dynamic
+// type and pointer. go-ethereum parses a secp256k1 key into
+// *secp256k1.BitCurve and btcec/decred into *secp256k1.KoblitzCurve — the same
+// curve, two objects — so the curve check refused a correct key, and its message
+// read "needs a secp256k1 key, but ... holds a secp256k1 key".
+//
+// The SDK's own vc/vp paths never saw it because ECPubFromVM always parses with
+// go-ethereum. AddEcdsaSecp256k1Proof is exported, so a caller passing a key from
+// another library did.
+func TestSecp256k1Suite_AcceptsASecp256k1KeyFromAnotherLibrary(t *testing.T) {
+	priv, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("gen secp256k1: %v", err)
+	}
+	prov, err := signer.NewDefaultProvider(hex.EncodeToString(ethcrypto.FromECDSA(priv)))
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+
+	// The same public key, parsed by btcec rather than go-ethereum.
+	parsed, err := btcec.ParsePubKey(ethcrypto.CompressPubkey(&priv.PublicKey))
+	if err != nil {
+		t.Fatalf("btcec parse: %v", err)
+	}
+	btcPub := parsed.ToECDSA()
+	if btcPub.X.Cmp(priv.PublicKey.X) != 0 {
+		t.Fatal("the fixture is not the same key")
+	}
+	if btcPub.Curve == ethcrypto.S256() {
+		t.Skip("btcec and go-ethereum now share one Curve value; this test has nothing to catch")
+	}
+
+	m := testCredential()
+	if err := (&m).AddEcdsaSecp256k1Proof(prov, "did:example:issuer#key-1", "assertionMethod",
+		WithVMPublicKey(btcPub)); err != nil {
+		t.Fatalf("a secp256k1 key from another library was refused: %v", err)
+	}
+	if _, has := m["proof"]; !has {
+		t.Fatal("no proof was attached")
 	}
 }
 
