@@ -184,12 +184,13 @@ func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, 
 // got through while only the parser knew it. Teaching a parser a new media type
 // means teaching this function the same one.
 //
-// The sd-jwt media types are absent because no parser routes them any more;
-// listing a typ nothing accepts would be a branch no entry point can reach.
+// vp+sd-jwt is absent because vp.isJOSEPresentationTyp does not accept it
+// either: a presentation secured as an SD-JWT needs a key binding JWT, which
+// this package does not check, so neither end claims support it.
 func purposeFromTyp(header map[string]interface{}) string {
 	typ, _ := header["typ"].(string)
 	switch typ {
-	case "vc+jwt", "application/vc+jwt":
+	case "vc+jwt", "application/vc+jwt", "vc+sd-jwt", "application/vc+sd-jwt":
 		return "assertionMethod"
 	case "vp+jwt", "application/vp+jwt":
 		return "authentication"

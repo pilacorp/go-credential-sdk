@@ -148,6 +148,46 @@ func requireSecuredClaimsSigned(signed, reconstructed map[string]interface{}) er
 	return nil
 }
 
+// rejectPrebuiltDisclosures refuses WithSDDisclosures on a builder.
+//
+// The builder generates _sd itself from WithSDSelectivePaths, with a fresh salt
+// each time, so a disclosure made anywhere else hashes to a digest this payload
+// does not contain. Attaching it produced a token this SDK's own parser refuses:
+// not a theoretical mismatch — handing back a disclosure a previous build of the
+// very same contents produced fails too, because the salt changed.
+//
+// Refused rather than removed, because the option is exported and shipped.
+func rejectPrebuiltDisclosures(o *credentialOptions) error {
+	if len(o.sdDisclosures) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf("WithSDDisclosures cannot be applied when building a credential: " +
+		"the builder generates the digests itself, so a disclosure made elsewhere matches " +
+		"none of them — to re-assemble a stored credential use ParseJWTCredential or " +
+		"ParseJOSECredential, to reveal a subset use Present")
+}
+
+// requireDisclosableAtTopLevel refuses a payload whose root carries _sd.
+//
+// Selective disclosure is for claims about the subject. At the top level of a
+// credential there is no property a verifier does not decide on — @context,
+// type, issuer, the validity window, credentialStatus — and hiding one there
+// moves it outside the signature, under whoever holds the token.
+//
+// The check has to be on _sd rather than on the property names, because a
+// withheld disclosure leaves only a digest and a digest does not record what it
+// stood for. _sd_alg is fine: BuildDisclosures writes it at the root whatever
+// the paths were, so refusing it would refuse every SD-JWT.
+func requireDisclosableAtTopLevel(m map[string]interface{}) error {
+	if _, ok := m["_sd"]; ok {
+		return fmt.Errorf(
+			"the payload carries _sd at the root; selective disclosure — and the decoy digests that pad it — belong to claims inside credentialSubject, because nothing at the top level may be withheld")
+	}
+
+	return nil
+}
+
 // requireV2Context enforces VCDM 2.0 §4.2: the v2 URL comes first. The data
 // model asks for an ordered set, but a lone string means the same thing and is
 // accepted rather than turned into a second way to fail.

@@ -40,6 +40,9 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 
 	vcMap := normalizeCredentialData(m)
 	options := getOptions(opts...)
+	if err := rejectPrebuiltDisclosures(options); err != nil {
+		return nil, err
+	}
 
 	result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
 		VC:             vcMap,
@@ -53,7 +56,12 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 	}
 	vcMap = result.ProcessedVC
 	disclosures := result.Disclosures
-	disclosures = append(disclosures, options.sdDisclosures...)
+
+	// Same rule the parse side applies: a top-level property must not be
+	// disclosable. Reachable here through WithSDDecoyDigests with a root path.
+	if err := requireDisclosableAtTopLevel(vcMap); err != nil {
+		return nil, err
+	}
 
 	payloadData := CredentialData(vcMap)
 
