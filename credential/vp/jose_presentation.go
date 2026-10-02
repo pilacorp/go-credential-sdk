@@ -14,6 +14,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"golang.org/x/sync/errgroup"
 )
@@ -43,6 +44,13 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 
 	payloadData := PresentationData(m)
 	options := getOptions(opts...)
+
+	// Refuse before signing what ParseJOSEPresentation would refuse after. The
+	// caller's own @context survives the default above, so a v1 document used to
+	// be signed under a vp+jwt label with nothing objecting.
+	if err := requireJOSEPresentation(payloadData); err != nil {
+		return nil, err
+	}
 
 	// Embedded credentials become EnvelopedVerifiableCredential entries, which
 	// vc-jose-cose requires ("Verifiable Credentials secured in verifiable
@@ -189,6 +197,17 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 		return nil, fmt.Errorf("invalid vc-jose-cose: 'vp' claim MUST NOT be present in payload")
 	}
 
+	// Both checks run unconditionally. They decide whether this payload is a
+	// well-formed vp+jwt at all, which is not something to gate behind
+	// WithVCValidation — that option asks for the embedded credentials to be
+	// verified, a different and far more expensive question.
+	if err := requireJOSEPresentation(PresentationData(payloadMap)); err != nil {
+		return nil, err
+	}
+	if err := requireEnvelopedCredentials(PresentationData(payloadMap)); err != nil {
+		return nil, err
+	}
+
 	signingInput := headerEncoded + "." + payloadEncoded
 
 	e := &JOSEPresentation{
@@ -210,10 +229,70 @@ const TypeVPJWT = "vp+jwt"
 // consumers branch on the value.
 const TypeJOSE = "JOSE"
 
+// typeVerifiablePresentation is the type every presentation names, whatever else
+// it adds alongside.
+const typeVerifiablePresentation = "VerifiablePresentation"
+
 // isJOSEPresentationTyp reports whether typ names a presentation secured the
 // way vc-jose-cose defines, in either media type spelling.
+//
+// jwt.purposeFromTyp has to recognise every value accepted here, or a token this
+// function routes would have its kind decided by its own payload. Adding one
+// means adding it there.
 func isJOSEPresentationTyp(typ string) bool {
 	return typ == TypeVPJWT || typ == "application/"+TypeVPJWT
+}
+
+// requireJOSEPresentation checks the payload really is the VC 2.0 presentation
+// its vp+jwt media type claims.
+//
+// A signature proves who produced the bytes, not what the bytes are, and
+// vc-jose-cose § Validation requires the document handed back after verification
+// to be a well-formed VCDM 2.0 document. Without this a payload of
+// {"holder": "did:..."} — no @context, no type — verified to nil and was returned
+// as a presentation, and a VC 1.1 document could be signed under a 2.0 label.
+// The credential side has had requireJOSECredential all along; this is its
+// counterpart.
+func requireJOSEPresentation(m PresentationData) error {
+	if first := vcdm.FirstContext(m["@context"]); first != vcdm.ContextV2 {
+		return fmt.Errorf("%s payload must name %q first in @context, got %q",
+			TypeVPJWT, vcdm.ContextV2, first)
+	}
+	if !vcdm.HasType(m["type"], typeVerifiablePresentation) {
+		return fmt.Errorf("%s payload must have type %s", TypeVPJWT, typeVerifiablePresentation)
+	}
+
+	return nil
+}
+
+// requireEnvelopedCredentials holds the credentials inside a vp+jwt to
+// vc-jose-cose § 3.1.2: "Verifiable Credentials secured in verifiable
+// presentations MUST use the Enveloped Verifiable Credential type".
+//
+// NewJOSEPresentation already envelopes what it carries and refuses a Data
+// Integrity credential outright, but nothing checked the other direction: a bare
+// vc+jwt string, or a bare JSON-LD credential object, verified to nil inside a
+// vp+jwt. Both lose the data: URL that tells an outside verifier which mechanism
+// secured the token, leaving it to guess.
+//
+// This cannot live in verifyCredentials, which the VP-JWT 1.1 and JSON-LD paths
+// share: those carry their credentials bare, and legitimately so.
+func requireEnvelopedCredentials(m PresentationData) error {
+	items, ok := m["verifiableCredential"].([]interface{})
+	if !ok {
+		return nil // No credentials to hold to anything.
+	}
+
+	for i, item := range items {
+		entry, ok := item.(map[string]interface{})
+		if !ok || !vcdm.HasType(entry["type"], vc.TypeEnvelopedVC) {
+			return fmt.Errorf(
+				"credential at index %d must be an %s; a %s carries credentials enveloped, not bare",
+				i, vc.TypeEnvelopedVC, TypeVPJWT)
+		}
+	}
+
+	return nil
 }
 
 // envelopeMediaType names the scheme that secured a token, for the data: URL an

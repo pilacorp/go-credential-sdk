@@ -216,6 +216,13 @@ func WithExpectedDomain(domain string) PresentationOpt {
 //
 // Without it, a presentation minted for one verifier still verifies at another,
 // which is the replay the aud claim exists to prevent.
+//
+// It applies to presentations secured as JWTs — JWT and vp+jwt — which are the
+// ones carrying an aud claim. A JSON-LD presentation names its verifier in
+// proof.domain instead and has no aud, so this option has no effect there: use
+// WithExpectedDomain, which that path does check. Passing it to a JSON-LD
+// presentation is not an error, so do not read a successful Verify as evidence
+// that an audience was enforced.
 func WithRequireAudience() PresentationOpt {
 	return func(p *presentationOptions) {
 		p.requireAudience = true

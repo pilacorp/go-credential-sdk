@@ -13,6 +13,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -175,20 +176,11 @@ func requireCredentialType(v interface{}) error {
 	return fmt.Errorf("credential type must include VerifiableCredential, got %v", v)
 }
 
-// hasType reports whether a type property names want. The property is an array
-// in the data model, but a single type is commonly written as a bare string.
+// hasType reports whether a type property names want. Shared with the vp package
+// through internal/vcdm, because both decide the same thing about the same data
+// model and two copies of that rule would drift.
 func hasType(v interface{}, want string) bool {
-	switch t := v.(type) {
-	case string:
-		return t == want
-	case []interface{}:
-		for _, e := range t {
-			if s, ok := e.(string); ok && s == want {
-				return true
-			}
-		}
-	}
-	return false
+	return vcdm.HasType(v, want)
 }
 
 // isEmptyValue treats absent, null, "" and empty arrays/objects alike.
