@@ -9,6 +9,7 @@ import (
 	"time"
 
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 // JWTVerifier handles JWT verification operations. It always enforces the
@@ -339,7 +340,7 @@ func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
 		return nil, fmt.Errorf("invalid payload JSON: %w", err)
 	}
 
-	sec, ok, err := numericClaim(body, "iat")
+	sec, ok, err := jwtutil.NumericClaim(body, "iat")
 	if err != nil || !ok {
 		return nil, err
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 type JWTPresentation struct {
@@ -288,20 +289,21 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 		if err := checkExpiration(PresentationData(j.payloadData)); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
-		if err := jwt.CheckTimeClaims(j.jwtClaims, time.Now()); err != nil {
+		if err := jwtutil.CheckTimeClaims(j.jwtClaims, time.Now()); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 
 	if options.isVerifyProof {
-		serialized, err := j.Serialize()
-		if err != nil {
-			return fmt.Errorf("failed to serialize presentation: %w", err)
+		// Same reason as the vp+jwt path: Serialize returns any and, when there
+		// is no signature, returns the two-segment signing input — which reaches
+		// VerifyJWT as "invalid JWT format" instead of saying it is unsigned.
+		if j.signature == "" {
+			return fmt.Errorf("presentation is not signed")
 		}
 
 		verifier := jwt.NewJWTVerifier(options.resolver)
-		err = verifier.VerifyJWT(serialized.(string))
-		if err != nil {
+		if err := verifier.VerifyJWT(j.signingInput + "." + j.signature); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 		if err := j.checkChallengeAndDomain(options); err != nil {

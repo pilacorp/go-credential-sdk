@@ -124,3 +124,60 @@ func TestJWTCredential_ChecksExpAndNbf(t *testing.T) {
 		})
 	}
 }
+
+// NewJOSECredential and ParseJOSECredential now run the same check, so the SDK
+// cannot sign a document its own verifier refuses.
+//
+// serializeCredentialContents already caught a missing type, issuer or
+// credentialSubject. The gap was a type that exists without naming
+// VerifiableCredential: that signed cleanly and failed at the far end, where the
+// error reaches whoever received the credential rather than whoever made it.
+func TestNewJOSECredential_RefusesWhatParseWouldRefuse(t *testing.T) {
+	const did = "did:example:jose-build-shape"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	contents := func() vc.CredentialContents {
+		return vc.CredentialContents{
+			Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+			Types:     []string{"VerifiableCredential"},
+			Issuer:    did,
+			ValidFrom: time.Now().Add(-time.Hour),
+			Subject:   []vc.Subject{{ID: "did:example:subject"}},
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		types   []string
+		wantErr string
+	}{
+		{name: "a credential", types: []string{"VerifiableCredential"}},
+		{name: "a credential with extra types", types: []string{"VerifiableCredential", "AlumniCredential"}},
+		{name: "a custom type alone", types: []string{"AlumniCredential"}, wantErr: "must include VerifiableCredential"},
+		{name: "a presentation type", types: []string{"VerifiablePresentation"}, wantErr: "must include VerifiableCredential"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := contents()
+			c.Types = tc.types
+
+			_, err := vc.NewJOSECredential(c, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("a well-formed credential was refused: %v", err)
+				}
+
+				return
+			}
+			if err == nil {
+				t.Fatal("a document its own verifier refuses was signed")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want one mentioning %q", err, tc.wantErr)
+			}
+		})
+	}
+}

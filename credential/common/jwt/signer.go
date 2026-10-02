@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 // JWTSigner handles JWT signing operations
@@ -31,16 +32,5 @@ func (s *JWTSigner) SignString(signingString string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("jwt signer: failed to sign digest: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(TrimRecoveryByte(signature)), nil
-}
-
-// TrimRecoveryByte drops the recovery byte a secp256k1 signer appends (r||s||v);
-// RFC 7518 §3.4 defines a JWS ECDSA signature as the raw r||s pair. Exported so
-// the external-signing entry points agree with the signing paths here — the same
-// key must not produce a token that verifies one way and not the other.
-func TrimRecoveryByte(signature []byte) []byte {
-	if len(signature) == 65 {
-		return signature[:64]
-	}
-	return signature
+	return base64.RawURLEncoding.EncodeToString(jwtutil.TrimRecoveryByte(signature)), nil
 }

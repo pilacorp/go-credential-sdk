@@ -14,6 +14,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"golang.org/x/sync/errgroup"
@@ -72,7 +73,15 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 			if err != nil {
 				return nil, fmt.Errorf("failed to serialize credential at index %d: %w", i, err)
 			}
-			credStr, _ := serialized.(string)
+			// The assertion cannot be skipped here: signingInput and signature
+			// belong to vc.JOSECredential and are not reachable from this package.
+			// Swallowing a failed assertion left credStr empty, and the error then
+			// came out of envelopeMediaType as "credential is not signed" — right
+			// by accident, about the wrong thing.
+			credStr, ok := serialized.(string)
+			if !ok {
+				return nil, fmt.Errorf("credential at index %d serialized to %T, want a token string", i, serialized)
+			}
 			mediaType, err := envelopeMediaType(credStr)
 			if err != nil {
 				return nil, fmt.Errorf("credential at index %d: %w", i, err)
@@ -101,7 +110,7 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 
 	// Without iat the verifier has no signing time to compare a soft revocation
 	// against, and would have to guess one from validFrom — a different fact.
-	jwt.SetIssuedAt(payloadData, time.Now())
+	jwtutil.SetIssuedAt(payloadData, time.Now())
 
 	// Resolve the Verification Method and derive the JOSE alg
 	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vpc.Holder,
@@ -412,19 +421,23 @@ func (j *JOSEPresentation) executeOptions(opts ...PresentationOpt) error {
 
 	if options.isVerifyProof {
 		g.Go(func() error {
-			serialized, err := j.Serialize()
-			if err != nil {
-				return fmt.Errorf("serialize presentation: %w", err)
+			// Built from the fields rather than through Serialize, which returns
+			// any and so needs a type assertion back — and which returns the
+			// unsigned two-segment input when there is no signature, leaving
+			// VerifyJWT to report "invalid JWT format" about a presentation whose
+			// only problem is that nobody signed it.
+			if j.signature == "" {
+				return fmt.Errorf("presentation is not signed")
 			}
 
 			verifier := jwt.NewJWTVerifier(options.resolver)
-			if err := verifier.VerifyJWT(serialized.(string)); err != nil {
+			if err := verifier.VerifyJWT(j.signingInput + "." + j.signature); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
 			// exp and nbf bound the signature, not the presentation, so they
 			// belong to this check and not to the optional expiry check on
 			// validFrom/validUntil.
-			if err := jwt.CheckTimeClaims(j.payloadData, time.Now()); err != nil {
+			if err := jwtutil.CheckTimeClaims(j.payloadData, time.Now()); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
 			if err := j.checkChallengeAndDomain(options); err != nil {

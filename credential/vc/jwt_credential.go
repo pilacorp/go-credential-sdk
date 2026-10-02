@@ -15,6 +15,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -407,7 +408,7 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 		if err := checkExpiration(j.payloadData); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
-		if err := jwt.CheckTimeClaims(j.jwtClaims, time.Now()); err != nil {
+		if err := jwtutil.CheckTimeClaims(j.jwtClaims, time.Now()); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}

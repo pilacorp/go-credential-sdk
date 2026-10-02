@@ -15,6 +15,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -48,6 +49,17 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 	vcMap := normalizeCredentialData(m)
 	options := getOptions(opts...)
 
+	// The same check ParseJOSECredential runs, so the two ends cannot disagree
+	// about what a vc+jwt is. serializeCredentialContents already refuses a
+	// missing type, issuer or credentialSubject, which left one gap: a type that
+	// exists but does not name VerifiableCredential — ["AlumniCredential"] alone,
+	// or ["VerifiablePresentation"] — signed here and then refused by the
+	// verifier. Running the whole function rather than only the part that gap
+	// needs is the point: one function, both ends.
+	if err := requireJOSECredential(CredentialData(vcMap)); err != nil {
+		return nil, err
+	}
+
 	// Selective disclosure is not part of vc+jwt here. vc-jose-cose gives SD-JWT
 	// its own media type (vc+sd-jwt) and its own rules — which properties may be
 	// disclosed, how the envelope in a presentation is labelled, how a key
@@ -66,7 +78,7 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 
 	// Without iat the verifier has no signing time to compare a soft revocation
 	// against, and would have to guess one from validFrom — a different fact.
-	jwt.SetIssuedAt(vcMap, time.Now())
+	jwtutil.SetIssuedAt(vcMap, time.Now())
 
 	payloadData := CredentialData(vcMap)
 
@@ -284,7 +296,7 @@ func (j *JOSECredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	// A rejected proof is rolled back, so a failed call leaves the credential as
 	// it found it.
 	previous := j.signature
-	j.signature = base64.RawURLEncoding.EncodeToString(jwt.TrimRecoveryByte(proof.Signature))
+	j.signature = base64.RawURLEncoding.EncodeToString(jwtutil.TrimRecoveryByte(proof.Signature))
 	if err := j.executeOptions(opts...); err != nil {
 		j.signature = previous
 		return err
@@ -376,7 +388,7 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 			// exp and nbf bound the signature, not the credential, so they
 			// belong to this check and not to the optional expiry check on
 			// validFrom/validUntil.
-			if err := jwt.CheckTimeClaims(j.payloadData, time.Now()); err != nil {
+			if err := jwtutil.CheckTimeClaims(j.payloadData, time.Now()); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
 			return nil
