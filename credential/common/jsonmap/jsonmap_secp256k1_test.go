@@ -2,6 +2,9 @@ package jsonmap
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,6 +18,7 @@ import (
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -455,5 +459,51 @@ func TestEnsureSecp256k1SuiteContext_Shapes(t *testing.T) {
 				t.Fatalf("@context = %#v, want %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+// The suite binds to a secp256k1 key. Signing with a P-256 one used to succeed
+// and fail only at the verifier — and on the way it ran the signature through a
+// low-S fold that uses secp256k1's order, which for a P-256 s above that curve's
+// halfway point rewrites the signature into something no key produced.
+func TestSecp256k1Suite_RefusesANonSecp256k1KeyAtSigningTime(t *testing.T) {
+	p256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	prov, err := signer.NewP256Provider(p256)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	m := testCredential()
+	err = (&m).AddEcdsaSecp256k1Proof(prov, "did:example:issuer#key-1", "assertionMethod",
+		WithVMPublicKey(&p256.PublicKey))
+	if err == nil {
+		t.Fatal("a P-256 key signed an EcdsaSecp256k1Signature2019 proof")
+	}
+	if !strings.Contains(err.Error(), "needs a secp256k1 key") {
+		t.Fatalf("err = %v, want it to name the curve mismatch", err)
+	}
+	if _, has := m["proof"]; has {
+		t.Fatal("a refused call still attached a proof")
+	}
+}
+
+// The fold itself, with the curve it is entitled to assume. n-1 is the highest
+// s there is, so it must come back as 1.
+func TestJoseSecp256k1Signature_FoldsAgainstTheSecp256k1Order(t *testing.T) {
+	n := ethcrypto.S256().Params().N
+
+	in := make([]byte, 64)
+	in[31] = 1
+	new(big.Int).Sub(n, big.NewInt(1)).FillBytes(in[32:])
+
+	out, err := joseSecp256k1Signature(in)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if got := new(big.Int).SetBytes(out[32:]); got.Cmp(big.NewInt(1)) != 0 {
+		t.Fatalf("s = %s, want 1", got)
 	}
 }

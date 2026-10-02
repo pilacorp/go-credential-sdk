@@ -114,6 +114,23 @@ func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, v
 	}
 
 	options := newProofOptions(opts...)
+
+	// The suite binds to a secp256k1 key, so refuse another curve before
+	// signing rather than at the verifier — the same check
+	// verifyEcdsaSecp256k1Proof makes with VMIsSecp256k1. It also keeps the
+	// low-S fold below honest: that fold uses secp256k1's order, and folding a
+	// P-256 s by the wrong order would quietly corrupt the signature.
+	//
+	// Only checkable when the caller named the key. Both paths inside this SDK
+	// do (WithVMPublicKey from vc.JSONCredential and vp.JSONPresentation); a
+	// caller reaching this exported method directly without it gets the
+	// verifier's refusal instead.
+	if vmPub := options.vmPub; vmPub != nil && vmPub.Curve != ethcrypto.S256() {
+		return fmt.Errorf(
+			"jsonmap: %s needs a secp256k1 key, but verification method %q holds a %s key",
+			EcdsaSecp256k1Signature2019, verificationMethod, vmPub.Curve.Params().Name)
+	}
+
 	proof := &dto.Proof{
 		Type:               EcdsaSecp256k1Signature2019,
 		Created:            time.Now().UTC().Format(time.RFC3339),
@@ -256,8 +273,9 @@ func (m *JSONMap) secp256k1SigningInput(proof *dto.Proof, encHeader string) ([]b
 // joseSecp256k1Signature normalizes a secp256k1 signature to the one 64-byte
 // r||s form JOSE expects: go-ethereum's trailing recovery byte is dropped, and
 // s is folded into the low half of the order. go-ethereum already signs low-S,
-// so the fold normally changes nothing — it is here so that a provider which
-// does not cannot produce a proof this SDK's own verifier refuses.
+// so the fold normally changes nothing. It is here for a provider that does not:
+// without it, such a provider would produce a proof this SDK's own verifier
+// refuses.
 func joseSecp256k1Signature(sig []byte) ([]byte, error) {
 	switch len(sig) {
 	case 65:
