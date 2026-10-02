@@ -13,14 +13,20 @@ import (
 	"time"
 )
 
-// SetIssuedAt records when the signing input was fixed, which is what the
-// soft-revocation check compares against. Per vc-jose-cose § Claims these time
-// claims describe the signature, not the credential, and are "different from
-// the validFrom and validUntil properties" — so nothing here is derived from
-// the validity period. exp is left out because the SDK has no signature expiry
-// policy to state, and nbf because the spec calls its use NOT RECOMMENDED.
-func SetIssuedAt(payload map[string]interface{}, signedAt time.Time) {
-	payload["iat"] = signedAt.Unix()
+// SetIssuedAt records when the signing input was fixed — which is when the
+// credential or presentation was built, not when it was signed. The two are the
+// same moment for AddProofByProvider and can be far apart for AddCustomProof,
+// where an HSM or an approval step signs later; a signature attached then does
+// not move iat, because moving it would change the bytes the signature covers.
+//
+// That is what the soft-revocation check compares against. Per vc-jose-cose
+// § Claims these time claims describe the signature, not the credential, and are
+// "different from the validFrom and validUntil properties" — so nothing here is
+// derived from the validity period. exp is left out because the SDK has no
+// signature expiry policy to state, and nbf because the spec calls its use NOT
+// RECOMMENDED.
+func SetIssuedAt(payload map[string]interface{}, builtAt time.Time) {
+	payload["iat"] = builtAt.Unix()
 }
 
 // CheckTimeClaims enforces RFC 7519 §4.1.4–4.1.5: a JWT "MUST NOT be accepted

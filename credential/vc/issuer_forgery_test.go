@@ -267,3 +267,118 @@ func TestVC_IssuerForgeryThroughProofPurposeRouting(t *testing.T) {
 		})
 	}
 }
+
+// The routing cases above all turn on an ambiguous type. These turn on the two
+// bindings that run after it, and neither had a test reaching them through
+// ParseCredential — only through jwt.VerifyJWT directly, which a consumer never
+// calls.
+//
+//	iss must match issuer   — the signer names itself in iss, the credential
+//	                          names its issuer, and a credential signed by one
+//	                          party on behalf of another is a forgery.
+//	resolve by the body      — the DID document comes from the issuer the body
+//	                          names, not from the DID prefix of kid, so a kid
+//	                          pointing into the attacker's own document does not
+//	                          get resolved there.
+func TestVC_IssuerForgeryThroughTheSignerBinding(t *testing.T) {
+	const (
+		attackerDID = "did:example:binding-attacker"
+		victimDID   = "did:example:binding-victim"
+	)
+
+	attackerKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen attacker key: %v", err)
+	}
+	victimKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen victim key: %v", err)
+	}
+	attackerVM := mustP256VM(t, attackerDID, "key-1", &attackerKey.PublicKey)
+	victimVM := mustP256VM(t, victimDID, "key-1", &victimKey.PublicKey)
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(attackerDID, attackerVM),
+		vmpkg.NewDIDDocument(victimDID, victimVM),
+	)
+	prov, err := signer.NewP256Provider(attackerKey)
+	if err != nil {
+		t.Fatalf("attacker provider: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		claims  map[string]interface{} // merged over the payload
+		wantErr string
+	}{
+		{
+			// iss and issuer disagree: the attacker admits who signed, and
+			// claims the credential belongs to someone else.
+			name:    "iss names the attacker, issuer names the victim",
+			claims:  map[string]interface{}{"iss": attackerDID, "issuer": victimDID},
+			wantErr: "does not match",
+		},
+		{
+			// No iss at all, so issuer is the only signer the body names. The
+			// document resolved is the victim's, and the attacker's kid is not
+			// in it.
+			name:    "no iss, issuer names the victim, kid points at the attacker",
+			claims:  map[string]interface{}{"issuer": victimDID},
+			wantErr: "failed to resolve verification method",
+		},
+		{
+			// The honest shape, for contrast: the attacker issuing its own
+			// credential with its own key has to work.
+			name:   "the attacker issuing its own credential",
+			claims: map[string]interface{}{"iss": attackerDID, "issuer": attackerDID},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]interface{}{
+				"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+				"type":              []interface{}{"VerifiableCredential"},
+				"credentialSubject": map[string]interface{}{"id": "did:example:subject", "role": "admin"},
+			}
+			for k, v := range tc.claims {
+				payload[k] = v
+			}
+
+			header, err := json.Marshal(map[string]interface{}{
+				"typ": "vc+jwt", "alg": "ES256", "kid": attackerVM.ID,
+			})
+			if err != nil {
+				t.Fatalf("marshal header: %v", err)
+			}
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+			signingInput := base64.RawURLEncoding.EncodeToString(header) + "." +
+				base64.RawURLEncoding.EncodeToString(body)
+			sig, err := jwtpkg.NewJWTSigner(prov).SignString(signingInput)
+			if err != nil {
+				t.Fatalf("sign: %v", err)
+			}
+
+			cred, err := vc.ParseCredential([]byte(signingInput+"."+sig), vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("refused at parse, so the signer binding was never reached: %v", err)
+			}
+
+			err = cred.Verify(vc.WithResolver(resolver))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("an honest credential was refused: %v", err)
+				}
+
+				return
+			}
+			if err == nil {
+				t.Fatalf("a credential signed by %s verified as issued by %v",
+					attackerDID, cred.ExtractField("issuer"))
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want one mentioning %q", err, tc.wantErr)
+			}
+		})
+	}
+}
