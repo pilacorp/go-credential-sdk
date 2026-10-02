@@ -14,7 +14,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"golang.org/x/sync/errgroup"
 )
@@ -26,6 +25,7 @@ type JOSECredential struct {
 	signingInput string         // JWS header.payload (base64 encoded)
 	payloadData  CredentialData // Unsecured VC as CredentialData
 	signature    string         // JWS signature (if signed)
+	signingKey   jwt.SigningKey // Verification method the header names; zero for a parsed credential
 }
 
 var _ Credential = (*JOSECredential)(nil)
@@ -82,19 +82,14 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 
 	payloadData := CredentialData(vcMap)
 
-	// Resolve the Verification Method and derive the JOSE alg
-	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vcc.Issuer,
+	// Resolve the verification method the header will name, and keep it: every
+	// signing path checks the signature it is handed against this key before
+	// attaching it, so a signature made by another key fails here rather than at
+	// whoever receives the credential.
+	signingKey, err := jwt.ResolveSigningKey(context.Background(), vcc.Issuer,
 		"assertionMethod", options.verificationMethodKey, options.resolver)
 	if err != nil {
-		return nil, fmt.Errorf("resolve verification method: %w", err)
-	}
-	kind, ok := verificationmethod.VMKeyKind(vm)
-	if !ok {
-		return nil, fmt.Errorf("verification method %q has an unrecognized key type", kid)
-	}
-	alg, err := jwt.AlgForKeyKind(kind)
-	if err != nil {
-		return nil, fmt.Errorf("verification method %q: %w", kid, err)
+		return nil, err
 	}
 
 	// typ names the securing mechanism. Only JWS is secured here, so the value is
@@ -103,8 +98,8 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 	// signature.
 	header := map[string]interface{}{
 		"typ": TypeVCJWT,
-		"alg": alg,
-		"kid": kid,
+		"alg": signingKey.Alg,
+		"kid": signingKey.ID,
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -125,6 +120,7 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 		signingInput: signingInput,
 		payloadData:  payloadData,
 		signature:    "",
+		signingKey:   signingKey,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -262,26 +258,42 @@ func (j *JOSECredential) AddProofByProvider(signerProvider signer.SignerProvider
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
-	jwtSigner := jwt.NewJWTSigner(signerProvider)
-	signature, err := jwtSigner.SignString(j.signingInput)
+	if err := rejectBuildTimeOptions(getOptions(opts...)); err != nil {
+		return err
+	}
+	if err := j.executeOptions(signingOptions(opts)...); err != nil {
+		return err
+	}
+
+	digest := sha256.Sum256([]byte(j.signingInput))
+	raw, err := signerProvider.Sign(digest[:])
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
-
-	j.signature = signature
-	if err := j.executeOptions(opts...); err != nil {
-		j.signature = ""
+	// Accept trims a trailing recovery id, checks the 64-byte r||s shape, and
+	// verifies the signature against the key the header names. Assigned only
+	// after all of that, so a failed call needs no rollback and cannot clear a
+	// signature the credential already had.
+	signature, err := j.signingKey.Accept(j.signingInput, raw)
+	if err != nil {
 		return err
 	}
+	j.signature = signature
+
 	return nil
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
+// GetSigningInput returns the bytes a signature must cover: base64url(header) +
+// "." + base64url(payload). Pair it with AddCustomProof to sign outside the SDK,
+// where the key cannot leave an HSM or a wallet. Not deprecated — this is the
+// only path for a key the process never holds.
 func (j *JOSECredential) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
+// AddCustomProof attaches a signature produced outside the SDK over
+// GetSigningInput. Not deprecated, for the same reason: an HSM signs, the SDK
+// attaches.
 func (j *JOSECredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -290,17 +302,22 @@ func (j *JOSECredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 		return fmt.Errorf("proof signature cannot be empty")
 	}
 
-	// Attach the signature before running the options, because WithVerifyProof
-	// is one of them and it reads j.signature: running the options first made it
-	// report "credential is not signed" about the very signature being attached.
-	// A rejected proof is rolled back, so a failed call leaves the credential as
-	// it found it.
-	previous := j.signature
-	j.signature = base64.RawURLEncoding.EncodeToString(jwtutil.TrimRecoveryByte(proof.Signature))
-	if err := j.executeOptions(opts...); err != nil {
-		j.signature = previous
+	if err := rejectBuildTimeOptions(getOptions(opts...)); err != nil {
 		return err
 	}
+	if err := j.executeOptions(signingOptions(opts)...); err != nil {
+		return err
+	}
+
+	// The same check AddProofByProvider runs. A signature produced outside the
+	// SDK — an HSM, a wallet — is still a signature by some key over some data,
+	// and this is where it is held to being the right key over this input.
+	signature, err := j.signingKey.Accept(j.signingInput, proof.Signature)
+	if err != nil {
+		return err
+	}
+	j.signature = signature
+
 	return nil
 }
 

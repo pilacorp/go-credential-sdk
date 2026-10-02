@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -27,6 +27,7 @@ type JOSEPresentation struct {
 	signingInput string           // JWS header.payload (base64 encoded)
 	payloadData  PresentationData // Unsecured VP as PresentationData
 	signature    string           // JWS signature (if signed)
+	signingKey   jwt.SigningKey   // Verification method the header names; zero for a parsed presentation
 }
 
 var _ Presentation = (*JOSEPresentation)(nil)
@@ -112,26 +113,21 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 	// against, and would have to guess one from validFrom — a different fact.
 	jwtutil.SetIssuedAt(payloadData, time.Now())
 
-	// Resolve the Verification Method and derive the JOSE alg
-	vm, kid, err := verificationmethod.ResolveSigningVM(context.Background(), vpc.Holder,
+	// Resolve the verification method the header will name, and keep it: every
+	// signing path checks the signature it is handed against this key before
+	// attaching it, so a signature made by another key fails here rather than at
+	// whoever receives the presentation.
+	signingKey, err := jwt.ResolveSigningKey(context.Background(), vpc.Holder,
 		"authentication", options.verificationMethodKey, options.resolver)
 	if err != nil {
-		return nil, fmt.Errorf("resolve verification method: %w", err)
-	}
-	kind, ok := verificationmethod.VMKeyKind(vm)
-	if !ok {
-		return nil, fmt.Errorf("verification method %q has an unrecognized key type", kid)
-	}
-	alg, err := jwt.AlgForKeyKind(kind)
-	if err != nil {
-		return nil, fmt.Errorf("verification method %q: %w", kid, err)
+		return nil, err
 	}
 
 	// Per W3C vc-jose-cose Section 3.1.2: typ MUST/SHOULD be "vp+jwt"
 	header := map[string]interface{}{
 		"typ": TypeVPJWT,
-		"alg": alg,
-		"kid": kid,
+		"alg": signingKey.Alg,
+		"kid": signingKey.ID,
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -152,6 +148,7 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 		signingInput: signingInput,
 		payloadData:  payloadData,
 		signature:    "",
+		signingKey:   signingKey,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -331,30 +328,76 @@ func (j *JOSEPresentation) AddProofByProvider(signerProvider signer.SignerProvid
 	}
 
 	options := getOptions(opts...)
+	if err := rejectBuildTimeOptions(options, false); err != nil {
+		return err
+	}
 	payload, signingInput, err := j.pendingChallengeDomain(options)
 	if err != nil {
 		return err
 	}
 
-	jwtSigner := jwt.NewJWTSigner(signerProvider)
-	signature, err := jwtSigner.SignString(signingInput)
+	digest := sha256.Sum256([]byte(signingInput))
+	raw, err := signerProvider.Sign(digest[:])
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
+	}
+	// Accept trims a trailing recovery id, checks the 64-byte r||s shape, and
+	// verifies the signature against the key the header names, so a signer that
+	// does not hold that key fails here instead of at the verifier.
+	signature, err := j.signingKey.Accept(signingInput, raw)
+	if err != nil {
+		return err
 	}
 
 	// Commit only once there is a signature to commit, and undo it if the
 	// options reject what was produced, so a failed call leaves the
-	// presentation exactly as it found it.
+	// presentation exactly as it found it. Challenge and domain rewrite the
+	// payload, so three fields move together and a rollback is unavoidable here.
 	prevPayload, prevInput, prevSignature := j.payloadData, j.signingInput, j.signature
 	j.payloadData, j.signingInput, j.signature = payload, signingInput, signature
-	if err := j.executeOptions(opts...); err != nil {
+	if err := j.executeOptions(signingOptions(opts)...); err != nil {
 		j.payloadData, j.signingInput, j.signature = prevPayload, prevInput, prevSignature
 		return err
 	}
+
 	return nil
 }
 
-// Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.
+// AddCustomProof attaches a signature produced outside the SDK over
+// GetSigningInput, for a key the process never holds — an HSM, a wallet. Without
+// it a vp+jwt presentation could only be signed by handing the key to the SDK,
+// which locked those callers out of the format entirely.
+//
+// Challenge and domain cannot be applied here: the signature already covers the
+// signing input, so rewriting the payload would invalidate it. Pass them to
+// NewJOSEPresentation before GetSigningInput.
+func (j *JOSEPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
+	if proof == nil {
+		return fmt.Errorf("proof cannot be nil")
+	}
+	if len(proof.Signature) == 0 {
+		return fmt.Errorf("proof signature cannot be empty")
+	}
+	if err := rejectBuildTimeOptions(getOptions(opts...), true); err != nil {
+		return err
+	}
+	if err := j.executeOptions(signingOptions(opts)...); err != nil {
+		return err
+	}
+
+	signature, err := j.signingKey.Accept(j.signingInput, proof.Signature)
+	if err != nil {
+		return err
+	}
+	j.signature = signature
+
+	return nil
+}
+
+// GetSigningInput returns the bytes a signature must cover: base64url(header) +
+// "." + base64url(payload). Pair it with AddCustomProof to sign outside the SDK,
+// where the key cannot leave an HSM or a wallet. Not deprecated — this is the
+// only path for a key the process never holds.
 func (j *JOSEPresentation) GetSigningInput() ([]byte, error) {
 	return []byte(j.signingInput), nil
 }
