@@ -225,7 +225,7 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 	}
 	// The third door to the same room: (r, s) and (r, n-s) both verify under
 	// the same key, so every signature has two numeric forms. Low-S is the one
-	// the signer writes, and the one BIP-62 and FIPS 186-5 § 6.4.2 settled on.
+	// the signer writes, and the one BIP-62 and BIP-146 settled on.
 	// This suite has issued nothing yet, so refusing the other form now costs
 	// no compatibility.
 	halfN := new(big.Int).Rsh(pub.Curve.Params().N, 1)
