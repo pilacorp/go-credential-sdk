@@ -9,6 +9,7 @@ import (
 	"time"
 
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 // JWTVerifier handles JWT verification operations. It always enforces the
@@ -65,11 +66,20 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("document resolver is not configured")
 	}
 
-	// Resolve the document by the issuer DID claimed in the JWT body, not
-	// by the DID prefix of `kid`. The `iss` claim is the authoritative
-	// identifier of the signer; FindVerificationMethod will reject if the
-	// kid does not actually belong to that issuer's document.
-	issuer, derr := jwtIssuer(parts[1])
+	// Which purpose the token claims decides which property names its signer:
+	// a credential is signed by its issuer, a presentation by its holder. So
+	// the purpose has to be known before the signer can be read, and both are
+	// read before any key is resolved.
+	purpose, perr := jwtProofPurpose(header, parts[1])
+	if perr != nil {
+		return perr
+	}
+
+	// Resolve the document by the signer DID the JWT body names, not by the
+	// DID prefix of `kid`. The body is the authoritative identifier;
+	// FindVerificationMethod will reject if the kid does not actually belong
+	// to that signer's document.
+	issuer, derr := jwtSigner(parts[1], purpose)
 	if derr != nil {
 		return derr
 	}
@@ -114,12 +124,8 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	}
 
 	// Strict-purpose check (always on): JWT VCs use proofPurpose =
-	// assertionMethod, JWT VPs use authentication. Detect from the JWT
-	// body's first claim.
-	purpose, perr := jwtProofPurpose(parts[1])
-	if perr != nil {
-		return perr
-	}
+	// assertionMethod, JWT VPs use authentication. purpose was resolved
+	// before the signer, above.
 	issuedAt, ierr := jwtIssuedAt(parts[1])
 	if ierr != nil {
 		return ierr
@@ -130,11 +136,16 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	return nil
 }
 
-// jwtProofPurpose returns the proofPurpose to enforce for the JWT body —
-// assertionMethod for credentials (presence of "vc" claim) and
-// authentication for presentations ("vp"). Returns an error if neither is
-// present.
-func jwtProofPurpose(payloadB64 string) (string, error) {
+// jwtProofPurpose returns the proofPurpose to enforce — assertionMethod for
+// credentials, authentication for presentations.
+//
+// The payload decides, not the header: `typ` is written by whoever signs the
+// token while the parsers route on the payload's own vc/vp claim, so letting
+// `typ` win would let a key granted only authentication sign a document every
+// consumer then reads as a credential. A `typ` contradicting the payload is
+// refused rather than ignored; when only one of the two speaks, that one
+// answers.
+func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
 		return "", fmt.Errorf("invalid payload encoding: %w", err)
@@ -143,39 +154,197 @@ func jwtProofPurpose(payloadB64 string) (string, error) {
 	if err := json.Unmarshal(payloadBytes, &body); err != nil {
 		return "", fmt.Errorf("invalid payload JSON: %w", err)
 	}
-	if _, ok := body["vc"]; ok {
-		return "assertionMethod", nil
+
+	carried, cerr := purposeFromBody(body)
+	if cerr != nil {
+		return "", cerr
 	}
-	if _, ok := body["vp"]; ok {
-		return "authentication", nil
+	declared := purposeFromTyp(header)
+
+	switch {
+	case carried != "" && declared != "" && carried != declared:
+		return "", fmt.Errorf("JWT typ %q implies proofPurpose %q but its payload is a %s",
+			header["typ"], declared, documentKind(carried))
+	case carried != "":
+		return carried, nil
+	case declared != "":
+		return declared, nil
 	}
-	return "", fmt.Errorf("JWT body has neither vc nor vp claim; cannot determine proofPurpose")
+	return "", fmt.Errorf("JWT has neither vc/vp claims nor vc+jwt/vp+jwt typ; cannot determine proofPurpose")
 }
 
-// jwtIssuer extracts the issuer DID from the `iss` claim in the JWT body.
-// Per W3C VC Data Model JWT encoding, both VC JWTs (issuer DID) and VP
-// JWTs (holder DID) put the signer DID in `iss`. The verifier resolves
-// the DID Document via this claim rather than the kid header so the
-// authoritative source is the signed body, not a key identifier hint.
-func jwtIssuer(payloadB64 string) (string, error) {
+// purposeFromTyp reads the media types vc-jose-cose gives the two document
+// kinds. Anything else — including VC 1.1's "JWT" — says nothing and yields "".
+//
+// This list must cover every typ the parsers accept: vc.isJOSECredentialTyp and
+// vp.isJOSEPresentationTyp. A typ they route but this one does not know yields
+// "", which drops the decision to the payload alone — and the payload is
+// attacker-written, so a token typed as a credential can be judged as a
+// presentation and have its issuer go unchecked. That is exactly how vc+sd-jwt
+// got through while only the parser knew it. Teaching a parser a new media type
+// means teaching this function the same one.
+//
+// The sd-jwt media types are absent because no parser routes them any more;
+// listing a typ nothing accepts would be a branch no entry point can reach.
+func purposeFromTyp(header map[string]interface{}) string {
+	typ, _ := header["typ"].(string)
+	switch typ {
+	case "vc+jwt", "application/vc+jwt":
+		return "assertionMethod"
+	case "vp+jwt", "application/vp+jwt":
+		return "authentication"
+	}
+	return ""
+}
+
+// purposeFromBody reads the kind out of the payload: the vc/vp claim of VC 1.1,
+// or the type property of a vc-jose-cose payload. Carrying both claims is
+// refused — the credential and the presentation parsers would each accept such
+// a token as its own kind, so no single proofPurpose fits it.
+func purposeFromBody(body map[string]interface{}) (string, error) {
+	_, hasVC := body["vc"]
+	_, hasVP := body["vp"]
+	switch {
+	case hasVC && hasVP:
+		return "", fmt.Errorf("JWT carries both vc and vp claims; its kind is ambiguous")
+	case hasVC:
+		return "assertionMethod", nil
+	case hasVP:
+		return "authentication", nil
+	}
+
+	switch t := body["type"].(type) {
+	case []interface{}:
+		// Every entry has to agree. Returning the first match would let the
+		// order of the array pick the purpose: ["VerifiablePresentation",
+		// "VerifiableCredential"] would be judged a presentation, so the signer
+		// would be taken for the holder and issuer never compared.
+		found := ""
+		for _, v := range t {
+			str, _ := v.(string)
+			p := purposeFromType(str)
+			if p == "" {
+				continue
+			}
+			if found != "" && found != p {
+				return "", fmt.Errorf("JWT type names both a credential and a presentation; its kind is ambiguous")
+			}
+			found = p
+		}
+		return found, nil
+	case string:
+		return purposeFromType(t), nil
+	}
+	return "", nil
+}
+
+// purposeFromType maps one type value to the purpose its kind is signed under.
+func purposeFromType(t string) string {
+	switch t {
+	case "VerifiableCredential":
+		return "assertionMethod"
+	case "VerifiablePresentation":
+		return "authentication"
+	}
+	return ""
+}
+
+// documentKind names a purpose the way the data model does, for error text.
+func documentKind(purpose string) string {
+	if purpose == "assertionMethod" {
+		return "credential"
+	}
+	return "presentation"
+}
+
+// jwtSigner returns the DID whose key signed the JWT, and refuses a token
+// whose `iss` claim disagrees with the property that names the signer.
+//
+// A credential is signed by its issuer, a presentation by its holder. Reading
+// `issuer` off a presentation would let anyone name a signer the presentation
+// never had, so the two are never crossed — hence the purpose argument.
+//
+// vc-jose-cose puts the unsecured VC/VP in the payload itself, so `iss` may be
+// absent and the property alone names the signer. When both are present they
+// MUST agree: "When issuer value is a string, iss value, if present, MUST
+// match issuer value" — and likewise against issuer.id when issuer is an
+// object. VC 1.1 nests the document under a vc/vp claim; the same rule applies
+// to the nested property.
+func jwtSigner(payloadB64, purpose string) (string, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
 		return "", fmt.Errorf("invalid payload encoding: %w", err)
 	}
-	var body struct {
-		Iss string `json:"iss"`
-	}
+	var body map[string]interface{}
 	if err := json.Unmarshal(payloadBytes, &body); err != nil {
 		return "", fmt.Errorf("invalid payload JSON: %w", err)
 	}
-	if body.Iss == "" {
-		return "", fmt.Errorf("JWT body is missing required `iss` claim")
+
+	// A credential names its signer in issuer, a presentation in holder.
+	field := "holder"
+	if purpose == "assertionMethod" {
+		field = "issuer"
 	}
-	return body.Iss, nil
+
+	// VC 1.1 keeps the document under a vc/vp claim; read the property there
+	// when it exists, so a nested issuer cannot disagree with iss unnoticed.
+	// Picked before reading, so presence and value come from the same map.
+	doc := body
+	if inner, ok := body["vc"].(map[string]interface{}); ok {
+		doc = inner
+	} else if inner, ok := body["vp"].(map[string]interface{}); ok {
+		doc = inner
+	}
+
+	// Two different questions, and conflating them opened a third door to the
+	// forgery the switch below exists to stop. A field that is absent leaves the
+	// signer to iss, which is fine. A field that is present but holds no DID —
+	// an array, an object without a string id — is a document naming a signer
+	// this function cannot compare, and treating that as absent let an attacker
+	// sign with its own key, put its own DID in iss, and name the victim in
+	// issuer: the mismatch branch needs claimed != "" and never ran.
+	raw, present := doc[field]
+	claimed := didFromClaim(raw)
+	if present && claimed == "" {
+		return "", fmt.Errorf("JWT %s must be a string or an object with a string id, got %T",
+			field, raw)
+	}
+
+	iss, _ := body["iss"].(string)
+	switch {
+	case iss != "" && claimed != "" && iss != claimed:
+		return "", fmt.Errorf("JWT iss %q does not match %s %q", iss, field, claimed)
+	case iss != "":
+		return iss, nil
+	case claimed != "":
+		return claimed, nil
+	}
+	return "", fmt.Errorf("JWT names no signer: both iss and %s are absent", field)
 }
 
-// jwtIssuedAt extracts iat (issued at) as UTC time when present.
-// Returns (nil, nil) when iat is absent.
+// didFromClaim reads a DID out of a property the data model allows in two
+// shapes: a bare string, or an object carrying it under id.
+func didFromClaim(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case map[string]interface{}:
+		if id, ok := t["id"].(string); ok {
+			return id
+		}
+	}
+	return ""
+}
+
+// jwtIssuedAt extracts iat (issued at) as UTC time when present, and returns
+// (nil, nil) when it is absent.
+//
+// There is deliberately no fallback to validFrom. iat is when the token was
+// signed; validFrom is when the document starts being true. The only caller is
+// the soft-revocation check — "was this signed before the key was revoked" —
+// and a credential may state a validFrom long after it was signed, or long
+// before. Substituting one for the other answers a different question and
+// answers it silently.
 func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
@@ -186,31 +355,10 @@ func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
 		return nil, fmt.Errorf("invalid payload JSON: %w", err)
 	}
 
-	raw, ok := body["iat"]
-	if !ok || raw == nil {
-		return nil, nil
+	sec, ok, err := jwtutil.NumericClaim(body, "iat")
+	if err != nil || !ok {
+		return nil, err
 	}
-
-	var sec int64
-	switch t := raw.(type) {
-	case float64:
-		sec = int64(t)
-	case int64:
-		sec = t
-	case json.Number:
-		v, err := t.Int64()
-		if err != nil {
-			return nil, fmt.Errorf("invalid iat: %v", err)
-		}
-		sec = v
-	default:
-		return nil, fmt.Errorf("invalid iat type: %T", raw)
-	}
-
-	if sec <= 0 {
-		return nil, fmt.Errorf("invalid iat value: %v", raw)
-	}
-
 	tm := time.Unix(sec, 0).UTC()
 	return &tm, nil
 }

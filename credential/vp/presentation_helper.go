@@ -3,6 +3,7 @@ package vp
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -146,6 +147,15 @@ func serializePresentationContents(vpc *PresentationContents) (PresentationData,
 		// Serialize credentials for presentation storage
 		credentialList := make([]interface{}, len(vpc.VerifiableCredentials))
 		for i, vc := range vpc.VerifiableCredentials {
+			// A nil credential here is a caller mistake, and it used to surface as
+			// a nil pointer dereference out of Serialize — on all three builders,
+			// since they all come through this function. Two shapes have to be
+			// caught: a nil interface, and an interface holding a nil pointer
+			// (vc.Credential((*vc.JOSECredential)(nil))), which is not == nil but
+			// panics just the same.
+			if isNilCredential(vc) {
+				return nil, fmt.Errorf("credential at index %d is nil", i)
+			}
 			serialized, err := vc.Serialize()
 			if err != nil {
 				return nil, fmt.Errorf("failed to serialize credential %d: %w", i, err)
@@ -156,6 +166,18 @@ func serializePresentationContents(vpc *PresentationContents) (PresentationData,
 	}
 
 	return vpJSON, nil
+}
+
+// isNilCredential reports whether c is unusable: either a nil interface, or an
+// interface carrying a nil pointer. Calling a method on the second panics, so the
+// plain c == nil test is not enough on its own.
+func isNilCredential(c vc.Credential) bool {
+	if c == nil {
+		return true
+	}
+	v := reflect.ValueOf(c)
+
+	return v.Kind() == reflect.Ptr && v.IsNil()
 }
 
 // parseContext extracts the @context field from a Presentation.
@@ -231,9 +253,18 @@ func parseDates(vp PresentationData, contents *PresentationContents) error {
 
 // parseVerifiableCredentials extracts the verifiableCredential field from a Presentation.
 func parseVerifiableCredentials(vp PresentationData, contents *PresentationContents) error {
-	vcs, ok := vp["verifiableCredential"].([]interface{})
-	if !ok {
+	// Same shape rule as requireEnvelopedCredentials: a single value is valid
+	// VCDM 2.0. Reading only the array form left a one-credential presentation
+	// looking empty, and verifyCredentials then reported "credential input is
+	// nil" about a presentation that carried one.
+	var vcs []interface{}
+	switch v := vp["verifiableCredential"].(type) {
+	case nil:
 		return nil // No verifiable credentials field
+	case []interface{}:
+		vcs = v
+	default:
+		vcs = []interface{}{v}
 	}
 
 	for i, vcItem := range vcs {
