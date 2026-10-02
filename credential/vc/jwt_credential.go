@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -20,11 +21,12 @@ import (
 type JWTHeaders map[string]interface{}
 
 type JWTCredential struct {
-	signingInput string         // JWT header.payload (base64 encoded)
-	payloadData  CredentialData // Parsed payload as CredentialData
-	signature    string         // JWT signature (if signed)
-	disclosures  []string       // Optional SD-JWT disclosures (when issuing/holding SD-JWT)
-	signingKey   jwt.SigningKey // Verification method the header names; zero for a parsed credential
+	signingInput string                 // JWT header.payload (base64 encoded)
+	payloadData  CredentialData         // The vc claim, parsed as CredentialData
+	jwtClaims    map[string]interface{} // Top-level JWT claims (iss, sub, exp, nbf, iat, jti)
+	signature    string                 // JWT signature (if signed)
+	disclosures  []string               // Optional SD-JWT disclosures (when issuing/holding SD-JWT)
+	signingKey   jwt.SigningKey         // Verification method the header names; zero for a parsed credential
 }
 
 var _ Credential = (*JWTCredential)(nil)
@@ -108,6 +110,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 	e := &JWTCredential{
 		signingInput: signingInput,
 		payloadData:  payloadData,
+		jwtClaims:    otherClaims,
 		signature:    "",
 		disclosures:  disclosures,
 		signingKey:   signingKey,
@@ -187,6 +190,7 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 	e := &JWTCredential{
 		signingInput: signingInput,
 		payloadData:  CredentialData(vcMap),
+		jwtClaims:    payloadMap,
 		signature:    signature,
 		disclosures:  disclosures,
 	}
@@ -386,7 +390,24 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	if options.isCheckExpiration {
+		// Two time windows, in two places. validFrom/validUntil live inside the
+		// vc claim and describe the credential; exp/nbf live beside it, at the top
+		// level, and describe the token. This path writes both — exp and nbf are
+		// derived from ValidUntil and ValidFrom at signing — so checking only the
+		// inner pair let a token past its own exp verify.
+		//
+		// Unlike the vc+jwt path, which enforces exp and nbf on every Verify,
+		// this stays behind the option: credentials already issued carry an exp
+		// mirroring validUntil, and making it unconditional would start refusing
+		// them on a plain Verify that accepts them today.
+		//
+		// The credential's own window is reported first, so a credential that was
+		// already refused keeps the message it had; the RFC 7519 wording appears
+		// only for tokens whose exp or nbf nothing else covers.
 		if err := checkExpiration(j.payloadData); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+		if err := jwt.CheckTimeClaims(j.jwtClaims, time.Now()); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
