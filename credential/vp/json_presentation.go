@@ -58,10 +58,14 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 	return e.AddProofByProvider(p256Signer, opts...)
 }
 
-// AddProofByProvider signs the presentation, producing an ecdsa-rdfc-2019 proof
-// bound to the VM WithVerificationMethodKey pins, or by default the holder's
-// only VM / latest active authentication VM.
-// The VM must hold a P-256 key.
+// AddProofByProvider signs the presentation, bound to the VM
+// WithVerificationMethodKey pins, or by default the holder's only VM / latest
+// active authentication VM.
+//
+// The proof suite follows the verification method's key: a P-256 key produces
+// an ecdsa-rdfc-2019 proof, a secp256k1 key an EcdsaSecp256k1Signature2019 one.
+// The second suite needs its terms defined, so its @context is added to the
+// presentation unless it already defines them.
 //
 // Verification stays permissive: secp256k1, hex proofValues and
 // JsonWebSignature2020 presentations issued by earlier versions still verify.
@@ -88,20 +92,27 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 	}
 
 	options := getOptions(opts...)
-	switch kind {
-	case verificationmethod.KeyP256:
-		vmPub, err := verificationmethod.ECPubFromVM(vm)
-		if err != nil {
-			return fmt.Errorf("verification method %q: %w", vmURL, err)
-		}
-		return (*jsonmap.JSONMap)(&e.presentationData).AddECDSAProof(
-			provider, vmURL, "authentication",
-			jsonmap.WithVMPublicKey(vmPub),
-			jsonmap.WithChallenge(options.challenge),
-			jsonmap.WithDomain(options.domain))
-	default:
-		return fmt.Errorf("unsupported key kind %v for JSON presentation", kind)
+	suite, err := jsonmap.SigningSuiteForKey(kind)
+	if err != nil {
+		return err
 	}
+	m := (*jsonmap.JSONMap)(&e.presentationData)
+
+	vmPub, err := verificationmethod.ECPubFromVM(vm)
+	if err != nil {
+		return fmt.Errorf("verification method %q: %w", vmURL, err)
+	}
+
+	proofOpts := []jsonmap.ProofOpt{
+		jsonmap.WithVMPublicKey(vmPub),
+		jsonmap.WithChallenge(options.challenge),
+		jsonmap.WithDomain(options.domain),
+	}
+
+	if suite == jsonmap.EcdsaSecp256k1Signature2019 {
+		return m.AddEcdsaSecp256k1Proof(provider, vmURL, "authentication", proofOpts...)
+	}
+	return m.AddECDSAProof(provider, vmURL, "authentication", proofOpts...)
 }
 
 // resolveSigningVMEntry resolves the verification method to sign with (pinned

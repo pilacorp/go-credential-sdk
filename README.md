@@ -212,25 +212,53 @@ The cryptosuite is chosen from the **key type of the bound verification method**
 (read from the resolved DID document at signing time), together with the
 credential type:
 
-| Credential / method | VM key type | Cryptosuite |
+| Credential / method | VM key type | Proof suite |
 |---|---|---|
-| `JSONCredential` / `JSONPresentation` | P-256 | `ecdsa-rdfc-2019` |
+| `JSONCredential` / `JSONPresentation` | P-256 | `DataIntegrityProof` / `ecdsa-rdfc-2019` |
+| `JSONCredential` / `JSONPresentation` | secp256k1 | `EcdsaSecp256k1Signature2019` (detached JWS — see below) |
 | `ECDSASDCredential` | P-256 | `ecdsa-sd-2023` (selective disclosure) |
 | `JWTCredential` / `JWTPresentation` | secp256k1 | `ES256K` (JWT) |
 | `JWTCredential` / `JWTPresentation` | P-256 | `ES256` (JWT) |
 
 Any other combination is rejected at signing time (`unsupported key kind ...`).
-In particular, JSON-LD Data Integrity proofs are **P-256 only**. P-384 is
-**not supported yet**: the ECDSA cryptosuites spec also defines a P-384 profile
-(SHA-384, 96-byte signature), and the key-material helpers already parse P-384
-JWKs and Multikeys, but signing and verification are wired for P-256 (SHA-256,
-64-byte signature) only — a P-384 verification method is reported as an
-unrecognized key type. Also, secp256k1 has
-no Data Integrity cryptosuite in VC 2.0 (it exists only through the VC 1.1
-legacy `EcdsaSecp256k1Signature2019` types, which this SDK does not issue), and
-RSA / `JsonWebSignature2020` is **verify-only** (see below).
+The caller never names the suite: there is no option for it, because the key
+already decides which suites apply.
 
-Built-in providers: `NewDefaultProvider(hex)` (secp256k1, JWT only);
+**secp256k1 signs under `EcdsaSecp256k1Signature2019`.**
+[`vc-di-ecdsa`](https://www.w3.org/TR/vc-di-ecdsa/) defines its cryptosuites for
+P-256 and P-384 only — it says of the third curve that it "is not used by this
+specification" — so a secp256k1 key has no Data Integrity cryptosuite. What it
+does have is the suite the CCG published for it,
+[`EcdsaSecp256k1Signature2019`](https://w3c-ccg.github.io/lds-ecdsa-secp256k1-2019/):
+URDNA2015 canonicalization, SHA-256 digests, `ES256K`, and the signature in a
+detached JWS in `jws` rather than in `proofValue`.
+
+The suite names itself in `type`, so the proof carries no `cryptosuite`
+property. Data Integrity allows this: `cryptosuite` is required only when
+`type` is `DataIntegrityProof`.
+
+The suite needs its terms defined, and `credentials/v2` defines Data Integrity
+only. So the SDK appends `https://w3id.org/security/suites/secp256k1-2019/v1`,
+the narrow context for this suite alone, after the base context. The document
+keeps every 2.0 property it had, `BitstringStatusListEntry` included. Nothing
+is appended to a document that already defines the suite, such as one built on
+the VC 1.1 base context elsewhere: those terms are `@protected`, and a second
+definition is a redefinition error rather than a no-op. This SDK itself issues
+VC 2.0 documents only.
+
+The suite is a CCG report, not a W3C Recommendation, and it says of itself that
+it "is not fit for production deployment". Outside this deployment, expect
+verifiers to reject a secp256k1 embedded proof whichever suite it names — P-256
+with `ecdsa-rdfc-2019` is the interoperable path.
+
+P-384 is **not supported yet**: the ECDSA cryptosuites spec also defines a P-384
+profile (SHA-384, 96-byte signature), and the key-material helpers already parse
+P-384 JWKs and Multikeys, but signing and verification are wired for P-256
+(SHA-256, 64-byte signature) only — a P-384 verification method is reported as
+an unrecognized key type. RSA / `JsonWebSignature2020` is **verify-only**
+(see below).
+
+Built-in providers: `NewDefaultProvider(hex)` (secp256k1);
 `NewP256Provider` / `NewP256ProviderFromHex` / `NewP256Func` (P-256);
 `NewRSAProvider(key, alg...)` / `NewRSAFunc(fn, alg)` (RSA, verification-side
 helpers and low-level `jsonmap` use only).
@@ -298,8 +326,8 @@ an RSA `publicKeyJwk`, and `Verify` checks the JWS against it like any other
 proof in the set.
 
 The public signing API does **not** issue them: `AddProofByProvider` on a JSON
-credential/presentation binds only to a P-256 VM and returns
-`unsupported key kind RSA for JSON credential` for an RSA signer. If you need to
+credential/presentation binds to a P-256 or secp256k1 VM and returns
+`unsupported key kind RSA for JSON-LD signing` for an RSA signer. If you need to
 produce a JWS proof (e.g. test fixtures for interop), go through the low-level
 `jsonmap` layer directly:
 
@@ -314,7 +342,8 @@ cred, _ := vc.ParseJSONCredential(signed) // verifies like any other proof
 
 > **Pin the VM on mixed-key DIDs.** The suite comes from the bound VM's key type,
 > NOT from the provider. If the issuer DID holds keys of different types (e.g. a
-> secp256k1 key for JWT and a P-256 key for Data Integrity), pin the right one
+> secp256k1 key and a P-256 key, which select different JSON-LD suites), pin the
+> right one
 > with `vc.WithVerificationMethodKey("key-2")`; otherwise the latest active VM is
 > used and a mismatched signer is rejected at signing time.
 
@@ -398,6 +427,7 @@ Supported Proof:
 
 - type: DataIntegrityProof
   - cryptosuite: ecdsa-rdfc-2019 (standard signing, P-256 only; `proofValue` is multibase base58btc — see above), ecdsa-sd-2023 (selective disclosure for JSON-LD, P-256 only — see below)
+- type: EcdsaSecp256k1Signature2019 (secp256k1, detached JWS in `jws`; either data model — see above)
 - type: JsonWebSignature2020 (RSA, detached JWS — verify-only, see above)
 
 ### <a name="sd-jwt-selective-disclosure"></a>SD-JWT (Selective Disclosure)
