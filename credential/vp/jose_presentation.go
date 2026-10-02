@@ -60,9 +60,9 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 	if len(vpc.VerifiableCredentials) > 0 {
 		envelopedList := make([]interface{}, len(vpc.VerifiableCredentials))
 		for i, cred := range vpc.VerifiableCredentials {
-			if cred == nil {
-				return nil, fmt.Errorf("credential at index %d is nil", i)
-			}
+			// No nil check here: serializePresentationContents ran above and
+			// refuses both a nil interface and an interface holding a nil pointer,
+			// so nothing nil reaches this loop.
 			joseCred, ok := cred.(*vc.JOSECredential)
 			if !ok {
 				return nil, fmt.Errorf("credential at index %d is %T: a vp+jwt presentation can only carry "+
