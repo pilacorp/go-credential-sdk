@@ -270,8 +270,8 @@ func TestVC_IssuerForgeryThroughProofPurposeRouting(t *testing.T) {
 
 // The routing cases above all turn on an ambiguous type. These turn on the two
 // bindings that run after it, and neither had a test reaching them through
-// ParseCredential — only through jwt.VerifyJWT directly, which a consumer never
-// calls.
+// ParseCredential — only through jwt.VerifyJWT, which is where the tests reached
+// it and not where a credential arrives.
 //
 //	iss must match issuer   — the signer names itself in iss, the credential
 //	                          names its issuer, and a credential signed by one

@@ -348,9 +348,10 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 					if typ, ok := header["typ"].(string); ok {
 						// A tilde still routes here, because VC 1.1 SD-JWT is a
 						// real shape this SDK issues — its typ is "JWT" and its
-						// claims live under vc. A vc+jwt never carries one;
-						// ParseJOSECredential refuses it rather than
-						// reconstructing a payload it cannot hold to the spec.
+						// claims live under vc. A vc+jwt must not carry one, and
+						// a token from elsewhere that does is refused by
+						// ParseJOSECredential rather than reconstructed into a
+						// payload this package cannot hold to the spec.
 						if isJOSECredentialTyp(typ) {
 							return ParseJOSECredential(valStr, opts...)
 						}
