@@ -27,6 +27,7 @@ type JWTCredential struct {
 	jwtClaims    map[string]interface{} // Top-level JWT claims (iss, sub, exp, nbf, iat, jti)
 	signature    string                 // JWT signature (if signed)
 	disclosures  []string               // Optional SD-JWT disclosures (when issuing/holding SD-JWT)
+	disclosable  bool                   // Payload carries _sd digests, even if this holder reveals none
 	signingKey   jwt.SigningKey         // Verification method the header names; zero for a parsed credential
 }
 
@@ -40,6 +41,9 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 
 	vcMap := normalizeCredentialData(m)
 	options := getOptions(opts...)
+	if err := rejectPrebuiltDisclosures(options); err != nil {
+		return nil, err
+	}
 
 	result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
 		VC:             vcMap,
@@ -53,7 +57,17 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 	}
 	vcMap = result.ProcessedVC
 	disclosures := result.Disclosures
-	disclosures = append(disclosures, options.sdDisclosures...)
+
+	// Same rule the parse side applies: a top-level property must not be
+	// disclosable. Reachable here through WithSDDecoyDigests with a root path.
+	if err := requireDisclosableAtTopLevel(vcMap); err != nil {
+		return nil, err
+	}
+
+	// See NewJOSECredential: read from the payload, the same question
+	// ParseJWTCredential asks of the same bytes, so a decoys-only credential does
+	// not serialize one way at build time and another after a round-trip.
+	_, disclosable := vcMap["_sd_alg"]
 
 	payloadData := CredentialData(vcMap)
 
@@ -114,6 +128,7 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 		jwtClaims:    otherClaims,
 		signature:    "",
 		disclosures:  disclosures,
+		disclosable:  disclosable,
 		signingKey:   signingKey,
 	}
 
@@ -170,7 +185,11 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 	}
 
 	signedVC := vcMap
-	if len(disclosures) > 0 {
+	// Same gate as ParseJOSECredential, and for the same reason: Reconstruct is
+	// what removes the _sd arrays, so a holder revealing nothing used to leave
+	// them visible in the document the caller reads.
+	_, disclosable := vcMap["_sd_alg"]
+	if disclosable || len(disclosures) > 0 {
 		processed, rerr := sdjwt.Reconstruct(vcMap, disclosures, true)
 		if rerr != nil {
 			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rerr)
@@ -178,10 +197,10 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 		vcMap = processed
 	}
 
-	// Selective disclosure lives only on this path now, so this is the only place
-	// the rule is enforced: the claims a verifier decides on have to be inside the
-	// signature, not inside a disclosure the holder controls. Reconstruct
-	// deep-copies, so signedVC is still exactly what the signature covered.
+	// The claims a verifier decides on have to be inside the signature, not
+	// inside a disclosure the holder controls. ParseJOSECredential enforces the
+	// same rule on the 2.0 path. Reconstruct deep-copies, so signedVC is still
+	// exactly what the signature covered.
 	if err := requireSecuredClaimsSigned(signedVC, vcMap); err != nil {
 		return nil, fmt.Errorf("invalid SD-JWT credential: %w", err)
 	}
@@ -194,6 +213,7 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 		jwtClaims:    payloadMap,
 		signature:    signature,
 		disclosures:  disclosures,
+		disclosable:  disclosable,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -274,10 +294,13 @@ func (j *JWTCredential) Serialize() (any, error) {
 		base = base + "." + j.signature
 	}
 
-	if len(j.disclosures) == 0 {
+	if !j.disclosable {
 		return base, nil
 	}
 
+	// See JOSECredential.Serialize: the terminator is what marks the token as an
+	// SD-JWT, and the digests are in the payload whether or not this holder
+	// reveals anything.
 	var sb strings.Builder
 	sb.WriteString(base)
 	for _, d := range j.disclosures {
@@ -345,6 +368,14 @@ func (j *JWTCredential) Present(selectedDisclosures []string) (Credential, error
 		return nil, fmt.Errorf("cannot present an unsigned credential")
 	}
 	issuerJWT := j.signingInput + "." + j.signature
+
+	// See JOSECredential.Present: a credential with nothing disclosable has no
+	// subset to choose, and BuildSDJWTPresentation would hand back the same JWT
+	// under an SD-JWT terminator, changing its bytes and its Hash.
+	if len(j.disclosures) == 0 {
+		return nil, fmt.Errorf("credential carries no disclosures; nothing to present selectively")
+	}
+
 	return ParseJWTCredential(sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures))
 }
 

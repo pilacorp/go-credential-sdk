@@ -13,6 +13,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
@@ -311,14 +312,25 @@ func requireEnvelopedCredentials(m PresentationData) error {
 }
 
 // envelopeMediaType names the scheme that secured a token, for the data: URL an
-// EnvelopedVerifiableCredential carries. Only JWS is secured here, so the answer
-// is fixed — but an unsigned token is refused now rather than enveloped under a
-// label it has not earned. An SD-JWT would need its own media type, and
-// ParseJOSECredential will not produce one.
+// EnvelopedVerifiableCredential carries: disclosures make it an SD-JWT, which
+// the spec envelopes under its own media type. Labelling an SD-JWT as vc+jwt
+// would tell an outside verifier to parse it as plain JWS, which fails on the
+// disclosures trailing the signature.
+//
+// An unsigned token is refused here rather than enveloped under a label it has
+// not earned.
 func envelopeMediaType(token string) (string, error) {
-	if parts := strings.Split(token, "."); len(parts) != 3 || parts[2] == "" {
+	base := token
+	if i := strings.IndexByte(base, '~'); i >= 0 {
+		base = base[:i]
+	}
+	if parts := strings.Split(base, "."); len(parts) != 3 || parts[2] == "" {
 		return "", fmt.Errorf("credential is not signed; sign it before putting it in a presentation")
 	}
+	if sdjwt.IsSDJWT(token) {
+		return vc.TypeVCSDJWT, nil
+	}
+
 	return vc.TypeVCJWT, nil
 }
 

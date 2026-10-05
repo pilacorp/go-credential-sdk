@@ -86,7 +86,7 @@ func TestProcessNode_ObjectContextRejectArrayDisclosure(t *testing.T) {
 		"_sd": []interface{}{h},
 	}
 
-	_, err := processNode(node, disclosureMap)
+	_, err := processNode(node, disclosureMap, map[string]bool{})
 	if err == nil {
 		t.Fatal("expected context mismatch error")
 	}
@@ -103,7 +103,7 @@ func TestProcessNode_ArrayContextRejectObjectDisclosure(t *testing.T) {
 		map[string]interface{}{"...": h},
 	}
 
-	_, err := processNode(node, disclosureMap)
+	_, err := processNode(node, disclosureMap, map[string]bool{})
 	if err == nil {
 		t.Fatal("expected context mismatch error")
 	}
@@ -121,7 +121,7 @@ func TestProcessNode_DuplicateFieldAfterReconstruct(t *testing.T) {
 		"_sd":  []interface{}{h},
 	}
 
-	_, err := processNode(node, disclosureMap)
+	_, err := processNode(node, disclosureMap, map[string]bool{})
 	if err == nil {
 		t.Fatal("expected duplicate field error")
 	}
@@ -157,10 +157,21 @@ func TestReconstruct_ArrayPlaceholder(t *testing.T) {
 	assert.Equal(t, "Item1", items[0])
 }
 
+// A real SD-JWT from the wild, reconstructed field by field.
 func TestReconstruct_RealExampleFromCompact(t *testing.T) {
 	compact := "eyJ0eXAiOiJzZCtqd3QiLCJhbGciOiJFUzI1NiJ9.eyJpZCI6IjEyMzQiLCJfc2QiOlsiYkRUUnZtNS1Zbi1IRzdjcXBWUjVPVlJJWHNTYUJrNTdKZ2lPcV9qMVZJNCIsImV0M1VmUnlsd1ZyZlhkUEt6Zzc5aGNqRDFJdHpvUTlvQm9YUkd0TW9zRmsiLCJ6V2ZaTlMxOUF0YlJTVGJvN3NKUm4wQlpRdldSZGNob0M3VVphYkZyalk4Il0sIl9zZF9hbGciOiJzaGEtMjU2In0.n27NCtnuwytlBYtUNjgkesDP_7gN7bhaLhWNL4SWT6MaHsOjZ2ZMp987GgQRL6ZkLbJ7Cd3hlePHS84GBXPuvg~WyI1ZWI4Yzg2MjM0MDJjZjJlIiwiZmlyc3RuYW1lIiwiSm9obiJd~WyJjNWMzMWY2ZWYzNTg4MWJjIiwibGFzdG5hbWUiLCJEb2UiXQ~WyJmYTlkYTUzZWJjOTk3OThlIiwic3NuIiwiMTIzLTQ1LTY3ODkiXQ~eyJ0eXAiOiJrYitqd3QiLCJhbGciOiJFUzI1NiJ9.eyJpYXQiOjE3MTAwNjk3MjIsImF1ZCI6ImRpZDpleGFtcGxlOjEyMyIsIm5vbmNlIjoiazh2ZGYwbmQ2Iiwic2RfaGFzaCI6Il8tTmJWSzNmczl3VzNHaDNOUktSNEt1NmZDMUwzN0R2MFFfalBXd0ppRkUifQ.pqw2OB5IA5ya9Mxf60hE3nr2gsJEIoIlnuCa4qIisijHbwg3WzTDFmW2SuNvK_ORN0WU6RoGbJx5uYZh8k4EbA"
 
-	parsed, err := Parse(compact)
+	// This example ends in a key binding JWT. Parse used to skip it in silence,
+	// which handed back a nil error for a token whose holder binding nothing
+	// checked — and gave the same credential a second byte form under one Hash().
+	// It is refused until the binding is verified.
+	_, err := Parse(compact)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "key binding JWT")
+
+	// The same token without it reconstructs, which is what this test was for.
+	withoutKB := compact[:strings.LastIndex(compact, "~")+1]
+	parsed, err := Parse(withoutKB)
 	require.NoError(t, err)
 
 	parts := strings.Split(parsed.BaseJWT, ".")
@@ -501,4 +512,39 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	out3, err := Reconstruct(result3.ProcessedVC, result3.Disclosures, true)
 	require.NoError(t, err)
 	assert.Equal(t, "Alice", out3["name"])
+}
+
+// draft-ietf-oauth-selective-disclosure-jwt § 7.1 step 4 counts a digest across
+// the whole Issuer-signed payload, not per object. objectDigests and arrayDigests
+// each see one container, so a digest placed in two different objects slipped
+// past both and one disclosure filled two fields.
+func TestValidation_DigestReferencedTwiceAcrossObjects(t *testing.T) {
+	arr, err := json.Marshal([]interface{}{"salt1", "secret", "VALUE"})
+	require.NoError(t, err)
+	D := base64.RawURLEncoding.EncodeToString(arr)
+	h, err := hashDisclosure(AlgSHA256, D)
+	require.NoError(t, err)
+
+	vc := map[string]interface{}{
+		"_sd_alg": AlgSHA256,
+		"a":       map[string]interface{}{"_sd": []interface{}{h}},
+		"b":       map[string]interface{}{"_sd": []interface{}{h}},
+	}
+
+	_, err = Reconstruct(vc, []string{D}, true)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "referenced more than once")
+}
+
+// _sd decides what the payload says, so a shape nobody expected is refused rather
+// than dropped: the old code deleted a non-array _sd and carried on.
+func TestValidation_SDMustBeAnArray(t *testing.T) {
+	vc := map[string]interface{}{
+		"_sd_alg": AlgSHA256,
+		"x":       map[string]interface{}{"_sd": "not-an-array", "k": 1},
+	}
+
+	_, err := Reconstruct(vc, nil, true)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "_sd must be an array")
 }
