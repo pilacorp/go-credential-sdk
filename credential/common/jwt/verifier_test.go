@@ -329,6 +329,62 @@ func TestJWTSigner(t *testing.T) {
 			payload:    map[string]interface{}{"iss": "did:example:attacker"},
 			wantSigner: "did:example:attacker",
 		},
+
+		// A key differing only by case is absent to doc[field] and present to a
+		// consumer's encoding/json, so the signer fell back to iss while the
+		// victim's DID travelled on in the document. Each of these used to
+		// return the attacker with no error.
+		{
+			name:    "Holder on a presentation",
+			purpose: vpPurpose,
+			payload: map[string]interface{}{
+				"iss": "did:example:attacker", "Holder": "did:example:victim"},
+			wantErr: `carries "Holder", which differs from holder only by case`,
+		},
+		{
+			name:    "HOLDER on a presentation",
+			purpose: vpPurpose,
+			payload: map[string]interface{}{
+				"iss": "did:example:attacker", "HOLDER": "did:example:victim"},
+			wantErr: `carries "HOLDER", which differs from holder only by case`,
+		},
+		{
+			name:    "Issuer on a credential",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{
+				"iss": "did:example:attacker", "Issuer": "did:example:victim"},
+			wantErr: `carries "Issuer", which differs from issuer only by case`,
+		},
+		{
+			// The VC 1.1 shape again: the case check reads the same nested map
+			// presence and value come from.
+			name:    "vc.Issuer on a VC 1.1 credential",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{
+				"iss": "did:example:attacker",
+				"vc":  map[string]interface{}{"Issuer": "did:example:victim"}},
+			wantErr: `carries "Issuer", which differs from issuer only by case`,
+		},
+		{
+			// U+017F LATIN SMALL LETTER LONG S. encoding/json folds it to s, so
+			// a struct field reads this key as issuer; a byte comparison would
+			// not catch it, and strings.EqualFold does.
+			name:    "vc.iſſuer with the long s",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{
+				"iss": "did:example:attacker",
+				"vc":  map[string]interface{}{"iſſuer": "did:example:victim"}},
+			wantErr: `which differs from issuer only by case`,
+		},
+		{
+			// The exact key is not a case variant of itself: the ordinary
+			// mismatch error still comes from the switch below.
+			name:    "the exact key still reports a plain mismatch",
+			purpose: vcPurpose,
+			payload: map[string]interface{}{
+				"iss": "did:example:attacker", "issuer": "did:example:victim"},
+			wantErr: `iss "did:example:attacker" does not match issuer "did:example:victim"`,
+		},
 	}
 
 	for _, tc := range cases {

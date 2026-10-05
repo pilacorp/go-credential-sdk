@@ -296,6 +296,19 @@ func jwtSigner(payloadB64, purpose string) (string, error) {
 		doc = inner
 	}
 
+	// A fourth door, opened by the gap between how this function reads the
+	// property and how a consumer does. doc[field] matches one exact key, while
+	// encoding/json matches a struct field case-insensitively — so "Holder" is
+	// absent here and still lands in a Holder string `json:"holder"` downstream.
+	// An attacker could sign with its own key, put its own DID in iss, and name
+	// the victim under a key this function never looks at. EqualFold folds the
+	// same way encoding/json does, including the ſ in "iſſuer".
+	for k := range doc {
+		if k != field && strings.EqualFold(k, field) {
+			return "", fmt.Errorf("JWT carries %q, which differs from %s only by case", k, field)
+		}
+	}
+
 	// Two different questions, and conflating them opened a third door to the
 	// forgery the switch below exists to stop. A field that is absent leaves the
 	// signer to iss, which is fine. A field that is present but holds no DID —
