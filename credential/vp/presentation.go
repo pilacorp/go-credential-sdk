@@ -1,6 +1,7 @@
 package vp
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -86,6 +87,9 @@ type presentationOptions struct {
 	// Verifying: every checked proof must carry exactly these values.
 	expectedChallenge string
 	expectedDomain    string
+	// requireAudience turns the aud claim from "checked only when the caller
+	// names itself" into "must be checked", per RFC 7519 §4.1.3.
+	requireAudience bool
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -200,6 +204,32 @@ func WithExpectedDomain(domain string) PresentationOpt {
 	}
 }
 
+// WithRequireAudience (verifying) refuses a presentation that names an audience
+// when the caller has not said who is verifying. Use it together with
+// WithExpectedDomain, which is what actually names this verifier; on its own the
+// option only turns the silent skip into an error.
+//
+// RFC 7519 §4.1.3 requires exactly this — "If the principal processing the claim
+// does not identify itself with a value in the aud claim when this claim is
+// present, then the JWT MUST be rejected" — but enforcing it by default would
+// break every verifier that does not name itself today, so it is opt-in.
+//
+// Without it, a presentation minted for one verifier still verifies at another,
+// which is the replay the aud claim exists to prevent.
+//
+// It applies to presentations secured as JWTs — JWT and vp+jwt — which are the
+// ones carrying an aud claim. A JSON-LD presentation names its verifier in
+// proof.domain instead and has no aud, so this option has no effect there: use
+// WithExpectedDomain, which that path does check. Passing it to a JSON-LD
+// presentation is not an error, so do not read a successful Verify as evidence
+// that an audience was enforced.
+func WithRequireAudience() PresentationOpt {
+	return func(p *presentationOptions) {
+		p.requireAudience = true
+		p.isVerifyProof = true
+	}
+}
+
 // WithResolver sets the document resolver for presentation signing/verification.
 func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt {
 	return func(p *presentationOptions) {
@@ -249,9 +279,26 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 		return ParseJSONPresentation(rawPresentation, opts...)
 	}
 
-	valStr := string(rawPresentation)
+	valStr := strings.TrimSpace(strings.Trim(string(rawPresentation), "\""))
 	if isJWTPresentation(valStr) {
+		parts := strings.Split(valStr, ".")
+		if len(parts) >= 2 {
+			if headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0]); err == nil {
+				var header map[string]interface{}
+				if err := json.Unmarshal(headerBytes, &header); err == nil {
+					if typ, ok := header["typ"].(string); ok {
+						if isJOSEPresentationTyp(typ) {
+							return ParseJOSEPresentation(valStr, opts...)
+						}
+					}
+				}
+			}
+		}
 		return ParseJWTPresentation(valStr, opts...)
+	}
+
+	if isSDJWTShaped(valStr) {
+		return nil, fmt.Errorf("presentation carries SD-JWT disclosures, which are not supported for presentations")
 	}
 
 	return nil, fmt.Errorf("failed to parse presentation")
@@ -280,9 +327,27 @@ func isJSONPresentation(rawPresentation []byte) bool {
 	return true
 }
 
+// isJWTPresentation reports whether the value has the three-segment shape of a
+// compact JWS.
+//
+// Disclosures are deliberately not tolerated here. Nothing in this package
+// reconstructs them — both presentation parsers split the raw string on "." and
+// take the third segment as the signature, so a token ending in "~..." yields a
+// signature with the disclosures glued on. Accepting the shape only moved the
+// failure from parsing, where it names the problem, to verification, where it
+// surfaces as "illegal base64 data".
 func isJWTPresentation(valStr string) bool {
 	valStr = strings.Trim(valStr, "\"")
 	regex := `^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$`
 	match, _ := regexp.MatchString(regex, valStr)
 	return match
+}
+
+// isSDJWTShaped reports whether the value looks like a compact JWS carrying
+// SD-JWT disclosures, so the caller can say so instead of reporting a generic
+// parse failure on something that is merely unsupported.
+func isSDJWTShaped(valStr string) bool {
+	valStr = strings.Trim(valStr, "\"")
+	head, _, found := strings.Cut(valStr, "~")
+	return found && isJWTPresentation(head)
 }

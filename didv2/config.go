@@ -67,6 +67,8 @@ type DIDConfig struct {
 	// ExtraVMs are verification methods published alongside the DID's secp256k1
 	// key at #key-1.
 	ExtraVMs []did.VerificationMethodSpec
+	// EnableP256VM publishes the P-256 key at #key-2. Off by default.
+	EnableP256VM bool
 }
 
 // DIDOption is a functional option type for configuring DIDGenerator.
@@ -155,6 +157,12 @@ func WithVerificationMethods(specs ...did.VerificationMethodSpec) DIDOption {
 	return func(c *DIDConfig) { c.ExtraVMs = append(c.ExtraVMs, specs...) }
 }
 
+// WithP256VerificationMethod publishes the DID's P-256 key at #key-2, so the
+// document then carries two verification methods (two attribute records).
+func WithP256VerificationMethod() DIDOption {
+	return func(c *DIDConfig) { c.EnableP256VM = true }
+}
+
 // WithDIDConfig sets the complete DID configuration from a DIDConfig struct.
 func WithDIDConfig(config *DIDConfig) DIDOption {
 	return func(c *DIDConfig) {
@@ -170,5 +178,6 @@ func WithDIDConfig(config *DIDConfig) DIDOption {
 		c.SyncEpoch = config.SyncEpoch
 		c.SyncNonce = config.SyncNonce
 		c.ExtraVMs = slices.Clone(config.ExtraVMs)
+		c.EnableP256VM = config.EnableP256VM
 	}
 }

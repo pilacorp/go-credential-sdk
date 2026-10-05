@@ -13,6 +13,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -69,6 +70,117 @@ func requireCredentialProperties(m CredentialData) error {
 		}
 	}
 	return nil
+}
+
+// credentialsV2Context is the @context VC Data Model 2.0 §4.2 requires first on
+// every credential. vc-jose-cose is defined against 2.0 only, so the JOSE paths
+// hold documents to it; the VC 1.1 paths do not, and keep their own context.
+const credentialsV2Context = "https://www.w3.org/ns/credentials/v2"
+
+// requireJOSECredential checks a payload really is the VC 2.0 credential its
+// vc+jwt media type claims: the properties every credential carries, the v2
+// @context, and a type that names a credential rather than something else.
+//
+// Per vc-jose-cose § Validation the verified payload must be a well-formed
+// credential; verifying the signature alone does not establish that.
+func requireJOSECredential(m CredentialData) error {
+	if err := requireCredentialProperties(m); err != nil {
+		return err
+	}
+	if err := requireV2Context(m["@context"]); err != nil {
+		return err
+	}
+	return requireCredentialType(m["type"])
+}
+
+// securedClaims are the credential properties a verifier's decisions rest on:
+// who issued it, which data model it speaks, when its statement holds, and where
+// to look up revocation. Both the 1.1 and the 2.0 spelling of the validity window
+// is listed, because a 1.1 document is free to carry either.
+//
+// JWT-level claims (iss, exp, nbf, iat) are not here. The only caller passes the
+// vc claim of a VC 1.1 token, and those live outside it — vc._sd cannot hide
+// them. They would belong in this list again if a flat vc-jose-cose payload ever
+// carried disclosures.
+var securedClaims = []string{
+	"@context", "type",
+	"issuer",
+	"validFrom", "validUntil",
+	"issuanceDate", "expirationDate",
+	"credentialStatus",
+}
+
+// requireSecuredClaimsSigned refuses a token whose reconstruction introduced one
+// of those properties, or whose holder withheld the disclosure carrying one.
+//
+// Selective disclosure moves a property outside the signature: it is the
+// digest that is signed, and the value arrives separately, under the holder's
+// control. For a claim nobody checks that is the point. For these claims it is
+// not:
+//
+//   - Hiding issuer let an attacker sign with its own key and name itself in
+//     iss — which matched, because the signed payload had no issuer to compare
+//     against — and the credential handed back named the victim as issuer.
+//   - Withholding the disclosure for expirationDate or credentialStatus made an
+//     expired or revoked credential verify as neither, since the checks run on
+//     the reconstructed payload and found nothing to check.
+//
+// A disclosure the holder attached can be named, so the first loop says which
+// property it was. A disclosure the holder withheld cannot: the digest left
+// behind does not record what it stood for. What is still visible is that some
+// top-level property was made disclosable, and at the top level of a credential
+// there is nothing a verifier does not decide on — hence the second check.
+func requireSecuredClaimsSigned(signed, reconstructed map[string]interface{}) error {
+	for _, claim := range securedClaims {
+		if _, ok := signed[claim]; ok {
+			continue
+		}
+		if _, ok := reconstructed[claim]; ok {
+			return fmt.Errorf(
+				"%q was selectively disclosed; a verifier decides on it, so it must be part of the signed payload",
+				claim)
+		}
+	}
+	if _, ok := signed["_sd"]; ok {
+		return fmt.Errorf(
+			"the signed payload hides top-level properties behind _sd; selective disclosure is for claims inside credentialSubject")
+	}
+	return nil
+}
+
+// requireV2Context enforces VCDM 2.0 §4.2: the v2 URL comes first. The data
+// model asks for an ordered set, but a lone string means the same thing and is
+// accepted rather than turned into a second way to fail.
+func requireV2Context(v interface{}) error {
+	var first string
+	switch t := v.(type) {
+	case string:
+		first = t
+	case []interface{}:
+		if len(t) > 0 {
+			first, _ = t[0].(string)
+		}
+	}
+	if first != credentialsV2Context {
+		return fmt.Errorf("credential must name %q first in @context, got %q", credentialsV2Context, first)
+	}
+	return nil
+}
+
+// requireCredentialType keeps a presentation — or any other document — from
+// being read as a credential just because the header said vc+jwt.
+func requireCredentialType(v interface{}) error {
+	if hasType(v, "VerifiableCredential") {
+		return nil
+	}
+	return fmt.Errorf("credential type must include VerifiableCredential, got %v", v)
+}
+
+// hasType reports whether a type property names want. Shared with the vp package
+// through internal/vcdm, because both decide the same thing about the same data
+// model and two copies of that rule would drift.
+func hasType(v interface{}, want string) bool {
+	return vcdm.HasType(v, want)
 }
 
 // isEmptyValue treats absent, null, "" and empty arrays/objects alike.
