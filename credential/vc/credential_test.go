@@ -87,11 +87,16 @@ func TestParseCredential(t *testing.T) {
 			expected:    buildExpectedEducationalCredential(),
 		},
 		{
-			name:        "Valid Educational Credential SD-JWT (wrapper)",
+			// buildDummySDJWT glues a made-up disclosure onto a plain JWT whose
+			// payload has no _sd at all, so the disclosure matches nothing the
+			// issuer signed a digest for. That used to be ignored in silence,
+			// which let a holder append anything and still verify — and gave one
+			// credential several byte forms under one Hash().
+			name:        "A JWT with a fabricated disclosure glued on",
 			inputJSON:   []byte(buildDummySDJWT(validJWTtoken)),
 			opts:        []CredentialOpt{},
-			expectError: false,
-			expected:    buildExpectedEducationalCredential(),
+			expectError: true,
+			errorMsg:    "matches nothing in the payload",
 		},
 	}
 
@@ -129,6 +134,8 @@ func TestParseCredential(t *testing.T) {
 
 // buildDummySDJWT wraps a plain JWT into an SD-JWT by appending a
 // syntactically valid disclosure that does not affect the payload.
+// buildDummySDJWT returns a plain JWT with one fabricated disclosure appended —
+// an SD-JWT costume over a token that never had any selectively disclosed field.
 func buildDummySDJWT(jwtStr string) string {
 	// Simple disclosure array [salt, name, value]
 	arr := []interface{}{"salt", "x", "y"}
@@ -1342,91 +1349,69 @@ func TestSerializeJSONCredential(t *testing.T) {
 	assert.True(t, json.Valid(bytes), "Serialized credential must be a json object")
 }
 
-func TestNewJWTCredential_WithSDDisclosures_SerializesSDJWT(t *testing.T) {
+// WithSDDisclosures is validated against the digests in the payload, not banned.
+// Every case below still fails, but for the reason that actually applies: the
+// disclosure matches nothing. Combining it with WithSDSelectivePaths is what
+// guarantees that — those paths make the builder generate its own digests with a
+// fresh salt, so even a disclosure this very builder produced a moment ago no
+// longer matches. The shape that does work, caller-supplied digests and
+// disclosures together, is in TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused.
+func TestNewJWTCredential_WithSDDisclosures_MustMatchTheDigests(t *testing.T) {
 	vcc := CredentialContents{
 		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
 		ID:      "urn:uuid:1234",
 		Issuer:  "did:example:issuer",
 		Types:   []string{"VerifiableCredential"},
 		Subject: []Subject{
-			{
-				ID: "did:example:subject1",
-				CustomFields: map[string]interface{}{
-					"name": "Alice",
-				},
-			},
+			{ID: "did:example:subject1", CustomFields: map[string]interface{}{"name": "Alice"}},
 		},
 		ValidFrom:  time.Now(),
 		ValidUntil: time.Now().Add(24 * time.Hour),
 	}
+	resolver := secpVMResolver(t, "did:example:issuer")
 
-	// Use simple, syntactically valid disclosures to avoid depending on BuildDisclosures behavior here.
-	arr := []interface{}{"salt", "x", "y"}
-	b, _ := json.Marshal(arr)
-	D := base64.RawURLEncoding.EncodeToString(b)
-	disclosures := []string{D}
-
-	// selective paths for name
-	selectivePaths := []string{"credentialSubject.name"}
-
-	cred, err := NewJWTCredential(
-		vcc,
-		WithVerificationMethodKey("key-1"),
-		WithSDDisclosures(disclosures),
-		WithSDSelectivePaths(selectivePaths),
-		secpVMResolver(t, "did:example:issuer"),
-	)
+	// The legitimate shape first: paths only, which produces a parseable SD-JWT.
+	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"),
+		WithSDSelectivePaths([]string{"credentialSubject.name"}), resolver)
 	assert.NoError(t, err)
-	assert.NotNil(t, cred)
 
 	serialized, err := cred.Serialize()
 	assert.NoError(t, err)
+	token, ok := serialized.(string)
+	assert.True(t, ok, "expected a token string")
+	assert.True(t, sdjwt.IsSDJWT(token), "expected SD-JWT format")
 
-	s, ok := serialized.(string)
-	if !ok {
-		t.Fatalf("expected serialized credential to be string, got %T", serialized)
-	}
-
-	// Inspect issuer-signed JWT payload to ensure "name" is hidden.
-	parts := strings.SplitN(s, "~", 2)
-	if len(parts) < 2 {
-		t.Fatalf("expected SD-JWT with disclosures, got %q", s)
-	}
-	jwtPart := parts[0]
-
-	segs := strings.Split(jwtPart, ".")
-	if len(segs) != 3 {
-		t.Fatalf("expected 3 JWT segments, got %d", len(segs))
-	}
-
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(segs[1])
-	assert.NoError(t, err)
-
-	var payload map[string]interface{}
-	err = json.Unmarshal(payloadBytes, &payload)
-	assert.NoError(t, err)
-
-	vcAny, ok := payload["vc"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected vc map in JWT payload")
-	}
-	csAny, ok := vcAny["credentialSubject"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected credentialSubject map in vc")
-	}
-
-	if _, has := csAny["name"]; has {
-		t.Fatalf("expected name to be hidden in issuer-signed JWT payload")
-	}
-
-	// Ensure SD-JWT format
-	assert.True(t, sdjwt.IsSDJWT(s), "expected SD-JWT format")
-
-	// Parse back and ensure we still get a JWTCredential
-	parsed, err := ParseCredential([]byte(s))
+	parsed, err := ParseCredential([]byte(token))
 	assert.NoError(t, err)
 	_, ok = parsed.(*JWTCredential)
 	assert.True(t, ok, "expected parsed credential to be JWTCredential")
+
+	// A disclosure the builder itself just produced, handed back in.
+	ownDisclosure := cred.disclosures[0]
+
+	arr, err := json.Marshal([]interface{}{"salt", "x", "y"})
+	assert.NoError(t, err)
+	foreign := base64.RawURLEncoding.EncodeToString(arr)
+
+	for name, disclosures := range map[string][]string{
+		"a disclosure from elsewhere":         {foreign},
+		"a disclosure this builder just made": {ownDisclosure},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"),
+				WithSDDisclosures(disclosures),
+				WithSDSelectivePaths([]string{"credentialSubject.name"}), resolver)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid SD-JWT disclosures")
+			assert.Contains(t, err.Error(), "matches nothing in the payload")
+		})
+	}
+
+	// And with no paths at all, so there is no digest in the payload to match.
+	_, err = NewJWTCredential(vcc, WithVerificationMethodKey("key-1"),
+		WithSDDisclosures([]string{foreign}), resolver)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid SD-JWT disclosures")
 }
 
 func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
@@ -1811,8 +1796,28 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	_, hasEmail := cs["email"]
 	assert.False(t, hasEmail, "Holder chose not to disclose email; verifier should not see it")
 
+	// Revealing nothing is still an SD-JWT presentation, so it keeps the "~"
+	// terminator. It used to come back as a bare JWT, which IsSDJWT does not
+	// recognise — and the parser then skipped reconstruction and handed the
+	// verifier a credentialSubject with the raw _sd digest array still in it.
 	emptyPres := sdjwt.BuildSDJWTPresentation(issuerJWT, nil)
-	assert.Equal(t, issuerJWT, emptyPres, "presentation with no disclosures returns bare JWT")
+	assert.Equal(t, issuerJWT+"~", emptyPres)
+	assert.True(t, sdjwt.IsSDJWT(emptyPres))
+
+	parsedEmpty, err := ParseCredential([]byte(emptyPres))
+	assert.NoError(t, err)
+	emptyContents, err := parsedEmpty.GetContents()
+	assert.NoError(t, err)
+	var em map[string]interface{}
+	assert.NoError(t, json.Unmarshal(emptyContents, &em))
+	emptyCS, ok := em["credentialSubject"].(map[string]interface{})
+	assert.True(t, ok)
+	for _, k := range []string{"firstname", "email", "_sd"} {
+		_, has := emptyCS[k]
+		assert.False(t, has, "credentialSubject must not carry %q when nothing was disclosed", k)
+	}
+	_, hasAlg := em["_sd_alg"]
+	assert.False(t, hasAlg, "_sd_alg is SD-JWT machinery, not a credential property")
 }
 
 // TestWithSDDecoyDigests_Array tests decoy digests for array elements

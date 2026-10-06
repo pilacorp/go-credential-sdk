@@ -606,73 +606,116 @@ func TestJOSECredential_TypNamesTheSecuringMechanism(t *testing.T) {
 	}
 }
 
-// Selective disclosure left this package with the SD-JWT work, because the rules
-// it needs are not settled here: which properties may be disclosed at all, what
-// media type the envelope in a presentation carries, how a key binding JWT is
-// checked. Until then every door is shut, and shut loudly — an option silently
-// ignored would produce a credential whose own verifier disagrees with it.
-func TestJOSECredential_RefusesSelectiveDisclosure(t *testing.T) {
-	const did = "did:example:jose-no-sd"
+// Selective disclosure on a vc+jwt credential: the named fields leave the signed
+// payload as digests and travel after the signature, so the holder can withhold
+// them. The media type changes with the mechanism, and the token still verifies
+// because the signature covers the issuer JWT alone.
+//
+// What stays refused is hiding anything at the top level. There is no property
+// up there a verifier does not decide on, and a withheld disclosure leaves only
+// a digest — nothing left to check.
+func TestJOSECredential_SelectiveDisclosure(t *testing.T) {
+	const did = "did:example:jose-sd"
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("gen p256: %v", err)
 	}
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
-
-	t.Run("build with a selective path", func(t *testing.T) {
-		_, err := vc.NewJOSECredential(joseContents(did),
-			vc.WithSDSelectivePaths([]string{"credentialSubject.name"}),
-			vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
-		if err == nil || !strings.Contains(err.Error(), "selective disclosure is not supported") {
-			t.Fatalf("err = %v, want the option to be refused", err)
-		}
-	})
-
-	t.Run("build with disclosures handed in", func(t *testing.T) {
-		_, err := vc.NewJOSECredential(joseContents(did),
-			vc.WithSDDisclosures([]string{"WyJzYWx0IiwibmFtZSIsIkFsaWNlIl0"}),
-			vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
-		if err == nil || !strings.Contains(err.Error(), "selective disclosure is not supported") {
-			t.Fatalf("err = %v, want the option to be refused", err)
-		}
-	})
-
-	payload := map[string]interface{}{
-		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
-		"type":              []interface{}{"VerifiableCredential"},
-		"issuer":            "did:example:123",
-		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
 	}
 
-	t.Run("parse a token with disclosures attached", func(t *testing.T) {
-		token := unsignedJOSEToken(t, "vc+jwt", payload) + "~WyJzYWx0IiwibmFtZSIsIkFsaWNlIl0~"
-		if _, err := vc.ParseCredential([]byte(token)); err == nil ||
-			!strings.Contains(err.Error(), "does not support selective disclosure") {
-			t.Fatalf("err = %v, want the disclosures to be refused", err)
+	contents := func() vc.CredentialContents {
+		c := joseContents(did)
+		c.Subject = []vc.Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{
+			"name": "Alice", "bloodType": "O-",
+		}}}
+
+		return c
+	}
+
+	t.Run("a subject field is disclosable and the token round-trips", func(t *testing.T) {
+		cred, err := vc.NewJOSECredential(contents(),
+			vc.WithSDSelectivePaths([]string{"credentialSubject.bloodType"}),
+			vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("new sd-jwt credential: %v", err)
+		}
+		if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+
+		if typ, _ := joseHeader(t, cred); typ != "vc+sd-jwt" {
+			t.Fatalf("typ = %q, want vc+sd-jwt: the media type follows the mechanism", typ)
+		}
+		serialized, err := cred.Serialize()
+		if err != nil {
+			t.Fatalf("serialize: %v", err)
+		}
+		token, ok := serialized.(string)
+		if !ok {
+			t.Fatalf("serialized credential is %T, want string", serialized)
+		}
+		if !strings.Contains(token, "~") {
+			t.Fatal("an SD-JWT must carry its disclosures after the signature")
+		}
+
+		parsed, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("parse back: %v", err)
+		}
+		if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("verify: %v", err)
+		}
+		// The disclosure was sent, so the field is readable again.
+		subject, _ := parsed.ExtractField("credentialSubject").(map[string]interface{})
+		if subject["bloodType"] != "O-" {
+			t.Fatalf("credentialSubject = %v, want bloodType back after reconstruction", subject)
 		}
 	})
 
-	// The holder can also send no disclosure at all. Then there is nothing to
-	// name — only the digests left behind say that something was hidden.
-	t.Run("parse a token whose payload hides properties", func(t *testing.T) {
-		hidden := map[string]interface{}{}
-		for k, v := range payload {
-			hidden[k] = v
+	t.Run("the holder withholds the disclosure", func(t *testing.T) {
+		cred, err := vc.NewJOSECredential(contents(),
+			vc.WithSDSelectivePaths([]string{"credentialSubject.bloodType"}),
+			vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("new sd-jwt credential: %v", err)
 		}
-		hidden["_sd"] = []interface{}{"X9x1bH-s0hxbXBEUl1x0B2EGLMLhKC0DdZH5tnGhxGQ"}
-		hidden["_sd_alg"] = "sha-256"
+		if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("sign: %v", err)
+		}
 
-		if _, err := vc.ParseCredential([]byte(unsignedJOSEToken(t, "vc+jwt", hidden))); err == nil ||
-			!strings.Contains(err.Error(), "does not support selective disclosure") {
-			t.Fatalf("err = %v, want the hidden properties to be refused", err)
+		presented, err := cred.Present(nil) // reveal nothing
+		if err != nil {
+			t.Fatalf("present: %v", err)
+		}
+		if err := presented.Verify(vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("a presentation revealing nothing must still verify: %v", err)
+		}
+		subject, _ := presented.ExtractField("credentialSubject").(map[string]interface{})
+		if _, has := subject["bloodType"]; has {
+			t.Fatalf("credentialSubject = %v, want bloodType withheld", subject)
+		}
+		if subject["name"] != "Alice" {
+			t.Fatalf("credentialSubject = %v, want the fields that were never disclosable", subject)
 		}
 	})
 
-	// vc+sd-jwt is no longer a media type this package routes.
-	for _, typ := range []string{"vc+sd-jwt", "application/vc+sd-jwt"} {
-		t.Run("parse typ "+typ, func(t *testing.T) {
-			if _, err := vc.ParseCredential([]byte(unsignedJOSEToken(t, typ, payload))); err == nil {
-				t.Fatalf("typ %q was accepted", typ)
+	// Every property at the top level is one a verifier decides on.
+	for _, path := range []string{"issuer", "validUntil", "validFrom", "credentialStatus", "type"} {
+		t.Run("a top-level path is refused: "+path, func(t *testing.T) {
+			c := contents()
+			c.ValidUntil = time.Now().Add(time.Hour)
+			_, err := vc.NewJOSECredential(c,
+				vc.WithSDSelectivePaths([]string{path}),
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+			if err == nil {
+				t.Fatalf("%q was made disclosable", path)
+			}
+			if !strings.Contains(err.Error(), "_sd at the root") &&
+				!strings.Contains(err.Error(), "failed to build SD-JWT disclosures") {
+				t.Fatalf("err = %v, want the top-level path to be refused", err)
 			}
 		})
 	}

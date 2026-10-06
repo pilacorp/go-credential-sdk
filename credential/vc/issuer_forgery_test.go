@@ -136,10 +136,17 @@ func TestVC_SecuredClaimsMustNotBeSelectivelyDisclosed(t *testing.T) {
 
 			cred, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
 			if err != nil {
-				// Named when the disclosure was attached, generic when it was
-				// withheld — a digest does not record which property it stood
-				// for. Either is a refusal; anything else is luck.
-				if !strings.Contains(err.Error(), "selectively disclosed") &&
+				// Every path here is a top-level property, so the digest lands
+				// in the vc claim's own _sd and requireDisclosableAtTopLevel
+				// refuses it before reconstruction — which is the earlier and
+				// more precise of the two refusals. The later ones still stand
+				// behind it: requireSecuredClaimsSigned names the property when
+				// the disclosure was attached, and reports the bare _sd when it
+				// was withheld, since a digest does not record what it stood
+				// for. Any of the three is a refusal; anything else is luck.
+				if !strings.Contains(err.Error(), "selective disclosure is not permitted") &&
+					!strings.Contains(err.Error(), "carries _sd at the root") &&
+					!strings.Contains(err.Error(), "selectively disclosed") &&
 					!strings.Contains(err.Error(), "hides top-level properties behind _sd") {
 					t.Fatalf("refused, but not for the disclosure: %v", err)
 				}

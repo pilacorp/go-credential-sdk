@@ -13,6 +13,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
+	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"golang.org/x/sync/errgroup"
@@ -25,6 +26,8 @@ type JOSECredential struct {
 	signingInput string         // JWS header.payload (base64 encoded)
 	payloadData  CredentialData // Unsecured VC as CredentialData
 	signature    string         // JWS signature (if signed)
+	disclosures  []string       // SD-JWT disclosures, when the credential is secured that way
+	disclosable  bool           // Payload carries _sd digests, even if this holder reveals none
 	signingKey   jwt.SigningKey // Verification method the header names; zero for a parsed credential
 }
 
@@ -60,15 +63,78 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 		return nil, err
 	}
 
-	// Selective disclosure is not part of vc+jwt here. vc-jose-cose gives SD-JWT
-	// its own media type (vc+sd-jwt) and its own rules — which properties may be
-	// disclosed, how the envelope in a presentation is labelled, how a key
-	// binding JWT is checked — and none of that is settled in this package yet.
-	// Refusing the option is better than signing something whose own verifier
-	// disagrees with it; the work continues on feat/support-vc-jose-cose-sd-jwt.
-	if options.hasSDOptions() {
-		return nil, fmt.Errorf("selective disclosure is not supported for %s yet", TypeVCJWT)
+	// Selective disclosure replaces the named fields with digests and returns the
+	// values separately, for the holder to send or withhold. Only fields inside
+	// credentialSubject may be hidden: everything at the top level is metadata a
+	// verifier decides on, and ParseJOSECredential refuses a payload whose root
+	// carries _sd for exactly that reason.
+	result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+		VC:             vcMap,
+		SelectivePaths: options.sdSelectivePaths,
+		HashAlgorithm:  options.sdAlg,
+		Shuffle:        options.sdShuffle,
+		Decoys:         options.sdDecoys,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", err)
 	}
+	vcMap = result.ProcessedVC
+
+	// WithSDDisclosures carries disclosures the caller built itself, against
+	// digests the caller put in the document — the advanced path the README
+	// documents. Refusing it outright was wrong: the reason given, that a
+	// disclosure made elsewhere cannot match a digest this payload holds, is
+	// true only when the builder generated the digests from
+	// WithSDSelectivePaths. When the caller supplied both halves they do match,
+	// and a credential that signed and verified before stopped building at all.
+	//
+	// So the question asked here is the one that actually matters — do these
+	// disclosures match the digests in this payload — and Reconstruct answers it
+	// by doing the work. It brings the § 7.1 rules with it: a disclosure that
+	// matches nothing, the same one twice, a digest referenced twice.
+	disclosures := make([]string, 0, len(result.Disclosures)+len(options.sdDisclosures))
+	disclosures = append(disclosures, result.Disclosures...)
+	disclosures = append(disclosures, options.sdDisclosures...)
+
+	// _sd_alg has to be written for prebuilt disclosures too, because it is what
+	// marks the payload as selectively disclosed further down. BuildDisclosures
+	// only writes it for paths and decoys it generated itself, so a prebuilt-only
+	// credential had none — and then the typ stayed vc+jwt, Serialize dropped the
+	// disclosures and the terminator, and the digests the caller put in the
+	// subject leaked back out on the next parse. Defaulted rather than demanded:
+	// RFC 9901 § 4.1.1 makes the claim optional and sha-256 the default.
+	if len(options.sdDisclosures) > 0 {
+		if _, ok := vcMap["_sd_alg"]; !ok {
+			alg := options.sdAlg
+			if alg == "" {
+				alg = sdjwt.DefaultHashAlgorithm
+			}
+			vcMap["_sd_alg"] = alg
+		}
+	}
+
+	// Same rule the parse side applies: nothing outside credentialSubject may be
+	// disclosable. Reachable here through WithSDSelectivePaths naming a path
+	// outside the subject, or WithSDDecoyDigests with a root path. The subject
+	// itself is exempt — hiding claims in there is the feature.
+	if err := requireDisclosableAtTopLevel(vcMap, true); err != nil {
+		return nil, err
+	}
+
+	// Reconstruct deep-copies, so this validates without touching what gets
+	// signed.
+	if _, rerr := sdjwt.Reconstruct(vcMap, disclosures, true); rerr != nil {
+		return nil, fmt.Errorf("invalid SD-JWT disclosures: %w", rerr)
+	}
+
+	// Read from the payload, which is the same question ParseJOSECredential asks
+	// of the same bytes. Deriving it from len(disclosures) instead made the two
+	// ends disagree about decoys-only credentials — BuildDisclosures writes
+	// _sd_alg and the decoy digests but returns no disclosure, so the issuer
+	// labelled the token vc+jwt and left the "~" off while the parser, reading
+	// _sd_alg, folded the digests out and put the "~" back. Same credential, two
+	// byte forms, two Hash values.
+	_, disclosable := vcMap["_sd_alg"]
 
 	// Per W3C vc-jose-cose Section 1.1.2.1:
 	// "The JWT Claim Names vc and vp MUST NOT be present in any JWT Claims Set that
@@ -92,14 +158,26 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 		return nil, err
 	}
 
-	// typ names the securing mechanism. Only JWS is secured here, so the value is
-	// fixed; an SD-JWT would have to say vc+sd-jwt, and a verifier told vc+jwt
-	// parses the token as plain JWS and chokes on the disclosures trailing the
-	// signature.
+	// typ names the securing mechanism, so it follows the payload rather than
+	// being fixed: vc-jose-cose § 3.2.1 says vc+jwt when securing with JWS and
+	// vc+sd-jwt when securing with SD-JWT. A verifier routes on this, and one
+	// told vc+jwt parses the token as plain JWS and chokes on the disclosures
+	// trailing the signature.
+	//
+	// Decoy digests count. They carry no disclosure, but a verifier still has to
+	// run SD-JWT processing to fold them out, and one that does not sees _sd and
+	// _sd_alg sitting in credentialSubject as though they were claims.
+	//
+	// jwt.purposeFromTyp has to recognise whichever value lands here — a typ the
+	// parser routes but the purpose check does not know is decided by the
+	// payload, which the signer writes.
 	header := map[string]interface{}{
 		"typ": TypeVCJWT,
 		"alg": signingKey.Alg,
 		"kid": signingKey.ID,
+	}
+	if disclosable {
+		header["typ"] = TypeVCSDJWT
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -120,6 +198,8 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 		signingInput: signingInput,
 		payloadData:  payloadData,
 		signature:    "",
+		disclosures:  disclosures,
+		disclosable:  disclosable,
 		signingKey:   signingKey,
 	}
 
@@ -130,17 +210,24 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential, error) {
 	rawJWT = strings.TrimSpace(strings.Trim(rawJWT, "\""))
 
-	// A tilde means disclosures follow the signature, which is SD-JWT. Refused
-	// rather than reconstructed: the properties a verifier decides on would then
-	// sit outside the signature, under whoever holds the token. See the note in
-	// NewJOSECredential.
-	if strings.ContainsRune(rawJWT, '~') {
-		return nil, fmt.Errorf("token carries SD-JWT disclosures; %s does not support selective disclosure yet", TypeVCJWT)
+	// A tilde means disclosures follow the signature. The issuer-signed JWT is
+	// what the signature covers; the disclosures travel beside it and are folded
+	// back into the payload below.
+	var issuerJWT string
+	var disclosures []string
+	if sdjwt.IsSDJWT(rawJWT) {
+		parsed, perr := sdjwt.Parse(rawJWT)
+		if perr != nil {
+			return nil, fmt.Errorf("failed to parse SD-JWT: %w", perr)
+		}
+		issuerJWT = parsed.BaseJWT
+		disclosures = parsed.Disclosures
+	} else {
+		if !isJWTCredential(rawJWT) {
+			return nil, fmt.Errorf("invalid JWT or SD-JWT format")
+		}
+		issuerJWT = rawJWT
 	}
-	if !isJWTCredential(rawJWT) {
-		return nil, fmt.Errorf("invalid JWT format")
-	}
-	issuerJWT := rawJWT
 
 	parts := strings.Split(issuerJWT, ".")
 	headerEncoded := parts[0]
@@ -160,8 +247,8 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	}
 	typ, _ := headerMap["typ"].(string)
 	if !isJOSECredentialTyp(typ) {
-		return nil, fmt.Errorf("invalid typ header for JOSECredential: got %q, want %q",
-			typ, TypeVCJWT)
+		return nil, fmt.Errorf("invalid typ header for JOSECredential: got %q, want %q or %q",
+			typ, TypeVCJWT, TypeVCSDJWT)
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadEncoded)
@@ -184,19 +271,63 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		return nil, fmt.Errorf("invalid vc-jose-cose: 'vp' claim MUST NOT be present in payload")
 	}
 
-	// Refusing the tilde is not enough on its own: a holder can simply send no
-	// disclosure, and the digests left in the payload still stand for properties
-	// nobody can see. _sd at the top level means some credential property was
-	// made disclosable, and at that level there is none a verifier does not
-	// decide on — issuer, the validity window, credentialStatus, @context, type.
-	for _, k := range []string{"_sd", "_sd_alg"} {
-		if _, ok := payloadMap[k]; ok {
-			return nil, fmt.Errorf("%s payload carries %q; %s does not support selective disclosure yet",
-				TypeVCJWT, k, TypeVCJWT)
-		}
+	// Whether this token is an SD-JWT is answered by the two things that say how
+	// it was secured — the media type in the header, and the combined format —
+	// not by a claim inside the payload. _sd_alg looked like the marker because
+	// BuildDisclosures always writes it, but RFC 9901 § 4.1.1 makes it OPTIONAL
+	// and defaults it to sha-256, so an SD-JWT from another implementation need
+	// not carry it. Reading it as the marker left such a token with
+	// disclosable=false: Reconstruct never ran, so the _sd digests stayed in the
+	// document as though they were claims, Serialize dropped the disclosures and
+	// the terminator, and the claim the holder did send was gone after a round
+	// trip. It is kept below only as a third signal, never as the only one.
+	_, hasSDAlg := payloadMap["_sd_alg"]
+	declaredSD := strings.TrimPrefix(typ, "application/") == TypeVCSDJWT
+	combinedSD := sdjwt.IsSDJWT(rawJWT)
+
+	// The header must not disagree with the bytes. A token typed vc+jwt means
+	// plain JWS to every other verifier, which parses it that way and chokes on
+	// the disclosures after the signature; this one used to accept it and
+	// reconstruct, so the two ends read the same token differently.
+	//
+	// A vc+jwt whose payload carries _sd with neither a terminator nor _sd_alg
+	// gives neither signal, so it slips past this one; the walk below catches it,
+	// which is why that walk is told whether the media type declared SD.
+	if !declaredSD && (combinedSD || hasSDAlg) {
+		return nil, fmt.Errorf("typ %q does not match the SD-JWT format", typ)
+	}
+
+	// Whatever the holder chose to send, the issuer must not have made anything
+	// outside credentialSubject disclosable in the first place: a withheld
+	// disclosure leaves only a digest, which does not say which property it
+	// stood for, so there would be nothing left to check. Runs before
+	// Reconstruct, because Reconstruct is what removes the evidence.
+	if err := requireDisclosableAtTopLevel(payloadMap, declaredSD); err != nil {
+		return nil, err
 	}
 
 	vcMap := payloadMap
+	// Reconstruct is also what strips the _sd arrays and _sd_alg, so it has to
+	// run whenever the token is an SD-JWT — not only when a disclosure arrived.
+	// A holder revealing nothing used to hand the caller a credentialSubject
+	// with a raw digest array sitting in it as though it were a claim, and
+	// schema validation then saw a property the schema does not know.
+	disclosable := declaredSD || combinedSD || hasSDAlg
+	if disclosable || len(disclosures) > 0 {
+		processed, rerr := sdjwt.Reconstruct(vcMap, disclosures, true)
+		if rerr != nil {
+			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rerr)
+		}
+		vcMap = processed
+	}
+
+	// Reconstruct deep-copies, so payloadMap is still exactly what the signature
+	// covered while vcMap is what the caller will read. A disclosure that arrived
+	// carrying one of the claims a verifier decides on is named here; one that was
+	// withheld was already refused above.
+	if err := requireSecuredClaimsSigned(payloadMap, vcMap); err != nil {
+		return nil, fmt.Errorf("invalid %s payload: %w", typ, err)
+	}
 
 	// A signature proves who produced these bytes, not that the bytes are a
 	// credential. The typ header already promised one, so hold the payload to
@@ -212,16 +343,20 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		signingInput: signingInput,
 		payloadData:  CredentialData(vcMap),
 		signature:    signature,
+		disclosures:  disclosures,
+		disclosable:  disclosable,
 	}
 
 	return e, e.executeOptions(opts...)
 }
 
-// The media type vc-jose-cose gives a credential secured with JWS, named by the
-// typ header and by the data: URL of an EnvelopedVerifiableCredential. SD-JWT
-// has its own (vc+sd-jwt) and is not implemented here; see NewJOSECredential.
+// The media types vc-jose-cose gives a secured credential, named by the typ
+// header and by the data: URL of an EnvelopedVerifiableCredential. Which one
+// applies depends on the securing mechanism: JWS gives vc+jwt, SD-JWT gives
+// vc+sd-jwt.
 const (
 	TypeVCJWT       = "vc+jwt"
+	TypeVCSDJWT     = "vc+sd-jwt"
 	TypeEnvelopedVC = "EnvelopedVerifiableCredential"
 )
 
@@ -238,7 +373,7 @@ const TypeJOSE = "JOSE"
 // means adding it there.
 func isJOSECredentialTyp(typ string) bool {
 	switch typ {
-	case TypeVCJWT, "application/" + TypeVCJWT:
+	case TypeVCJWT, "application/" + TypeVCJWT, TypeVCSDJWT, "application/" + TypeVCSDJWT:
 		return true
 	}
 	return false
@@ -326,11 +461,63 @@ func (j *JOSECredential) Verify(opts ...CredentialOpt) error {
 	return j.executeOptions(opts...)
 }
 
+// Serialize returns the token to hand to someone else: the issuer-signed JWT,
+// and for an SD-JWT the disclosures this holder is willing to reveal, each after
+// a "~". Verification does not go through here — it rebuilds the issuer JWT from
+// signingInput and signature, because the disclosures are outside the signature
+// and feeding them to a JWS verifier fails as a base64 error (issue #78).
 func (j *JOSECredential) Serialize() (any, error) {
-	if j.signature == "" {
-		return j.signingInput, nil
+	base := j.signingInput
+	if j.signature != "" {
+		base += "." + j.signature
 	}
-	return j.signingInput + "." + j.signature, nil
+	if !j.disclosable {
+		return base, nil
+	}
+
+	// Terminated even with no disclosure left to write: the payload still holds
+	// the digests, so dropping the "~" would hand out a token whose typ header
+	// says vc+sd-jwt while its shape says plain JWS — and envelopeMediaType, which
+	// reads the token, then labelled the envelope in a presentation vc+jwt.
+	var sb strings.Builder
+	sb.WriteString(base)
+	for _, d := range j.disclosures {
+		if d == "" {
+			continue
+		}
+		sb.WriteString("~")
+		sb.WriteString(d)
+	}
+	sb.WriteString("~")
+
+	return sb.String(), nil
+}
+
+// DecodedDisclosures reports which fields this token still discloses, decoded
+// from the salted arrays that travel after the signature.
+func (j *JOSECredential) DecodedDisclosures() ([]sdjwt.DecodedDisclosure, error) {
+	return sdjwt.DecodeDisclosures(j.disclosures)
+}
+
+// Present returns the same credential carrying only selectedDisclosures, which
+// is how a holder reveals a subset. The issuer-signed JWT is untouched, so the
+// signature still verifies; what changes is how much of the payload can be
+// reconstructed from it.
+func (j *JOSECredential) Present(selectedDisclosures []string) (Credential, error) {
+	if j.signature == "" {
+		return nil, fmt.Errorf("cannot present an unsigned credential")
+	}
+	issuerJWT := j.signingInput + "." + j.signature
+
+	// Nothing was made disclosable, so there is no subset to choose and the
+	// token is already everything the holder has. Said plainly rather than
+	// returning the same credential under an SD-JWT terminator it has not
+	// earned — the typ header would still say vc+jwt.
+	if len(j.disclosures) == 0 {
+		return nil, fmt.Errorf("credential carries no disclosures; nothing to present selectively")
+	}
+
+	return ParseJOSECredential(sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures))
 }
 
 func (j *JOSECredential) Hash() (string, error) {
