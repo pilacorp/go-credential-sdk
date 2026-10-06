@@ -41,9 +41,6 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 
 	vcMap := normalizeCredentialData(m)
 	options := getOptions(opts...)
-	if err := rejectPrebuiltDisclosures(options); err != nil {
-		return nil, err
-	}
 
 	result, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
 		VC:             vcMap,
@@ -56,12 +53,52 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 		return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", err)
 	}
 	vcMap = result.ProcessedVC
-	disclosures := result.Disclosures
 
-	// Same rule the parse side applies: a top-level property must not be
-	// disclosable. Reachable here through WithSDDecoyDigests with a root path.
-	if err := requireDisclosableAtTopLevel(vcMap); err != nil {
+	// WithSDDisclosures carries disclosures the caller built itself, against
+	// digests the caller put in the document — the advanced path the README
+	// documents. Refusing it outright was wrong: the reason given, that a
+	// disclosure made elsewhere cannot match a digest this payload holds, is
+	// true only when the builder generated the digests from
+	// WithSDSelectivePaths. When the caller supplied both halves they do match,
+	// and a credential that signed and verified before stopped building at all.
+	//
+	// So the question asked here is the one that actually matters — do these
+	// disclosures match the digests in this payload — and Reconstruct answers it
+	// by doing the work. It brings the § 7.1 rules with it: a disclosure that
+	// matches nothing, the same one twice, a digest referenced twice.
+	disclosures := make([]string, 0, len(result.Disclosures)+len(options.sdDisclosures))
+	disclosures = append(disclosures, result.Disclosures...)
+	disclosures = append(disclosures, options.sdDisclosures...)
+
+	// _sd_alg has to be written for prebuilt disclosures too, because it is what
+	// marks the payload as selectively disclosed further down. BuildDisclosures
+	// only writes it for paths and decoys it generated itself, so a prebuilt-only
+	// credential had none — and then the typ stayed vc+jwt, Serialize dropped the
+	// disclosures and the terminator, and the digests the caller put in the
+	// subject leaked back out on the next parse. Defaulted rather than demanded:
+	// RFC 9901 § 4.1.1 makes the claim optional and sha-256 the default.
+	if len(options.sdDisclosures) > 0 {
+		if _, ok := vcMap["_sd_alg"]; !ok {
+			alg := options.sdAlg
+			if alg == "" {
+				alg = sdjwt.DefaultHashAlgorithm
+			}
+			vcMap["_sd_alg"] = alg
+		}
+	}
+
+	// Same rule the parse side applies: nothing outside credentialSubject may be
+	// disclosable. Reachable here through WithSDSelectivePaths naming a path
+	// outside the subject, or WithSDDecoyDigests with a root path. The subject
+	// itself is exempt — hiding claims in there is the feature.
+	if err := requireDisclosableAtTopLevel(vcMap, true); err != nil {
 		return nil, err
+	}
+
+	// Reconstruct deep-copies, so this validates without touching what gets
+	// signed.
+	if _, rerr := sdjwt.Reconstruct(vcMap, disclosures, true); rerr != nil {
+		return nil, fmt.Errorf("invalid SD-JWT disclosures: %w", rerr)
 	}
 
 	// See NewJOSECredential: read from the payload, the same question
@@ -184,11 +221,26 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 		return nil, fmt.Errorf("vc claim is not a valid JSON object")
 	}
 
+	// The call the 2.0 parser has had and this one was missing, which is why the
+	// revocation bypass reached the released path: nothing outside
+	// credentialSubject may be disclosable. A VC 1.1 token has no media type to
+	// contradict its own payload — it types itself "JWT" either way — so the
+	// subject stays exempt here.
+	if err := requireDisclosableAtTopLevel(vcMap, true); err != nil {
+		return nil, err
+	}
+
 	signedVC := vcMap
 	// Same gate as ParseJOSECredential, and for the same reason: Reconstruct is
 	// what removes the _sd arrays, so a holder revealing nothing used to leave
 	// them visible in the document the caller reads.
-	_, disclosable := vcMap["_sd_alg"]
+	//
+	// There is no media type to read here — a VC 1.1 token types itself "JWT"
+	// whether or not it is selectively disclosed — so the combined format is the
+	// only signal that does not depend on _sd_alg, which RFC 9901 § 4.1.1 leaves
+	// optional.
+	_, hasSDAlg := vcMap["_sd_alg"]
+	disclosable := hasSDAlg || sdjwt.IsSDJWT(rawJWT)
 	if disclosable || len(disclosures) > 0 {
 		processed, rerr := sdjwt.Reconstruct(vcMap, disclosures, true)
 		if rerr != nil {

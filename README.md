@@ -476,7 +476,21 @@ cred, err := vc.NewJWTCredential(contents,
 )
 ```
 
-**Alternative (advanced):** If you build disclosures yourself, use `vc.WithSDDisclosures(disclosures)` when creating the credential. The SDK will attach them when serializing to SD-JWT.
+**Alternative (advanced):** If you build the disclosures yourself, put the processed claims — digests and all — into the contents and pass the matching disclosures with `vc.WithSDDisclosures(disclosures)`:
+
+```go
+res, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+    VC:             draft,
+    SelectivePaths: []string{"credentialSubject.bloodType"},
+})
+// res.ProcessedVC["credentialSubject"] now holds the digests; carry it into
+// Subject.CustomFields, then hand the disclosures back:
+cred, err := vc.NewJWTCredential(contents,
+    vc.WithSDDisclosures(res.Disclosures),
+    vc.WithVerificationMethodKey("key-1"))
+```
+
+The builder validates them against the digests in the payload before signing: a disclosure that matches nothing, the same one twice, or a digest referenced twice fails with `invalid SD-JWT disclosures`. Do not combine this with `WithSDSelectivePaths` for the same claim — those paths make the builder generate its own digests with a fresh salt, which no previously built disclosure can match.
 
 #### Holder: Presenting an SD-JWT
 
@@ -1323,7 +1337,7 @@ presentation, err := vp.ParsePresentationWithValidation(data)
 Used when **issuing** JWT credentials to produce an SD-JWT (selective disclosure).
 
 - **WithSDSelectivePaths(paths)**: SDK builds disclosures for the given claim paths (e.g. `"credentialSubject.email"`, `"credentialSubject.tags[0]"`). When you call `Serialize()`, the result is an SD-JWT string.
-- **WithSDDisclosures(disclosures)**: Attach pre-built disclosure strings (advanced; normally use `WithSDSelectivePaths`).
+- **WithSDDisclosures(disclosures)**: Attach disclosure strings you built yourself, against digests you put in the contents (advanced; normally use `WithSDSelectivePaths`). Validated against the payload before signing — see above.
 
 ```go
 // Issue SD-JWT with selective disclosure
@@ -1344,7 +1358,7 @@ vc.WithVerifyProof()                        // Enable proof verification
 vc.WithBaseURL(url)                         // Set custom DID resolver URL
 vc.WithVerificationMethodKey(key)           // Set custom verification method key
 vc.WithSDSelectivePaths(paths)              // Issue SD-JWT: claims at these paths are selectively disclosable
-vc.WithSDDisclosures(disclosures)           // Issue SD-JWT: use these pre-built disclosure strings
+vc.WithSDDisclosures(disclosures)           // Issue SD-JWT: disclosures you built, matching digests already in the contents
 
 // VP options
 vp.WithVCValidation()                       // Enable VC validation within presentation

@@ -1349,13 +1349,14 @@ func TestSerializeJSONCredential(t *testing.T) {
 	assert.True(t, json.Valid(bytes), "Serialized credential must be a json object")
 }
 
-// WithSDDisclosures asks a builder to attach disclosures it did not make. The
-// builder generates _sd itself with a fresh salt, so those disclosures match no
-// digest in the payload and the token is one this SDK's own parser refuses. Even
-// handing back a disclosure a previous build of the same contents produced fails,
-// because the salt changed — so the option has no working shape and is refused
-// outright rather than left to fail somewhere further on.
-func TestNewJWTCredential_WithSDDisclosures_IsRefused(t *testing.T) {
+// WithSDDisclosures is validated against the digests in the payload, not banned.
+// Every case below still fails, but for the reason that actually applies: the
+// disclosure matches nothing. Combining it with WithSDSelectivePaths is what
+// guarantees that — those paths make the builder generate its own digests with a
+// fresh salt, so even a disclosure this very builder produced a moment ago no
+// longer matches. The shape that does work, caller-supplied digests and
+// disclosures together, is in TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused.
+func TestNewJWTCredential_WithSDDisclosures_MustMatchTheDigests(t *testing.T) {
 	vcc := CredentialContents{
 		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
 		ID:      "urn:uuid:1234",
@@ -1401,15 +1402,16 @@ func TestNewJWTCredential_WithSDDisclosures_IsRefused(t *testing.T) {
 				WithSDDisclosures(disclosures),
 				WithSDSelectivePaths([]string{"credentialSubject.name"}), resolver)
 			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "cannot be applied when building")
+			assert.Contains(t, err.Error(), "invalid SD-JWT disclosures")
+			assert.Contains(t, err.Error(), "matches nothing in the payload")
 		})
 	}
 
-	// And with no paths at all, so nothing could have matched.
+	// And with no paths at all, so there is no digest in the payload to match.
 	_, err = NewJWTCredential(vcc, WithVerificationMethodKey("key-1"),
 		WithSDDisclosures([]string{foreign}), resolver)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot be applied when building")
+	assert.Contains(t, err.Error(), "invalid SD-JWT disclosures")
 }
 
 func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {

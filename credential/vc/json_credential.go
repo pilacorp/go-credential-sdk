@@ -148,45 +148,89 @@ func requireSecuredClaimsSigned(signed, reconstructed map[string]interface{}) er
 	return nil
 }
 
-// rejectPrebuiltDisclosures refuses WithSDDisclosures on a builder.
+// requireDisclosableAtTopLevel confines selective disclosure to the
+// credentialSubject subtree. Everything else in a credential is metadata a
+// verifier decides on — @context, type, issuer, the validity window,
+// credentialStatus — and making one of those disclosable moves it outside the
+// signature, under whoever holds the token.
 //
-// The builder generates _sd itself from WithSDSelectivePaths, with a fresh salt
-// each time, so a disclosure made anywhere else hashes to a digest this payload
-// does not contain. Attaching it produced a token this SDK's own parser refuses:
-// not a theoretical mismatch — handing back a disclosure a previous build of the
-// very same contents produced fails too, because the salt changed.
+// subjectMayDisclose says whether credentialSubject is exempt. It is on every
+// path that legitimately produces or carries an SD-JWT, and off for a vc+jwt,
+// whose media type promises nothing was selectively disclosed: a token labelled
+// that way must not carry the machinery anywhere, not even in the subject.
 //
-// Refused rather than removed, because the option is exported and shipped.
-func rejectPrebuiltDisclosures(o *credentialOptions) error {
-	if len(o.sdDisclosures) == 0 {
-		return nil
-	}
-
-	return fmt.Errorf("WithSDDisclosures cannot be applied when building a credential: " +
-		"the builder generates the digests itself, so a disclosure made elsewhere matches " +
-		"none of them — to re-assemble a stored credential use ParseJWTCredential or " +
-		"ParseJOSECredential, to reveal a subset use Present")
-}
-
-// requireDisclosableAtTopLevel refuses a payload whose root carries _sd.
+// The check is on the machinery (_sd arrays, and the {"...": digest}
+// placeholder an array uses) rather than on property names, because a withheld
+// disclosure leaves only a digest and a digest does not record what it stood
+// for. _sd_alg is not machinery in this sense: BuildDisclosures writes it at the
+// root whatever the paths were, so refusing it would refuse every SD-JWT.
 //
-// Selective disclosure is for claims about the subject. At the top level of a
-// credential there is no property a verifier does not decide on — @context,
-// type, issuer, the validity window, credentialStatus — and hiding one there
-// moves it outside the signature, under whoever holds the token.
-//
-// The check has to be on _sd rather than on the property names, because a
-// withheld disclosure leaves only a digest and a digest does not record what it
-// stood for. _sd_alg is fine: BuildDisclosures writes it at the root whatever
-// the paths were, so refusing it would refuse every SD-JWT.
-func requireDisclosableAtTopLevel(m map[string]interface{}) error {
+// Checking only the root used to be enough-looking and was not. _sd nested
+// inside a top-level property is still _sd: an issuer that made every field of
+// credentialStatus disclosable left a holder able to withhold all of them, and
+// reconstruction then produced credentialStatus: {} — which checkRevocation
+// reads as "this credential does not use revocation" and passes. A revoked
+// credential verified clean, and dropping the disclosures cost the holder none
+// of the claims a verifier wanted to see. Hence the walk.
+func requireDisclosableAtTopLevel(m map[string]interface{}, subjectMayDisclose bool) error {
 	if _, ok := m["_sd"]; ok {
 		return fmt.Errorf("the payload carries _sd at the root; selective disclosure — and the " +
 			"decoy digests that pad it — belong to claims inside credentialSubject, because " +
 			"nothing at the top level may be withheld")
 	}
 
+	// Map iteration order is unspecified, so with more than one offending
+	// property the name reported is whichever came first. The verdict does not
+	// depend on it; only the message does.
+	for name, value := range m {
+		if name == credentialSubjectProperty && subjectMayDisclose {
+			continue
+		}
+		if carriesSDMachinery(value) {
+			return fmt.Errorf("selective disclosure is not permitted in %q; "+
+				"only claims inside %s may be withheld", name, credentialSubjectProperty)
+		}
+	}
+
 	return nil
+}
+
+// credentialSubjectProperty is the one subtree selective disclosure belongs to.
+const credentialSubjectProperty = "credentialSubject"
+
+// carriesSDMachinery reports whether value holds anything the SD-JWT layer puts
+// in a payload, at any depth: an _sd digest array, or the {"...": digest}
+// placeholder that stands for a withheld array element.
+//
+// The placeholder is only looked for inside arrays, which is the only place
+// draft-ietf-oauth-selective-disclosure-jwt § 4.2.4.2 defines it and the only
+// place Reconstruct acts on it. A map value of that shape elsewhere reconstructs
+// to nothing, so it is not machinery to refuse.
+func carriesSDMachinery(value interface{}) bool {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		if _, ok := v["_sd"]; ok {
+			return true
+		}
+		for _, child := range v {
+			if carriesSDMachinery(child) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, child := range v {
+			if elem, ok := child.(map[string]interface{}); ok && len(elem) == 1 {
+				if _, ok := elem["..."]; ok {
+					return true
+				}
+			}
+			if carriesSDMachinery(child) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // requireV2Context enforces VCDM 2.0 §4.2: the v2 URL comes first. The data

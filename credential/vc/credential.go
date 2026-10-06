@@ -204,18 +204,26 @@ func WithCheckRevocation() CredentialOpt {
 	}
 }
 
-// WithSDDisclosures is refused by the builders and kept only because removing an
-// exported option is a breaking change.
+// WithSDDisclosures attaches disclosures the caller built itself. It is the
+// advanced path: the caller runs sdjwt.BuildDisclosures, puts the processed
+// claims — digests and all — into the contents it hands the builder, and passes
+// the matching disclosures here.
 //
-// A builder generates _sd itself from WithSDSelectivePaths, with a fresh salt each
-// time, so a disclosure made anywhere else hashes to a digest this payload does
-// not contain — and a token carrying one is refused by this SDK's own parser.
-// Handing the disclosures back in therefore cannot work, not even the ones a
-// previous build produced.
+// The builder validates rather than trusts. Every disclosure has to match a
+// digest the payload actually carries, and the rules of
+// draft-ietf-oauth-selective-disclosure-jwt § 7.1 apply: a disclosure matching
+// nothing is refused, so is the same one twice, so is a digest referenced twice.
+// A mismatch fails at build time with "invalid SD-JWT disclosures" rather than
+// producing a token this SDK's own parser would reject.
 //
-// To re-assemble a stored credential, parse the token: ParseJWTCredential and
-// ParseJOSECredential read the disclosures from the string. To reveal a subset,
-// use Present.
+// Do not combine it with WithSDSelectivePaths for the same claim. Those paths
+// make the builder generate its own digests with a fresh salt, which no
+// previously built disclosure can match.
+//
+// For the ordinary case, name the claims with WithSDSelectivePaths and let the
+// builder do both halves. To re-assemble a stored credential, parse the token:
+// ParseJWTCredential and ParseJOSECredential read the disclosures from the
+// string. To reveal a subset of a credential already issued, use Present.
 func WithSDDisclosures(disclosures []string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.sdDisclosures = disclosures
