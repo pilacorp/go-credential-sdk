@@ -1180,3 +1180,153 @@ func TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused(t *testing.T) {
 		})
 	}
 }
+
+// Present answers "which subset of the disclosures do I send", so its guard has
+// to ask whether the credential is an SD-JWT at all — the question disclosable
+// answers, and the one Serialize and the typ header already read.
+//
+// Asking len(disclosures) instead asked a different question and got a different
+// answer. Two shapes are SD-JWTs with no disclosure left to list: one issued
+// with decoy digests only, and one that came out of an earlier Present(nil).
+// Both were refused, while Serialize still terminated them with "~" — the same
+// object answering two ways depending on which method you called.
+func TestSDJWT_PresentIsGatedOnDisclosableNotOnDisclosureCount(t *testing.T) {
+	const did = "did:example:sd-present-gate"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	contents := func(ctx []interface{}) vc.CredentialContents {
+		return vc.CredentialContents{
+			Context:   ctx,
+			ID:        "urn:uuid:sd-present-gate",
+			Issuer:    did,
+			Types:     []string{"VerifiableCredential"},
+			ValidFrom: time.Now().Add(-time.Hour),
+			Subject: []vc.Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{
+				"name": "Alice", "bloodType": "O-",
+			}}},
+		}
+	}
+
+	type presenter interface {
+		Present([]string) (vc.Credential, error)
+	}
+	type prover interface {
+		AddProofByProvider(signer.SignerProvider, ...vc.CredentialOpt) error
+	}
+
+	for _, b := range []struct {
+		name  string
+		ctx   []interface{}
+		build func(vc.CredentialContents, ...vc.CredentialOpt) (vc.Credential, error)
+	}{
+		{
+			name: "vc+sd-jwt",
+			ctx:  []interface{}{"https://www.w3.org/ns/credentials/v2"},
+			build: func(c vc.CredentialContents, o ...vc.CredentialOpt) (vc.Credential, error) {
+				return vc.NewJOSECredential(c, o...)
+			},
+		},
+		{
+			name: "VC 1.1 SD-JWT",
+			ctx:  []interface{}{"https://www.w3.org/2018/credentials/v1"},
+			build: func(c vc.CredentialContents, o ...vc.CredentialOpt) (vc.Credential, error) {
+				return vc.NewJWTCredential(c, o...)
+			},
+		},
+	} {
+		t.Run(b.name, func(t *testing.T) {
+			issue := func(t *testing.T, opts ...vc.CredentialOpt) vc.Credential {
+				t.Helper()
+				cred, err := b.build(contents(b.ctx), append(opts,
+					vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))...)
+				if err != nil {
+					t.Fatalf("issue: %v", err)
+				}
+				if err := cred.(prover).AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+					t.Fatalf("sign: %v", err)
+				}
+
+				return cred
+			}
+
+			// presentable asserts the credential is an SD-JWT by its own
+			// serialization and that Present agrees.
+			presentable := func(t *testing.T, cred vc.Credential, label string) vc.Credential {
+				t.Helper()
+				serialized, err := cred.Serialize()
+				if err != nil {
+					t.Fatalf("%s: serialize: %v", label, err)
+				}
+				token, ok := serialized.(string)
+				if !ok {
+					t.Fatalf("%s: serialized credential is %T, want string", label, serialized)
+				}
+				if !strings.HasSuffix(token, "~") {
+					t.Fatalf("%s: token = %.40q..., not an SD-JWT to begin with", label, token)
+				}
+				out, err := cred.(presenter).Present(nil)
+				if err != nil {
+					t.Fatalf("%s: Serialize terminates the token with \"~\" but Present refuses it: %v",
+						label, err)
+				}
+
+				return out
+			}
+
+			t.Run("a credential carrying only decoy digests", func(t *testing.T) {
+				cred := issue(t, vc.WithSDDecoyDigests([]vc.Decoy{{Path: "credentialSubject", Count: 2}}))
+				presented := presentable(t, cred, "decoys only")
+
+				if err := presented.Verify(vc.WithResolver(resolver)); err != nil {
+					t.Fatalf("verify the presented token: %v", err)
+				}
+				subject, _ := presented.ExtractField("credentialSubject").(map[string]interface{})
+				if sd, has := subject["_sd"]; has {
+					t.Errorf("credentialSubject carries decoy digests %v", sd)
+				}
+				if subject["name"] != "Alice" {
+					t.Errorf("credentialSubject = %v, want the real claims intact", subject)
+				}
+			})
+
+			t.Run("Present chains after revealing nothing", func(t *testing.T) {
+				cred := issue(t, vc.WithSDSelectivePaths([]string{"credentialSubject.bloodType"}))
+
+				// First hop: the holder reveals nothing and forwards the token.
+				first := presentable(t, cred, "first Present(nil)")
+				// Second hop: the next holder forwards it again. There is still
+				// nothing to reveal, and it is still an SD-JWT.
+				second := presentable(t, first, "second Present(nil)")
+
+				if err := second.Verify(vc.WithResolver(resolver)); err != nil {
+					t.Fatalf("verify after two hops: %v", err)
+				}
+				subject, _ := second.ExtractField("credentialSubject").(map[string]interface{})
+				if _, has := subject["bloodType"]; has {
+					t.Error("bloodType was withheld and must not be readable")
+				}
+				if sd, has := subject["_sd"]; has {
+					t.Errorf("credentialSubject carries _sd = %v", sd)
+				}
+			})
+
+			// The guard still does its job: a credential with nothing
+			// disclosable has no subset to choose.
+			t.Run("a plain credential is still refused", func(t *testing.T) {
+				cred := issue(t)
+				if _, err := cred.(presenter).Present(nil); err == nil {
+					t.Fatal("a credential with nothing disclosable was presented selectively")
+				}
+			})
+		})
+	}
+}

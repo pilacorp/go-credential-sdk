@@ -1,6 +1,7 @@
 package sdjwt
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -547,4 +548,103 @@ func TestValidation_SDMustBeAnArray(t *testing.T) {
 	_, err := Reconstruct(vc, nil, true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "_sd must be an array")
+}
+
+// digestFor is the digest an _sd array carries for a disclosure under sha-256.
+func digestFor(disclosure string) string {
+	sum := sha256.Sum256([]byte(disclosure))
+
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// discFor builds the salted array a disclosure base64url-encodes.
+func discFor(t *testing.T, salt, name string, value interface{}) string {
+	t.Helper()
+
+	b, err := json.Marshal([]interface{}{salt, name, value})
+	if err != nil {
+		t.Fatalf("marshal disclosure: %v", err)
+	}
+
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// RFC 9901 § 7.1 step 4 counts a digest across the whole payload and does not
+// ask whether a disclosure arrived for it. Counting behind the disclosure lookup
+// meant only revealed digests were counted: the same unrevealed digest, or the
+// same decoy, in two containers passed — and a conforming verifier would reject
+// the token this one accepted.
+//
+// Nothing is injected by it, since an unrevealed digest fills no field and the
+// moment a holder reveals it the count does fire. What it costs is agreement
+// with every other verifier about what the same bytes mean.
+func TestReconstruct_DigestUniquenessIgnoresWhetherItWasRevealed(t *testing.T) {
+	disclosure := discFor(t, "c2FsdDAxc2FsdDAxc2FsdDAx", "secret", "x")
+	h := digestFor(disclosure)
+
+	for _, tc := range []struct {
+		name        string
+		vcMap       map[string]interface{}
+		disclosures []string
+	}{
+		{
+			name: "unrevealed, in two objects",
+			vcMap: map[string]interface{}{"_sd_alg": AlgSHA256,
+				"a": map[string]interface{}{"_sd": []interface{}{h}},
+				"b": map[string]interface{}{"_sd": []interface{}{h}}},
+		},
+		{
+			name: "revealed, in two objects",
+			vcMap: map[string]interface{}{"_sd_alg": AlgSHA256,
+				"a": map[string]interface{}{"_sd": []interface{}{h}},
+				"b": map[string]interface{}{"_sd": []interface{}{h}}},
+			disclosures: []string{disclosure},
+		},
+		{
+			name: "unrevealed placeholder, in two arrays",
+			vcMap: map[string]interface{}{"_sd_alg": AlgSHA256,
+				"a": []interface{}{map[string]interface{}{"...": h}},
+				"b": []interface{}{map[string]interface{}{"...": h}}},
+		},
+		{
+			name: "once in an object, once as an array placeholder",
+			vcMap: map[string]interface{}{"_sd_alg": AlgSHA256,
+				"a": map[string]interface{}{"_sd": []interface{}{h}},
+				"b": []interface{}{map[string]interface{}{"...": h}}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Reconstruct(tc.vcMap, tc.disclosures, true)
+			if err == nil {
+				t.Fatal("a digest repeated across containers was accepted")
+			}
+			if !strings.Contains(err.Error(), "referenced more than once in the payload") {
+				t.Fatalf("err = %v, want the payload-wide duplicate reported", err)
+			}
+		})
+	}
+
+	// And a digest that appears once is still fine, revealed or not — the rule
+	// is about repetition, not about disclosure.
+	t.Run("a single occurrence is untouched", func(t *testing.T) {
+		for _, ds := range [][]string{nil, {disclosure}} {
+			out, err := Reconstruct(map[string]interface{}{
+				"_sd_alg": AlgSHA256,
+				"a":       map[string]interface{}{"_sd": []interface{}{h}},
+			}, ds, true)
+			if err != nil {
+				t.Fatalf("disclosures=%v: %v", ds, err)
+			}
+			a, ok := out["a"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("a is %T, want an object", out["a"])
+			}
+			if _, leaked := a["_sd"]; leaked {
+				t.Errorf("disclosures=%v: _sd survived reconstruction: %v", ds, a)
+			}
+			if len(ds) > 0 && a["secret"] != "x" {
+				t.Errorf("the revealed claim was not applied: %v", a)
+			}
+		}
+	})
 }

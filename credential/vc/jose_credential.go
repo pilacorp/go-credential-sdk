@@ -513,7 +513,13 @@ func (j *JOSECredential) Present(selectedDisclosures []string) (Credential, erro
 	// token is already everything the holder has. Said plainly rather than
 	// returning the same credential under an SD-JWT terminator it has not
 	// earned — the typ header would still say vc+jwt.
-	if len(j.disclosures) == 0 {
+	//
+	// Read from disclosable, the same field Serialize and the typ header read.
+	// len(j.disclosures) is a different question and gave a different answer:
+	// a credential carrying only decoy digests, and one that came out of an
+	// earlier Present(nil), are both SD-JWTs with no disclosure left to list,
+	// and both were refused here while Serialize still terminated them with "~".
+	if !j.disclosable {
 		return nil, fmt.Errorf("credential carries no disclosures; nothing to present selectively")
 	}
 

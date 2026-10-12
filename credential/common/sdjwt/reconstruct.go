@@ -168,13 +168,15 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 						}
 						arrayDigests[h] = true
 
-						info, exists := disclosureMap[h]
-						if exists {
-							if used[h] {
-								return nil, fmt.Errorf("digest %q is referenced more than once in the payload", h)
-							}
-							used[h] = true
+						// Same reason as applySDHashes: the payload-wide count
+						// runs before the lookup, so an unrevealed placeholder
+						// repeated across arrays is caught too.
+						if used[h] {
+							return nil, fmt.Errorf("digest %q is referenced more than once in the payload", h)
 						}
+						used[h] = true
+
+						info, exists := disclosureMap[h]
 						if !exists {
 							// Placeholder without disclosure - keep it to preserve array structure
 							out = append(out, map[string]interface{}{"...": h})
@@ -219,18 +221,25 @@ func applySDHashes(hashes []string, v map[string]interface{}, disclosureMap map[
 		}
 		objectDigests[h] = true
 
+		// § 7.1 step 4 counts a digest across the whole payload, not per object:
+		// objectDigests above sees one _sd array, so without this one disclosure
+		// could fill two fields in two different objects.
+		//
+		// Counted before the disclosure is looked up, because the rule is about
+		// the payload and says nothing about whether a disclosure came with it.
+		// Behind the lookup it only ever saw revealed digests, so the same
+		// unrevealed digest — or the same decoy — in two containers passed, and
+		// a conforming verifier would have rejected the token this one accepted.
+		if used[h] {
+			return fmt.Errorf("digest %q is referenced more than once in the payload", h)
+		}
+		used[h] = true
+
 		info, ok := disclosureMap[h]
 		if !ok {
 			// No disclosure for this digest - it's either unrevealed or a decoy
 			continue
 		}
-		// § 7.1 step 4 counts a digest across the whole payload, not per object:
-		// objectDigests above sees one _sd array, so without this one disclosure
-		// could fill two fields in two different objects.
-		if used[h] {
-			return fmt.Errorf("digest %q is referenced more than once in the payload", h)
-		}
-		used[h] = true
 
 		// Validate disclosure type matches context
 		if info.isArrayElem || info.objectField == "" {

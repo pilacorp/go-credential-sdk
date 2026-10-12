@@ -423,8 +423,9 @@ func (j *JWTCredential) Present(selectedDisclosures []string) (Credential, error
 
 	// See JOSECredential.Present: a credential with nothing disclosable has no
 	// subset to choose, and BuildSDJWTPresentation would hand back the same JWT
-	// under an SD-JWT terminator, changing its bytes and its Hash.
-	if len(j.disclosures) == 0 {
+	// under an SD-JWT terminator, changing its bytes and its Hash. Gated on
+	// disclosable, not on how many disclosures are left to send.
+	if !j.disclosable {
 		return nil, fmt.Errorf("credential carries no disclosures; nothing to present selectively")
 	}
 
