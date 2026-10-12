@@ -109,12 +109,39 @@ func buildDisclosureMap(disclosures []string, sdAlg string) (map[string]disclosu
 	return disclosureMap, nil
 }
 
+// sdKey is the array of digests an object carries for its withheld claims.
+const sdKey = "_sd"
+
 // processNode recursively processes objects/arrays, applying disclosures.
 func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used map[string]bool) (interface{}, error) {
 	switch v := node.(type) {
 	case map[string]interface{}:
-		// Handle _sd on this object first
-		if rawSd, ok := v["_sd"]; ok {
+		// The fields the issuer wrote, before _sd adds any. Doing it the other
+		// way round visited a disclosed claim twice: applySDHashes already calls
+		// processNode on the value it inserts, and a loop over v afterwards found
+		// that same value sitting in the map and walked it again.
+		//
+		// Harmless until digests were counted whether or not a disclosure came
+		// with them. After that, a disclosed claim whose value holds an
+		// unrevealed {"...": h} had h marked on the first walk, and the second
+		// walk reported it as referenced more than once — a token where h occurs
+		// exactly once. Issue a disclosure for both skills and skills[1], reveal
+		// only skills, and the SDK refused its own credential.
+		//
+		// Assigning to keys that already exist is safe to do while ranging; the
+		// keys applySDHashes adds come after the loop.
+		for key, val := range v {
+			if key == sdKey {
+				continue
+			}
+			processedChild, err := processNode(val, disclosureMap, used)
+			if err != nil {
+				return nil, err
+			}
+			v[key] = processedChild
+		}
+
+		if rawSd, ok := v[sdKey]; ok {
 			// Track all digests in this object to check for duplicates
 			objectDigests := make(map[string]bool)
 
@@ -141,17 +168,9 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 				return nil, fmt.Errorf("_sd must be an array of digests, got %T", rawSd)
 			}
 			// Remove _sd after expansion
-			delete(v, "_sd")
+			delete(v, sdKey)
 		}
 
-		// Recurse into other fields
-		for key, val := range v {
-			processedChild, err := processNode(val, disclosureMap, used)
-			if err != nil {
-				return nil, err
-			}
-			v[key] = processedChild
-		}
 		return v, nil
 
 	case []interface{}:

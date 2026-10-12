@@ -648,3 +648,97 @@ func TestReconstruct_DigestUniquenessIgnoresWhetherItWasRevealed(t *testing.T) {
 		}
 	})
 }
+
+// A disclosure's value can itself hold an unrevealed array element, which is
+// what recursive disclosure means: issue skills[1] and skills as two
+// disclosures, and the skills disclosure reads ["go", {"...": <digest of
+// skills[1]>}]. A holder revealing skills but not skills[1] is the ordinary
+// case that costs nothing extra to support.
+//
+// processNode used to apply _sd first and then loop over the object, which
+// walked every claim a disclosure had just inserted a second time. That was
+// invisible until digests were counted whether or not a disclosure came with
+// them: the first walk marked the nested placeholder, the second walk found the
+// same digest and reported it as referenced more than once — in a token where
+// it occurs exactly once. Reconstruct refused a credential this SDK issues.
+//
+// Walking the issuer's own fields before applying _sd gives every node exactly
+// one visit, since applySDHashes already processes the value it inserts.
+func TestReconstruct_DisclosedClaimHoldingAnUnrevealedElement(t *testing.T) {
+	// The array element, as an array-element disclosure: ["<salt>", value].
+	elem, err := json.Marshal([]interface{}{"c2FsdFJVc2FsdFJVc2FsdFJV", "rust"})
+	if err != nil {
+		t.Fatalf("marshal element disclosure: %v", err)
+	}
+	rust := base64.RawURLEncoding.EncodeToString(elem)
+
+	// The claim that contains it, still withheld inside.
+	skills := discFor(t, "c2FsZFNLc2FsZFNLc2FsZFNL", "skills",
+		[]interface{}{"go", map[string]interface{}{"...": digestFor(rust)}})
+
+	payload := func() map[string]interface{} {
+		return map[string]interface{}{
+			"_sd_alg": AlgSHA256,
+			"credentialSubject": map[string]interface{}{
+				"id":  "did:example:subject",
+				"_sd": []interface{}{digestFor(skills)},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name        string
+		disclosures []string
+		wantSkills  interface{}
+	}{
+		{
+			name:        "both revealed",
+			disclosures: []string{skills, rust},
+			wantSkills:  []interface{}{"go", "rust"},
+		},
+		{
+			// The case that regressed. skills comes back; the element inside
+			// stays a placeholder, because that is what withholding it means.
+			name:        "the claim revealed, the element inside withheld",
+			disclosures: []string{skills},
+			wantSkills: []interface{}{"go",
+				map[string]interface{}{"...": digestFor(rust)}},
+		},
+		{
+			name:        "neither revealed",
+			disclosures: nil,
+			wantSkills:  nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := Reconstruct(payload(), tc.disclosures, true)
+			if err != nil {
+				t.Fatalf("a well-formed token was refused: %v", err)
+			}
+			subject, ok := out["credentialSubject"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("credentialSubject is %T, want an object", out["credentialSubject"])
+			}
+			if _, leaked := subject["_sd"]; leaked {
+				t.Errorf("credentialSubject carries _sd = %v", subject["_sd"])
+			}
+
+			got, want := mustJSON(t, subject["skills"]), mustJSON(t, tc.wantSkills)
+			if got != want {
+				t.Errorf("skills = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+// mustJSON renders a value for comparison, so a nested map compares by content.
+func mustJSON(t *testing.T, v interface{}) string {
+	t.Helper()
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	return string(b)
+}

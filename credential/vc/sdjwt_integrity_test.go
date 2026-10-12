@@ -1330,3 +1330,143 @@ func TestSDJWT_PresentIsGatedOnDisclosableNotOnDisclosureCount(t *testing.T) {
 		})
 	}
 }
+
+// An issuer can make a claim disclosable and an element inside it disclosable
+// too — WithSDSelectivePaths("credentialSubject.skills[1]",
+// "credentialSubject.skills") — and the holder then has three choices, not two:
+// reveal both, reveal the claim while keeping the element hidden, or reveal
+// neither. The middle one is the point of nesting them.
+//
+// It stopped working when digests began being counted whether or not a
+// disclosure came with them. processNode applied _sd first and then looped over
+// the object, so a claim a disclosure had just inserted was walked twice; the
+// first walk marked the nested placeholder and the second reported the same
+// digest as referenced more than once. Present, ParseJOSECredential and
+// ParseJWTCredential all refused a credential this SDK had just issued, and
+// only when the holder withheld the inner element — revealing everything
+// replaced the placeholder on the first walk, so no test saw it.
+func TestSDJWT_NestedDisclosureKeepsItsWithheldElement(t *testing.T) {
+	const did = "did:example:sd-nested"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	type prover interface {
+		AddProofByProvider(signer.SignerProvider, ...vc.CredentialOpt) error
+	}
+	type presenter interface {
+		Present([]string) (vc.Credential, error)
+	}
+
+	for _, b := range []struct {
+		name  string
+		ctx   []interface{}
+		build func(vc.CredentialContents, ...vc.CredentialOpt) (vc.Credential, error)
+	}{
+		{
+			name: "vc+sd-jwt",
+			ctx:  []interface{}{"https://www.w3.org/ns/credentials/v2"},
+			build: func(c vc.CredentialContents, o ...vc.CredentialOpt) (vc.Credential, error) {
+				return vc.NewJOSECredential(c, o...)
+			},
+		},
+		{
+			name: "VC 1.1 SD-JWT",
+			ctx:  []interface{}{"https://www.w3.org/2018/credentials/v1"},
+			build: func(c vc.CredentialContents, o ...vc.CredentialOpt) (vc.Credential, error) {
+				return vc.NewJWTCredential(c, o...)
+			},
+		},
+	} {
+		t.Run(b.name, func(t *testing.T) {
+			cred, err := b.build(vc.CredentialContents{
+				Context:   b.ctx,
+				ID:        "urn:uuid:sd-nested",
+				Issuer:    did,
+				Types:     []string{"VerifiableCredential"},
+				ValidFrom: time.Now().Add(-time.Hour),
+				Subject: []vc.Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{
+					"skills": []interface{}{"go", "rust"},
+				}}},
+			},
+				vc.WithSDSelectivePaths([]string{
+					"credentialSubject.skills[1]", "credentialSubject.skills"}),
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("issue: %v", err)
+			}
+			if err := cred.(prover).AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+				t.Fatalf("sign: %v", err)
+			}
+
+			serialized, err := cred.Serialize()
+			if err != nil {
+				t.Fatalf("serialize: %v", err)
+			}
+			token, ok := serialized.(string)
+			if !ok {
+				t.Fatalf("serialized credential is %T, want string", serialized)
+			}
+
+			// Pick out the disclosure for skills itself; the other one is the
+			// element inside it.
+			var skillsOnly []string
+			for _, d := range strings.Split(token, "~")[1:] {
+				if d == "" {
+					continue
+				}
+				raw, derr := base64.RawURLEncoding.DecodeString(d)
+				if derr != nil {
+					t.Fatalf("decode disclosure: %v", derr)
+				}
+				var arr []interface{}
+				if json.Unmarshal(raw, &arr) == nil && len(arr) == 3 {
+					if name, _ := arr[1].(string); name == "skills" {
+						skillsOnly = append(skillsOnly, d)
+					}
+				}
+			}
+			if len(skillsOnly) != 1 {
+				t.Fatalf("found %d disclosures named skills, want 1", len(skillsOnly))
+			}
+
+			presented, err := cred.(presenter).Present(skillsOnly)
+			if err != nil {
+				t.Fatalf("revealing skills while withholding skills[1] was refused: %v", err)
+			}
+			if err := presented.Verify(vc.WithResolver(resolver)); err != nil {
+				t.Fatalf("verify: %v", err)
+			}
+
+			subject, ok := presented.ExtractField("credentialSubject").(map[string]interface{})
+			if !ok {
+				t.Fatalf("credentialSubject is %T, want an object", presented.ExtractField("credentialSubject"))
+			}
+			if _, leaked := subject["_sd"]; leaked {
+				t.Errorf("credentialSubject carries _sd = %v", subject["_sd"])
+			}
+			skills, ok := subject["skills"].([]interface{})
+			if !ok {
+				t.Fatalf("skills is %T, want an array — the revealed claim should be back", subject["skills"])
+			}
+			if len(skills) != 2 || skills[0] != "go" {
+				t.Fatalf("skills = %v, want the revealed claim with its first element", skills)
+			}
+			// The withheld element stays a placeholder: that is what hiding it means.
+			placeholder, ok := skills[1].(map[string]interface{})
+			if !ok || len(placeholder) != 1 {
+				t.Fatalf("skills[1] = %v, want the {\"...\": digest} placeholder", skills[1])
+			}
+			if _, ok := placeholder["..."]; !ok {
+				t.Errorf("skills[1] = %v, want it still withheld", placeholder)
+			}
+		})
+	}
+}
