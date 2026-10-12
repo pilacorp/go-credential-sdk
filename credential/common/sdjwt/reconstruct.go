@@ -26,10 +26,26 @@ func Reconstruct(vcMap map[string]interface{}, disclosures []string, validateAlg
 	// Deep copy vcMap to avoid modifying original
 	rootCopy := util.DeepCopyMap(vcMap)
 
-	// Process the SD-JWT structure, replacing digests with actual values
-	processed, err := processNode(rootCopy, disclosureMap)
+	// Process the SD-JWT structure, replacing digests with actual values. used
+	// records which digests the payload actually referenced.
+	used := make(map[string]bool, len(disclosureMap))
+	processed, err := processNode(rootCopy, disclosureMap, used)
 	if err != nil {
 		return nil, err
+	}
+
+	// A disclosure the payload never referenced is a value nobody signed a digest
+	// for. Ignoring it let a holder append anything — fabricated disclosures, a
+	// key binding JWT — and still verify, which gave one credential many byte
+	// forms and therefore many Hash() values. draft-ietf-oauth-selective-disclosure-jwt
+	// § 7.1 step 5: "If any Disclosure was not referenced by digest value in the
+	// Issuer-signed JWT (directly or recursively via other Disclosures), the SD-JWT
+	// MUST be rejected."
+	for digest := range disclosureMap {
+		if !used[digest] {
+			return nil, fmt.Errorf(
+				"disclosure for digest %q matches nothing in the payload; it was not part of what the issuer signed", digest)
+		}
 	}
 
 	// Ensure result is a map
@@ -80,18 +96,52 @@ func buildDisclosureMap(disclosures []string, sdAlg string) (map[string]disclosu
 			return nil, err
 		}
 
+		// The same disclosure twice is the same value twice: it reconstructs to
+		// the identical payload but gives the token a second byte form, and
+		// Hash() covers those bytes. draft-ietf-oauth-selective-disclosure-jwt
+		// § 7.1 step 4 rejects a digest encountered more than once.
+		if _, dup := disclosureMap[h]; dup {
+			return nil, fmt.Errorf("disclosure for digest %q was sent more than once", h)
+		}
 		disclosureMap[h] = info
 	}
 
 	return disclosureMap, nil
 }
 
+// sdKey is the array of digests an object carries for its withheld claims.
+const sdKey = "_sd"
+
 // processNode recursively processes objects/arrays, applying disclosures.
-func processNode(node interface{}, disclosureMap map[string]disclosureInfo) (interface{}, error) {
+func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used map[string]bool) (interface{}, error) {
 	switch v := node.(type) {
 	case map[string]interface{}:
-		// Handle _sd on this object first
-		if rawSd, ok := v["_sd"]; ok {
+		// The fields the issuer wrote, before _sd adds any. Doing it the other
+		// way round visited a disclosed claim twice: applySDHashes already calls
+		// processNode on the value it inserts, and a loop over v afterwards found
+		// that same value sitting in the map and walked it again.
+		//
+		// Harmless until digests were counted whether or not a disclosure came
+		// with them. After that, a disclosed claim whose value holds an
+		// unrevealed {"...": h} had h marked on the first walk, and the second
+		// walk reported it as referenced more than once — a token where h occurs
+		// exactly once. Issue a disclosure for both skills and skills[1], reveal
+		// only skills, and the SDK refused its own credential.
+		//
+		// Assigning to keys that already exist is safe to do while ranging; the
+		// keys applySDHashes adds come after the loop.
+		for key, val := range v {
+			if key == sdKey {
+				continue
+			}
+			processedChild, err := processNode(val, disclosureMap, used)
+			if err != nil {
+				return nil, err
+			}
+			v[key] = processedChild
+		}
+
+		if rawSd, ok := v[sdKey]; ok {
 			// Track all digests in this object to check for duplicates
 			objectDigests := make(map[string]bool)
 
@@ -104,26 +154,23 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo) (int
 						hashes = append(hashes, h)
 					}
 				}
-				if err := applySDHashes(hashes, v, disclosureMap, objectDigests); err != nil {
+				if err := applySDHashes(hashes, v, disclosureMap, objectDigests, used); err != nil {
 					return nil, err
 				}
 			case []string:
-				if err := applySDHashes(sdList, v, disclosureMap, objectDigests); err != nil {
+				if err := applySDHashes(sdList, v, disclosureMap, objectDigests, used); err != nil {
 					return nil, err
 				}
+			default:
+				// Dropping it silently discarded whatever the issuer meant by it,
+				// and _sd is the one field whose shape decides what the payload
+				// says.
+				return nil, fmt.Errorf("_sd must be an array of digests, got %T", rawSd)
 			}
 			// Remove _sd after expansion
-			delete(v, "_sd")
+			delete(v, sdKey)
 		}
 
-		// Recurse into other fields
-		for key, val := range v {
-			processedChild, err := processNode(val, disclosureMap)
-			if err != nil {
-				return nil, err
-			}
-			v[key] = processedChild
-		}
 		return v, nil
 
 	case []interface{}:
@@ -140,6 +187,14 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo) (int
 						}
 						arrayDigests[h] = true
 
+						// Same reason as applySDHashes: the payload-wide count
+						// runs before the lookup, so an unrevealed placeholder
+						// repeated across arrays is caught too.
+						if used[h] {
+							return nil, fmt.Errorf("digest %q is referenced more than once in the payload", h)
+						}
+						used[h] = true
+
 						info, exists := disclosureMap[h]
 						if !exists {
 							// Placeholder without disclosure - keep it to preserve array structure
@@ -153,7 +208,7 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo) (int
 						}
 
 						// Array-element disclosure
-						processedVal, err := processNode(info.value, disclosureMap)
+						processedVal, err := processNode(info.value, disclosureMap, used)
 						if err != nil {
 							return nil, err
 						}
@@ -163,7 +218,7 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo) (int
 				}
 			}
 
-			processedElem, err := processNode(elem, disclosureMap)
+			processedElem, err := processNode(elem, disclosureMap, used)
 			if err != nil {
 				return nil, err
 			}
@@ -177,13 +232,27 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo) (int
 }
 
 // applySDHashes processes a slice of hash strings, applying their disclosures to the object.
-func applySDHashes(hashes []string, v map[string]interface{}, disclosureMap map[string]disclosureInfo, objectDigests map[string]bool) error {
+func applySDHashes(hashes []string, v map[string]interface{}, disclosureMap map[string]disclosureInfo, objectDigests, used map[string]bool) error {
 	for _, h := range hashes {
 		// Check for duplicate digest within this object
 		if objectDigests[h] {
 			return fmt.Errorf("duplicate digest %q found in _sd array", h)
 		}
 		objectDigests[h] = true
+
+		// § 7.1 step 4 counts a digest across the whole payload, not per object:
+		// objectDigests above sees one _sd array, so without this one disclosure
+		// could fill two fields in two different objects.
+		//
+		// Counted before the disclosure is looked up, because the rule is about
+		// the payload and says nothing about whether a disclosure came with it.
+		// Behind the lookup it only ever saw revealed digests, so the same
+		// unrevealed digest — or the same decoy — in two containers passed, and
+		// a conforming verifier would have rejected the token this one accepted.
+		if used[h] {
+			return fmt.Errorf("digest %q is referenced more than once in the payload", h)
+		}
+		used[h] = true
 
 		info, ok := disclosureMap[h]
 		if !ok {
@@ -200,7 +269,7 @@ func applySDHashes(hashes []string, v map[string]interface{}, disclosureMap map[
 			return fmt.Errorf("duplicate field %q when reconstructing SD-JWT object", info.objectField)
 		}
 
-		processedVal, err := processNode(info.value, disclosureMap)
+		processedVal, err := processNode(info.value, disclosureMap, used)
 		if err != nil {
 			return err
 		}

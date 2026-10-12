@@ -60,15 +60,17 @@ func Parse(raw string) (*ParsedSDJWT, error) {
 		if seg == "" {
 			continue
 		}
-		// Only treat as holder binding JWT if:
-		// 1. This is the last segment AND
-		// 2. It looks like a JWT AND
-		// 3. There is a ~ before this segment (i.e., not the first disclosure)
-		//    This ensures "issuer~jwt-like" (no ~ before last) is treated as disclosure
-		//    but "issuer~D~JWT" (has ~ before last) is treated as holder binding.
-		// Note: KB-JWT is not verified - just skipped if detected.
+		// A trailing JWT after the disclosures is a key binding JWT: the holder
+		// proving it holds the key the credential was issued to, over a nonce
+		// and audience the verifier named.
+		//
+		// Skipping it silently was worse than not supporting it. A verifier that
+		// asked for holder binding would get a nil error back from a token whose
+		// binding nothing checked, and the KB-JWT also gave the token a second
+		// byte form under the same Hash(). Refused until it is verified.
 		if i == len(parts)-1 && isJWT(seg) && i > 1 {
-			break
+			return nil, fmt.Errorf(
+				"SD-JWT carries a key binding JWT, which this SDK does not verify yet; present the credential without it")
 		}
 		disclosures = append(disclosures, seg)
 	}
@@ -88,21 +90,28 @@ func Parse(raw string) (*ParsedSDJWT, error) {
 
 // BuildSDJWTPresentation builds an SD-JWT presentation string from the issuer-signed JWT
 // and a subset of disclosure strings.
+//
+// The trailing "~" is written even when nothing is selected, because that is
+// what makes the result an SD-JWT: draft-ietf-oauth-selective-disclosure-jwt § 4
+// terminates the combined format with it, and a holder revealing nothing is
+// still presenting an SD-JWT. Omitting it returned a bare JWT, which IsSDJWT
+// does not recognise — so the digests were never folded out of the payload and
+// a presentation whose header says vc+sd-jwt was enveloped as vc+jwt.
+//
+// Callers must not hand a plain JWT here; Present checks that the credential
+// has disclosures before calling.
 func BuildSDJWTPresentation(issuerSignedJWT string, selectedDisclosures []string) string {
 	var sb strings.Builder
 	sb.WriteString(issuerSignedJWT)
-	hasDisclosure := false
 	for _, sel := range selectedDisclosures {
 		if sel == "" {
 			continue
 		}
 		sb.WriteString("~")
 		sb.WriteString(sel)
-		hasDisclosure = true
 	}
-	if hasDisclosure {
-		sb.WriteString("~")
-	}
+	sb.WriteString("~")
+
 	return sb.String()
 }
 

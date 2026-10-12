@@ -112,14 +112,32 @@ func TestJWTProofPurpose(t *testing.T) {
 			payload: map[string]interface{}{"vc": map[string]interface{}{}, "vp": map[string]interface{}{}},
 			wantErr: "its kind is ambiguous",
 		},
-		// A media type no parser routes says nothing, the same as VC 1.1's "JWT".
-		// Answering for it would be a branch no entry point can reach — and the
-		// SD-JWT work that owned these two lives on its own branch now.
+		// An SD-JWT credential is still a credential. vc.isJOSECredentialTyp
+		// routes these two, so this function has to know them: a typ it does not
+		// recognise leaves the decision to the payload, which the signer writes.
 		{
-			name:    "sd-jwt media type says nothing",
+			name:        "vc+sd-jwt header",
+			header:      map[string]interface{}{"typ": "vc+sd-jwt"},
+			payload:     map[string]interface{}{"id": "urn:uuid:1"},
+			wantPurpose: "assertionMethod",
+		},
+		{
+			name:        "application/vc+sd-jwt header",
+			header:      map[string]interface{}{"typ": "application/vc+sd-jwt"},
+			payload:     map[string]interface{}{"id": "urn:uuid:1"},
+			wantPurpose: "assertionMethod",
+		},
+		{
+			name:    "vc+sd-jwt typ over a presentation payload",
 			header:  map[string]interface{}{"typ": "vc+sd-jwt"},
-			payload: map[string]interface{}{"id": "urn:uuid:1"},
-			wantErr: "cannot determine proofPurpose",
+			payload: map[string]interface{}{"type": []interface{}{"VerifiablePresentation"}},
+			wantErr: `implies proofPurpose "assertionMethod" but its payload is a presentation`,
+		},
+		{
+			name:    "vc+sd-jwt over a type array naming both kinds",
+			header:  map[string]interface{}{"typ": "vc+sd-jwt"},
+			payload: map[string]interface{}{"type": []interface{}{"VerifiablePresentation", "VerifiableCredential"}},
+			wantErr: "names both a credential and a presentation",
 		},
 		// A type array naming both kinds is refused rather than resolved by
 		// order. Taking the first match let a credential be judged a
