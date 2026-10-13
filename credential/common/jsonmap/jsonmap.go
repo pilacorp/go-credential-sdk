@@ -6,7 +6,6 @@ import (
 	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -30,7 +29,6 @@ const (
 	EcdsaSecp256k1Signature2019 string = "EcdsaSecp256k1Signature2019"
 	DataIntegrityProof          string = "DataIntegrityProof"
 	ECDSARDFC2019               string = "ecdsa-rdfc-2019"
-	ECDSASECPKEY                string = "EcdsaSecp256k1VerificationKey2019"
 
 	// MultibaseBase58BTCPrefix is base58btc's multibase code, and the
 	// discriminator against legacy hex proofValues (whose alphabet has no "z").
@@ -338,23 +336,15 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 	case proof.Type == JwtProof2020:
 		return m.verifyJWTProof(doc, proof)
 
-	// Two formats share this type name. The spec-conformant Linked Data
-	// Signature suite carries its signature in jws; the pre-v1.8.0 in-house
-	// format carries a hex proofValue and is handled by the case below. The jws
-	// is the only thing that tells them apart, which is why this condition
-	// exists — TestSecp256k1Suite_LegacyHexProofReachesTheLegacyVerifier turns
-	// red if it is dropped.
-	//
-	// Whether the legacy branch stays is an open question, not a settled one:
-	// #89 reports that it takes the public key from the proof rather than from
-	// the resolved DID document, and weighs deleting it against resolving the
-	// key properly. Read this routing as describing what is there today, not as
-	// a commitment to keep it.
-	case proof.Type == EcdsaSecp256k1Signature2019 && proof.JWS != "":
+	// One type, one verifier. A second branch used to sit here for an in-house
+	// shape that shared this type name but carried a hex proofValue, and it read
+	// the public key out of proof.verificationMethod instead of out of doc — so
+	// a proof that brought its own key verified against that key, and dropping
+	// jws from a credential signed with this suite was enough to reach it (#89).
+	// Nothing ever issued that shape: every signing path writes a DID URL into
+	// verificationMethod.
+	case proof.Type == EcdsaSecp256k1Signature2019:
 		return m.verifyEcdsaSecp256k1Proof(doc, proof)
-
-	case proof.Type == EcdsaSecp256k1Signature2019 || proof.Type == ECDSASECPKEY:
-		return m.verifyEcdsaProofLegacy()
 
 	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019:
 		return m.verifyDataIntegrityProof(doc, proof)
@@ -371,12 +361,31 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 }
 
 // didForProof returns the DID to resolve for a proof: the DID embedded in the
-// proof's verificationMethod when present, otherwise the body's issuer/holder.
+// proof's own verificationMethod.
+//
+// It used to fall back to the body's issuer/holder when verificationMethod was
+// not a DID URL. That fallback existed for one format — the in-house secp256k1
+// shape that put a raw public key there — and it was the step that let the
+// forgery in #89 reach a resolvable DID document: the attacker wrote their own
+// key into verificationMethod, the victim's DID in issuer still resolved, and
+// the document got in. Every suite left requires a DID URL, so a
+// verificationMethod that is not one is now an error rather than a reason to
+// look somewhere else.
 func (m *JSONMap) didForProof(proof *dto.Proof) (string, error) {
 	if did := didFromVMURL(proof.VerificationMethod); did != "" {
 		return did, nil
 	}
-	return signerDIDFromBody(*m)
+	// JwtProof2020 may name its verification method only in the JWS kid.
+	if proof.Type == JwtProof2020 {
+		if vmURL, err := jwtVerificationMethodURL(*m); err == nil {
+			if did := didFromVMURL(vmURL); did != "" {
+				return did, nil
+			}
+		}
+	}
+	return "", fmt.Errorf(
+		"proof verificationMethod %q is not a DID URL; it must name a key in the signer's DID document",
+		proof.VerificationMethod)
 }
 
 // didFromVMURL extracts the DID prefix from a verification method URL
@@ -557,51 +566,6 @@ func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, 
 	return true, nil
 }
 
-// verifyEcdsaProofLegacy verifies an ECDSA-signed JSONMap. Supports legacy
-// VC for compatibility.
-func (m *JSONMap) verifyEcdsaProofLegacy() (bool, error) {
-	proofMap, ok := m.getFirstProof().(map[string]interface{})
-	if !ok {
-		return false, fmt.Errorf("proof is missing or has unexpected format")
-	}
-
-	proofValue, ok := proofMap["proofValue"].(string)
-	if !ok || proofValue == "" {
-		return false, fmt.Errorf("proof value is missing or invalid in the request")
-	}
-	publicKeyHex, ok := proofMap["verificationMethod"].(string)
-	if !ok || publicKeyHex == "" {
-		return false, fmt.Errorf("proof verificationMethod is missing or invalid in the request")
-	}
-
-	signatureBytes, err := hex.DecodeString(proofValue)
-	if err != nil {
-		return false, fmt.Errorf("failed to decode proof value to bytes: %w", err)
-	}
-
-	reqCopy := make(map[string]interface{})
-
-	for k, v := range *m {
-		if k != proofField {
-			reqCopy[k] = v
-		}
-	}
-
-	message, err := json.Marshal(reqCopy)
-	if err != nil {
-		return false, fmt.Errorf("failed to marshal request to JSON: %w", err)
-	}
-
-	pubBytes, err := crypto.KeyToBytes(publicKeyHex)
-	if err != nil {
-		return false, fmt.Errorf("failed to convert public key to bytes: %w", err)
-	}
-
-	verified := crypto.VerifyJSONSignature(pubBytes, message, signatureBytes)
-
-	return verified, nil
-}
-
 // ===== Helpers (internal) =====
 
 func (m *JSONMap) getFirstProof() interface{} {
@@ -676,21 +640,6 @@ func ParseRawToProof(proof interface{}) (dto.Proof, error) {
 		return dto.Proof{}, fmt.Errorf("invalid proof format: expected map[string]interface{}, got %T", proof)
 	}
 	return dto.ProofFromMap(proofMap), nil
-}
-
-// signerDIDFromBody returns the DID of the entity that signed the JSONMap.
-// VCs put it in `issuer`, VPs in `holder`; both forms accept either a plain
-// string DID or an object with an `id` field per W3C VC Data Model. Returns
-// an error when neither key is present so the verifier never silently falls
-// back to extracting a DID from the proof field.
-func signerDIDFromBody(m map[string]interface{}) (string, error) {
-	if did, ok := DIDFromField(m["issuer"]); ok {
-		return did, nil
-	}
-	if did, ok := DIDFromField(m["holder"]); ok {
-		return did, nil
-	}
-	return "", fmt.Errorf("body is missing required `issuer` (VC) or `holder` (VP) field")
 }
 
 // DIDFromField accepts either a plain string DID or an object form
