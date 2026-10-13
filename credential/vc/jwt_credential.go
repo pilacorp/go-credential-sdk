@@ -104,7 +104,13 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 	// See NewJOSECredential: read from the payload, the same question
 	// ParseJWTCredential asks of the same bytes, so a decoys-only credential does
 	// not serialize one way at build time and another after a round-trip.
-	_, disclosable := vcMap["_sd_alg"]
+	//
+	// _sd_alg alone was not that same question. RFC 9901 § 4.1.1 leaves the claim
+	// optional, so a payload can carry _sd digests without it — and then this end
+	// said "not an SD-JWT" while the parse end, reading the disclosures, said it
+	// was.
+	_, hasSDAlg := vcMap["_sd_alg"]
+	disclosable := hasSDAlg || carriesSDMachinery(vcMap)
 
 	payloadData := CredentialData(vcMap)
 
@@ -235,12 +241,21 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 	// what removes the _sd arrays, so a holder revealing nothing used to leave
 	// them visible in the document the caller reads.
 	//
-	// There is no media type to read here — a VC 1.1 token types itself "JWT"
-	// whether or not it is selectively disclosed — so the combined format is the
-	// only signal that does not depend on _sd_alg, which RFC 9901 § 4.1.1 leaves
-	// optional.
+	// Read from the signed payload, and only from there. A VC 1.1 token types
+	// itself "JWT" either way, so there is no media type to lean on the way the
+	// 2.0 path does — but the combined format is no substitute: the "~" sits
+	// after the signature, so anyone holding the token can add one. Trusting it
+	// let a stranger turn a plain JWT into an SD-JWT with a single character. It
+	// still verified, because the signature never covered that byte, and then
+	// Serialize kept the "~" so Hash() no longer matched the credential as
+	// issued — one credential, two Merkle leaves — and Present() became callable
+	// on something with nothing to disclose.
+	//
+	// _sd_alg is not enough on its own either: RFC 9901 § 4.1.1 makes it
+	// optional, so the digests themselves are the signal that is always there
+	// and always signed.
 	_, hasSDAlg := vcMap["_sd_alg"]
-	disclosable := hasSDAlg || sdjwt.IsSDJWT(rawJWT)
+	disclosable := hasSDAlg || carriesSDMachinery(vcMap)
 	if disclosable || len(disclosures) > 0 {
 		processed, rerr := sdjwt.Reconstruct(vcMap, disclosures, true)
 		if rerr != nil {

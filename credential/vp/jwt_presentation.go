@@ -354,8 +354,12 @@ func (j *JWTPresentation) checkChallengeAndDomain(options *presentationOptions) 
 }
 
 // checkAudience applies RFC 7519 §4.1.3 to a presentation's aud claim: naming
-// this verifier is what checks it, and with WithRequireAudience a verifier that
-// names nobody refuses a presentation addressed to someone.
+// this verifier is what checks it.
+//
+// WithRequireAudience alone used to pass a presentation that named no audience
+// at all, and refuse one that did — exactly backwards from what the option says,
+// and it left a verifier believing it had closed the replay the aud claim exists
+// to prevent while accepting the unbound presentations it meant to reject.
 func checkAudience(aud interface{}, options *presentationOptions) error {
 	if options.expectedDomain != "" {
 		if !audContains(aud, options.expectedDomain) {
@@ -363,10 +367,10 @@ func checkAudience(aud interface{}, options *presentationOptions) error {
 		}
 		return nil
 	}
-	if options.requireAudience && audPresent(aud) {
-		return fmt.Errorf("presentation is addressed to %v, but this verifier did not name itself; "+
-			"pass WithExpectedDomain to say who is verifying", aud)
+	if options.requireAudience {
+		return ErrAudienceUnbound
 	}
+
 	return nil
 }
 
@@ -388,20 +392,6 @@ func audContains(aud interface{}, domain string) bool {
 				return true
 			}
 		}
-	}
-	return false
-}
-
-// audPresent reports whether an aud claim actually names anyone. An absent
-// claim, an empty string and an empty array all name nobody.
-func audPresent(aud interface{}) bool {
-	switch v := aud.(type) {
-	case string:
-		return v != ""
-	case []interface{}:
-		return len(v) > 0
-	case []string:
-		return len(v) > 0
 	}
 	return false
 }

@@ -3,6 +3,7 @@ package vp
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -55,6 +56,17 @@ type PresentationContents struct {
 	ValidUntil            time.Time       `json:"validUntil,omitempty"` // Expiration date
 	VerifiableCredentials []vc.Credential `json:"verifiableCredential,omitempty"`
 }
+
+// ErrAudienceUnbound is returned by Verify when WithRequireAudience is set
+// without WithExpectedDomain.
+//
+// The option asks for the presentation to be bound to this verifier, which
+// takes both halves: the claim in the presentation, and the identity of
+// whoever is reading it. Checking only that some audience exists checks
+// nothing worth having, because a presentation minted for a different verifier
+// carries one too. Both data models are held to it — aud on the JWT paths,
+// proof.domain on JSON-LD.
+var ErrAudienceUnbound = errors.New("WithRequireAudience needs WithExpectedDomain")
 
 // PresentationOpt configures presentation processing options.
 //
@@ -204,25 +216,29 @@ func WithExpectedDomain(domain string) PresentationOpt {
 	}
 }
 
-// WithRequireAudience (verifying) refuses a presentation that names an audience
-// when the caller has not said who is verifying. Use it together with
-// WithExpectedDomain, which is what actually names this verifier; on its own the
-// option only turns the silent skip into an error.
+// WithRequireAudience (verifying) requires the presentation to be bound to this
+// verifier, and must be paired with WithExpectedDomain to say who that is.
+// Passing it alone is a configuration error: verification fails with
+// "WithRequireAudience needs WithExpectedDomain" on both the JWT and the JSON-LD
+// path, rather than appearing to enforce something.
 //
-// RFC 7519 §4.1.3 requires exactly this — "If the principal processing the claim
-// does not identify itself with a value in the aud claim when this claim is
-// present, then the JWT MUST be rejected" — but enforcing it by default would
-// break every verifier that does not name itself today, so it is opt-in.
+// Why it cannot stand alone: checking only that an audience exists checks
+// nothing worth having. A presentation minted for a different verifier carries
+// an audience too, so it would pass. Binding needs both halves — the claim in
+// the presentation, and the identity of whoever is reading it.
+//
+// RFC 7519 §4.1.3 states the rule this enforces — "If the principal processing
+// the claim does not identify itself with a value in the aud claim when this
+// claim is present, then the JWT MUST be rejected" — but enforcing it by default
+// would break every verifier that does not name itself today, so it is opt-in.
 //
 // Without it, a presentation minted for one verifier still verifies at another,
 // which is the replay the aud claim exists to prevent.
 //
-// It applies to presentations secured as JWTs — JWT and vp+jwt — which are the
-// ones carrying an aud claim. A JSON-LD presentation names its verifier in
-// proof.domain instead and has no aud, so this option has no effect there: use
-// WithExpectedDomain, which that path does check. Passing it to a JSON-LD
-// presentation is not an error, so do not read a successful Verify as evidence
-// that an audience was enforced.
+// The two data models carry the binding in different places: a JWT or vp+jwt
+// presentation in the aud claim, a JSON-LD one in proof.domain. WithExpectedDomain
+// is checked against whichever applies, so pairing the two options works on
+// either path.
 func WithRequireAudience() PresentationOpt {
 	return func(p *presentationOptions) {
 		p.requireAudience = true

@@ -3,6 +3,7 @@ package vp_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,12 +13,17 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
 )
 
-// WithRequireAudience reaches exactly one check — checkAudience, which the JWT
-// and vp+jwt paths call. A JSON-LD presentation has no aud claim; it names its
-// verifier in proof.domain. The option is therefore a no-op there, and the doc
-// now says so. This test is what keeps the doc honest: if the option ever starts
-// applying to JSON-LD, or stops applying to the JWT paths, one of these fails.
-func TestWithRequireAudience_AppliesOnlyToJWTSecuredPresentations(t *testing.T) {
+// WithRequireAudience means "bind this presentation to me", so it needs to know
+// who "me" is. Alone it used to be worse than a no-op: it refused a presentation
+// that named an audience and accepted one that named nobody, which is exactly
+// backwards, and left a verifier believing it had closed the replay the aud
+// claim exists to prevent.
+//
+// It is now a configuration error on both data models — the two carry the
+// binding in different places, aud on the JWT paths and proof.domain on JSON-LD,
+// but neither can bind to a verifier that has not said who it is. This test is
+// what keeps the doc honest.
+func TestWithRequireAudience_NeedsAVerifierIdentity(t *testing.T) {
 	const (
 		did       = "did:example:require-aud"
 		challenge = "nonce-from-the-verifier"
@@ -25,7 +31,7 @@ func TestWithRequireAudience_AppliesOnlyToJWTSecuredPresentations(t *testing.T) 
 	)
 	resolver, prov := joseVPFixture(t, did)
 
-	t.Run("vp+jwt refuses an aud it was not named in", func(t *testing.T) {
+	t.Run("vp+jwt: alone it is a configuration error, paired it binds", func(t *testing.T) {
 		pres, err := vp.NewJOSEPresentation(joseVPContents(did),
 			vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
 		if err != nil {
@@ -48,20 +54,26 @@ func TestWithRequireAudience_AppliesOnlyToJWTSecuredPresentations(t *testing.T) 
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
-		// No WithExpectedDomain: this verifier does not name itself, and the
-		// presentation is addressed to someone.
+		// No WithExpectedDomain: there is no verifier identity to bind to, so
+		// the option cannot be honoured and says so.
 		err = parsed.Verify(vp.WithResolver(resolver), vp.WithRequireAudience())
-		if err == nil || !strings.Contains(err.Error(), "did not name itself") {
-			t.Fatalf("err = %v, want the unaddressed verifier to be refused", err)
+		if !errors.Is(err, vp.ErrAudienceUnbound) {
+			t.Fatalf("err = %v, want it to match vp.ErrAudienceUnbound", err)
 		}
-		// Naming itself is what makes it pass.
+		// Naming itself is what makes it work.
 		if err := parsed.Verify(vp.WithResolver(resolver),
 			vp.WithRequireAudience(), vp.WithExpectedDomain(domain)); err != nil {
 			t.Fatalf("a verifier that names itself was refused: %v", err)
 		}
+		// And the binding is real: named as someone else, it fails.
+		err = parsed.Verify(vp.WithResolver(resolver),
+			vp.WithRequireAudience(), vp.WithExpectedDomain("https://someone-else.example"))
+		if err == nil || !strings.Contains(err.Error(), "does not match expected domain") {
+			t.Fatalf("err = %v, want a presentation for another verifier refused", err)
+		}
 	})
 
-	t.Run("JSON-LD ignores it and relies on proof.domain", func(t *testing.T) {
+	t.Run("JSON-LD is held to the same rule, through proof.domain", func(t *testing.T) {
 		contents := joseVPContents(did)
 		pres, err := vp.NewJSONPresentation(contents,
 			vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
@@ -74,11 +86,23 @@ func TestWithRequireAudience_AppliesOnlyToJWTSecuredPresentations(t *testing.T) 
 			t.Fatalf("sign: %v", err)
 		}
 
-		// The option has no effect: there is no aud to refuse. Documenting the
-		// no-op rather than endorsing it — a caller who passes this and nothing
-		// else has not bound the presentation to anybody.
-		if err := pres.Verify(vp.WithResolver(resolver), vp.WithRequireAudience()); err != nil {
-			t.Fatalf("WithRequireAudience changed the JSON-LD outcome: %v", err)
+		// It used to be a silent no-op here, which let a caller pass it and
+		// bind nothing. Same configuration error as the JWT path now.
+		err = pres.Verify(vp.WithResolver(resolver), vp.WithRequireAudience())
+		if !errors.Is(err, vp.ErrAudienceUnbound) {
+			t.Fatalf("err = %v, want it to match vp.ErrAudienceUnbound on the JSON-LD path too", err)
+		}
+
+		// Paired, it goes through proof.domain, which is where this data model
+		// carries the binding.
+		if err := pres.Verify(vp.WithResolver(resolver),
+			vp.WithRequireAudience(), vp.WithExpectedDomain(domain)); err != nil {
+			t.Fatalf("the right domain was refused with the option on: %v", err)
+		}
+		err = pres.Verify(vp.WithResolver(resolver),
+			vp.WithRequireAudience(), vp.WithExpectedDomain("https://someone-else.example"))
+		if err == nil || !strings.Contains(err.Error(), "domain") {
+			t.Fatalf("err = %v, want the wrong domain refused with the option on", err)
 		}
 
 		// WithExpectedDomain is what that path checks, and it does refuse a

@@ -667,10 +667,13 @@ func TestJOSEPresentation_RequireAudience(t *testing.T) {
 			wantErr: "does not match expected domain",
 		},
 		{
-			name:    "bank-b names nobody, with the option",
+			// The option cannot do its job without knowing who is verifying, so
+			// passing it alone is a configuration error rather than a check that
+			// happens to fire on some tokens and not others.
+			name:    "the option alone, on a presentation that names bank-a",
 			token:   forBankA,
 			opts:    []vp.PresentationOpt{vp.WithRequireAudience()},
-			wantErr: "did not name itself",
+			wantErr: "needs WithExpectedDomain",
 		},
 		{
 			// The default is deliberately unchanged, so a verifier that never
@@ -680,10 +683,22 @@ func TestJOSEPresentation_RequireAudience(t *testing.T) {
 			opts:  nil,
 		},
 		{
-			// Nothing to enforce when the presentation names no audience.
-			name:  "no aud at all, with the option",
-			token: noAudience,
-			opts:  []vp.PresentationOpt{vp.WithRequireAudience()},
+			// This is the case that used to pass, and it is the worst one: a
+			// presentation bound to nobody, accepted by a verifier that asked
+			// for binding. Having an aud used to be refused while having none
+			// was accepted — exactly backwards.
+			name:    "the option alone, on a presentation that names nobody",
+			token:   noAudience,
+			opts:    []vp.PresentationOpt{vp.WithRequireAudience()},
+			wantErr: "needs WithExpectedDomain",
+		},
+		{
+			// Paired, it does what it says: no aud means not bound to this
+			// verifier.
+			name:    "paired, on a presentation that names nobody",
+			token:   noAudience,
+			opts:    []vp.PresentationOpt{vp.WithRequireAudience(), vp.WithExpectedDomain("https://bank-b.example")},
+			wantErr: "does not match expected domain",
 		},
 		{
 			name:    "no aud, but the verifier names itself",
