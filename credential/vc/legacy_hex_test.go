@@ -14,9 +14,9 @@ import (
 // DataIntegrityProof, cryptosuite ecdsa-rdfc-2019, a DID URL in
 // verificationMethod, and the key taken from the resolved DID document. Do not
 // confuse it with the other legacy hex format — type
-// EcdsaSecp256k1Signature2019 with a raw public key in verificationMethod,
-// covered by TestSecp256k1Suite_LegacyHexProofReachesTheLegacyVerifier — which
-// takes the key from the proof itself and is what #89 is about.
+// EcdsaSecp256k1Signature2019 with a raw public key in verificationMethod, the
+// one #89 was about. That format no longer verifies at all; see
+// TestSecp256k1Suite_ProofCarryingItsOwnKeyIsRefused.
 const legacyHexVC = `{
   "@context": [
     "https://www.w3.org/ns/credentials/v2",

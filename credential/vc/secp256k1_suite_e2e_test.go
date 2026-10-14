@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsoncanonicalizer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -354,13 +356,13 @@ func TestSecp256k1Suite_SignsVC2Document(t *testing.T) {
 	}
 }
 
-// TestSecp256k1Suite_LegacyHexProofReachesTheLegacyVerifier pins the routing,
-// not the outcome: the pre-v1.8.0 in-house format uses the same proof type name
-// and is told apart only by carrying a hex proofValue instead of a jws, so this
-// checks that a proof of that shape still lands in verifyEcdsaProofLegacy.
-//
-// It says nothing about whether that branch should exist — see #89.
-func TestSecp256k1Suite_LegacyHexProofReachesTheLegacyVerifier(t *testing.T) {
+// TestSecp256k1Suite_ProofCarryingItsOwnKeyIsRefused covers #89. A proof whose
+// verificationMethod holds a raw public key instead of a DID URL used to reach
+// a verifier that checked the signature against that very key, so a document
+// nobody with a published key had signed verified. The refusal now happens
+// before any signature math, in didForProof: a verificationMethod that is not a
+// DID URL names no key in anybody's DID document.
+func TestSecp256k1Suite_ProofCarryingItsOwnKeyIsRefused(t *testing.T) {
 	const did = "did:example:secp-suite-legacy"
 	resolver := secpResolver(t, did)
 
@@ -384,19 +386,123 @@ func TestSecp256k1Suite_LegacyHexProofReachesTheLegacyVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse credential: %v", err)
 	}
-	// "deadbeef" is not a hex-encoded public key, so the legacy verifier fails on
-	// it — and that message is produced nowhere else. Assert that one string
-	// rather than listing the errors other verifiers would give: a list of ways
-	// to be wrong always misses the one nobody thought of. Drop the `jws != ""`
-	// condition from verifyOneProof and this credential reaches the new suite
-	// verifier, which dies earlier on "failed to resolve verification method"
-	// instead — a string no such list contained.
 	err = cred.Verify(vc.WithResolver(resolver))
 	if err == nil {
-		t.Fatal("expected the bogus legacy signature to fail")
+		t.Fatal("a proof carrying its own public key must not verify")
 	}
-	if !strings.Contains(err.Error(), "key is not in hex format") {
-		t.Fatalf("legacy hex proof did not reach the legacy verifier: %v", err)
+	if !strings.Contains(err.Error(), "is not a DID URL") {
+		t.Fatalf("refused for the wrong reason: %v", err)
+	}
+}
+
+// A second secp256k1 scalar, standing in for an attacker's own key. It is not
+// in any DID document these tests resolve.
+const attackerSecpPriv = "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d7d21715b23b1d"
+
+// TestSecp256k1Suite_DowngradeToTheLegacyShapeIsRefused is step 3 of #89's
+// reproduction, and the reason that issue was raised against a released
+// version: the forgery does not need to break the new suite's signature, only
+// to drop it.
+//
+// An attacker takes a credential genuinely signed with this suite, deletes jws,
+// edits the subject, and attaches a hex proofValue signed with their own key
+// plus that key in verificationMethod. The proof type never changes. Under the
+// old routing the missing jws sent the document to the legacy verifier, which
+// took the key from the proof — so the edited credential verified.
+func TestSecp256k1Suite_DowngradeToTheLegacyShapeIsRefused(t *testing.T) {
+	const did = "did:example:secp-suite-downgrade"
+	resolver := secpResolver(t, did)
+
+	cred, err := vc.ParseJSONCredential(mkSuiteCredentialJSON(did))
+	if err != nil {
+		t.Fatalf("parse credential: %v", err)
+	}
+	if err := cred.AddProofByProvider(
+		secpProvider(t),
+		vc.WithVerificationMethodKey("key-1"),
+		vc.WithResolver(resolver),
+	); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+	if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("the genuine credential must verify: %v", err)
+	}
+
+	raw, err := cred.GetContents()
+	if err != nil {
+		t.Fatalf("contents: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// The body the attacker wants signed: jws gone, subject edited.
+	delete(doc, "proof")
+	subject, ok := doc["credentialSubject"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("credentialSubject is %T, want object", doc["credentialSubject"])
+	}
+	subject["name"] = "Attacker"
+
+	body, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	// The legacy verifier hashed the JCS form of the body, so that is what the
+	// attacker signs.
+	canonical, err := jsoncanonicalizer.Transform(body)
+	if err != nil {
+		t.Fatalf("canonicalize body: %v", err)
+	}
+	privBytes, err := hex.DecodeString(attackerSecpPriv)
+	if err != nil {
+		t.Fatalf("decode attacker key: %v", err)
+	}
+	proofValue, err := crypto.SignMessage(privBytes, canonical)
+	if err != nil {
+		t.Fatalf("attacker sign: %v", err)
+	}
+	attackerPriv, err := ethcrypto.ToECDSA(privBytes)
+	if err != nil {
+		t.Fatalf("parse attacker key: %v", err)
+	}
+	attackerPubHex := "0x" + hex.EncodeToString(
+		ethcrypto.CompressPubkey(&attackerPriv.PublicKey))
+
+	// Self-check: the forgery is well formed, so a refusal below comes from the
+	// SDK's routing and not from a fixture that never signed anything. Reinstate
+	// the legacy branch and this same document verifies.
+	sigBytes, err := hex.DecodeString(proofValue)
+	if err != nil {
+		t.Fatalf("decode attacker signature: %v", err)
+	}
+	pubBytes, err := crypto.KeyToBytes(attackerPubHex)
+	if err != nil {
+		t.Fatalf("attacker key to bytes: %v", err)
+	}
+	if !crypto.VerifyJSONSignature(pubBytes, body, sigBytes) {
+		t.Fatal("the forged legacy signature does not check out against the attacker key; fix the fixture")
+	}
+
+	doc["proof"] = map[string]interface{}{
+		"type":               "EcdsaSecp256k1Signature2019",
+		"created":            "2026-01-01T00:00:00Z",
+		"proofPurpose":       "assertionMethod",
+		"verificationMethod": attackerPubHex,
+		"proofValue":         proofValue,
+	}
+	forged, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal forged credential: %v", err)
+	}
+
+	downgraded, err := vc.ParseJSONCredential(forged)
+	if err != nil {
+		t.Fatalf("parse forged credential: %v", err)
+	}
+	if err := downgraded.Verify(vc.WithResolver(resolver)); err == nil {
+		t.Fatal("the downgraded credential verified: the issuer's suite can be stripped and replaced")
 	}
 }
 

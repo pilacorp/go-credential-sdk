@@ -1,6 +1,7 @@
 package vp_test
 
 import (
+	"strings"
 	"testing"
 
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
@@ -9,6 +10,11 @@ import (
 
 // Signed by the SDK before ecdsa-rdfc-2019 moved to multibase proofValues
 // (hex proofValue, secp256k1 key below). Pins the legacy verification path.
+//
+// This is the sound hex path: type DataIntegrityProof, cryptosuite
+// ecdsa-rdfc-2019, a DID URL in verificationMethod, and the key taken from the
+// resolved DID document. The unsound one — a raw public key in
+// verificationMethod — is covered by TestVP_ProofCarryingItsOwnKeyIsRefused.
 const legacyHexVP = `{
   "@context": [
     "https://www.w3.org/ns/credentials/v2"
@@ -67,5 +73,42 @@ func TestVP_LegacyHexProofStillVerifies(t *testing.T) {
 	}
 	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
 		t.Fatalf("verify legacy hex presentation: %v", err)
+	}
+}
+
+// TestVP_ProofCarryingItsOwnKeyIsRefused is the presentation half of #89. The
+// forgery used holder where the credential forgery used issuer: holder resolves,
+// so the document reached a verifier that checked its signature against the key
+// sitting in the proof. The refusal happens in didForProof, before any signature
+// math, so it covers presentations and credentials the same way.
+func TestVP_ProofCarryingItsOwnKeyIsRefused(t *testing.T) {
+	const did = "did:example:legacy-holder"
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vmpkg.NewSecp256k1VM(did, "key-1",
+		"04e962c45627a43f3bec0af18c6c780ddbacceb8275b5204d494bc2cc44dc96d9805e64ee5ffeb6d05ed37284636c7cf6bfbaaa0d131f950cecc43110ac5510cad")))
+
+	forged := []byte(`{
+      "@context": ["https://www.w3.org/ns/credentials/v2"],
+      "id": "urn:uuid:forged-vp",
+      "type": ["VerifiablePresentation"],
+      "holder": "did:example:legacy-holder",
+      "proof": {
+        "type": "EcdsaSecp256k1Signature2019",
+        "created": "2026-01-01T00:00:00Z",
+        "proofPurpose": "authentication",
+        "verificationMethod": "0x02b4632d08485ff1df2db55b9dafd23347d1c47a457072a1e87be26896549a8737",
+        "proofValue": "00"
+      }
+    }`)
+
+	pres, err := vp.ParseJSONPresentation(forged)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = pres.Verify(vp.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("a presentation whose proof carries its own public key must not verify")
+	}
+	if !strings.Contains(err.Error(), "is not a DID URL") {
+		t.Fatalf("refused for the wrong reason: %v", err)
 	}
 }
