@@ -341,8 +341,9 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 	// the public key out of proof.verificationMethod instead of out of doc — so
 	// a proof that brought its own key verified against that key, and dropping
 	// jws from a credential signed with this suite was enough to reach it (#89).
-	// Nothing ever issued that shape: every signing path writes a DID URL into
-	// verificationMethod.
+	// authen-service issued that shape between 2025-07-18 and 2025-08-14, before
+	// it moved onto this SDK; those documents are rejected now, deliberately,
+	// because a key taken from the proof cannot tell them apart from a forgery.
 	case proof.Type == EcdsaSecp256k1Signature2019:
 		return m.verifyEcdsaSecp256k1Proof(doc, proof)
 
