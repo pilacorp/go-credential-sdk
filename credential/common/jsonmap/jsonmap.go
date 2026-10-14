@@ -266,6 +266,60 @@ func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
 	return nil
 }
 
+// VerifyDetachedProof verifies one proof against the document as it stands,
+// before that proof is attached. It is what lets AddCustomProof check the proof
+// a caller hands it: a proof signed over the wrong digest, or by a key the
+// verification method does not name, fails where it is added instead of at
+// whoever receives the credential.
+//
+// It costs one DID resolution and one canonicalization. Verifying after
+// attaching would instead re-check every proof already on the document — one
+// resolution each — and fail on another issuer's broken proof, which is not
+// this caller's business.
+//
+// Only ecdsa-rdfc-2019 is checked, because that is the suite the external
+// signing flow produces (GetSigningInput → CreateProofSigning → sign →
+// AddCustomProof): its hashData is the document body plus the proof
+// configuration, both of which can be rebuilt without the proof being present.
+// The other suites bind to something the document does not carry yet — the
+// secp256k1 suite adds its own @context before signing, JwtProof2020 reads the
+// attached proof — so checking them here would compare against bytes nobody
+// signed. Those are refused rather than checked wrongly.
+//
+// The document is not modified, whatever the outcome.
+func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof) error {
+	if m == nil {
+		return fmt.Errorf("jsonmap: JSONMap is nil")
+	}
+	if proof == nil {
+		return fmt.Errorf("jsonmap: proof is nil")
+	}
+	if resolver == nil {
+		return fmt.Errorf("jsonmap: document resolver is required")
+	}
+	if proof.Type != DataIntegrityProof || proof.Cryptosuite != ECDSARDFC2019 {
+		suite := proof.Type
+		if proof.Cryptosuite != "" {
+			suite += "/" + proof.Cryptosuite
+		}
+		return fmt.Errorf(
+			"jsonmap: a %s proof cannot be checked before it is attached; only %s/%s can — attach it without WithVerifyProof and call Verify instead",
+			suite, DataIntegrityProof, ECDSARDFC2019)
+	}
+
+	ok, err := m.verifyOneProof(resolver, proof)
+	if err != nil {
+		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
+	}
+	if !ok {
+		return fmt.Errorf(
+			"jsonmap: the proof does not verify against verification method %q; it was signed by another key or over data other than this document",
+			proof.VerificationMethod)
+	}
+
+	return nil
+}
+
 // VerifyProof verifies the JSONMap's proof(s). It also runs the strict-purpose
 // check: rejects proofs whose VM has a hard revocation reason, was revoked
 // before proof.created, or is missing from the relationship array for

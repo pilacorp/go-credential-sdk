@@ -385,9 +385,15 @@ func (e *JSONCredential) CreateProofSigning(docHash []byte, proof *dto.Proof) ([
 // release issues base58btc ("z") values only, and the legacy hex form is
 // refused.
 //
-// TODO(next PR): verify the signature against the verification method before
-// attaching, so a proof signed over the wrong digest or by the wrong key fails
-// here instead of at the verifier.
+// Pass WithVerifyProof to have the proof checked before it is attached: the DID
+// in proof.verificationMethod is resolved and the signature checked against
+// that key, so a proof signed over the wrong digest or by the wrong key fails
+// here rather than at whoever receives the credential. It costs one DID
+// resolution; without the option nothing is checked, as before. Only
+// ecdsa-rdfc-2019 can be checked this way — see
+// jsonmap.JSONMap.VerifyDetachedProof.
+//
+// A failed check leaves the credential exactly as it was.
 func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -397,17 +403,29 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 		!strings.HasPrefix(proof.ProofValue, jsonmap.MultibaseBase58BTCPrefix) {
 		return fmt.Errorf("proofValue must be multibase base58btc (%q prefix); hex proofs are no longer issued", jsonmap.MultibaseBase58BTCPrefix)
 	}
+	options := getOptions(opts...)
 	// The proof arrives signed: its verificationMethod is part of the proof
 	// configuration the signature covers, so an option cannot change it here.
-	if getOptions(opts...).verificationMethodKey != "" {
+	if options.verificationMethodKey != "" {
 		return fmt.Errorf("WithVerificationMethodKey cannot be applied by AddCustomProof: set proof.VerificationMethod on the proof you sign")
+	}
+
+	m := (*jsonmap.JSONMap)(&e.credentialData)
+
+	// Before the content options, because this is the question the caller just
+	// asked by handing over a proof, and before attaching, so a proof that does
+	// not check out leaves nothing behind.
+	if options.isVerifyProof {
+		if err := m.VerifyDetachedProof(options.resolver, proof); err != nil {
+			return err
+		}
 	}
 
 	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
 
-	return (*jsonmap.JSONMap)(&e.credentialData).AddCustomProof(proof)
+	return m.AddCustomProof(proof)
 }
 
 func (e *JSONCredential) Verify(opts ...CredentialOpt) error {
