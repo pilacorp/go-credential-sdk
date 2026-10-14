@@ -299,7 +299,11 @@ func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider,
 	if signerProvider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
-	if err := rejectBuildTimeOptions(getOptions(opts...)); err != nil {
+	o := getOptions(opts...)
+	if err := rejectBuildTimeOptions(o); err != nil {
+		return err
+	}
+	if err := refuseOverwrite(j.signature, o); err != nil {
 		return err
 	}
 
@@ -334,7 +338,11 @@ func (j *JWTCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt) 
 	if len(proof.Signature) == 0 {
 		return fmt.Errorf("proof signature cannot be empty")
 	}
-	if err := rejectBuildTimeOptions(getOptions(opts...)); err != nil {
+	o := getOptions(opts...)
+	if err := rejectBuildTimeOptions(o); err != nil {
+		return err
+	}
+	if err := refuseOverwrite(j.signature, o); err != nil {
 		return err
 	}
 

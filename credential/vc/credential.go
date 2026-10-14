@@ -125,6 +125,41 @@ type credentialOptions struct {
 	loadedSchemaLoader      SchemaLoaderFunc
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
+	replaceProof            bool
+}
+
+// WithReplaceProof (signing) lets a signing call replace a signature the
+// credential already carries. Without it, signing something already signed is
+// refused.
+//
+// A JWT holds one signature, so there is no way to add a second: the first is
+// gone either way. The option exists so that losing it is a choice. The new
+// signature differs from the old one even over identical claims (ECDSA draws a
+// fresh nonce), so the token's bytes and its Hash() change with it — which
+// matters wherever Hash() is a key, as it is for on-chain anchoring.
+//
+// JSON-LD credentials append proofs rather than replacing them, so the option
+// does not apply there.
+func WithReplaceProof() CredentialOpt {
+	return func(c *credentialOptions) {
+		c.replaceProof = true
+	}
+}
+
+// refuseOverwrite stops a JWT signing call from replacing a signature the
+// credential already carries, unless the caller passed WithReplaceProof.
+//
+// Signing with a key the header does not name already failed, because
+// signingKey.Accept checks the fresh signature before it is stored. What went
+// through in silence was the other case: signing again with the right key
+// succeeded, and Hash() changed. Shared by the VC 1.1 JWT and the vc+jwt
+// credential, which both hold exactly one signature.
+func refuseOverwrite(current string, options *credentialOptions) error {
+	if current == "" || options.replaceProof {
+		return nil
+	}
+	return fmt.Errorf(
+		"credential is already signed; signing again would replace that signature — pass WithReplaceProof to do so deliberately")
 }
 
 // hasSDOptions reports whether any SD-JWT option was set. Kept beside the

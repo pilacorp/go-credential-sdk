@@ -356,8 +356,11 @@ func TestJWT_ParsedTokenSignsWithoutKeyCheck(t *testing.T) {
 	}
 
 	// Wrong key: accepted at signing (no key to check against), refused by Verify.
+	// WithReplaceProof because a parsed token already carries the issuer's
+	// signature and re-signing replaces it; this test is about the key check,
+	// not about whether replacing is allowed by default.
 	wrongKey := jwttest.SignExternally(t, secpSigner, string(input))
-	if err := parsed.AddCustomProof(&dto.Proof{Signature: wrongKey}); err != nil {
+	if err := parsed.AddCustomProof(&dto.Proof{Signature: wrongKey}, vc.WithReplaceProof()); err != nil {
 		t.Fatalf("a parsed token has no resolved method; signing must not check the key, got: %v", err)
 	}
 	if err := parsed.Verify(vc.WithResolver(resolver)); err == nil {

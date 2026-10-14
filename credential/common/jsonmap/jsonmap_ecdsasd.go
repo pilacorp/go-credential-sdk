@@ -66,7 +66,7 @@ func (m *JSONMap) AddECDSASDBaseProof(
 	verificationMethod, proofPurpose string,
 	mandatoryPointers []string,
 	opts ...ProofOpt,
-) error {
+) (err error) {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
@@ -79,6 +79,24 @@ func (m *JSONMap) AddECDSASDBaseProof(
 	if proofPurpose == "" {
 		return fmt.Errorf("jsonmap: proof purpose is required")
 	}
+	// This writes the proof set rather than appending to it, so an existing
+	// proof would be dropped without a word. Refused instead of appended: a
+	// base proof is the issuer's statement of which claims a holder may
+	// withhold, and a document carrying it beside an ordinary proof is a state
+	// nothing produces on purpose.
+	if existing, ok := (*m)[proofField]; ok && existing != nil {
+		return fmt.Errorf(
+			"jsonmap: the document already carries a proof; an ecdsa-sd-2023 base proof replaces the proof set, so remove the existing proof first if that is intended")
+	}
+
+	// The document is only mutated on the way to a signature; a failure must
+	// leave the caller's document exactly as it was.
+	restoreContext := m.contextSnapshot()
+	defer func() {
+		if err != nil {
+			restoreContext()
+		}
+	}()
 
 	// Ensure the proof's data-integrity terms are defined in @context (VC 1.1
 	// documents only carry the 2018 credentials context).
