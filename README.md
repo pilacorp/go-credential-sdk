@@ -576,7 +576,7 @@ out, _ := presented.Serialize() // SD-JWT string to send to the Verifier
 
 #### Verifier: Parsing and verifying an SD-JWT
 
-Use the same parsing API as for ordinary JWT credentials. The SDK detects SD-JWT by the presence of `~` and the JWT prefix, then parses and reconstructs the **processed payload** (only disclosed claims) before returning a `Credential`.
+Use the same parsing API as for ordinary JWT credentials. The `~` separators say where the disclosures are in the string; whether the credential is an SD-JWT at all is read from the **signed payload** (the digests the issuer put there), not from the `~`. A plain JWT with a `~` appended is still a plain JWT, and a payload carrying digests is reconstructed even if nothing was revealed. The SDK reconstructs the **processed payload** (only disclosed claims) before returning a `Credential`.
 
 ```go
 // Verifier (or Holder): parse and verify SD-JWT
@@ -592,7 +592,7 @@ if err != nil {
 contents, _ := cred.GetContents()
 ```
 
-- **Detection:** `vc.ParseCredential` accepts JSON credentials, plain JWTs, or SD-JWTs. SD-JWT is detected automatically (format: `...~...` with a valid JWT before the first `~`).
+- **Detection:** `vc.ParseCredential` accepts JSON credentials, plain JWTs, or SD-JWTs. A `~` makes it split the string into the issuer-signed JWT and the disclosures that follow (format: `...~...` with a valid JWT before the first `~`); the payload then decides whether it is treated as an SD-JWT.
 - **Verification:** Signature and standard claims (`exp`, `nbf`, etc.) are verified on the issuer-signed JWT. Schema validation, if enabled, runs on the **reconstructed** payload (disclosed claims only).
 - **Validation:** The SDK validates:
   - Duplicate digest detection
@@ -648,12 +648,34 @@ err = parsed.Verify()
 Selective disclosure works here too, and then the media type becomes `vc+sd-jwt`:
 
 ```go
+// Issuer: make a claim disclosable, sign, serialize.
 cred, err := vc.NewJOSECredential(contents,
     vc.WithSDSelectivePaths([]string{"credentialSubject.bloodType"}),
     vc.WithVerificationMethodKey("key-1"))
+if err != nil {
+    return err
+}
+if err := cred.AddProofByProvider(signerProvider); err != nil {
+    return err
+}
 // typ is now vc+sd-jwt and Serialize() appends the disclosures after a "~".
-// Holder reveals a subset:
-presented, err := cred.Present([]string{chosenDisclosure})
+sdJWT, err := cred.Serialize()
+if err != nil {
+    return err
+}
+
+// Holder: parse the token that arrived, pick what to reveal, present that subset.
+// The holder has the token, not the issuer's credential object — and Present
+// needs a signature, so it must come after AddProofByProvider either way.
+holderCred, err := vc.ParseJOSECredential(sdJWT.(string))
+if err != nil {
+    return err
+}
+discs, err := holderCred.DecodedDisclosures()
+if err != nil {
+    return err
+}
+presented, err := holderCred.Present([]string{discs[0].Disclosure})
 ```
 
 What this path enforces that the 1.1 path does not:
