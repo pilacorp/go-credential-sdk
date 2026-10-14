@@ -8,23 +8,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"golang.org/x/sync/errgroup"
 )
 
 type JWTHeaders map[string]interface{}
 
 type JWTCredential struct {
-	signingInput string         // JWT header.payload (base64 encoded)
-	payloadData  CredentialData // Parsed payload as CredentialData
-	signature    string         // JWT signature (if signed)
-	disclosures  []string       // Optional SD-JWT disclosures (when issuing/holding SD-JWT)
-	signingKey   jwt.SigningKey // Verification method the header names; zero for a parsed credential
+	signingInput string                 // JWT header.payload (base64 encoded)
+	payloadData  CredentialData         // The vc claim, parsed as CredentialData
+	jwtClaims    map[string]interface{} // Top-level JWT claims (iss, sub, exp, nbf, iat, jti)
+	signature    string                 // JWT signature (if signed)
+	disclosures  []string               // Optional SD-JWT disclosures (when issuing/holding SD-JWT)
+	disclosable  bool                   // Payload carries _sd digests, even if this holder reveals none
+	signingKey   jwt.SigningKey         // Verification method the header names; zero for a parsed credential
 }
 
 var _ Credential = (*JWTCredential)(nil)
@@ -49,8 +53,64 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 		return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", err)
 	}
 	vcMap = result.ProcessedVC
-	disclosures := result.Disclosures
+
+	// WithSDDisclosures carries disclosures the caller built itself, against
+	// digests the caller put in the document — the advanced path the README
+	// documents. Refusing it outright was wrong: the reason given, that a
+	// disclosure made elsewhere cannot match a digest this payload holds, is
+	// true only when the builder generated the digests from
+	// WithSDSelectivePaths. When the caller supplied both halves they do match,
+	// and a credential that signed and verified before stopped building at all.
+	//
+	// So the question asked here is the one that actually matters — do these
+	// disclosures match the digests in this payload — and Reconstruct answers it
+	// by doing the work. It brings the § 7.1 rules with it: a disclosure that
+	// matches nothing, the same one twice, a digest referenced twice.
+	disclosures := make([]string, 0, len(result.Disclosures)+len(options.sdDisclosures))
+	disclosures = append(disclosures, result.Disclosures...)
 	disclosures = append(disclosures, options.sdDisclosures...)
+
+	// _sd_alg has to be written for prebuilt disclosures too, because it is what
+	// marks the payload as selectively disclosed further down. BuildDisclosures
+	// only writes it for paths and decoys it generated itself, so a prebuilt-only
+	// credential had none — and then the typ stayed vc+jwt, Serialize dropped the
+	// disclosures and the terminator, and the digests the caller put in the
+	// subject leaked back out on the next parse. Defaulted rather than demanded:
+	// RFC 9901 § 4.1.1 makes the claim optional and sha-256 the default.
+	if len(options.sdDisclosures) > 0 {
+		if _, ok := vcMap["_sd_alg"]; !ok {
+			alg := options.sdAlg
+			if alg == "" {
+				alg = sdjwt.DefaultHashAlgorithm
+			}
+			vcMap["_sd_alg"] = alg
+		}
+	}
+
+	// Same rule the parse side applies: nothing outside credentialSubject may be
+	// disclosable. Reachable here through WithSDSelectivePaths naming a path
+	// outside the subject, or WithSDDecoyDigests with a root path. The subject
+	// itself is exempt — hiding claims in there is the feature.
+	if err := requireDisclosableAtTopLevel(vcMap, true); err != nil {
+		return nil, err
+	}
+
+	// Reconstruct deep-copies, so this validates without touching what gets
+	// signed.
+	if _, rerr := sdjwt.Reconstruct(vcMap, disclosures, true); rerr != nil {
+		return nil, fmt.Errorf("invalid SD-JWT disclosures: %w", rerr)
+	}
+
+	// See NewJOSECredential: read from the payload, the same question
+	// ParseJWTCredential asks of the same bytes, so a decoys-only credential does
+	// not serialize one way at build time and another after a round-trip.
+	//
+	// _sd_alg alone was not that same question. RFC 9901 § 4.1.1 leaves the claim
+	// optional, so a payload can carry _sd digests without it — and then this end
+	// said "not an SD-JWT" while the parse end, reading the disclosures, said it
+	// was.
+	_, hasSDAlg := vcMap["_sd_alg"]
+	disclosable := hasSDAlg || carriesSDMachinery(vcMap)
 
 	payloadData := CredentialData(vcMap)
 
@@ -108,8 +168,10 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 	e := &JWTCredential{
 		signingInput: signingInput,
 		payloadData:  payloadData,
+		jwtClaims:    otherClaims,
 		signature:    "",
 		disclosures:  disclosures,
+		disclosable:  disclosable,
 		signingKey:   signingKey,
 	}
 
@@ -165,12 +227,49 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 		return nil, fmt.Errorf("vc claim is not a valid JSON object")
 	}
 
-	if len(disclosures) > 0 {
-		processed, err := sdjwt.Reconstruct(vcMap, disclosures, true)
-		if err != nil {
-			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", err)
+	// The call the 2.0 parser has had and this one was missing, which is why the
+	// revocation bypass reached the released path: nothing outside
+	// credentialSubject may be disclosable. A VC 1.1 token has no media type to
+	// contradict its own payload — it types itself "JWT" either way — so the
+	// subject stays exempt here.
+	if err := requireDisclosableAtTopLevel(vcMap, true); err != nil {
+		return nil, err
+	}
+
+	signedVC := vcMap
+	// Same gate as ParseJOSECredential, and for the same reason: Reconstruct is
+	// what removes the _sd arrays, so a holder revealing nothing used to leave
+	// them visible in the document the caller reads.
+	//
+	// Read from the signed payload, and only from there. A VC 1.1 token types
+	// itself "JWT" either way, so there is no media type to lean on the way the
+	// 2.0 path does — but the combined format is no substitute: the "~" sits
+	// after the signature, so anyone holding the token can add one. Trusting it
+	// let a stranger turn a plain JWT into an SD-JWT with a single character. It
+	// still verified, because the signature never covered that byte, and then
+	// Serialize kept the "~" so Hash() no longer matched the credential as
+	// issued — one credential, two Merkle leaves — and Present() became callable
+	// on something with nothing to disclose.
+	//
+	// _sd_alg is not enough on its own either: RFC 9901 § 4.1.1 makes it
+	// optional, so the digests themselves are the signal that is always there
+	// and always signed.
+	_, hasSDAlg := vcMap["_sd_alg"]
+	disclosable := hasSDAlg || carriesSDMachinery(vcMap)
+	if disclosable || len(disclosures) > 0 {
+		processed, rerr := sdjwt.Reconstruct(vcMap, disclosures, true)
+		if rerr != nil {
+			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rerr)
 		}
 		vcMap = processed
+	}
+
+	// The claims a verifier decides on have to be inside the signature, not
+	// inside a disclosure the holder controls. ParseJOSECredential enforces the
+	// same rule on the 2.0 path. Reconstruct deep-copies, so signedVC is still
+	// exactly what the signature covered.
+	if err := requireSecuredClaimsSigned(signedVC, vcMap); err != nil {
+		return nil, fmt.Errorf("invalid SD-JWT credential: %w", err)
 	}
 
 	signingInput := headerEncoded + "." + payloadEncoded
@@ -178,8 +277,10 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 	e := &JWTCredential{
 		signingInput: signingInput,
 		payloadData:  CredentialData(vcMap),
+		jwtClaims:    payloadMap,
 		signature:    signature,
 		disclosures:  disclosures,
+		disclosable:  disclosable,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -260,10 +361,13 @@ func (j *JWTCredential) Serialize() (any, error) {
 		base = base + "." + j.signature
 	}
 
-	if len(j.disclosures) == 0 {
+	if !j.disclosable {
 		return base, nil
 	}
 
+	// See JOSECredential.Serialize: the terminator is what marks the token as an
+	// SD-JWT, and the digests are in the payload whether or not this holder
+	// reveals anything.
 	var sb strings.Builder
 	sb.WriteString(base)
 	for _, d := range j.disclosures {
@@ -331,6 +435,15 @@ func (j *JWTCredential) Present(selectedDisclosures []string) (Credential, error
 		return nil, fmt.Errorf("cannot present an unsigned credential")
 	}
 	issuerJWT := j.signingInput + "." + j.signature
+
+	// See JOSECredential.Present: a credential with nothing disclosable has no
+	// subset to choose, and BuildSDJWTPresentation would hand back the same JWT
+	// under an SD-JWT terminator, changing its bytes and its Hash. Gated on
+	// disclosable, not on how many disclosures are left to send.
+	if !j.disclosable {
+		return nil, fmt.Errorf("credential carries no disclosures; nothing to present selectively")
+	}
+
 	return ParseJWTCredential(sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures))
 }
 
@@ -377,7 +490,24 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	if options.isCheckExpiration {
+		// Two time windows, in two places. validFrom/validUntil live inside the
+		// vc claim and describe the credential; exp/nbf live beside it, at the top
+		// level, and describe the token. This path writes both — exp and nbf are
+		// derived from ValidUntil and ValidFrom at signing — so checking only the
+		// inner pair let a token past its own exp verify.
+		//
+		// Unlike the vc+jwt path, which enforces exp and nbf on every Verify,
+		// this stays behind the option: credentials already issued carry an exp
+		// mirroring validUntil, and making it unconditional would start refusing
+		// them on a plain Verify that accepts them today.
+		//
+		// The credential's own window is reported first, so a credential that was
+		// already refused keeps the message it had; the RFC 7519 wording appears
+		// only for tokens whose exp or nbf nothing else covers.
 		if err := checkExpiration(j.payloadData); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+		if err := jwtutil.CheckTimeClaims(j.jwtClaims, time.Now()); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}

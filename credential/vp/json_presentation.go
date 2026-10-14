@@ -251,6 +251,15 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 // covers the document alone, so on those proofs these values are not bound to
 // the signer and prove nothing about who the presentation was made for.
 func (e *JSONPresentation) checkChallengeAndDomain(options *presentationOptions) error {
+	// The same rule the JWT path applies, so the option cannot mean one thing
+	// here and another there. A JSON-LD presentation names its verifier in
+	// proof.domain rather than in aud, and WithExpectedDomain is what checks it;
+	// asking to require an audience without saying who is verifying has no
+	// reading that binds anything.
+	if options.requireAudience && options.expectedDomain == "" {
+		return ErrAudienceUnbound
+	}
+
 	if options.expectedChallenge == "" && options.expectedDomain == "" {
 		return nil
 	}

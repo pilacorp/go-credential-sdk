@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 // SigningKey is the verification method a JWT is issued under: the kid and alg
@@ -49,7 +50,7 @@ func ResolveSigningKey(ctx context.Context, did, purpose, pinnedKey string, reso
 // trailing recovery id, which is trimmed) is a signer returning the wrong
 // format — DER, RSA — not a signer holding the wrong key.
 func (k SigningKey) Accept(signingInput string, signature []byte) (string, error) {
-	signature = trimRecoveryID(signature)
+	signature = jwtutil.TrimRecoveryByte(signature)
 	if n := len(signature); n != 64 {
 		return "", fmt.Errorf("signature must be 64-byte r||s (65 with a trailing recovery id is trimmed), got %d bytes: the signer returned another format, not a JWS signature", n)
 	}

@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -203,8 +204,26 @@ func WithCheckRevocation() CredentialOpt {
 	}
 }
 
-// WithSDDisclosures sets pre-built SD-JWT disclosures to be used when issuing credentials.
-// If provided, JWTCredential.Serialize will output an SD-JWT instead of a plain JWT.
+// WithSDDisclosures attaches disclosures the caller built itself. It is the
+// advanced path: the caller runs sdjwt.BuildDisclosures, puts the processed
+// claims — digests and all — into the contents it hands the builder, and passes
+// the matching disclosures here.
+//
+// The builder validates rather than trusts. Every disclosure has to match a
+// digest the payload actually carries, and the rules of
+// draft-ietf-oauth-selective-disclosure-jwt § 7.1 apply: a disclosure matching
+// nothing is refused, so is the same one twice, so is a digest referenced twice.
+// A mismatch fails at build time with "invalid SD-JWT disclosures" rather than
+// producing a token this SDK's own parser would reject.
+//
+// Do not combine it with WithSDSelectivePaths for the same claim. Those paths
+// make the builder generate its own digests with a fresh salt, which no
+// previously built disclosure can match.
+//
+// For the ordinary case, name the claims with WithSDSelectivePaths and let the
+// builder do both halves. To re-assemble a stored credential, parse the token:
+// ParseJWTCredential and ParseJOSECredential read the disclosures from the
+// string. To reveal a subset of a credential already issued, use Present.
 func WithSDDisclosures(disclosures []string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.sdDisclosures = disclosures
@@ -235,9 +254,16 @@ func WithSDShuffle(enabled bool) CredentialOpt {
 	}
 }
 
-// WithSDDecoyDigests adds decoy digests at specified parent paths to obscure the number of disclosed claims.
-// Each Decoy specifies the path where decoy digests should be added and the count of decoys.
-// Example: WithSDDecoyDigests([]vc.Decoy{{Path: "", Count: 2}, {Path: "credentialSubject", Count: 3}})
+// WithSDDecoyDigests adds decoy digests at specified parent paths to obscure the
+// number of disclosed claims. Each Decoy specifies the path where decoy digests
+// should be added and the count of decoys.
+//
+// The path must name an object inside credentialSubject, not the root. A decoy at
+// the root would claim a top-level property is hidden when none may be — nothing
+// up there is selectively disclosable — and a root digest is indistinguishable
+// from a withheld top-level property, which is what the parser refuses.
+//
+// Example: WithSDDecoyDigests([]vc.Decoy{{Path: "credentialSubject", Count: 3}})
 func WithSDDecoyDigests(decoys []Decoy) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.sdDecoys = decoys
@@ -299,18 +325,67 @@ func getOptions(opts ...CredentialOpt) *credentialOptions {
 // ParseCredential parses a credential from various formats into a Credential.
 func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, error) {
 	if len(rawCredential) == 0 {
-
 		return nil, fmt.Errorf("JSON string is empty")
 	}
 
 	if isJSONCredential(rawCredential) {
-
+		// Check for EnvelopedVerifiableCredential data URI per W3C VC 2.0 / vc-jose-cose.
+		//
+		// VCDM 2.0 §4.13 pairs the data: URI with the EnvelopedVerifiableCredential
+		// type, and both halves are load-bearing: unwrapping on the id alone lets
+		// any JSON borrow an id and be read as whatever that id points at, with its
+		// own type, issuer and subject silently discarded.
+		var peek map[string]interface{}
+		if err := json.Unmarshal(rawCredential, &peek); err == nil {
+			if idStr, ok := peek["id"].(string); ok {
+				for _, prefix := range []string{
+					"data:application/" + TypeVCJWT + ",",
+					"data:application/" + TypeVCSDJWT + ",",
+				} {
+					if !strings.HasPrefix(idStr, prefix) {
+						continue
+					}
+					if !hasType(peek["type"], TypeEnvelopedVC) {
+						return nil, fmt.Errorf("credential carries a %s id but its type is not %s", prefix, TypeEnvelopedVC)
+					}
+					// Parse the token as vc-jose-cose rather than recursing through
+					// ParseCredential: the envelope is defined to hold a vc+jwt, so
+					// this refuses a VC 1.1 JWT hidden inside a v2 envelope, and
+					// keeps the nesting to one level.
+					return ParseJOSECredential(strings.TrimPrefix(idStr, prefix), opts...)
+				}
+			}
+		}
 		return ParseJSONCredential(rawCredential, opts...)
 	}
 
-	valStr := string(rawCredential)
+	valStr := strings.TrimSpace(strings.Trim(string(rawCredential), "\""))
 	if sdjwt.IsSDJWT(valStr) || isJWTCredential(valStr) {
-
+		// Auto-detect vc-jose-cose (vc+jwt) vs legacy VC 1.1 JWT
+		baseJWT := valStr
+		if sdjwt.IsSDJWT(valStr) {
+			if parsed, err := sdjwt.Parse(valStr); err == nil {
+				baseJWT = parsed.BaseJWT
+			}
+		}
+		parts := strings.Split(baseJWT, ".")
+		if len(parts) >= 2 {
+			if headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0]); err == nil {
+				var header map[string]interface{}
+				if err := json.Unmarshal(headerBytes, &header); err == nil {
+					if typ, ok := header["typ"].(string); ok {
+						// Both vc+jwt and vc+sd-jwt are vc-jose-cose; only the
+						// securing mechanism differs, so both route here. A
+						// tilde alone does not decide it: VC 1.1 SD-JWT has the
+						// same shape with typ "JWT" and its claims under vc, and
+						// belongs on the 1.1 path below.
+						if isJOSECredentialTyp(typ) {
+							return ParseJOSECredential(valStr, opts...)
+						}
+					}
+				}
+			}
+		}
 		return ParseJWTCredential(valStr, opts...)
 	}
 

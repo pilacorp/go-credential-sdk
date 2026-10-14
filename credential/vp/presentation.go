@@ -1,7 +1,9 @@
 package vp
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -55,6 +57,17 @@ type PresentationContents struct {
 	VerifiableCredentials []vc.Credential `json:"verifiableCredential,omitempty"`
 }
 
+// ErrAudienceUnbound is returned by Verify when WithRequireAudience is set
+// without WithExpectedDomain.
+//
+// The option asks for the presentation to be bound to this verifier, which
+// takes both halves: the claim in the presentation, and the identity of
+// whoever is reading it. Checking only that some audience exists checks
+// nothing worth having, because a presentation minted for a different verifier
+// carries one too. Both data models are held to it — aud on the JWT paths,
+// proof.domain on JSON-LD.
+var ErrAudienceUnbound = errors.New("WithRequireAudience needs WithExpectedDomain")
+
 // PresentationOpt configures presentation processing options.
 //
 // TODO(opts): one option type is reused across constructors, Parse, signing
@@ -86,6 +99,9 @@ type presentationOptions struct {
 	// Verifying: every checked proof must carry exactly these values.
 	expectedChallenge string
 	expectedDomain    string
+	// requireAudience turns the aud claim from "checked only when the caller
+	// names itself" into "must be checked", per RFC 7519 §4.1.3.
+	requireAudience bool
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -200,6 +216,36 @@ func WithExpectedDomain(domain string) PresentationOpt {
 	}
 }
 
+// WithRequireAudience (verifying) requires the presentation to be bound to this
+// verifier, and must be paired with WithExpectedDomain to say who that is.
+// Passing it alone is a configuration error: verification fails with
+// "WithRequireAudience needs WithExpectedDomain" on both the JWT and the JSON-LD
+// path, rather than appearing to enforce something.
+//
+// Why it cannot stand alone: checking only that an audience exists checks
+// nothing worth having. A presentation minted for a different verifier carries
+// an audience too, so it would pass. Binding needs both halves — the claim in
+// the presentation, and the identity of whoever is reading it.
+//
+// RFC 7519 §4.1.3 states the rule this enforces — "If the principal processing
+// the claim does not identify itself with a value in the aud claim when this
+// claim is present, then the JWT MUST be rejected" — but enforcing it by default
+// would break every verifier that does not name itself today, so it is opt-in.
+//
+// Without it, a presentation minted for one verifier still verifies at another,
+// which is the replay the aud claim exists to prevent.
+//
+// The two data models carry the binding in different places: a JWT or vp+jwt
+// presentation in the aud claim, a JSON-LD one in proof.domain. WithExpectedDomain
+// is checked against whichever applies, so pairing the two options works on
+// either path.
+func WithRequireAudience() PresentationOpt {
+	return func(p *presentationOptions) {
+		p.requireAudience = true
+		p.isVerifyProof = true
+	}
+}
+
 // WithResolver sets the document resolver for presentation signing/verification.
 func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt {
 	return func(p *presentationOptions) {
@@ -249,9 +295,26 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 		return ParseJSONPresentation(rawPresentation, opts...)
 	}
 
-	valStr := string(rawPresentation)
+	valStr := strings.TrimSpace(strings.Trim(string(rawPresentation), "\""))
 	if isJWTPresentation(valStr) {
+		parts := strings.Split(valStr, ".")
+		if len(parts) >= 2 {
+			if headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0]); err == nil {
+				var header map[string]interface{}
+				if err := json.Unmarshal(headerBytes, &header); err == nil {
+					if typ, ok := header["typ"].(string); ok {
+						if isJOSEPresentationTyp(typ) {
+							return ParseJOSEPresentation(valStr, opts...)
+						}
+					}
+				}
+			}
+		}
 		return ParseJWTPresentation(valStr, opts...)
+	}
+
+	if isSDJWTShaped(valStr) {
+		return nil, fmt.Errorf("presentation carries SD-JWT disclosures, which are not supported for presentations")
 	}
 
 	return nil, fmt.Errorf("failed to parse presentation")
@@ -280,9 +343,27 @@ func isJSONPresentation(rawPresentation []byte) bool {
 	return true
 }
 
+// isJWTPresentation reports whether the value has the three-segment shape of a
+// compact JWS.
+//
+// Disclosures are deliberately not tolerated here. Nothing in this package
+// reconstructs them — both presentation parsers split the raw string on "." and
+// take the third segment as the signature, so a token ending in "~..." yields a
+// signature with the disclosures glued on. Accepting the shape only moved the
+// failure from parsing, where it names the problem, to verification, where it
+// surfaces as "illegal base64 data".
 func isJWTPresentation(valStr string) bool {
 	valStr = strings.Trim(valStr, "\"")
 	regex := `^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$`
 	match, _ := regexp.MatchString(regex, valStr)
 	return match
+}
+
+// isSDJWTShaped reports whether the value looks like a compact JWS carrying
+// SD-JWT disclosures, so the caller can say so instead of reporting a generic
+// parse failure on something that is merely unsupported.
+func isSDJWTShaped(valStr string) bool {
+	valStr = strings.Trim(valStr, "\"")
+	head, _, found := strings.Cut(valStr, "~")
+	return found && isJWTPresentation(head)
 }

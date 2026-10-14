@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 // JWTSigner handles JWT signing operations
@@ -31,14 +32,5 @@ func (s *JWTSigner) SignString(signingString string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("jwt signer: failed to sign digest: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(trimRecoveryID(signature)), nil
-}
-
-// trimRecoveryID drops the recovery byte a secp256k1 signer appends (r||s||v);
-// a JWS signature is r||s.
-func trimRecoveryID(signature []byte) []byte {
-	if len(signature) == 65 {
-		return signature[:64]
-	}
-	return signature
+	return base64.RawURLEncoding.EncodeToString(jwtutil.TrimRecoveryByte(signature)), nil
 }

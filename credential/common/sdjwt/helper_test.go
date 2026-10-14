@@ -138,8 +138,11 @@ func TestCreatePresentation(t *testing.T) {
 	subset := BuildSDJWTPresentation(issuerJWT, []string{all[0], all[2]})
 	assert.Equal(t, "header.payload.sig~D1~D3~", subset)
 
+	// A holder revealing nothing is still presenting an SD-JWT, and § 4 ends the
+	// combined format with "~". Returning a bare JWT here made IsSDJWT say no, so
+	// the digests were never folded out of the payload.
 	none := BuildSDJWTPresentation(issuerJWT, nil)
-	assert.Equal(t, "header.payload.sig", none)
+	assert.Equal(t, "header.payload.sig~", none)
 
 	empty := BuildSDJWTPresentation(issuerJWT, []string{"", "D1", ""})
 	assert.Equal(t, "header.payload.sig~D1~", empty)

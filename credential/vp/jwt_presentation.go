@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 type JWTPresentation struct {
@@ -276,20 +278,32 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 	}
 
 	if options.isCheckExpiration {
+		// Same split as the credential path: validFrom/validUntil describe the
+		// presentation and sit in the payload, exp/nbf describe the token and sit
+		// in the top-level claims this builder also writes. Checking one pair and
+		// not the other let a presentation past its own exp verify.
+		//
+		// The document's own window is reported first, so a presentation that was
+		// already refused keeps the message it had; the RFC 7519 wording appears
+		// only for tokens whose exp or nbf nothing else covers.
 		if err := checkExpiration(PresentationData(j.payloadData)); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+		if err := jwtutil.CheckTimeClaims(j.jwtClaims, time.Now()); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 
 	if options.isVerifyProof {
-		serialized, err := j.Serialize()
-		if err != nil {
-			return fmt.Errorf("failed to serialize presentation: %w", err)
+		// Same reason as the vp+jwt path: Serialize returns any and, when there
+		// is no signature, returns the two-segment signing input — which reaches
+		// VerifyJWT as "invalid JWT format" instead of saying it is unsigned.
+		if j.signature == "" {
+			return fmt.Errorf("presentation is not signed")
 		}
 
 		verifier := jwt.NewJWTVerifier(options.resolver)
-		err = verifier.VerifyJWT(serialized.(string))
-		if err != nil {
+		if err := verifier.VerifyJWT(j.signingInput + "." + j.signature); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 		if err := j.checkChallengeAndDomain(options); err != nil {
@@ -336,9 +350,27 @@ func (j *JWTPresentation) checkChallengeAndDomain(options *presentationOptions) 
 			return fmt.Errorf("nonce %q does not match expected challenge %q", nonce, options.expectedChallenge)
 		}
 	}
-	if options.expectedDomain != "" && !audContains(j.jwtClaims["aud"], options.expectedDomain) {
-		return fmt.Errorf("aud %v does not match expected domain %q", j.jwtClaims["aud"], options.expectedDomain)
+	return checkAudience(j.jwtClaims["aud"], options)
+}
+
+// checkAudience applies RFC 7519 §4.1.3 to a presentation's aud claim: naming
+// this verifier is what checks it.
+//
+// WithRequireAudience alone used to pass a presentation that named no audience
+// at all, and refuse one that did — exactly backwards from what the option says,
+// and it left a verifier believing it had closed the replay the aud claim exists
+// to prevent while accepting the unbound presentations it meant to reject.
+func checkAudience(aud interface{}, options *presentationOptions) error {
+	if options.expectedDomain != "" {
+		if !audContains(aud, options.expectedDomain) {
+			return fmt.Errorf("aud %v does not match expected domain %q", aud, options.expectedDomain)
+		}
+		return nil
 	}
+	if options.requireAudience {
+		return ErrAudienceUnbound
+	}
+
 	return nil
 }
 

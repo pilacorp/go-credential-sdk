@@ -1,6 +1,7 @@
 package sdjwt
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -86,7 +87,7 @@ func TestProcessNode_ObjectContextRejectArrayDisclosure(t *testing.T) {
 		"_sd": []interface{}{h},
 	}
 
-	_, err := processNode(node, disclosureMap)
+	_, err := processNode(node, disclosureMap, map[string]bool{})
 	if err == nil {
 		t.Fatal("expected context mismatch error")
 	}
@@ -103,7 +104,7 @@ func TestProcessNode_ArrayContextRejectObjectDisclosure(t *testing.T) {
 		map[string]interface{}{"...": h},
 	}
 
-	_, err := processNode(node, disclosureMap)
+	_, err := processNode(node, disclosureMap, map[string]bool{})
 	if err == nil {
 		t.Fatal("expected context mismatch error")
 	}
@@ -121,7 +122,7 @@ func TestProcessNode_DuplicateFieldAfterReconstruct(t *testing.T) {
 		"_sd":  []interface{}{h},
 	}
 
-	_, err := processNode(node, disclosureMap)
+	_, err := processNode(node, disclosureMap, map[string]bool{})
 	if err == nil {
 		t.Fatal("expected duplicate field error")
 	}
@@ -157,10 +158,21 @@ func TestReconstruct_ArrayPlaceholder(t *testing.T) {
 	assert.Equal(t, "Item1", items[0])
 }
 
+// A real SD-JWT from the wild, reconstructed field by field.
 func TestReconstruct_RealExampleFromCompact(t *testing.T) {
 	compact := "eyJ0eXAiOiJzZCtqd3QiLCJhbGciOiJFUzI1NiJ9.eyJpZCI6IjEyMzQiLCJfc2QiOlsiYkRUUnZtNS1Zbi1IRzdjcXBWUjVPVlJJWHNTYUJrNTdKZ2lPcV9qMVZJNCIsImV0M1VmUnlsd1ZyZlhkUEt6Zzc5aGNqRDFJdHpvUTlvQm9YUkd0TW9zRmsiLCJ6V2ZaTlMxOUF0YlJTVGJvN3NKUm4wQlpRdldSZGNob0M3VVphYkZyalk4Il0sIl9zZF9hbGciOiJzaGEtMjU2In0.n27NCtnuwytlBYtUNjgkesDP_7gN7bhaLhWNL4SWT6MaHsOjZ2ZMp987GgQRL6ZkLbJ7Cd3hlePHS84GBXPuvg~WyI1ZWI4Yzg2MjM0MDJjZjJlIiwiZmlyc3RuYW1lIiwiSm9obiJd~WyJjNWMzMWY2ZWYzNTg4MWJjIiwibGFzdG5hbWUiLCJEb2UiXQ~WyJmYTlkYTUzZWJjOTk3OThlIiwic3NuIiwiMTIzLTQ1LTY3ODkiXQ~eyJ0eXAiOiJrYitqd3QiLCJhbGciOiJFUzI1NiJ9.eyJpYXQiOjE3MTAwNjk3MjIsImF1ZCI6ImRpZDpleGFtcGxlOjEyMyIsIm5vbmNlIjoiazh2ZGYwbmQ2Iiwic2RfaGFzaCI6Il8tTmJWSzNmczl3VzNHaDNOUktSNEt1NmZDMUwzN0R2MFFfalBXd0ppRkUifQ.pqw2OB5IA5ya9Mxf60hE3nr2gsJEIoIlnuCa4qIisijHbwg3WzTDFmW2SuNvK_ORN0WU6RoGbJx5uYZh8k4EbA"
 
-	parsed, err := Parse(compact)
+	// This example ends in a key binding JWT. Parse used to skip it in silence,
+	// which handed back a nil error for a token whose holder binding nothing
+	// checked — and gave the same credential a second byte form under one Hash().
+	// It is refused until the binding is verified.
+	_, err := Parse(compact)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "key binding JWT")
+
+	// The same token without it reconstructs, which is what this test was for.
+	withoutKB := compact[:strings.LastIndex(compact, "~")+1]
+	parsed, err := Parse(withoutKB)
 	require.NoError(t, err)
 
 	parts := strings.Split(parsed.BaseJWT, ".")
@@ -501,4 +513,232 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	out3, err := Reconstruct(result3.ProcessedVC, result3.Disclosures, true)
 	require.NoError(t, err)
 	assert.Equal(t, "Alice", out3["name"])
+}
+
+// draft-ietf-oauth-selective-disclosure-jwt § 7.1 step 4 counts a digest across
+// the whole Issuer-signed payload, not per object. objectDigests and arrayDigests
+// each see one container, so a digest placed in two different objects slipped
+// past both and one disclosure filled two fields.
+func TestValidation_DigestReferencedTwiceAcrossObjects(t *testing.T) {
+	arr, err := json.Marshal([]interface{}{"salt1", "secret", "VALUE"})
+	require.NoError(t, err)
+	D := base64.RawURLEncoding.EncodeToString(arr)
+	h, err := hashDisclosure(AlgSHA256, D)
+	require.NoError(t, err)
+
+	vc := map[string]interface{}{
+		"_sd_alg": AlgSHA256,
+		"a":       map[string]interface{}{"_sd": []interface{}{h}},
+		"b":       map[string]interface{}{"_sd": []interface{}{h}},
+	}
+
+	_, err = Reconstruct(vc, []string{D}, true)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "referenced more than once")
+}
+
+// _sd decides what the payload says, so a shape nobody expected is refused rather
+// than dropped: the old code deleted a non-array _sd and carried on.
+func TestValidation_SDMustBeAnArray(t *testing.T) {
+	vc := map[string]interface{}{
+		"_sd_alg": AlgSHA256,
+		"x":       map[string]interface{}{"_sd": "not-an-array", "k": 1},
+	}
+
+	_, err := Reconstruct(vc, nil, true)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "_sd must be an array")
+}
+
+// digestFor is the digest an _sd array carries for a disclosure under sha-256.
+func digestFor(disclosure string) string {
+	sum := sha256.Sum256([]byte(disclosure))
+
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// discFor builds the salted array a disclosure base64url-encodes.
+func discFor(t *testing.T, salt, name string, value interface{}) string {
+	t.Helper()
+
+	b, err := json.Marshal([]interface{}{salt, name, value})
+	if err != nil {
+		t.Fatalf("marshal disclosure: %v", err)
+	}
+
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// RFC 9901 § 7.1 step 4 counts a digest across the whole payload and does not
+// ask whether a disclosure arrived for it. Counting behind the disclosure lookup
+// meant only revealed digests were counted: the same unrevealed digest, or the
+// same decoy, in two containers passed — and a conforming verifier would reject
+// the token this one accepted.
+//
+// Nothing is injected by it, since an unrevealed digest fills no field and the
+// moment a holder reveals it the count does fire. What it costs is agreement
+// with every other verifier about what the same bytes mean.
+func TestReconstruct_DigestUniquenessIgnoresWhetherItWasRevealed(t *testing.T) {
+	disclosure := discFor(t, "c2FsdDAxc2FsdDAxc2FsdDAx", "secret", "x")
+	h := digestFor(disclosure)
+
+	for _, tc := range []struct {
+		name        string
+		vcMap       map[string]interface{}
+		disclosures []string
+	}{
+		{
+			name: "unrevealed, in two objects",
+			vcMap: map[string]interface{}{"_sd_alg": AlgSHA256,
+				"a": map[string]interface{}{"_sd": []interface{}{h}},
+				"b": map[string]interface{}{"_sd": []interface{}{h}}},
+		},
+		{
+			name: "revealed, in two objects",
+			vcMap: map[string]interface{}{"_sd_alg": AlgSHA256,
+				"a": map[string]interface{}{"_sd": []interface{}{h}},
+				"b": map[string]interface{}{"_sd": []interface{}{h}}},
+			disclosures: []string{disclosure},
+		},
+		{
+			name: "unrevealed placeholder, in two arrays",
+			vcMap: map[string]interface{}{"_sd_alg": AlgSHA256,
+				"a": []interface{}{map[string]interface{}{"...": h}},
+				"b": []interface{}{map[string]interface{}{"...": h}}},
+		},
+		{
+			name: "once in an object, once as an array placeholder",
+			vcMap: map[string]interface{}{"_sd_alg": AlgSHA256,
+				"a": map[string]interface{}{"_sd": []interface{}{h}},
+				"b": []interface{}{map[string]interface{}{"...": h}}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Reconstruct(tc.vcMap, tc.disclosures, true)
+			if err == nil {
+				t.Fatal("a digest repeated across containers was accepted")
+			}
+			if !strings.Contains(err.Error(), "referenced more than once in the payload") {
+				t.Fatalf("err = %v, want the payload-wide duplicate reported", err)
+			}
+		})
+	}
+
+	// And a digest that appears once is still fine, revealed or not — the rule
+	// is about repetition, not about disclosure.
+	t.Run("a single occurrence is untouched", func(t *testing.T) {
+		for _, ds := range [][]string{nil, {disclosure}} {
+			out, err := Reconstruct(map[string]interface{}{
+				"_sd_alg": AlgSHA256,
+				"a":       map[string]interface{}{"_sd": []interface{}{h}},
+			}, ds, true)
+			if err != nil {
+				t.Fatalf("disclosures=%v: %v", ds, err)
+			}
+			a, ok := out["a"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("a is %T, want an object", out["a"])
+			}
+			if _, leaked := a["_sd"]; leaked {
+				t.Errorf("disclosures=%v: _sd survived reconstruction: %v", ds, a)
+			}
+			if len(ds) > 0 && a["secret"] != "x" {
+				t.Errorf("the revealed claim was not applied: %v", a)
+			}
+		}
+	})
+}
+
+// A disclosure's value can itself hold an unrevealed array element, which is
+// what recursive disclosure means: issue skills[1] and skills as two
+// disclosures, and the skills disclosure reads ["go", {"...": <digest of
+// skills[1]>}]. A holder revealing skills but not skills[1] is the ordinary
+// case that costs nothing extra to support.
+//
+// processNode used to apply _sd first and then loop over the object, which
+// walked every claim a disclosure had just inserted a second time. That was
+// invisible until digests were counted whether or not a disclosure came with
+// them: the first walk marked the nested placeholder, the second walk found the
+// same digest and reported it as referenced more than once — in a token where
+// it occurs exactly once. Reconstruct refused a credential this SDK issues.
+//
+// Walking the issuer's own fields before applying _sd gives every node exactly
+// one visit, since applySDHashes already processes the value it inserts.
+func TestReconstruct_DisclosedClaimHoldingAnUnrevealedElement(t *testing.T) {
+	// The array element, as an array-element disclosure: ["<salt>", value].
+	elem, err := json.Marshal([]interface{}{"c2FsdFJVc2FsdFJVc2FsdFJV", "rust"})
+	if err != nil {
+		t.Fatalf("marshal element disclosure: %v", err)
+	}
+	rust := base64.RawURLEncoding.EncodeToString(elem)
+
+	// The claim that contains it, still withheld inside.
+	skills := discFor(t, "c2FsZFNLc2FsZFNLc2FsZFNL", "skills",
+		[]interface{}{"go", map[string]interface{}{"...": digestFor(rust)}})
+
+	payload := func() map[string]interface{} {
+		return map[string]interface{}{
+			"_sd_alg": AlgSHA256,
+			"credentialSubject": map[string]interface{}{
+				"id":  "did:example:subject",
+				"_sd": []interface{}{digestFor(skills)},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name        string
+		disclosures []string
+		wantSkills  interface{}
+	}{
+		{
+			name:        "both revealed",
+			disclosures: []string{skills, rust},
+			wantSkills:  []interface{}{"go", "rust"},
+		},
+		{
+			// The case that regressed. skills comes back; the element inside
+			// stays a placeholder, because that is what withholding it means.
+			name:        "the claim revealed, the element inside withheld",
+			disclosures: []string{skills},
+			wantSkills: []interface{}{"go",
+				map[string]interface{}{"...": digestFor(rust)}},
+		},
+		{
+			name:        "neither revealed",
+			disclosures: nil,
+			wantSkills:  nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := Reconstruct(payload(), tc.disclosures, true)
+			if err != nil {
+				t.Fatalf("a well-formed token was refused: %v", err)
+			}
+			subject, ok := out["credentialSubject"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("credentialSubject is %T, want an object", out["credentialSubject"])
+			}
+			if _, leaked := subject["_sd"]; leaked {
+				t.Errorf("credentialSubject carries _sd = %v", subject["_sd"])
+			}
+
+			got, want := mustJSON(t, subject["skills"]), mustJSON(t, tc.wantSkills)
+			if got != want {
+				t.Errorf("skills = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+// mustJSON renders a value for comparison, so a nested map compares by content.
+func mustJSON(t *testing.T, v interface{}) string {
+	t.Helper()
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	return string(b)
 }

@@ -16,6 +16,8 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
   - [Features](#vc-features)
   - [Usage](#vc-usage)
   - [SD-JWT (Selective Disclosure)](#sd-jwt-selective-disclosure)
+  - [vc-jose-cose (VC 2.0 secured as a JWT)](#vc-jose-cose)
+  - [Presentations secured as a JWT (vp+jwt)](#vp-jose-cose)
   - [ecdsa-sd-2023 (Selective Disclosure for JSON-LD)](#ecdsa-sd-2023)
   - [Example](#vc-example)
 - [Verifiable Presentation (VP) Package](#verifiable-presentation-vp-package)
@@ -419,6 +421,59 @@ For JSON credentials pass it when signing (`AddProofByProvider`); `NewJSONCreden
 err := credential.AddProofByProvider(signer, vc.WithVerificationMethodKey("key-2"), vc.WithResolver(resolver))
 ```
 
+#### **vp.WithChallenge(nonce)** / **vp.WithDomain(domain)**
+
+Set when **signing**: the nonce the verifier handed out, and who the presentation is
+for. A JWT presentation writes them as the `nonce` and `aud` claims; a JSON-LD one
+writes them into `proof.challenge` and `proof.domain`.
+
+```go
+err = pres.AddProofByProvider(holderSigner,
+    vp.WithChallenge(nonceFromVerifier),
+    vp.WithDomain("https://verifier.example"))
+```
+
+#### **vp.WithExpectedChallenge(nonce)** / **vp.WithExpectedDomain(domain)**
+
+The verifying halves. `WithExpectedChallenge` refuses a presentation whose nonce is not
+the one this verifier issued — that is what makes it fresh. `WithExpectedDomain` refuses
+one not addressed to this verifier — that is what makes it unreplayable. Both imply
+`WithVerifyProof`, since neither value means anything on an unverified proof.
+
+```go
+err = pres.Verify(
+    vp.WithExpectedChallenge(nonceFromVerifier),
+    vp.WithExpectedDomain("https://verifier.example"))
+```
+
+> On a JSON-LD presentation only an `ecdsa-rdfc-2019` proof signs its challenge and
+> domain. A legacy hex or `JsonWebSignature2020` signature covers the document alone, so
+> on those proofs the values are not bound to the signer.
+
+#### **vp.WithRequireAudience()**
+
+Requires the presentation to be bound to this verifier — and **must be paired with
+`vp.WithExpectedDomain`**. Alone it is a configuration error: verification fails with
+`WithRequireAudience needs WithExpectedDomain`, on both the JWT and the JSON-LD path.
+
+```go
+err = pres.Verify(
+    vp.WithRequireAudience(),
+    vp.WithExpectedDomain("https://verifier.example"))
+
+// Callers who need to tell a misconfiguration apart from a bad presentation:
+if errors.Is(err, vp.ErrAudienceUnbound) {
+    // this verifier asked for binding without saying who it is
+}
+```
+
+Why it cannot stand alone: checking that *some* audience exists checks nothing worth
+having, because a presentation minted for a different verifier carries one too. Binding
+needs both halves — the claim in the presentation, and the identity of whoever reads it.
+
+RFC 7519 §4.1.3 states the rule it enforces, but enforcing it by default would break
+every verifier that does not name itself today, so it is opt-in.
+
 Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(url)
 
 - Default: https://api.ndadid.vn/api/v1/did
@@ -497,16 +552,35 @@ cred, err := vc.NewJWTCredential(contents,
     vc.WithSDHashAlgorithm("sha-384"),
     // Shuffle _sd array to prevent disclosure order leakage
     vc.WithSDShuffle(true),
-    // Add decoy digests: 2 at root, 3 at credentialSubject
+    // Add decoy digests: 3 in credentialSubject, 1 in the emails array
     vc.WithSDDecoyDigests([]vc.Decoy{
-        {Path: "", Count: 2},                      // 2 decoys at root level
         {Path: "credentialSubject", Count: 3},      // 3 decoys in credentialSubject object
         {Path: "credentialSubject.emails", Count: 1}, // 1 decoy in emails array (adds new elements)
     }),
 )
 ```
 
-**Alternative (advanced):** If you build disclosures yourself, use `vc.WithSDDisclosures(disclosures)` when creating the credential. The SDK will attach them when serializing to SD-JWT.
+> **Decoys go inside `credentialSubject`, not at the root.** A root path writes `_sd`
+> beside `issuer`, `type` and `credentialStatus`, and the SDK refuses that — `the payload
+> carries _sd at the root…` — because a digest there is indistinguishable from a
+> top-level property a holder withheld, and nothing at that level may be withheld.
+
+
+**Alternative (advanced):** If you build the disclosures yourself, put the processed claims — digests and all — into the contents and pass the matching disclosures with `vc.WithSDDisclosures(disclosures)`:
+
+```go
+res, err := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+    VC:             draft,
+    SelectivePaths: []string{"credentialSubject.bloodType"},
+})
+// res.ProcessedVC["credentialSubject"] now holds the digests; carry it into
+// Subject.CustomFields, then hand the disclosures back:
+cred, err := vc.NewJWTCredential(contents,
+    vc.WithSDDisclosures(res.Disclosures),
+    vc.WithVerificationMethodKey("key-1"))
+```
+
+The builder validates them against the digests in the payload before signing: a disclosure that matches nothing, the same one twice, or a digest referenced twice fails with `invalid SD-JWT disclosures`. Do not combine this with `WithSDSelectivePaths` for the same claim — those paths make the builder generate its own digests with a fresh salt, which no previously built disclosure can match.
 
 #### Holder: Presenting an SD-JWT
 
@@ -532,7 +606,7 @@ out, _ := presented.Serialize() // SD-JWT string to send to the Verifier
 
 #### Verifier: Parsing and verifying an SD-JWT
 
-Use the same parsing API as for ordinary JWT credentials. The SDK detects SD-JWT by the presence of `~` and the JWT prefix, then parses and reconstructs the **processed payload** (only disclosed claims) before returning a `Credential`.
+Use the same parsing API as for ordinary JWT credentials. The `~` separators say where the disclosures are in the string; whether the credential is an SD-JWT at all is read from the **signed payload** (the digests the issuer put there), not from the `~`. A plain JWT with a `~` appended is still a plain JWT, and a payload carrying digests is reconstructed even if nothing was revealed. The SDK reconstructs the **processed payload** (only disclosed claims) before returning a `Credential`.
 
 ```go
 // Verifier (or Holder): parse and verify SD-JWT
@@ -548,7 +622,7 @@ if err != nil {
 contents, _ := cred.GetContents()
 ```
 
-- **Detection:** `vc.ParseCredential` accepts JSON credentials, plain JWTs, or SD-JWTs. SD-JWT is detected automatically (format: `...~...` with a valid JWT before the first `~`).
+- **Detection:** `vc.ParseCredential` accepts JSON credentials, plain JWTs, or SD-JWTs. A `~` makes it split the string into the issuer-signed JWT and the disclosures that follow (format: `...~...` with a valid JWT before the first `~`); the payload then decides whether it is treated as an SD-JWT.
 - **Verification:** Signature and standard claims (`exp`, `nbf`, etc.) are verified on the issuer-signed JWT. Schema validation, if enabled, runs on the **reconstructed** payload (disclosed claims only).
 - **Validation:** The SDK validates:
   - Duplicate digest detection
@@ -563,6 +637,132 @@ contents, _ := cred.GetContents()
 | **Issuer** | `vc.NewJWTCredential(contents, vc.WithSDSelectivePaths(paths))` → `AddProof` → `Serialize()` → SD-JWT string |
 | **Holder** | `vc.ParseJWTCredential(sdJWT)` → `DecodedDisclosures()` → `Present(selectedDisclosures)` → `Serialize()` |
 | **Verifier** | `vc.ParseCredential(raw, vc.WithVerifyProof(), ...)` → use returned `Credential` (disclosed claims only) |
+
+### <a name="vc-jose-cose"></a>vc-jose-cose (VC 2.0 secured as a JWT)
+
+The data models in this SDK differ in **where the proof lives**, and that decides which
+constructor to call:
+
+| Constructor | Data model | Proof | Token |
+|---|---|---|---|
+| `NewJSONCredential` | VC 2.0 | embedded (`proof` inside the document) | JSON object |
+| `NewJWTCredential` | VC 1.1 | the JWT signature, document under a `vc` claim | `header.payload.sig` |
+| `NewJOSECredential` | **VC 2.0** | the JWS signature, document **is** the payload | `header.payload.sig`, `typ: vc+jwt` |
+
+`NewJOSECredential` is [vc-jose-cose](https://www.w3.org/TR/vc-jose-cose/): a VC 2.0
+document carried as the JWT payload itself, with no `vc` wrapper. Use it when the
+consumer wants a compact token but the document must be 2.0.
+
+```go
+cred, err := vc.NewJOSECredential(vc.CredentialContents{
+    Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+    ID:        "urn:uuid:" + uuid.NewString(),
+    Issuer:    issuerDID,
+    Types:     []string{"VerifiableCredential"},
+    ValidFrom: time.Now(),
+    Subject:   []vc.Subject{{ID: holderDID, CustomFields: map[string]interface{}{"name": "A"}}},
+}, vc.WithVerificationMethodKey("key-1"))
+if err != nil {
+    return err
+}
+if err := cred.AddProofByProvider(signerProvider); err != nil {
+    return err
+}
+token, err := cred.Serialize() // "eyJ...vc+jwt...", a string
+
+// Verifying: ParseCredential auto-detects the media type from the typ header.
+parsed, err := vc.ParseCredential([]byte(token.(string)))
+err = parsed.Verify()
+```
+
+Selective disclosure works here too, and then the media type becomes `vc+sd-jwt`:
+
+```go
+// Issuer: make a claim disclosable, sign, serialize.
+cred, err := vc.NewJOSECredential(contents,
+    vc.WithSDSelectivePaths([]string{"credentialSubject.bloodType"}),
+    vc.WithVerificationMethodKey("key-1"))
+if err != nil {
+    return err
+}
+if err := cred.AddProofByProvider(signerProvider); err != nil {
+    return err
+}
+// typ is now vc+sd-jwt and Serialize() appends the disclosures after a "~".
+sdJWT, err := cred.Serialize()
+if err != nil {
+    return err
+}
+
+// Holder: parse the token that arrived, pick what to reveal, present that subset.
+// The holder has the token, not the issuer's credential object — and Present
+// needs a signature, so it must come after AddProofByProvider either way.
+holderCred, err := vc.ParseJOSECredential(sdJWT.(string))
+if err != nil {
+    return err
+}
+discs, err := holderCred.DecodedDisclosures()
+if err != nil {
+    return err
+}
+presented, err := holderCred.Present([]string{discs[0].Disclosure})
+```
+
+What this path enforces that the 1.1 path does not:
+
+- The payload must really be a **VC 2.0** credential — `@context` naming
+  `https://www.w3.org/ns/credentials/v2` first, and a `type` that names a credential.
+  A signature proves who wrote the bytes, not that the bytes are a credential.
+- The `typ` header must match the format: a `vc+jwt` carrying SD-JWT disclosures is
+  refused, and so is a `vc+sd-jwt` whose payload has none of the machinery.
+- `vc` and `vp` claims are forbidden in the payload (vc-jose-cose §1.1.2.1).
+
+### <a name="vp-jose-cose"></a>Presentations secured as a JWT (`vp+jwt`)
+
+`NewJOSEPresentation` is the presentation half. Credentials inside it are carried
+**enveloped**, as vc-jose-cose §3.1.2 requires — the SDK wraps them for you:
+
+```go
+pres, err := vp.NewJOSEPresentation(vp.PresentationContents{
+    Context:               []interface{}{"https://www.w3.org/ns/credentials/v2"},
+    Types:                 []string{"VerifiablePresentation"},
+    Holder:                holderDID,
+    VerifiableCredentials: []vc.Credential{joseCred}, // must be a *vc.JOSECredential
+}, vp.WithVerificationMethodKey("key-1"))
+if err != nil {
+    return err
+}
+err = pres.AddProofByProvider(holderSigner,
+    vp.WithChallenge(nonceFromVerifier),
+    vp.WithDomain("https://verifier.example"))
+```
+
+Each credential appears as an `EnvelopedVerifiableCredential` whose `id` is a data URL —
+`data:application/vc+jwt,<token>` or `data:application/vc+sd-jwt,<token>`. A bare
+credential, or a Data Integrity one, is refused: it is not an enveloping scheme.
+
+#### Binding a presentation to the verifier
+
+A presentation made for one verifier should not verify at another. Both data models
+carry that binding, in different places:
+
+| Data model | Where | Verify with |
+|---|---|---|
+| `vp+jwt` / VC 1.1 JWT | the `aud` claim | `WithExpectedDomain` |
+| JSON-LD | `proof.domain` | `WithExpectedDomain` |
+
+```go
+err = pres.Verify(
+    vp.WithRequireAudience(),                            // refuse an unbound presentation
+    vp.WithExpectedDomain("https://verifier.example"),   // ...bound to me
+    vp.WithExpectedChallenge(nonceFromVerifier),         // ...and fresh
+)
+```
+
+`WithRequireAudience` **must** be paired with `WithExpectedDomain`. Alone it is a
+configuration error and verification fails with `WithRequireAudience needs
+WithExpectedDomain` — checking that *some* audience exists checks nothing worth having,
+because a presentation minted for a different verifier carries one too.
 
 ### <a name="ecdsa-sd-2023"></a>ecdsa-sd-2023 (Selective Disclosure for JSON-LD)
 
@@ -1308,11 +1508,20 @@ jwtPres, err := vp.NewJWTPresentation(contents)
 pres, err := vp.ParsePresentation(data)
 pres, err := vp.ParsePresentationWithValidation(data)
 
+// Create a VC 2.0 presentation secured as a JWT (vc-jose-cose)
+josePres, err := vp.NewJOSEPresentation(contents)
+
 	// Add proof and verify
 	holderSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
 	err = pres.AddProof(holderSigner)
 	err = pres.Verify()
 	result, err := pres.Serialize()
+
+// Bind the presentation to this verifier
+err = pres.Verify(
+	vp.WithRequireAudience(),                          // needs WithExpectedDomain
+	vp.WithExpectedDomain("https://verifier.example"),
+	vp.WithExpectedChallenge(nonceFromVerifier))
 ```
 
 ### Options Usage Examples
@@ -1335,6 +1544,13 @@ credential, err := vc.ParseCredential(data,
 // Create presentation with VC validation
 presentation, err := vp.NewJSONPresentation(contents, vp.WithVCValidation())
 err = presentation.AddProofByProvider(signer, vp.WithVerificationMethodKey("key-3"))
+
+// Verify a presentation that is bound and fresh
+err = presentation.Verify(
+    vp.WithVCValidation(),
+    vp.WithRequireAudience(),
+    vp.WithExpectedDomain("https://verifier.example"),
+    vp.WithExpectedChallenge(nonceFromVerifier))
 ```
 
 #### **Using ParseCredentialWithValidation and ParsePresentationWithValidation**
@@ -1353,7 +1569,7 @@ presentation, err := vp.ParsePresentationWithValidation(data)
 Used when **issuing** JWT credentials to produce an SD-JWT (selective disclosure).
 
 - **WithSDSelectivePaths(paths)**: SDK builds disclosures for the given claim paths (e.g. `"credentialSubject.email"`, `"credentialSubject.tags[0]"`). When you call `Serialize()`, the result is an SD-JWT string.
-- **WithSDDisclosures(disclosures)**: Attach pre-built disclosure strings (advanced; normally use `WithSDSelectivePaths`).
+- **WithSDDisclosures(disclosures)**: Attach disclosure strings you built yourself, against digests you put in the contents (advanced; normally use `WithSDSelectivePaths`). Validated against the payload before signing — see above.
 
 ```go
 // Issue SD-JWT with selective disclosure
@@ -1374,7 +1590,7 @@ vc.WithVerifyProof()                        // Enable proof verification
 vc.WithBaseURL(url)                         // Set custom DID resolver URL
 vc.WithVerificationMethodKey(key)           // Set custom verification method key
 vc.WithSDSelectivePaths(paths)              // Issue SD-JWT: claims at these paths are selectively disclosable
-vc.WithSDDisclosures(disclosures)           // Issue SD-JWT: use these pre-built disclosure strings
+vc.WithSDDisclosures(disclosures)           // Issue SD-JWT: disclosures you built, matching digests already in the contents
 
 // VP options
 vp.WithVCValidation()                       // Enable VC validation within presentation
