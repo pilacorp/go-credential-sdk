@@ -69,6 +69,12 @@ func NewDIDDocument(did string, vms ...VerificationMethodEntry) *DIDDocument {
 
 // NewSecp256k1VM builds an EcdsaSecp256k1VerificationKey2019 verification method
 // from an uncompressed public key hex (0x04||X||Y). Used by ecdsa-rdfc-2019.
+//
+// Deprecated: publicKeyHex is not a property DID Core defines, so a resolver
+// written against the specification finds no key material here and treats the
+// verification method as holding no key (#91). Prefer
+// NewSecp256k1MultikeyVM for new documents; this stays because documents
+// already published carry hex and must keep resolving.
 func NewSecp256k1VM(did, fragment, pubKeyHex string) VerificationMethodEntry {
 	return VerificationMethodEntry{
 		ID:           did + "#" + fragment,
@@ -76,6 +82,24 @@ func NewSecp256k1VM(did, fragment, pubKeyHex string) VerificationMethodEntry {
 		Controller:   did,
 		PublicKeyHex: pubKeyHex,
 	}
+}
+
+// NewSecp256k1MultikeyVM builds a Multikey verification method from a secp256k1
+// public key — the DID Core representation, in place of publicKeyHex.
+func NewSecp256k1MultikeyVM(did, fragment string, pub *ecdsa.PublicKey) (VerificationMethodEntry, error) {
+	if pub == nil || !CurveIsSecp256k1(pub.Curve) {
+		return VerificationMethodEntry{}, fmt.Errorf("NewSecp256k1MultikeyVM requires a secp256k1 key")
+	}
+	mb, err := EncodePubMultibase(pub)
+	if err != nil {
+		return VerificationMethodEntry{}, err
+	}
+	return VerificationMethodEntry{
+		ID:                 did + "#" + fragment,
+		Type:               "Multikey",
+		Controller:         did,
+		PublicKeyMultibase: mb,
+	}, nil
 }
 
 // NewRSAVM builds a JsonWebKey2020 verification method from an RSA public key.

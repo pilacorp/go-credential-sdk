@@ -49,9 +49,13 @@ func VMIsP256(vm *VerificationMethodEntry) bool {
 	return false
 }
 
-// VMIsSecp256k1 matches an EC secp256k1 JWK or a publicKeyHex (the
-// EcdsaSecp256k1VerificationKey2019 representation). P-256 keys never use
-// publicKeyHex.
+// VMIsSecp256k1 matches an EC secp256k1 JWK, a secp256k1 Multikey, or a
+// publicKeyHex (the EcdsaSecp256k1VerificationKey2019 representation). P-256
+// keys never use publicKeyHex.
+//
+// The Multikey case is why this decodes rather than testing for a non-empty
+// field: a Multikey names its curve in the multicodec prefix, and a P-256 one
+// must not be claimed here — VMKeyKind asks this function first.
 func VMIsSecp256k1(vm *VerificationMethodEntry) bool {
 	if vm == nil {
 		return false
@@ -59,7 +63,14 @@ func VMIsSecp256k1(vm *VerificationMethodEntry) bool {
 	if vm.PublicKeyJwk != nil {
 		return vm.PublicKeyJwk.Kty == "EC" && vm.PublicKeyJwk.Crv == "secp256k1"
 	}
-	return vm.PublicKeyHex != ""
+	if vm.PublicKeyHex != "" {
+		return true
+	}
+	if vm.PublicKeyMultibase != "" {
+		pub, err := ECPubFromMultibase(vm.PublicKeyMultibase)
+		return err == nil && CurveIsSecp256k1(pub.Curve)
+	}
+	return false
 }
 
 // VMKeyKind reports the key kind a verification method holds, and whether it was

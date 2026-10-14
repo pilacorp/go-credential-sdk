@@ -180,6 +180,12 @@ func documentContext(vms []VerificationMethod) []string {
 }
 
 // NewSecp256k1VM builds a complete secp256k1 VM from a "#name" fragment.
+//
+// Deprecated: publicKeyHex is not a property DID Core defines, so a resolver
+// written against the specification finds no key material here and treats the
+// verification method as holding no key (#91). Prefer NewSecp256k1MultikeyVM
+// for new documents; this stays because documents already published carry hex
+// and must keep resolving.
 func NewSecp256k1VM(did, fragment, publicKeyHex string) VerificationMethod {
 	return VerificationMethod{
 		Id:           canonicalVMID(did, fragment),
@@ -187,6 +193,26 @@ func NewSecp256k1VM(did, fragment, publicKeyHex string) VerificationMethod {
 		Controller:   did,
 		PublicKeyHex: publicKeyHex,
 	}
+}
+
+// NewSecp256k1MultikeyVM builds a complete Multikey VM from a secp256k1 public
+// key — the DID Core representation, in place of publicKeyHex.
+func NewSecp256k1MultikeyVM(did, fragment string, pub *ecdsa.PublicKey) (VerificationMethod, error) {
+	if pub == nil || !curveIsSecp256k1(pub.Curve) {
+		return VerificationMethod{}, fmt.Errorf("NewSecp256k1MultikeyVM requires a secp256k1 public key")
+	}
+
+	multibase, err := encodePubMultibase(pub)
+	if err != nil {
+		return VerificationMethod{}, err
+	}
+
+	return VerificationMethod{
+		Id:                 canonicalVMID(did, fragment),
+		Type:               multikeyVMType,
+		Controller:         did,
+		PublicKeyMultibase: multibase,
+	}, nil
 }
 
 // NewP256MultikeyVM builds a complete Multikey VM from a "#name" fragment.

@@ -76,13 +76,19 @@ type VerificationMethod struct {
 	Controller string `json:"controller"`
 	// PublicKeyHex is the hex-encoded public key (compressed format).
 	// Mutually exclusive with PublicKeyJwk and PublicKeyMultibase.
+	//
+	// Deprecated: not a property DID Core defines, so a conforming resolver
+	// reads no key here (#91). New documents publish secp256k1 under
+	// PublicKeyMultibase; this field stays for documents already published.
 	PublicKeyHex string `json:"publicKeyHex,omitempty"`
 	// PublicKeyJwk is the JWK representation of the public key, used for
 	// non-secp256k1 keys (e.g. RSA CA keys with Type="JsonWebKey2020").
 	// Mutually exclusive with PublicKeyHex and PublicKeyMultibase.
 	// Deprecated: Use PublicKeyMultibase for P-256 keys instead of JWK.
 	PublicKeyJwk map[string]any `json:"publicKeyJwk,omitempty"`
-	// PublicKeyMultibase is the Multikey encoding used for P-256 keys.
+	// PublicKeyMultibase is the Multikey encoding, the representation DID Core
+	// defines. Carries P-256 or secp256k1; the curve is named by the
+	// multicodec prefix inside the value.
 	// Mutually exclusive with PublicKeyHex and PublicKeyJwk.
 	PublicKeyMultibase string `json:"publicKeyMultibase,omitempty"`
 	// Revoked, when present, marks the moment this verification method was

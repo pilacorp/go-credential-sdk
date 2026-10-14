@@ -46,9 +46,10 @@ func (doc *DIDDocument) FindVerificationMethod(idOrFragment string) *Verificatio
 // If vm.Id is empty, it assigns the next sequential "did...#key-N" id; a
 // fragment id ("#key-3") is canonicalised to the full URL form.
 //
-// The VM must publish exactly one key material field: PublicKeyHex
-// (secp256k1) or PublicKeyMultibase (P-256 Multikey). An empty Type is
-// defaulted from that field; a Type that contradicts it is rejected.
+// The VM must publish exactly one key material field: PublicKeyMultibase (a
+// Multikey, P-256 or secp256k1) or the deprecated PublicKeyHex (secp256k1).
+// An empty Type is defaulted from that field; a Type that contradicts it is
+// rejected.
 //
 // Returns the assigned VM id.
 func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []VerificationPurpose) (string, error) {
@@ -263,12 +264,14 @@ func (doc *DIDDocument) RemoveVerificationMethodPurposes(kid string, purposes []
 }
 
 // vmTypeFor returns the suite a VM must be published under, derived from its
-// key material field: publicKeyHex is secp256k1, publicKeyMultibase is a
-// P-256 Multikey. A VM carrying neither, both, or the deprecated
+// key material field: publicKeyMultibase is a Multikey, publicKeyHex the
+// deprecated secp256k1 form. The Multikey case does not depend on the curve —
+// the multicodec prefix inside the value names it, and both curves publish
+// under the same type. A VM carrying neither, both, or the deprecated
 // publicKeyJwk is rejected (model.go declares the fields mutually exclusive).
 func vmTypeFor(vm VerificationMethod) (string, error) {
 	if len(vm.PublicKeyJwk) > 0 {
-		return "", fmt.Errorf("publicKeyJwk is not supported: publish secp256k1 as publicKeyHex or P-256 as publicKeyMultibase")
+		return "", fmt.Errorf("publicKeyJwk is not supported: publish the key as publicKeyMultibase")
 	}
 
 	hasHex, hasMultibase := vm.PublicKeyHex != "", vm.PublicKeyMultibase != ""

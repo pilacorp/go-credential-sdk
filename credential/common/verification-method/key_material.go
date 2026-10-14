@@ -150,15 +150,47 @@ func RSAPubKeyFromJWK(jwk *JWK) (*rsa.PublicKey, error) {
 	}, nil
 }
 
-// Multicodec varint prefixes for P-256 Multikeys:
+// Multicodec varint prefixes for Multikeys:
 //
-//	p256-pub  0x1200 -> varint 0x80 0x24
-//	p256-priv 0x1306 -> varint 0x86 0x26
+//	p256-pub       0x1200 -> varint 0x80 0x24
+//	p256-priv      0x1306 -> varint 0x86 0x26
+//	p384-pub       0x1201 -> varint 0x81 0x24
+//	secp256k1-pub  0x00e7 -> varint 0xe7 0x01
 var (
-	p256PubMulticodec  = []byte{0x80, 0x24}
-	p256PrivMulticodec = []byte{0x86, 0x26}
-	p384PubMulticodec  = []byte{0x81, 0x24}
+	p256PubMulticodec      = []byte{0x80, 0x24}
+	p256PrivMulticodec     = []byte{0x86, 0x26}
+	p384PubMulticodec      = []byte{0x81, 0x24}
+	secp256k1PubMulticodec = []byte{0xe7, 0x01}
 )
+
+// CurveIsSecp256k1 reports whether c is secp256k1.
+//
+// Compared by the curve's order, not by the Curve value: elliptic.Curve is an
+// interface, so == compares the dynamic type and pointer, and go-ethereum hands
+// back *secp256k1.BitCurve where btcec/decred hand back
+// *secp256k1.KoblitzCurve — two objects describing one curve. The order
+// identifies it and every implementation agrees on it. (BitCurve also leaves
+// Params().Name empty, so the name is no use for this either.)
+func CurveIsSecp256k1(c elliptic.Curve) bool {
+	return c != nil && c.Params().N.Cmp(crypto.S256().Params().N) == 0
+}
+
+// curveName returns a curve's name for an error message, falling back to
+// "secp256k1" and then to "unknown": go-ethereum's BitCurve reports an empty
+// Params().Name, which would leave the message with a blank where the curve
+// should be.
+func curveName(c elliptic.Curve) string {
+	if c == nil {
+		return "unknown"
+	}
+	if n := c.Params().Name; n != "" {
+		return n
+	}
+	if CurveIsSecp256k1(c) {
+		return "secp256k1"
+	}
+	return "unknown"
+}
 
 // ECPubFromVM extracts a public key from a VM's publicKeyHex, publicKeyJwk or
 // publicKeyMultibase, on whichever curve it names. publicKeyHex names none, so
@@ -201,12 +233,27 @@ func Secp256k1PubFromHex(h string) (*ecdsa.PublicKey, error) {
 }
 
 // ECPubFromMultikeyBytes decodes raw Multikey bytes (2-byte multicodec prefix +
-// compressed point), taking the curve from the prefix. Only the curves CID 1.0
-// defines for ECDSA are accepted — secp256k1 is not one of them.
+// compressed point), taking the curve from the prefix.
 func ECPubFromMultikeyBytes(raw []byte) (*ecdsa.PublicKey, error) {
 	if len(raw) < 2 {
 		return nil, fmt.Errorf("multikey: value too short")
 	}
+
+	// secp256k1 first, and not through elliptic.UnmarshalCompressed.
+	// That function decompresses with the NIST short-Weierstrass polynomial
+	// y² = x³ - 3x + b, which is not secp256k1's (a = 0, b = 7) — handed a
+	// genuine secp256k1 point it returns nil, so the key would read as an
+	// invalid point rather than as a key on another curve. go-ethereum's
+	// DecompressPubkey does the right arithmetic, and it is the same function
+	// Secp256k1PubFromHex uses for the publicKeyHex form.
+	if bytes.HasPrefix(raw, secp256k1PubMulticodec) {
+		pub, err := crypto.DecompressPubkey(raw[len(secp256k1PubMulticodec):])
+		if err != nil {
+			return nil, fmt.Errorf("multikey: invalid secp256k1 compressed point: %w", err)
+		}
+		return pub, nil
+	}
+
 	var curve elliptic.Curve
 	switch {
 	case bytes.HasPrefix(raw, p256PubMulticodec):
@@ -251,14 +298,25 @@ func EncodeMultibaseKey(raw []byte) string {
 }
 
 // pubMulticodecFor maps a curve to its public-key multicodec prefix.
+//
+// secp256k1 is matched before the == cases and by its order, for the reason
+// CurveIsSecp256k1 gives: the two Go implementations of that curve are
+// different objects, so == would refuse a correct key depending on which
+// library produced it.
 func pubMulticodecFor(c elliptic.Curve) ([]byte, error) {
+	if c == nil {
+		return nil, fmt.Errorf("multikey: curve is nil")
+	}
+	if CurveIsSecp256k1(c) {
+		return secp256k1PubMulticodec, nil
+	}
 	switch c {
 	case elliptic.P256():
 		return p256PubMulticodec, nil
 	case elliptic.P384():
 		return p384PubMulticodec, nil
 	}
-	return nil, fmt.Errorf("multikey: unsupported curve %s", c.Params().Name)
+	return nil, fmt.Errorf("multikey: unsupported curve %s", curveName(c))
 }
 
 // PubToMultikeyBytes renders a public key as raw Multikey bytes (multicodec

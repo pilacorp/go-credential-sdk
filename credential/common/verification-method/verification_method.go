@@ -14,8 +14,15 @@ type JWK struct {
 
 // VerificationMethodEntry represents a single verification method in a
 // DID Document. Conforms to W3C CID 1.0 §2.2 — id/type/controller plus
-// verification material (publicKeyHex for EcdsaSecp256k1VerificationKey2019,
-// publicKeyJwk for JWK-encoded keys).
+// verification material: publicKeyMultibase (a Multikey, P-256 or secp256k1 —
+// the curve is named by the multicodec prefix inside the value),
+// publicKeyJwk for JWK-encoded keys, or publicKeyHex for the
+// EcdsaSecp256k1VerificationKey2019 form.
+//
+// publicKeyHex is read but no longer the form to publish: DID Core defines no
+// such property, so a conforming resolver finds no key material and treats the
+// method as holding none (#91). All three are accepted on the reading side for
+// as long as documents carrying hex exist.
 //
 // Revoked and RevocationReason are Pila extensions following W3C MAY
 // guidance for additional properties; see revocation.go for taxonomy.
