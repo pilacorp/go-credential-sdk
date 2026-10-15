@@ -401,6 +401,23 @@ credential, err := vc.ParseCredential(data, vc.WithVerifyProof())
 credential, err := vc.ParseCredential(data, vc.WithSchemaValidation(), vc.WithVerifyProof())
 ```
 
+On a JSON-LD `AddCustomProof` it also checks **the proof being attached**, before attaching it: the DID in `proof.verificationMethod` is resolved and the signature checked against that key, so a proof signed over the wrong digest or by the wrong key fails where it is added rather than at whoever receives the credential.
+
+```go
+// External signing: sign, then attach with the proof checked
+docHash, _ := credential.GetSigningInput()
+proofHash, _ := credential.CreateProofSigning(docHash, proof) // SHA-256 digest to sign
+sig := sign(proofHash)                                        // raw 64-byte r||s, P-256
+proof.ProofValue = verificationmethod.EncodeMultibaseKey(sig) // "z..." base58btc
+
+err := credential.AddCustomProof(proof, vc.WithVerifyProof(), vc.WithResolver(resolver))
+// refused -> the credential is unchanged, no proof attached
+```
+
+Import: `verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"`. `proofValue` must be the multibase `z…` string, not the raw signature: a raw or hex value is refused by the prefix check before the signature is ever looked at.
+
+Costs one DID resolution and one canonicalization, and only when you pass the option — without it the proof is attached unchecked, as before. Only `ecdsa-rdfc-2019` can be checked this way (the suite the external signing flow produces); with the option set, another suite is refused rather than checked against bytes nobody signed — attach it without the option and call `Verify()`. The signing calls that make their own signature (`AddProof`, `AddProofByProvider`) already check it against the verification method, so the option changes nothing there.
+
 #### **vc.WithBaseURL(url)**
 
 Sets a custom DID resolver base URL for proof verification.
@@ -1073,6 +1090,13 @@ presentation, err := vp.ParsePresentation(data, vp.WithVerifyProof())
 
 // Parse presentation with both VC validation and proof verification
 presentation, err := vp.ParsePresentation(data, vp.WithVCValidation(), vp.WithVerifyProof())
+```
+
+On a JSON-LD `AddCustomProof` it also checks **the proof being attached**, before attaching it — same rule as `vc.WithVerifyProof()`. Here the check covers `proof.challenge` and `proof.domain` as well, since both are part of the proof configuration the signature commits to: a proof whose challenge or domain was edited after signing is refused where it is attached. This is not replay protection: an old proof with its original nonce still verifies, and the verifier rejects it with `vp.WithExpectedChallenge` / `vp.WithExpectedDomain`.
+
+```go
+err := presentation.AddCustomProof(proof, vp.WithVerifyProof(), vp.WithResolver(resolver))
+// refused -> the presentation is unchanged, no proof attached
 ```
 
 #### **vp.WithBaseURL(url)**
