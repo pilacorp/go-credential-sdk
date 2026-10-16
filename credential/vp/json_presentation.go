@@ -76,6 +76,9 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 	if provider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
+	if err := refuseReplaceOnJSONLD(getOptions(opts...)); err != nil {
+		return err
+	}
 
 	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
@@ -168,6 +171,9 @@ func (e *JSONPresentation) CreateProofSigning(docHash []byte, proof *dto.Proof) 
 func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationOpt) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
+	}
+	if err := refuseReplaceOnJSONLD(getOptions(opts...)); err != nil {
+		return err
 	}
 
 	if proof.Type == jsonmap.DataIntegrityProof && proof.Cryptosuite == jsonmap.ECDSARDFC2019 &&

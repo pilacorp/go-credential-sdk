@@ -179,7 +179,7 @@ func newProofOptions(opts ...ProofOpt) *proofOptions {
 
 // AddECDSAProof adds an ECDSA proof to the JSONMap. verificationMethod must
 // be a full DID URL (caller's responsibility to resolve/normalize).
-func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string, opts ...ProofOpt) error {
+func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string, opts ...ProofOpt) (err error) {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
@@ -192,6 +192,16 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 	if proofPurpose == "" {
 		return fmt.Errorf("jsonmap: proof purpose is required")
 	}
+
+	// The document is only mutated on the way to a signature; a failure must
+	// leave the caller's document exactly as it was. The same guard
+	// AddEcdsaSecp256k1Proof uses.
+	restoreContext := m.contextSnapshot()
+	defer func() {
+		if err != nil {
+			restoreContext()
+		}
+	}()
 
 	// The proof config is canonicalized against the document's @context, which
 	// must define the Data Integrity terms (VC 1.1 contexts don't).

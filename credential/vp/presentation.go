@@ -102,6 +102,8 @@ type presentationOptions struct {
 	// requireAudience turns the aud claim from "checked only when the caller
 	// names itself" into "must be checked", per RFC 7519 §4.1.3.
 	requireAudience bool
+	// Signing: allow a signing call to replace a signature already present.
+	replaceProof bool
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -192,6 +194,50 @@ func WithDomain(domain string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.domain = domain
 	}
+}
+
+// WithReplaceProof (signing) lets a signing call replace a signature the
+// presentation already carries. Without it, signing something already signed
+// is refused.
+//
+// A JWT holds one signature, so there is no way to add a second: the first is
+// gone either way. The option exists so that losing it is a choice — the usual
+// reason to want it is a verifier handing out a fresh challenge, where
+// re-signing is exactly the intent. The new signature differs from the old one
+// even over identical claims (ECDSA draws a fresh nonce), so the token's bytes
+// change with it.
+//
+// JSON-LD presentations append proofs rather than replacing them, so their
+// signing calls refuse the option instead of ignoring it.
+func WithReplaceProof() PresentationOpt {
+	return func(p *presentationOptions) {
+		p.replaceProof = true
+	}
+}
+
+// refuseOverwrite stops a JWT signing call from replacing a signature the
+// presentation already carries, unless the caller passed WithReplaceProof.
+// Shared by the vp+jwt and VC 1.1 JWT presentations, which both hold exactly
+// one signature.
+func refuseOverwrite(current string, options *presentationOptions) error {
+	if current == "" || options.replaceProof {
+		return nil
+	}
+	return fmt.Errorf(
+		"presentation is already signed; signing again would replace that signature — pass WithReplaceProof to do so deliberately")
+}
+
+// refuseReplaceOnJSONLD stops WithReplaceProof from reaching a JSON-LD signing
+// call. Those calls append to the proof set, so honouring the option would mean
+// silently appending when the caller asked to replace. Refused rather than
+// ignored: with several proofs in a set, "replace" has no settled meaning yet,
+// and refusing now leaves room to define one later without breaking anyone.
+func refuseReplaceOnJSONLD(options *presentationOptions) error {
+	if !options.replaceProof {
+		return nil
+	}
+	return fmt.Errorf(
+		"WithReplaceProof does not apply to JSON-LD: proofs are appended to the proof set, not replaced; build a new presentation without the proof to re-sign")
 }
 
 // WithExpectedChallenge (verifying) requires every verified proof to carry this

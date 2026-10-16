@@ -352,6 +352,9 @@ func (j *JOSEPresentation) AddProofByProvider(signerProvider signer.SignerProvid
 	if err := rejectBuildTimeOptions(options, false); err != nil {
 		return err
 	}
+	if err := refuseOverwrite(j.signature, options); err != nil {
+		return err
+	}
 	payload, signingInput, err := j.pendingChallengeDomain(options)
 	if err != nil {
 		return err
@@ -399,7 +402,11 @@ func (j *JOSEPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 	if len(proof.Signature) == 0 {
 		return fmt.Errorf("proof signature cannot be empty")
 	}
-	if err := rejectBuildTimeOptions(getOptions(opts...), true); err != nil {
+	options := getOptions(opts...)
+	if err := rejectBuildTimeOptions(options, true); err != nil {
+		return err
+	}
+	if err := refuseOverwrite(j.signature, options); err != nil {
 		return err
 	}
 	if err := j.executeOptions(signingOptions(opts)...); err != nil {
