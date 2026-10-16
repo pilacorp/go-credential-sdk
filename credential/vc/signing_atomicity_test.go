@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
@@ -200,6 +201,67 @@ func TestSigning_RefusesToReplaceASignature(t *testing.T) {
 			}
 			if replaced, _ := cred.Hash(); replaced == first {
 				t.Error("re-signing produced the same Hash(); this test no longer shows why the option exists")
+			}
+		})
+	}
+}
+
+// JSON-LD signing calls append to the proof set, so WithReplaceProof cannot mean
+// what it says there. Ignoring it handed a caller who asked to replace a proof
+// set with one more proof in it, and the old one still in place. Every JSON-LD
+// signing path refuses it instead, before touching the document.
+func TestSigning_JSONLDRefusesReplaceProof(t *testing.T) {
+	did, _, prov, resolver := atomicityKey(t)
+
+	paths := []struct {
+		name string
+		run  func(t *testing.T) (error, func() []byte)
+	}{
+		{"JSONCredential.AddProofByProvider", func(t *testing.T) (error, func() []byte) {
+			cred, err := vc.ParseJSONCredential([]byte(vc11DocumentJSON))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			err = cred.AddProofByProvider(prov, vc.WithVerificationMethodKey("key-1"),
+				vc.WithResolver(resolver), vc.WithReplaceProof())
+			return err, func() []byte { b, _ := cred.GetContents(); return b }
+		}},
+		{"JSONCredential.AddCustomProof", func(t *testing.T) (error, func() []byte) {
+			cred, err := vc.ParseJSONCredential([]byte(vc11DocumentJSON))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			proof := &dto.Proof{Type: "DataIntegrityProof", Cryptosuite: "ecdsa-rdfc-2019",
+				VerificationMethod: did + "#key-1", ProofPurpose: "assertionMethod", ProofValue: "z1111"}
+			err = cred.AddCustomProof(proof, vc.WithReplaceProof())
+			return err, func() []byte { b, _ := cred.GetContents(); return b }
+		}},
+		{"ECDSASDCredential.AddProofByProvider", func(t *testing.T) (error, func() []byte) {
+			cred, err := vc.ParseECDSASDCredential(mkSDCredentialJSON(did))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			err = cred.AddProofByProvider(prov, []string{"issuer"},
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver), vc.WithReplaceProof())
+			return err, func() []byte { b, _ := cred.GetContents(); return b }
+		}},
+	}
+
+	for _, p := range paths {
+		t.Run(p.name, func(t *testing.T) {
+			err, contents := p.run(t)
+			if err == nil {
+				t.Fatal("WithReplaceProof on a JSON-LD signing call must be refused, not ignored")
+			}
+			if !strings.Contains(err.Error(), "does not apply to JSON-LD") {
+				t.Errorf("err = %v, want it to say the option does not apply to JSON-LD", err)
+			}
+			var doc map[string]interface{}
+			if err := json.Unmarshal(contents(), &doc); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if doc["proof"] != nil {
+				t.Errorf("the refused call attached a proof: %v", doc["proof"])
 			}
 		})
 	}

@@ -49,6 +49,9 @@ func (e *ECDSASDCredential) AddProofByProvider(signerProvider signer.SignerProvi
 	if signerProvider == nil {
 		return fmt.Errorf("signer provider cannot be nil")
 	}
+	if err := refuseReplaceOnJSONLD(getOptions(opts...)); err != nil {
+		return err
+	}
 	if err := e.base.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}

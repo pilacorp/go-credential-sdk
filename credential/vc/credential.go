@@ -138,8 +138,8 @@ type credentialOptions struct {
 // fresh nonce), so the token's bytes and its Hash() change with it — which
 // matters wherever Hash() is a key, as it is for on-chain anchoring.
 //
-// JSON-LD credentials append proofs rather than replacing them, so the option
-// does not apply there.
+// JSON-LD credentials append proofs rather than replacing them, so their
+// signing calls refuse the option instead of ignoring it.
 func WithReplaceProof() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.replaceProof = true
@@ -160,6 +160,19 @@ func refuseOverwrite(current string, options *credentialOptions) error {
 	}
 	return fmt.Errorf(
 		"credential is already signed; signing again would replace that signature — pass WithReplaceProof to do so deliberately")
+}
+
+// refuseReplaceOnJSONLD stops WithReplaceProof from reaching a JSON-LD signing
+// call. Those calls append to the proof set, so honouring the option would mean
+// silently appending when the caller asked to replace. Refused rather than
+// ignored: with several proofs in a set, "replace" has no settled meaning yet,
+// and refusing now leaves room to define one later without breaking anyone.
+func refuseReplaceOnJSONLD(options *credentialOptions) error {
+	if !options.replaceProof {
+		return nil
+	}
+	return fmt.Errorf(
+		"WithReplaceProof does not apply to JSON-LD: proofs are appended to the proof set, not replaced; build a new credential without the proof to re-sign")
 }
 
 // hasSDOptions reports whether any SD-JWT option was set. Kept beside the

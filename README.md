@@ -432,7 +432,7 @@ err := cred.AddProofByProvider(signer)                         // refused: "cred
 err  = cred.AddProofByProvider(signer, vc.WithReplaceProof())  // replaces the signature
 ```
 
-JSON-LD credentials add proofs to a list instead of replacing one, so the option does not apply there. One exception: an `ecdsa-sd-2023` base proof replaces the whole list, so it is refused on a document that already has a proof.
+JSON-LD credentials add proofs to a list instead of replacing one, so their signing calls (`AddProof`, `AddProofByProvider`, `AddCustomProof`, and the `ecdsa-sd-2023` base proof) refuse the option rather than silently appending. One exception: an `ecdsa-sd-2023` base proof replaces the whole list, so it is refused on a document that already has a proof.
 
 > A signing call that fails leaves the credential exactly as it was: no proof, no added `@context`, and any signature it already had still in place.
 
@@ -1122,6 +1122,8 @@ err := pres.AddProofByProvider(signer, vp.WithChallenge(newNonce), vp.WithReplac
 
 > If that re-sign fails, the presentation keeps its old signature and its old
 > nonce — the new challenge is only written once a signature covering it exists.
+
+JSON-LD presentations add proofs to a list instead of replacing one, so their signing calls (`AddProof`, `AddProofByProvider`, `AddCustomProof`) refuse the option rather than silently appending.
 
 Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(url)
 

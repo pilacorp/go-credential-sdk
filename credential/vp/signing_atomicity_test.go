@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
@@ -176,6 +177,62 @@ func TestSigning_RefusesToReplaceASignature(t *testing.T) {
 			}
 			if err := pres.Verify(vp.WithResolver(k.resolver)); err != nil {
 				t.Fatalf("the replacement signature must verify: %v", err)
+			}
+		})
+	}
+}
+
+// JSON-LD presentations append to the proof set, so WithReplaceProof cannot mean
+// what it says there. Both JSON-LD signing paths refuse it instead of ignoring
+// it, before touching the presentation.
+func TestSigning_JSONLDRefusesReplaceProof(t *testing.T) {
+	const holder = "did:example:vp-jsonld-replace"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(holder,
+		mustP256VM(t, holder, "key-1", &priv.PublicKey)))
+	contents := vp.PresentationContents{
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:      "urn:uuid:vp-jsonld-replace",
+		Types:   []string{"VerifiablePresentation"},
+		Holder:  holder,
+	}
+
+	paths := []struct {
+		name string
+		call func(p *vp.JSONPresentation) error
+	}{
+		{"AddProofByProvider", func(p *vp.JSONPresentation) error {
+			return p.AddProofByProvider(prov, vp.WithResolver(resolver), vp.WithReplaceProof())
+		}},
+		{"AddCustomProof", func(p *vp.JSONPresentation) error {
+			proof := &dto.Proof{Type: "DataIntegrityProof", Cryptosuite: "ecdsa-rdfc-2019",
+				VerificationMethod: holder + "#key-1", ProofPurpose: "authentication", ProofValue: "z1111"}
+			return p.AddCustomProof(proof, vp.WithReplaceProof())
+		}},
+	}
+
+	for _, path := range paths {
+		t.Run(path.name, func(t *testing.T) {
+			pres, err := vp.NewJSONPresentation(contents)
+			if err != nil {
+				t.Fatalf("NewJSONPresentation: %v", err)
+			}
+			err = path.call(pres)
+			if err == nil {
+				t.Fatal("WithReplaceProof on a JSON-LD signing call must be refused, not ignored")
+			}
+			if !strings.Contains(err.Error(), "does not apply to JSON-LD") {
+				t.Errorf("err = %v, want it to say the option does not apply to JSON-LD", err)
+			}
+			if pres.ExtractField("proof") != nil {
+				t.Errorf("the refused call attached a proof: %v", pres.ExtractField("proof"))
 			}
 		})
 	}

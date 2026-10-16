@@ -207,8 +207,8 @@ func WithDomain(domain string) PresentationOpt {
 // even over identical claims (ECDSA draws a fresh nonce), so the token's bytes
 // change with it.
 //
-// JSON-LD presentations append proofs rather than replacing them, so the option
-// does not apply there.
+// JSON-LD presentations append proofs rather than replacing them, so their
+// signing calls refuse the option instead of ignoring it.
 func WithReplaceProof() PresentationOpt {
 	return func(p *presentationOptions) {
 		p.replaceProof = true
@@ -225,6 +225,19 @@ func refuseOverwrite(current string, options *presentationOptions) error {
 	}
 	return fmt.Errorf(
 		"presentation is already signed; signing again would replace that signature — pass WithReplaceProof to do so deliberately")
+}
+
+// refuseReplaceOnJSONLD stops WithReplaceProof from reaching a JSON-LD signing
+// call. Those calls append to the proof set, so honouring the option would mean
+// silently appending when the caller asked to replace. Refused rather than
+// ignored: with several proofs in a set, "replace" has no settled meaning yet,
+// and refusing now leaves room to define one later without breaking anyone.
+func refuseReplaceOnJSONLD(options *presentationOptions) error {
+	if !options.replaceProof {
+		return nil
+	}
+	return fmt.Errorf(
+		"WithReplaceProof does not apply to JSON-LD: proofs are appended to the proof set, not replaced; build a new presentation without the proof to re-sign")
 }
 
 // WithExpectedChallenge (verifying) requires every verified proof to carry this
