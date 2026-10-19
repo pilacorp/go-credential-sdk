@@ -393,7 +393,11 @@ func (j *JOSECredential) AddProofByProvider(signerProvider signer.SignerProvider
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 
-	if err := rejectBuildTimeOptions(getOptions(opts...)); err != nil {
+	o := getOptions(opts...)
+	if err := rejectBuildTimeOptions(o); err != nil {
+		return err
+	}
+	if err := refuseOverwrite(j.signature, o); err != nil {
 		return err
 	}
 	if err := j.executeOptions(signingOptions(opts)...); err != nil {
@@ -437,7 +441,11 @@ func (j *JOSECredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 		return fmt.Errorf("proof signature cannot be empty")
 	}
 
-	if err := rejectBuildTimeOptions(getOptions(opts...)); err != nil {
+	o := getOptions(opts...)
+	if err := rejectBuildTimeOptions(o); err != nil {
+		return err
+	}
+	if err := refuseOverwrite(j.signature, o); err != nil {
 		return err
 	}
 	if err := j.executeOptions(signingOptions(opts)...); err != nil {

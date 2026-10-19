@@ -438,6 +438,21 @@ For JSON credentials pass it when signing (`AddProofByProvider`); `NewJSONCreden
 err := credential.AddProofByProvider(signer, vc.WithVerificationMethodKey("key-2"), vc.WithResolver(resolver))
 ```
 
+#### **vc.WithReplaceProof()**
+
+Lets a signing call replace a signature the credential already carries. Without it, signing an already-signed JWT credential (`vc+jwt` or VC 1.1 JWT) is refused.
+
+A JWT holds one signature, so signing again always throws the old one away. Even with the same key and the same claims the new signature is different (ECDSA is randomized), so the token and its `Hash()` change too. The option makes that a choice instead of a side effect.
+
+```go
+err := cred.AddProofByProvider(signer)                         // refused: "credential is already signed"
+err  = cred.AddProofByProvider(signer, vc.WithReplaceProof())  // replaces the signature
+```
+
+JSON-LD credentials add proofs to a list instead of replacing one, so their signing calls (`AddProof`, `AddProofByProvider`, `AddCustomProof`, and the `ecdsa-sd-2023` base proof) refuse the option rather than silently appending. One exception: an `ecdsa-sd-2023` base proof replaces the whole list, so it is refused on a document that already has a proof.
+
+> A signing call that fails leaves the credential exactly as it was: no proof, no added `@context`, and any signature it already had still in place.
+
 #### **vp.WithChallenge(nonce)** / **vp.WithDomain(domain)**
 
 Set when **signing**: the nonce the verifier handed out, and who the presentation is
@@ -1119,6 +1134,21 @@ For JSON presentations pass it when signing (`AddProofByProvider`); `NewJSONPres
 err := presentation.AddProofByProvider(signer, vp.WithVerificationMethodKey("key-2"), vp.WithResolver(resolver))
 ```
 
+#### **vp.WithReplaceProof()**
+
+Lets a signing call replace a signature the presentation already carries. Without it, signing an already-signed JWT presentation (`vp+jwt` or VC 1.1 JWT) is refused.
+
+The usual reason to need it: the verifier hands out a new challenge and the holder signs again.
+
+```go
+err := pres.AddProofByProvider(signer, vp.WithChallenge(newNonce), vp.WithReplaceProof())
+```
+
+> If that re-sign fails, the presentation keeps its old signature and its old
+> nonce — the new challenge is only written once a signature covering it exists.
+
+JSON-LD presentations add proofs to a list instead of replacing one, so their signing calls (`AddProof`, `AddProofByProvider`, `AddCustomProof`) refuse the option rather than silently appending.
+
 Note: Setup DID resolver baseURL for resolve DID by call vc.Init(url), vp.Init(url)
 
 - Default: https://api.ndadid.vn/api/v1/did
@@ -1615,12 +1645,14 @@ vc.WithBaseURL(url)                         // Set custom DID resolver URL
 vc.WithVerificationMethodKey(key)           // Set custom verification method key
 vc.WithSDSelectivePaths(paths)              // Issue SD-JWT: claims at these paths are selectively disclosable
 vc.WithSDDisclosures(disclosures)           // Issue SD-JWT: disclosures you built, matching digests already in the contents
+vc.WithReplaceProof()                       // Allow signing to replace a signature already present
 
 // VP options
 vp.WithVCValidation()                       // Enable VC validation within presentation
 vp.WithVerifyProof()                        // Enable proof verification
 vp.WithBaseURL(url)                         // Set custom DID resolver URL
 vp.WithVerificationMethodKey(key)           // Set custom verification method key
+vp.WithReplaceProof()                       // Allow signing to replace a signature already present
 ```
 
 ---

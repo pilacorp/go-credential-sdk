@@ -186,26 +186,32 @@ func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opt
 	if err := rejectBuildTimeOptions(o, false); err != nil {
 		return err
 	}
+	if err := refuseOverwrite(j.signature, o); err != nil {
+		return err
+	}
 
 	// WithChallenge/WithDomain may be given at signing time, as with JSON
 	// presentations; they overwrite nonce/aud and the payload is re-encoded.
-	if err := j.applyChallengeDomain(o); err != nil {
+	// Worked out here, written at the end: see pendingChallengeDomain.
+	claims, signingInput, err := j.pendingChallengeDomain(o)
+	if err != nil {
 		return err
 	}
 	if err := j.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
 
-	digest := sha256.Sum256([]byte(j.signingInput))
+	digest := sha256.Sum256([]byte(signingInput))
 	raw, err := provider.Sign(digest[:])
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
-	signature, err := j.signingKey.Accept(j.signingInput, raw)
+	signature, err := j.signingKey.Accept(signingInput, raw)
 	if err != nil {
 		return err
 	}
-	j.signature = signature
+
+	j.jwtClaims, j.signingInput, j.signature = claims, signingInput, signature
 	return nil
 }
 
@@ -224,7 +230,11 @@ func (j *JWTPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationO
 		return fmt.Errorf("proof signature cannot be empty")
 	}
 
-	if err := rejectBuildTimeOptions(getOptions(opts...), true); err != nil {
+	o := getOptions(opts...)
+	if err := rejectBuildTimeOptions(o, true); err != nil {
+		return err
+	}
+	if err := refuseOverwrite(j.signature, o); err != nil {
 		return err
 	}
 
@@ -314,30 +324,42 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 	return nil
 }
 
-// applyChallengeDomain writes options.challenge/domain into the nonce/aud
-// claims and re-encodes the payload half of signingInput. No-op when neither
-// is set.
-func (j *JWTPresentation) applyChallengeDomain(options *presentationOptions) error {
+// pendingChallengeDomain returns the claims and signing input that this call's
+// challenge and domain would produce, WITHOUT writing them into j. With neither
+// option set it returns what j already holds.
+//
+// The same shape as JOSEPresentation.pendingChallengeDomain, for the same
+// reason. This used to write into j directly — the claims, the signing input,
+// and j.signature = "" to clear the old signature so the token could be signed
+// again — ahead of three steps that can fail. A signed presentation re-signed
+// with a new challenge, where signing then failed, came back with the new nonce
+// and no signature, from a call that returned an error. The caller commits the
+// result only once there is a signature to go with it.
+func (j *JWTPresentation) pendingChallengeDomain(options *presentationOptions) (map[string]interface{}, string, error) {
 	if options.challenge == "" && options.domain == "" {
-		return nil
+		return j.jwtClaims, j.signingInput, nil
 	}
 	if j.jwtClaims == nil {
-		return fmt.Errorf("presentation has no JWT claims to update")
+		return nil, "", fmt.Errorf("presentation has no JWT claims to update")
+	}
+
+	claims := make(map[string]interface{}, len(j.jwtClaims)+2)
+	for k, v := range j.jwtClaims {
+		claims[k] = v
 	}
 	if options.challenge != "" {
-		j.jwtClaims["nonce"] = options.challenge
+		claims["nonce"] = options.challenge
 	}
 	if options.domain != "" {
-		j.jwtClaims["aud"] = options.domain
+		claims["aud"] = options.domain
 	}
-	payloadJSON, err := json.Marshal(j.jwtClaims)
+
+	payloadJSON, err := json.Marshal(claims)
 	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
+		return nil, "", fmt.Errorf("failed to marshal payload: %w", err)
 	}
 	header, _, _ := strings.Cut(j.signingInput, ".")
-	j.signingInput = header + "." + base64.RawURLEncoding.EncodeToString(payloadJSON)
-	j.signature = ""
-	return nil
+	return claims, header + "." + base64.RawURLEncoding.EncodeToString(payloadJSON), nil
 }
 
 // checkChallengeAndDomain enforces WithExpectedChallenge / WithExpectedDomain
