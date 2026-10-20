@@ -92,9 +92,6 @@ func requireJOSECredential(m CredentialData) error {
 	}
 	return requireCredentialType(m["type"])
 }
-
-// securedClaims are the credential properties a verifier's decisions rest on:
-// who issued it, which data model it speaks, when its statement holds, and where
 // to look up revocation. Both the 1.1 and the 2.0 spelling of the validity window
 // are listed so that neither can be moved out of the signature, whichever one a
 // payload uses.
