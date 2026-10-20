@@ -420,7 +420,7 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 // JWTCredential and JOSECredential.
 func rejectBuildTimeOptions(o *credentialOptions) error {
 	if o.verificationMethodKey != "" {
-		return fmt.Errorf("WithVerificationMethodKey cannot be applied when signing a JWT: the header's kid was fixed when the token was built — pass the option to NewJWTCredential")
+		return fmt.Errorf("WithVerificationMethodKey cannot be applied when signing a JWT: the header's kid was fixed when the token was built — pass the option to NewJWTCredential or NewJOSECredential")
 	}
 	if o.hasSDOptions() {
 		return fmt.Errorf("SD-JWT options cannot be applied when signing: the disclosures were fixed when the token was built — pass them to NewJOSECredential")
