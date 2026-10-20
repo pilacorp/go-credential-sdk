@@ -566,6 +566,10 @@ cred, err := vc.NewJOSECredential(contents, // contents.Context names https://ww
 if err != nil {
     log.Fatal(err)
 }
+issuerSigner, err := signer.NewDefaultProvider(privateKeyHex) // local/dev only
+if err != nil {
+    log.Fatal(err)
+}
 if err := cred.AddProofByProvider(issuerSigner); err != nil {
     log.Fatal(err)
 }

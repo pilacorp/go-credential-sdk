@@ -1698,9 +1698,78 @@ func TestJOSECredential_WithSDDecoyDigests_Array(t *testing.T) {
 			{Path: "credentialSubject.emails[1]", Count: 1},
 		}),
 	)...)
-	assert.NoError(t, err)
-	assert.NotNil(t, cred)
-	_ = prov
+	if err != nil {
+		t.Fatalf("new credential: %v", err)
+	}
+	if err := cred.AddProofByProvider(prov); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	disclosures, err := cred.DecodedDisclosures()
+	if err != nil {
+		t.Fatalf("decode disclosures: %v", err)
+	}
+	if len(disclosures) != 1 {
+		t.Fatalf("got %d disclosures, want 1: a decoy must not carry a disclosure", len(disclosures))
+	}
+
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	issuerJWT := strings.Split(serialized.(string), "~")[0]
+	raw, err := base64.RawURLEncoding.DecodeString(strings.Split(issuerJWT, ".")[1])
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	var payload struct {
+		CredentialSubject struct {
+			Emails []interface{} `json:"emails"`
+		} `json:"credentialSubject"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+
+	// One digest for emails[0], the plain emails[1], and one decoy digest.
+	emails := payload.CredentialSubject.Emails
+	if len(emails) != 3 {
+		t.Fatalf("emails = %v, want 3 elements", emails)
+	}
+	var digests int
+	for _, e := range emails {
+		if m, ok := e.(map[string]interface{}); ok {
+			if _, ok := m["..."]; ok {
+				digests++
+			}
+		}
+	}
+	if digests != 2 {
+		t.Fatalf("got %d array digests, want 2 (one disclosed, one decoy)", digests)
+	}
+}
+
+// TestJWTCredential_VerifyNamesAMissingSignature keeps the unsigned branch of
+// JWTCredential.Verify covered: a token built but never signed is reported as
+// such, not as a failed signature check.
+func TestJWTCredential_VerifyNamesAMissingSignature(t *testing.T) {
+	const did = "did:example:unsigned"
+	_, opts := p256TestIssuer(t, did)
+	cred, err := NewJWTCredential(CredentialContents{
+		Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:        "urn:uuid:unsigned",
+		Issuer:    did,
+		Types:     []string{"VerifiableCredential"},
+		ValidFrom: time.Now().Add(-time.Hour),
+		Subject:   []Subject{{ID: "did:example:subject"}},
+	}, opts...)
+	if err != nil {
+		t.Fatalf("new credential: %v", err)
+	}
+	err = cred.Verify(opts...)
+	if err == nil || !strings.Contains(err.Error(), "not signed") {
+		t.Fatalf("error = %v, want it to name the missing signature", err)
+	}
 }
 
 // TestExtractField tests the ExtractField method for both JWT and JSON credentials

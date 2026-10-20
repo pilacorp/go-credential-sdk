@@ -96,13 +96,14 @@ func requireJOSECredential(m CredentialData) error {
 // securedClaims are the credential properties a verifier's decisions rest on:
 // who issued it, which data model it speaks, when its statement holds, and where
 // to look up revocation. Both the 1.1 and the 2.0 spelling of the validity window
-// is listed, because a 1.1 document is free to carry either.
+// are listed so that neither can be moved out of the signature, whichever one a
+// payload uses.
 //
-// JWT-level claims (iss, exp, nbf, iat) are not here. The only caller is the
-// vc+sd-jwt path (SD-JWT over VC 1.1 was removed in #100), whose payload is flat,
-// so those claims sit at its root beside credentialSubject. They still need no
-// entry: requireDisclosableAtTopLevel refuses an _sd array at the payload root
-// before this runs, so no disclosure can hide or introduce a root claim.
+// JWT-level claims (iss, exp, nbf, iat) are not here. ParseJOSECredential runs
+// this for vc+jwt and vc+sd-jwt alike; both payloads are flat, so those claims
+// sit at the root beside credentialSubject. They still need no entry:
+// requireDisclosableAtTopLevel refuses an _sd array at the payload root before
+// this runs, so no disclosure can hide or introduce a root claim.
 var securedClaims = []string{
 	"@context", "type",
 	"issuer",
