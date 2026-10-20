@@ -16,11 +16,10 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
-// signSDJWTToken assembles and signs a VC 1.1 SD-JWT by hand, the way a non-SDK
-// producer would, and appends the disclosures the holder chose to show. The 1.1
-// path is where selective disclosure still lives: vc+jwt refuses it outright
-// (see TestJOSECredential_RefusesSelectiveDisclosure), while a 1.1 token keeps
-// its claims under vc and hides them through vc._sd.
+// signSDJWTToken assembles and signs a vc+sd-jwt by hand, the way a non-SDK
+// producer would, and appends the disclosures the holder chose to show. The
+// payload is the credential itself, flat, as vc-jose-cose puts it; selective
+// disclosure on VC 1.1 was removed in #100.
 func signSDJWTToken(t *testing.T, key *ecdsa.PrivateKey, kid string,
 	payload map[string]interface{}, shown []string) string {
 	t.Helper()
@@ -29,7 +28,7 @@ func signSDJWTToken(t *testing.T, key *ecdsa.PrivateKey, kid string,
 	if err != nil {
 		t.Fatalf("provider: %v", err)
 	}
-	header, err := json.Marshal(map[string]interface{}{"typ": "JWT", "alg": "ES256", "kid": kid})
+	header, err := json.Marshal(map[string]interface{}{"typ": "vc+sd-jwt", "alg": "ES256", "kid": kid})
 	if err != nil {
 		t.Fatalf("marshal header: %v", err)
 	}
@@ -44,14 +43,12 @@ func signSDJWTToken(t *testing.T, key *ecdsa.PrivateKey, kid string,
 		t.Fatalf("sign: %v", err)
 	}
 
+	// The combined form ends with "~" whether or not any disclosure is shown.
 	token := signingInput + "." + sig
 	for _, d := range shown {
 		token += "~" + d
 	}
-	if len(shown) > 0 {
-		token += "~"
-	}
-	return token
+	return token + "~"
 }
 
 // Selective disclosure moves a property out of the signature: the digest is
@@ -69,7 +66,7 @@ func signSDJWTToken(t *testing.T, key *ecdsa.PrivateKey, kid string,
 //	                      selectively disclosable, and the holder simply does not
 //	                      send it; the expiry and revocation checks then run on a
 //	                      payload where the property is absent.
-func TestVC_SecuredClaimsMustNotBeSelectivelyDisclosed(t *testing.T) {
+func TestJOSECredential_SecuredClaimsMustNotBeSelectivelyDisclosed(t *testing.T) {
 	const (
 		attackerDID = "did:example:sd-attacker"
 		victimDID   = "did:example:sd-victim"
@@ -97,9 +94,9 @@ func TestVC_SecuredClaimsMustNotBeSelectivelyDisclosed(t *testing.T) {
 		byVic bool   // signed by the victim (a real issuer) rather than the attacker
 	}{
 		{name: "issuer disclosed by an attacker signing with its own key", path: "issuer", show: true},
-		{name: "expirationDate withheld by the holder", path: "expirationDate", show: false, byVic: true},
+		{name: "validUntil withheld by the holder", path: "validUntil", show: false, byVic: true},
 		{name: "credentialStatus withheld by the holder", path: "credentialStatus", show: false, byVic: true},
-		{name: "issuanceDate withheld by the holder", path: "issuanceDate", show: false, byVic: true},
+		{name: "validFrom withheld by the holder", path: "validFrom", show: false, byVic: true},
 		{name: "type disclosed", path: "type", show: true, byVic: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,14 +105,14 @@ func TestVC_SecuredClaimsMustNotBeSelectivelyDisclosed(t *testing.T) {
 			if tc.byVic {
 				signer, vm, iss = victimKey, victimVM, victimDID
 			}
-			// A VC 1.1 credential: the document sits under the vc claim, and
-			// vc._sd is what hides a property inside it.
+			// A vc+sd-jwt: the credential is the payload itself, and an _sd at
+			// its root is what would hide one of its properties.
 			inner := map[string]interface{}{
-				"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+				"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
 				"type":              []interface{}{"VerifiableCredential"},
 				"issuer":            victimDID,
-				"issuanceDate":      "2019-01-01T00:00:00Z",
-				"expirationDate":    "2020-01-01T00:00:00Z", // long expired
+				"validFrom":         "2019-01-01T00:00:00Z",
+				"validUntil":        "2020-01-01T00:00:00Z", // long expired
 				"credentialStatus":  map[string]interface{}{"type": "BitstringStatusListEntry", "id": "https://example.org/status/1"},
 				"credentialSubject": map[string]interface{}{"id": "did:example:subject", "role": "admin"},
 			}
@@ -129,15 +126,14 @@ func TestVC_SecuredClaimsMustNotBeSelectivelyDisclosed(t *testing.T) {
 			if !tc.show {
 				shown = nil
 			}
-			token := signSDJWTToken(t, signer, vm.ID, map[string]interface{}{
-				"iss": iss,
-				"vc":  built.ProcessedVC,
-			}, shown)
+			payload := built.ProcessedVC
+			payload["iss"] = iss
+			token := signSDJWTToken(t, signer, vm.ID, payload, shown)
 
 			cred, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
 			if err != nil {
 				// Every path here is a top-level property, so the digest lands
-				// in the vc claim's own _sd and requireDisclosableAtTopLevel
+				// in the payload's own _sd and requireDisclosableAtTopLevel
 				// refuses it before reconstruction — which is the earlier and
 				// more precise of the two refusals. The later ones still stand
 				// behind it: requireSecuredClaimsSigned names the property when
@@ -153,9 +149,9 @@ func TestVC_SecuredClaimsMustNotBeSelectivelyDisclosed(t *testing.T) {
 				return
 			}
 			if err := cred.Verify(vc.WithResolver(resolver)); err == nil {
-				t.Fatalf("%q outside the signature was accepted: issuer=%v expirationDate=%v credentialStatus=%v",
+				t.Fatalf("%q outside the signature was accepted: issuer=%v validUntil=%v credentialStatus=%v",
 					tc.path, cred.ExtractField("issuer"),
-					cred.ExtractField("expirationDate"), cred.ExtractField("credentialStatus"))
+					cred.ExtractField("validUntil"), cred.ExtractField("credentialStatus"))
 			}
 		})
 	}

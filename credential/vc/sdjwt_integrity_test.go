@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -141,7 +142,7 @@ func TestJOSECredential_DisclosureListIntegrity(t *testing.T) {
 // real claims.
 //
 // Reaching it took no attacker. Present(nil) is the ordinary "reveal nothing"
-// call, and both media types issue the payload the same way.
+// call.
 func TestSDJWT_RevealingNothingStillFoldsOutTheDigests(t *testing.T) {
 	const did = "did:example:sd-reveal-nothing"
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -163,14 +164,6 @@ func TestSDJWT_RevealingNothingStillFoldsOutTheDigests(t *testing.T) {
 		return c
 	}
 
-	// The 1.1 path keeps its own context, so it gets its own contents.
-	v11Contents := func() vc.CredentialContents {
-		c := contents()
-		c.Context = []interface{}{"https://www.w3.org/2018/credentials/v1"}
-
-		return c
-	}
-
 	for _, tc := range []struct {
 		name  string
 		build func() (vc.Credential, error)
@@ -179,19 +172,6 @@ func TestSDJWT_RevealingNothingStillFoldsOutTheDigests(t *testing.T) {
 			name: "vc+sd-jwt",
 			build: func() (vc.Credential, error) {
 				c, err := vc.NewJOSECredential(contents(),
-					vc.WithSDSelectivePaths([]string{"credentialSubject.bloodType"}),
-					vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
-				if err != nil {
-					return nil, err
-				}
-
-				return c, c.AddProofByProvider(prov, vc.WithResolver(resolver))
-			},
-		},
-		{
-			name: "VC 1.1 SD-JWT",
-			build: func() (vc.Credential, error) {
-				c, err := vc.NewJWTCredential(v11Contents(),
 					vc.WithSDSelectivePaths([]string{"credentialSubject.bloodType"}),
 					vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
 				if err != nil {
@@ -433,46 +413,6 @@ func TestSDJWT_DecoysAloneStillMakeItAnSDJWT(t *testing.T) {
 	if subject["name"] != "Alice" {
 		t.Errorf("credentialSubject = %v, want the real claim intact", subject)
 	}
-
-	// The VC 1.1 path pins its typ to "JWT", so only the terminator and the
-	// digests are observable there — but it reads the same payload question.
-	v11 := contents
-	v11.Context = []interface{}{"https://www.w3.org/2018/credentials/v1"}
-	legacy, err := vc.NewJWTCredential(v11,
-		vc.WithSDDecoyDigests([]vc.Decoy{{Path: "credentialSubject", Count: 2}}),
-		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
-	if err != nil {
-		t.Fatalf("new 1.1 decoy-only credential: %v", err)
-	}
-	if err := legacy.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("sign 1.1: %v", err)
-	}
-	legacyToken, err := legacy.Serialize()
-	if err != nil {
-		t.Fatalf("serialize 1.1: %v", err)
-	}
-	legacyStr, ok := legacyToken.(string)
-	if !ok {
-		t.Fatalf("serialized 1.1 credential is %T, want string", legacyToken)
-	}
-	if !strings.HasSuffix(legacyStr, "~") {
-		t.Errorf("1.1 token = %.40q..., want the SD-JWT terminator", legacyStr)
-	}
-	legacyBack, err := vc.ParseCredential([]byte(legacyStr), vc.WithResolver(resolver))
-	if err != nil {
-		t.Fatalf("reparse 1.1: %v", err)
-	}
-	legacyRound, err := legacyBack.Serialize()
-	if err != nil {
-		t.Fatalf("reserialize 1.1: %v", err)
-	}
-	if legacyRound != legacyToken {
-		t.Error("a round trip changed the 1.1 token's bytes")
-	}
-	legacySubject, _ := legacyBack.ExtractField("credentialSubject").(map[string]interface{})
-	if sd, has := legacySubject["_sd"]; has {
-		t.Errorf("1.1 credentialSubject carries decoy digests %v", sd)
-	}
 }
 
 // signJOSEByHand signs payload under typ, so a test can present a token the
@@ -676,9 +616,11 @@ func TestSDJWT_FormatIsReadFromTheMediaTypeNotFromSDAlg(t *testing.T) {
 		}
 	})
 
-	// A VC 1.1 token types itself "JWT" either way, so there is no media type to
-	// read. The combined format is the signal that does not depend on _sd_alg.
-	t.Run("VC 1.1 falls back to the combined format", func(t *testing.T) {
+	// A VC 1.1 token carries no selective disclosure any more (#100). The case
+	// that matters is the last one: no "~" at all, only a digest and no _sd_alg.
+	// It proves the refusal reads the digests in the payload, not _sd_alg and not
+	// the tilde, because RFC 9901 § 4.1.1 lets a token leave _sd_alg out.
+	t.Run("VC 1.1 with digests is refused", func(t *testing.T) {
 		inner := map[string]interface{}{
 			"@context":     []interface{}{"https://www.w3.org/2018/credentials/v1"},
 			"type":         []interface{}{"VerifiableCredential"},
@@ -689,27 +631,20 @@ func TestSDJWT_FormatIsReadFromTheMediaTypeNotFromSDAlg(t *testing.T) {
 			},
 		}
 		for _, tc := range []struct {
-			name    string
-			suffix  string
-			reveals bool
+			name   string
+			suffix string
 		}{
-			{"disclosure sent, no _sd_alg", "~" + disclosure + "~", true},
-			{"nothing revealed, no _sd_alg", "~", false},
+			{"disclosure sent, no _sd_alg", "~" + disclosure + "~"},
+			{"nothing revealed, no _sd_alg", "~"},
+			{"no combined form at all, no _sd_alg", ""},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				token := signJOSEByHand(t, prov, "JWT", did+"#key-1",
 					map[string]interface{}{"iss": did, "vc": inner}) + tc.suffix
 
-				cred, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
-				if err != nil {
-					t.Fatalf("parse: %v", err)
-				}
-				subject, _ := cred.ExtractField("credentialSubject").(map[string]interface{})
-				if sd, has := subject["_sd"]; has {
-					t.Errorf("credentialSubject carries _sd = %v", sd)
-				}
-				if tc.reveals && subject["bloodType"] != "O-" {
-					t.Errorf("credentialSubject = %v, want the disclosed claim readable", subject)
+				_, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+				if !errors.Is(err, vc.ErrSDJWTRequiresJOSE) {
+					t.Fatalf("err = %v, want ErrSDJWTRequiresJOSE", err)
 				}
 			})
 		}
@@ -838,55 +773,6 @@ func TestSDJWT_SelectiveDisclosureIsConfinedToTheSubject(t *testing.T) {
 				verr := cred.Verify(vc.WithResolver(resolver), vc.WithCheckRevocation())
 				if verr == nil {
 					t.Fatalf("a revoked credential verified clean; credentialStatus = %v",
-						cred.ExtractField("credentialStatus"))
-				}
-				if !strings.Contains(verr.Error(), "revoked") {
-					t.Fatalf("err = %v, want the revocation to be reported", verr)
-				}
-			})
-		}
-	})
-
-	// The VC 1.1 path is where this actually regressed. It had no call to the
-	// guard at all, and it is the path already tagged and in use. Before
-	// Reconstruct started running on a zero-disclosure token, credentialStatus
-	// kept its _sd array and checkRevocation refused it by accident, for
-	// missing statusListCredential; once the digests were cleaned up the object
-	// became {} and the refusal turned into a pass.
-	t.Run("the VC 1.1 path is held to the same rule", func(t *testing.T) {
-		inner := map[string]interface{}{
-			"@context":     []interface{}{"https://www.w3.org/2018/credentials/v1"},
-			"type":         []interface{}{"VerifiableCredential"},
-			"issuer":       issuerDID,
-			"issuanceDate": "2026-01-01T00:00:00Z",
-			"credentialSubject": map[string]interface{}{
-				"id": "did:example:subject", "name": "Alice",
-			},
-			"_sd_alg":          "sha-256",
-			"credentialStatus": hiddenStatus,
-		}
-		base := signJOSEByHand(t, prov, "JWT", issuerDID+"#key-1",
-			map[string]interface{}{"iss": issuerDID, "vc": inner})
-
-		for _, tc := range []struct {
-			name  string
-			token string
-		}{
-			{"every disclosure sent", base + "~" + strings.Join(statusDisclosures, "~") + "~"},
-			{"all four withheld", base + "~"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				cred, err := vc.ParseCredential([]byte(tc.token), vc.WithResolver(resolver))
-				if err != nil {
-					if !strings.Contains(err.Error(), "not permitted in \"credentialStatus\"") {
-						t.Fatalf("err = %v, want one naming credentialStatus", err)
-					}
-
-					return
-				}
-				verr := cred.Verify(vc.WithResolver(resolver), vc.WithCheckRevocation())
-				if verr == nil {
-					t.Fatalf("a revoked VC 1.1 credential verified clean; credentialStatus = %v",
 						cred.ExtractField("credentialStatus"))
 				}
 				if !strings.Contains(verr.Error(), "revoked") {
@@ -1055,13 +941,6 @@ func TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused(t *testing.T) {
 			ctx:  []interface{}{"https://www.w3.org/ns/credentials/v2"},
 			build: func(c vc.CredentialContents, o ...vc.CredentialOpt) (vc.Credential, error) {
 				return vc.NewJOSECredential(c, o...)
-			},
-		},
-		{
-			name: "VC 1.1 SD-JWT",
-			ctx:  []interface{}{"https://www.w3.org/2018/credentials/v1"},
-			build: func(c vc.CredentialContents, o ...vc.CredentialOpt) (vc.Credential, error) {
-				return vc.NewJWTCredential(c, o...)
 			},
 		},
 	}
@@ -1235,13 +1114,6 @@ func TestSDJWT_PresentIsGatedOnDisclosableNotOnDisclosureCount(t *testing.T) {
 				return vc.NewJOSECredential(c, o...)
 			},
 		},
-		{
-			name: "VC 1.1 SD-JWT",
-			ctx:  []interface{}{"https://www.w3.org/2018/credentials/v1"},
-			build: func(c vc.CredentialContents, o ...vc.CredentialOpt) (vc.Credential, error) {
-				return vc.NewJWTCredential(c, o...)
-			},
-		},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			issue := func(t *testing.T, opts ...vc.CredentialOpt) vc.Credential {
@@ -1377,13 +1249,6 @@ func TestSDJWT_NestedDisclosureKeepsItsWithheldElement(t *testing.T) {
 				return vc.NewJOSECredential(c, o...)
 			},
 		},
-		{
-			name: "VC 1.1 SD-JWT",
-			ctx:  []interface{}{"https://www.w3.org/2018/credentials/v1"},
-			build: func(c vc.CredentialContents, o ...vc.CredentialOpt) (vc.Credential, error) {
-				return vc.NewJWTCredential(c, o...)
-			},
-		},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			cred, err := b.build(vc.CredentialContents{
@@ -1471,21 +1336,12 @@ func TestSDJWT_NestedDisclosureKeepsItsWithheldElement(t *testing.T) {
 	}
 }
 
-// A VC 1.1 token types itself "JWT" whether or not it is selectively disclosed,
-// so there is no media type to anchor on the way the 2.0 path does. The
-// combined format looked like the next best signal and is not one: the "~" sits
-// after the signature, so anyone holding the token can add one.
-//
-// Reading it meant a stranger turned a plain JWT into an SD-JWT with a single
-// character. It still verified — the signature never covered that byte — and
-// then Serialize kept the "~", so Hash() no longer matched the credential as
-// issued, and Present() became callable on something with nothing to disclose.
-// Hash() is the Merkle leaf when a credential is anchored, so one credential
-// became two leaves at the choice of whoever was holding it.
-//
-// Both ends now read the digests in the signed payload, which is the one signal
-// that is always present and always covered.
-func TestSDJWT_LegacyFormatIsReadFromTheSignedPayloadNotTheTilde(t *testing.T) {
+// A "~" never appears in a valid JWT — base64url has no such character — so on
+// the VC 1.1 path it can only mean the SD-JWT combined form, which that path no
+// longer carries (#100). A plain JWT someone appended a "~" to used to parse as
+// the plain JWT; it is refused now, while the plain JWT itself still parses and
+// verifies unchanged.
+func TestVC11_CombinedFormIsRefused(t *testing.T) {
 	const did = "did:example:sd-legacy-tilde"
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -1498,139 +1354,46 @@ func TestSDJWT_LegacyFormatIsReadFromTheSignedPayloadNotTheTilde(t *testing.T) {
 		t.Fatalf("p256 provider: %v", err)
 	}
 
-	type presenter interface {
-		Present([]string) (vc.Credential, error)
+	cred, err := vc.NewJWTCredential(vc.CredentialContents{
+		Context:   []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		ID:        "urn:uuid:sd-legacy-tilde",
+		Issuer:    did,
+		Types:     []string{"VerifiableCredential"},
+		ValidFrom: time.Now().Add(-time.Hour),
+		Subject:   []vc.Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{"name": "Alice"}}},
+	}, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	token, ok := serialized.(string)
+	if !ok {
+		t.Fatalf("serialized credential is %T, want string", serialized)
+	}
+	if strings.Contains(token, "~") {
+		t.Fatalf("the fixture is not a plain JWT: %.40q...", token)
 	}
 
-	issue := func(t *testing.T, custom map[string]interface{}, opts ...vc.CredentialOpt) (string, string) {
-		t.Helper()
-		cred, err := vc.NewJWTCredential(vc.CredentialContents{
-			Context:   []interface{}{"https://www.w3.org/2018/credentials/v1"},
-			ID:        "urn:uuid:sd-legacy-tilde",
-			Issuer:    did,
-			Types:     []string{"VerifiableCredential"},
-			ValidFrom: time.Now().Add(-time.Hour),
-			Subject:   []vc.Subject{{ID: "did:example:subject", CustomFields: custom}},
-		}, append([]vc.CredentialOpt{
-			vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)}, opts...)...)
-		if err != nil {
-			t.Fatalf("issue: %v", err)
-		}
-		if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
-			t.Fatalf("sign: %v", err)
-		}
-		serialized, err := cred.Serialize()
-		if err != nil {
-			t.Fatalf("serialize: %v", err)
-		}
-		token, ok := serialized.(string)
-		if !ok {
-			t.Fatalf("serialized credential is %T, want string", serialized)
-		}
-		hash, err := cred.Hash()
-		if err != nil {
-			t.Fatalf("hash: %v", err)
-		}
-
-		return token, hash
+	parsed, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("the plain JWT must still parse: %v", err)
+	}
+	if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("the plain JWT must still verify: %v", err)
 	}
 
-	// A plain VC 1.1 credential. Appending tildes must change nothing a
-	// verifier or an anchor can see.
-	t.Run("a plain JWT does not become an SD-JWT when a stranger adds a tilde", func(t *testing.T) {
-		token, issuedHash := issue(t, map[string]interface{}{"name": "Alice"})
-		if strings.Contains(token, "~") {
-			t.Fatalf("the fixture is not a plain JWT: %.40q...", token)
-		}
-
-		for _, suffix := range []string{"", "~", "~~"} {
-			t.Run("suffix "+strconv.Quote(suffix), func(t *testing.T) {
-				cred, err := vc.ParseCredential([]byte(token+suffix), vc.WithResolver(resolver))
-				if err != nil {
-					t.Fatalf("parse: %v", err)
-				}
-				if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
-					t.Fatalf("verify: %v", err)
-				}
-				hash, err := cred.Hash()
-				if err != nil {
-					t.Fatalf("hash: %v", err)
-				}
-				if hash != issuedHash {
-					t.Errorf("Hash = %s, want the issued %s — a byte outside the signature moved the Merkle leaf",
-						hash, issuedHash)
-				}
-				if _, err := cred.(presenter).Present(nil); err == nil {
-					t.Error("Present succeeded on a credential with nothing disclosable")
-				}
-			})
-		}
-	})
-
-	// _sd with no _sd_alg is legal — RFC 9901 § 4.1.1 defaults the algorithm —
-	// so the digests alone have to be enough for both ends to agree.
-	t.Run("digests with no _sd_alg are recognised at both ends", func(t *testing.T) {
-		disclosure := rawDisclosure(t, "c2FsdDAxc2FsdDAxc2FsdDAx", "bloodType", "O-")
-		token, issuedHash := issue(t, map[string]interface{}{
-			"name": "Alice", "_sd": []interface{}{digestOf(disclosure)}})
-
-		// The issuer saw the digests, so the token is already an SD-JWT.
-		if !strings.HasSuffix(token, "~") {
-			t.Fatalf("token = %.40q..., want it issued as an SD-JWT", token)
-		}
-
-		cred, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
-			t.Fatalf("verify: %v", err)
-		}
-		hash, err := cred.Hash()
-		if err != nil {
-			t.Fatalf("hash: %v", err)
-		}
-		if hash != issuedHash {
-			t.Errorf("Hash = %s, want the issued %s", hash, issuedHash)
-		}
-		// And the digests were folded out rather than handed over as a claim.
-		subject, _ := cred.ExtractField("credentialSubject").(map[string]interface{})
-		if sd, leaked := subject["_sd"]; leaked {
-			t.Errorf("credentialSubject carries _sd = %v", sd)
-		}
-		if subject["name"] != "Alice" {
-			t.Errorf("credentialSubject = %v, want the real claim intact", subject)
-		}
-	})
-
-	// The control: a credential the SDK issued as an SD-JWT still works, and
-	// extra tildes do not move its hash either.
-	t.Run("an ordinary SD-JWT is unaffected", func(t *testing.T) {
-		token, issuedHash := issue(t, map[string]interface{}{"name": "Alice", "bloodType": "O-"},
-			vc.WithSDSelectivePaths([]string{"credentialSubject.bloodType"}))
-
-		for _, suffix := range []string{"", "~"} {
-			cred, err := vc.ParseCredential([]byte(token+suffix), vc.WithResolver(resolver))
-			if err != nil {
-				t.Fatalf("suffix %q: parse: %v", suffix, err)
+	for _, suffix := range []string{"~", "~~"} {
+		t.Run("suffix "+strconv.Quote(suffix), func(t *testing.T) {
+			_, err := vc.ParseCredential([]byte(token+suffix), vc.WithResolver(resolver))
+			if !errors.Is(err, vc.ErrSDJWTRequiresJOSE) {
+				t.Fatalf("err = %v, want ErrSDJWTRequiresJOSE", err)
 			}
-			if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
-				t.Fatalf("suffix %q: verify: %v", suffix, err)
-			}
-			hash, err := cred.Hash()
-			if err != nil {
-				t.Fatalf("hash: %v", err)
-			}
-			if hash != issuedHash {
-				t.Errorf("suffix %q: Hash = %s, want the issued %s", suffix, hash, issuedHash)
-			}
-			subject, _ := cred.ExtractField("credentialSubject").(map[string]interface{})
-			if subject["bloodType"] != "O-" {
-				t.Errorf("suffix %q: credentialSubject = %v, want the disclosed claim", suffix, subject)
-			}
-			if _, err := cred.(presenter).Present(nil); err != nil {
-				t.Errorf("suffix %q: Present on a real SD-JWT was refused: %v", suffix, err)
-			}
-		}
-	})
+		})
+	}
 }

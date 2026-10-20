@@ -87,16 +87,15 @@ func TestParseCredential(t *testing.T) {
 			expected:    buildExpectedEducationalCredential(),
 		},
 		{
-			// buildDummySDJWT glues a made-up disclosure onto a plain JWT whose
-			// payload has no _sd at all, so the disclosure matches nothing the
-			// issuer signed a digest for. That used to be ignored in silence,
-			// which let a holder append anything and still verify — and gave one
-			// credential several byte forms under one Hash().
+			// buildDummySDJWT glues a made-up disclosure onto a plain VC 1.1
+			// JWT. The VC 1.1 path no longer carries selective disclosure
+			// (#100), so the combined form is refused outright, before any
+			// disclosure is looked at.
 			name:        "A JWT with a fabricated disclosure glued on",
 			inputJSON:   []byte(buildDummySDJWT(validJWTtoken)),
 			opts:        []CredentialOpt{},
 			expectError: true,
-			errorMsg:    "matches nothing in the payload",
+			errorMsg:    ErrSDJWTRequiresJOSE.Error(),
 		},
 	}
 
@@ -1349,74 +1348,12 @@ func TestSerializeJSONCredential(t *testing.T) {
 	assert.True(t, json.Valid(bytes), "Serialized credential must be a json object")
 }
 
-// WithSDDisclosures is validated against the digests in the payload, not banned.
-// Every case below still fails, but for the reason that actually applies: the
-// disclosure matches nothing. Combining it with WithSDSelectivePaths is what
-// guarantees that — those paths make the builder generate its own digests with a
-// fresh salt, so even a disclosure this very builder produced a moment ago no
-// longer matches. The shape that does work, caller-supplied digests and
-// disclosures together, is in TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused.
-func TestNewJWTCredential_WithSDDisclosures_MustMatchTheDigests(t *testing.T) {
+// A selective path may name a single array element: emails[1] becomes a
+// {"...": digest} placeholder in the signed payload, and the disclosure puts it
+// back. Moved here from the VC 1.1 path, which no longer carries SD (#100).
+func TestNewJOSECredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 	vcc := CredentialContents{
-		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
-		ID:      "urn:uuid:1234",
-		Issuer:  "did:example:issuer",
-		Types:   []string{"VerifiableCredential"},
-		Subject: []Subject{
-			{ID: "did:example:subject1", CustomFields: map[string]interface{}{"name": "Alice"}},
-		},
-		ValidFrom:  time.Now(),
-		ValidUntil: time.Now().Add(24 * time.Hour),
-	}
-	resolver := secpVMResolver(t, "did:example:issuer")
-
-	// The legitimate shape first: paths only, which produces a parseable SD-JWT.
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"),
-		WithSDSelectivePaths([]string{"credentialSubject.name"}), resolver)
-	assert.NoError(t, err)
-
-	serialized, err := cred.Serialize()
-	assert.NoError(t, err)
-	token, ok := serialized.(string)
-	assert.True(t, ok, "expected a token string")
-	assert.True(t, sdjwt.IsSDJWT(token), "expected SD-JWT format")
-
-	parsed, err := ParseCredential([]byte(token))
-	assert.NoError(t, err)
-	_, ok = parsed.(*JWTCredential)
-	assert.True(t, ok, "expected parsed credential to be JWTCredential")
-
-	// A disclosure the builder itself just produced, handed back in.
-	ownDisclosure := cred.disclosures[0]
-
-	arr, err := json.Marshal([]interface{}{"salt", "x", "y"})
-	assert.NoError(t, err)
-	foreign := base64.RawURLEncoding.EncodeToString(arr)
-
-	for name, disclosures := range map[string][]string{
-		"a disclosure from elsewhere":         {foreign},
-		"a disclosure this builder just made": {ownDisclosure},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"),
-				WithSDDisclosures(disclosures),
-				WithSDSelectivePaths([]string{"credentialSubject.name"}), resolver)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "invalid SD-JWT disclosures")
-			assert.Contains(t, err.Error(), "matches nothing in the payload")
-		})
-	}
-
-	// And with no paths at all, so there is no digest in the payload to match.
-	_, err = NewJWTCredential(vcc, WithVerificationMethodKey("key-1"),
-		WithSDDisclosures([]string{foreign}), resolver)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid SD-JWT disclosures")
-}
-
-func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
-	vcc := CredentialContents{
-		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
 		ID:      "urn:uuid:array",
 		Issuer:  "did:example:issuer",
 		Types:   []string{"VerifiableCredential"},
@@ -1434,10 +1371,14 @@ func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 
 	selectivePaths := []string{"credentialSubject.emails[1]"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
+	prov, issuerOpts := p256TestIssuer(t, "did:example:issuer")
+	cred, err := NewJOSECredential(vcc, append(issuerOpts, WithSDSelectivePaths(selectivePaths))...)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
+	if err := cred.AddProofByProvider(prov); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
 	serialized, err := cred.Serialize()
 	assert.NoError(t, err)
 
@@ -1465,13 +1406,10 @@ func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 	err = json.Unmarshal(payloadBytes, &payload)
 	assert.NoError(t, err)
 
-	vcAny, ok := payload["vc"].(map[string]interface{})
+	// vc+sd-jwt carries the credential as the payload itself, no vc wrapper.
+	csAny, ok := payload["credentialSubject"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected vc map in JWT payload")
-	}
-	csAny, ok := vcAny["credentialSubject"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected credentialSubject map in vc")
+		t.Fatalf("expected credentialSubject map in the payload")
 	}
 
 	rawEmails, ok := csAny["emails"]
@@ -1494,10 +1432,10 @@ func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 	parsed, err := ParseCredential([]byte(s))
 	assert.NoError(t, err)
 
-	jwtCred, ok := parsed.(*JWTCredential)
-	assert.True(t, ok, "expected parsed credential to be JWTCredential")
+	joseCred, ok := parsed.(*JOSECredential)
+	assert.True(t, ok, "expected parsed credential to be JOSECredential")
 
-	payloadBytes2, err := jwtCred.GetContents()
+	payloadBytes2, err := joseCred.GetContents()
 	assert.NoError(t, err)
 
 	var m2 map[string]interface{}
@@ -1512,9 +1450,12 @@ func TestNewJWTCredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 	assert.Equal(t, []interface{}{"a@example.com", "b@example.com", "c@example.com"}, emails2)
 }
 
-func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
+// A selective path may reach inside a nested object: profile.name is withheld
+// through an _sd array inside profile, and the rest of profile stays visible.
+// Moved here from the VC 1.1 path, which no longer carries SD (#100).
+func TestNewJOSECredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 	vcc := CredentialContents{
-		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
 		ID:      "urn:uuid:recursive",
 		Issuer:  "did:example:issuer",
 		Types:   []string{"VerifiableCredential"},
@@ -1535,10 +1476,14 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 
 	selectivePaths := []string{"credentialSubject.profile.name"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
+	prov, issuerOpts := p256TestIssuer(t, "did:example:issuer")
+	cred, err := NewJOSECredential(vcc, append(issuerOpts, WithSDSelectivePaths(selectivePaths))...)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
 
+	if err := cred.AddProofByProvider(prov); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
 	serialized, err := cred.Serialize()
 	assert.NoError(t, err)
 
@@ -1566,13 +1511,10 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 	err = json.Unmarshal(payloadBytes, &payload)
 	assert.NoError(t, err)
 
-	vcAny, ok := payload["vc"].(map[string]interface{})
+	// vc+sd-jwt carries the credential as the payload itself, no vc wrapper.
+	csAny, ok := payload["credentialSubject"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected vc map in JWT payload")
-	}
-	csAny, ok := vcAny["credentialSubject"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected credentialSubject map in vc")
+		t.Fatalf("expected credentialSubject map in the payload")
 	}
 
 	rawProfile, ok := csAny["profile"]
@@ -1596,10 +1538,10 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 	parsed, err := ParseCredential([]byte(s))
 	assert.NoError(t, err)
 
-	jwtCred, ok := parsed.(*JWTCredential)
-	assert.True(t, ok, "expected parsed credential to be JWTCredential")
+	joseCred, ok := parsed.(*JOSECredential)
+	assert.True(t, ok, "expected parsed credential to be JOSECredential")
 
-	payloadBytes2, err := jwtCred.GetContents()
+	payloadBytes2, err := joseCred.GetContents()
 	assert.NoError(t, err)
 
 	var m2 map[string]interface{}
@@ -1616,135 +1558,12 @@ func TestNewJWTCredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 	assert.Equal(t, float64(30), profile2["age"])
 }
 
-// Issue #78: an SD-JWT credential signed with the right key never passed
-// Verify(). Serialize appends "~<disclosure>" for an SD-JWT, and the proof check
-// fed that whole string to the JWT verifier, which splits on "." — so the
-// signature segment carried the disclosures and failed to base64-decode
-// ("illegal base64 data at input byte 86", the byte right after an 86-character
-// P-256 signature). Only the issuer-signed JWT may be verified.
-func TestJWTCredential_SDJWTSignVerifyRoundTrip(t *testing.T) {
-	const did = "did:example:sd-roundtrip"
-
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("p256 keygen: %v", err)
-	}
-	prov, err := signer.NewP256Provider(priv)
-	if err != nil {
-		t.Fatalf("p256 provider: %v", err)
-	}
-	resolver := WithResolver(verificationmethod.NewStaticResolver(
-		verificationmethod.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey))))
-	// The kid is fixed when the token is built, so the VM key binds at New and
-	// must not be passed again when signing.
-	buildOpts := []CredentialOpt{WithVerificationMethodKey("key-1"), resolver}
-
-	contents := func() CredentialContents {
-		return CredentialContents{
-			Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
-			ID:        "urn:uuid:sd-roundtrip",
-			Issuer:    did,
-			Types:     []string{"VerifiableCredential"},
-			ValidFrom: time.Now().Add(-time.Hour),
-			Subject: []Subject{{
-				ID: "did:example:subject",
-				CustomFields: map[string]interface{}{
-					"name":      "Alice",
-					"bloodType": "O",
-				},
-			}},
-		}
-	}
-
-	sign := func(t *testing.T, extra ...CredentialOpt) *JWTCredential {
-		t.Helper()
-		cred, err := NewJWTCredential(contents(), append(append([]CredentialOpt{}, buildOpts...), extra...)...)
-		if err != nil {
-			t.Fatalf("new credential: %v", err)
-		}
-		if err := cred.AddProofByProvider(prov, resolver); err != nil {
-			t.Fatalf("add proof: %v", err)
-		}
-		return cred
-	}
-
-	t.Run("with disclosures", func(t *testing.T) {
-		cred := sign(t, WithSDSelectivePaths([]string{"credentialSubject.bloodType"}))
-
-		serialized, err := cred.Serialize()
-		if err != nil {
-			t.Fatalf("serialize: %v", err)
-		}
-		if !strings.Contains(serialized.(string), "~") {
-			t.Fatal("expected an SD-JWT with disclosures")
-		}
-
-		if err := cred.Verify(resolver); err != nil {
-			t.Fatalf("verify an SD-JWT signed with the matching key: %v", err)
-		}
-	})
-
-	t.Run("without disclosures still verifies", func(t *testing.T) {
-		if err := sign(t).Verify(resolver); err != nil {
-			t.Fatalf("verify a plain JWT credential: %v", err)
-		}
-	})
-
-	t.Run("holder presenting a subset", func(t *testing.T) {
-		cred := sign(t, WithSDSelectivePaths([]string{
-			"credentialSubject.name", "credentialSubject.bloodType",
-		}))
-		disclosures, err := cred.DecodedDisclosures()
-		if err != nil {
-			t.Fatalf("decode disclosures: %v", err)
-		}
-
-		var selected []string
-		for _, d := range disclosures {
-			if d.FieldName == "bloodType" {
-				selected = append(selected, d.Disclosure)
-			}
-		}
-		if len(selected) != 1 {
-			t.Fatalf("got %d bloodType disclosures, want 1", len(selected))
-		}
-
-		shown, err := cred.Present(selected)
-		if err != nil {
-			t.Fatalf("present: %v", err)
-		}
-		// The issuer's signature is untouched, so a subset must verify too.
-		if err := shown.Verify(resolver); err != nil {
-			t.Fatalf("verify a holder presentation: %v", err)
-		}
-
-		body, err := shown.GetContents()
-		if err != nil {
-			t.Fatalf("contents: %v", err)
-		}
-		if !strings.Contains(string(body), "bloodType") {
-			t.Fatal("the disclosed field is missing from the presented credential")
-		}
-		if strings.Contains(string(body), "Alice") {
-			t.Fatal("a withheld field leaked into the presented credential")
-		}
-	})
-
-	t.Run("unsigned credential is named as such", func(t *testing.T) {
-		cred, err := NewJWTCredential(contents(), buildOpts...)
-		if err != nil {
-			t.Fatalf("new credential: %v", err)
-		}
-		err = cred.Verify(resolver)
-		if err == nil || !strings.Contains(err.Error(), "not signed") {
-			t.Fatalf("error = %v, want it to name the missing signature", err)
-		}
-	})
-}
-
-func TestSDJWT_HolderFlow(t *testing.T) {
+// The holder side of a vc+sd-jwt credential: split the token, re-present a
+// subset, and check the verifier sees only what was disclosed. Moved here from
+// the VC 1.1 path, which no longer carries SD (#100).
+func TestJOSECredential_SDJWTHolderFlow(t *testing.T) {
 	vcc := CredentialContents{
-		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
 		ID:      "urn:uuid:holder-test",
 		Issuer:  "did:example:issuer",
 		Types:   []string{"VerifiableCredential"},
@@ -1762,8 +1581,12 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	}
 	selectivePaths := []string{"credentialSubject.firstname", "credentialSubject.email"}
 
-	cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), WithSDSelectivePaths(selectivePaths), secpVMResolver(t, "did:example:issuer"))
+	prov, issuerOpts := p256TestIssuer(t, "did:example:issuer")
+	cred, err := NewJOSECredential(vcc, append(issuerOpts, WithSDSelectivePaths(selectivePaths))...)
 	assert.NoError(t, err)
+	if err := cred.AddProofByProvider(prov); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
 	serialized, err := cred.Serialize()
 	assert.NoError(t, err)
 	s, ok := serialized.(string)
@@ -1818,12 +1641,40 @@ func TestSDJWT_HolderFlow(t *testing.T) {
 	}
 	_, hasAlg := em["_sd_alg"]
 	assert.False(t, hasAlg, "_sd_alg is SD-JWT machinery, not a credential property")
+
+	// The same flow through the methods a holder actually calls: list what the
+	// token can disclose, then present one of them.
+	holderCred, err := ParseJOSECredential(s)
+	assert.NoError(t, err)
+	decoded, err := holderCred.DecodedDisclosures()
+	assert.NoError(t, err)
+	assert.Len(t, decoded, 2, "expected two disclosures (firstname, email)")
+	var firstnameDisclosure string
+	for _, d := range decoded {
+		if d.FieldName == "firstname" {
+			firstnameDisclosure = d.Disclosure
+		}
+	}
+	assert.NotEmpty(t, firstnameDisclosure, "expected a disclosure for firstname")
+
+	presented, err := holderCred.Present([]string{firstnameDisclosure})
+	assert.NoError(t, err)
+	presentedContents, err := presented.GetContents()
+	assert.NoError(t, err)
+	var pm map[string]interface{}
+	assert.NoError(t, json.Unmarshal(presentedContents, &pm))
+	presentedCS, ok := pm["credentialSubject"].(map[string]interface{})
+	assert.True(t, ok)
+	assert.Equal(t, "Alice", presentedCS["firstname"])
+	_, hasPresentedEmail := presentedCS["email"]
+	assert.False(t, hasPresentedEmail, "email was not presented; the verifier must not see it")
 }
 
-// TestWithSDDecoyDigests_Array tests decoy digests for array elements
-func TestWithSDDecoyDigests_Array(t *testing.T) {
+// Decoy digests can pad an array as well as an object. Moved here from the VC
+// 1.1 path, which no longer carries SD (#100).
+func TestJOSECredential_WithSDDecoyDigests_Array(t *testing.T) {
 	vcc := CredentialContents{
-		Context: []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
 		ID:      "urn:uuid:decoy-test-array",
 		Issuer:  "did:example:issuer",
 		Types:   []string{"VerifiableCredential"},
@@ -1840,16 +1691,16 @@ func TestWithSDDecoyDigests_Array(t *testing.T) {
 	}
 
 	// Issue SD-JWT with selective disclosure on first email and decoy on second
-	cred, err := NewJWTCredential(vcc,
-		WithVerificationMethodKey("key-1"),
+	prov, issuerOpts := p256TestIssuer(t, "did:example:issuer")
+	cred, err := NewJOSECredential(vcc, append(issuerOpts,
 		WithSDSelectivePaths([]string{"credentialSubject.emails[0]"}),
 		WithSDDecoyDigests([]Decoy{
 			{Path: "credentialSubject.emails[1]", Count: 1},
 		}),
-		secpVMResolver(t, "did:example:issuer"),
-	)
+	)...)
 	assert.NoError(t, err)
 	assert.NotNil(t, cred)
+	_ = prov
 }
 
 // TestExtractField tests the ExtractField method for both JWT and JSON credentials

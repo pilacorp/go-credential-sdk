@@ -3,6 +3,7 @@ package vc
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -12,6 +13,20 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
+
+// ErrSDJWTRequiresJOSE is returned when selective disclosure is asked of the VC
+// 1.1 JWT path, which does not support it (#100): by NewJWTCredential given a
+// WithSD* option or contents that already carry SD-JWT digests, by
+// ParseJWTCredential given a token that carries SD-JWT machinery or arrives in
+// the "~" combined form, and by JWTCredential.Present.
+//
+// SD-JWT over VC 1.1 was never a format anyone else could read: its header said
+// typ "JWT", so a verifier outside this SDK had no way to know the token carried
+// disclosures. Selective disclosure goes through vc+sd-jwt, the media type
+// VC-JOSE-COSE defines for it: issue with NewJOSECredential, parse with
+// ParseJOSECredential.
+var ErrSDJWTRequiresJOSE = errors.New(
+	"selective disclosure is supported only as vc+sd-jwt; use NewJOSECredential / ParseJOSECredential")
 
 // Config holds package configuration.
 var config = struct {
@@ -104,7 +119,8 @@ type SchemaLoaderFunc func(schemaID string) ([]byte, error)
 // NewJSONCredential, which only signing reads). Splitting into per-operation
 // option sets is planned; until then each option documents where it applies.
 // On the signing calls a verify-only option is ignored. JWT signing refuses the
-// options only NewJWTCredential applies (kid, SD-JWT); AddCustomProof refuses
+// options only the constructors apply: kid (NewJWTCredential,
+// NewJOSECredential) and SD-JWT (NewJOSECredential); AddCustomProof refuses
 // the ones already inside the signed proof. JSON-LD AddProofByProvider applies
 // the kid.
 type CredentialOpt func(*credentialOptions)
@@ -270,8 +286,11 @@ func WithCheckRevocation() CredentialOpt {
 //
 // For the ordinary case, name the claims with WithSDSelectivePaths and let the
 // builder do both halves. To re-assemble a stored credential, parse the token:
-// ParseJWTCredential and ParseJOSECredential read the disclosures from the
-// string. To reveal a subset of a credential already issued, use Present.
+// ParseJOSECredential reads the disclosures from the string. To reveal a subset
+// of a credential already issued, use JOSECredential.Present.
+//
+// Applies to NewJOSECredential only; NewJWTCredential refuses it with
+// ErrSDJWTRequiresJOSE.
 func WithSDDisclosures(disclosures []string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.sdDisclosures = disclosures
@@ -281,6 +300,9 @@ func WithSDDisclosures(disclosures []string) CredentialOpt {
 // WithSDSelectivePaths declares which claims should be selectively disclosable.
 // When provided, the SDK will use sdjwt.BuildDisclosures to construct SD-JWT structures
 // during credential issuance.
+//
+// Applies to NewJOSECredential only; NewJWTCredential refuses it with
+// ErrSDJWTRequiresJOSE.
 func WithSDSelectivePaths(paths []string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.sdSelectivePaths = paths
@@ -289,6 +311,9 @@ func WithSDSelectivePaths(paths []string) CredentialOpt {
 
 // WithSDHashAlgorithm sets the hash algorithm for SD-JWT.
 // Supported: sha-256, sha-384, sha-512. Empty string defaults to sha-256.
+//
+// Applies to NewJOSECredential only; NewJWTCredential refuses it with
+// ErrSDJWTRequiresJOSE.
 func WithSDHashAlgorithm(alg string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.sdAlg = alg
@@ -296,6 +321,9 @@ func WithSDHashAlgorithm(alg string) CredentialOpt {
 }
 
 // WithSDShuffle enables shuffling of the _sd array to prevent disclosure order leakage.
+//
+// Applies to NewJOSECredential only; NewJWTCredential refuses it with
+// ErrSDJWTRequiresJOSE.
 func WithSDShuffle(enabled bool) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.sdShuffle = enabled
@@ -312,6 +340,9 @@ func WithSDShuffle(enabled bool) CredentialOpt {
 // from a withheld top-level property, which is what the parser refuses.
 //
 // Example: WithSDDecoyDigests([]vc.Decoy{{Path: "credentialSubject", Count: 3}})
+//
+// Applies to NewJOSECredential only; NewJWTCredential refuses it with
+// ErrSDJWTRequiresJOSE.
 func WithSDDecoyDigests(decoys []Decoy) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.sdDecoys = decoys
@@ -424,9 +455,10 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 					if typ, ok := header["typ"].(string); ok {
 						// Both vc+jwt and vc+sd-jwt are vc-jose-cose; only the
 						// securing mechanism differs, so both route here. A
-						// tilde alone does not decide it: VC 1.1 SD-JWT has the
-						// same shape with typ "JWT" and its claims under vc, and
-						// belongs on the 1.1 path below.
+						// tilde alone does not decide it: a VC 1.1 SD-JWT has the
+						// same shape with typ "JWT" and its claims under vc. It
+						// goes to the 1.1 path below, which refuses it with
+						// ErrSDJWTRequiresJOSE.
 						if isJOSECredentialTyp(typ) {
 							return ParseJOSECredential(valStr, opts...)
 						}

@@ -98,10 +98,11 @@ func requireJOSECredential(m CredentialData) error {
 // to look up revocation. Both the 1.1 and the 2.0 spelling of the validity window
 // is listed, because a 1.1 document is free to carry either.
 //
-// JWT-level claims (iss, exp, nbf, iat) are not here. The only caller passes the
-// vc claim of a VC 1.1 token, and those live outside it — vc._sd cannot hide
-// them. They would belong in this list again if a flat vc-jose-cose payload ever
-// carried disclosures.
+// JWT-level claims (iss, exp, nbf, iat) are not here. The only caller is the
+// vc+sd-jwt path (SD-JWT over VC 1.1 was removed in #100), whose payload is flat,
+// so those claims sit at its root beside credentialSubject. They still need no
+// entry: requireDisclosableAtTopLevel refuses an _sd array at the payload root
+// before this runs, so no disclosure can hide or introduce a root claim.
 var securedClaims = []string{
 	"@context", "type",
 	"issuer",
