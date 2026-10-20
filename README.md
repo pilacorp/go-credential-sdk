@@ -524,6 +524,8 @@ The SDK supports **SD-JWT** (Selective Disclosure for JWT) as per [RFC 9901](htt
 Selective disclosure is issued as **`vc+sd-jwt`**, the media type [vc-jose-cose](https://www.w3.org/TR/vc-jose-cose/) defines for it: a VC 2.0 credential, built with `NewJOSECredential` and parsed with `ParseJOSECredential` (or `ParseCredential`, which routes on the `typ` header).
 
 > **Not on VC 1.1 JWT.** `NewJWTCredential` refuses every `WithSD*` option, and contents that already carry SD-JWT digests, with `vc.ErrSDJWTRequiresJOSE`. A VC 1.1 JWT that carries digests or arrives in the `~` combined form is refused by `ParseJWTCredential` and `ParseCredential` with the same error. A VC 1.1 token typed itself `JWT`, so a verifier outside this SDK had no way to know it carried disclosures.
+>
+> The digest check reads the credential's own data, so ordinary data shaped like a digest is refused too: an `_sd` key at any depth, or an array element that is an object whose only key is `...`. A VC 1.1 JWT issued by v1.13.1 or earlier with such data used to parse and is now refused.
 
 **Roles:**
 
