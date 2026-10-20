@@ -2,9 +2,11 @@ package subdid
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/pilacorp/go-credential-sdk/didv2/did"
+	"github.com/pilacorp/go-credential-sdk/didv2/signer"
 )
 
 func TestGenerateSubDID_Vectors(t *testing.T) {
@@ -49,4 +51,40 @@ func TestGenerateSubDID_Refuses(t *testing.T) {
 		provider(t, rootR1PrivateKeyHex), provider(t, row1PrivateKeyHex)); err == nil {
 		t.Error("an empty subID was accepted")
 	}
+}
+
+func ExampleGenerateSubDID() {
+	rootDID := "did:nda:0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+	rootPrivateKeyHex := "1111111111111111111111111111111111111111111111111111111111111111"
+	subID := "0b8e6f3c-5a1d-4c27-9f40-3e2a7d91c6b5"
+
+	rootSigner, err := signer.NewDefaultProvider(rootPrivateKeyHex)
+	if err != nil {
+		panic(err)
+	}
+
+	subKey, err := DeriveSubDIDKey(rootPrivateKeyHex, subID)
+	if err != nil {
+		panic(err)
+	}
+	subSigner, err := signer.NewDefaultProvider(subKey.GetPrivateKeyHex())
+	if err != nil {
+		panic(err)
+	}
+
+	res, err := GenerateSubDID(rootDID, subID, subKey.GetPublicKeyHex(), did.DIDTypePeople, nil, rootSigner, subSigner)
+	if err != nil {
+		panic(err)
+	}
+
+	body, err := json.Marshal(map[string]any{"document": res.Document, "type": res.Type, "signature": res.Signature})
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res.DID)
+	fmt.Println(len(body) > 0)
+	// Output:
+	// did:nda:0x86b2efd244acb31eb238a65ca05476ab42558071
+	// true
 }

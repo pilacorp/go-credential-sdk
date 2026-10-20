@@ -22,6 +22,7 @@ This SDK allows you to:
 - **Pre-signed Transactions**: Generate blockchain-ready transactions for NDA Chain anchoring
 - **Transaction Regeneration**: Re-create failed transactions without regenerating keys or DID
 - **Epoch & Nonce Synchronization**: Automatic synchronization of capability epochs and transaction nonces
+- **Sub-DID**: create a Sub-DID under a root DID with one call (`didv2/subdid`, see [Sub-DID](#sub-did))
 
 ---
 
@@ -676,6 +677,68 @@ err = jwtCred.AddProofByProvider(p256Signer)
 ```
 
 See the root [README](../README.md) for the credential API.
+
+## Sub-DID
+
+A Sub-DID is a DID created under a root DID. When you hold the root DID's
+key, create the Sub-DID with `subdid.GenerateSubDID` and register it through
+`POST /api/v3/sub-did/register`. The route takes no credentials: the root's
+`rootConsent` signature is the authority.
+
+```go
+import (
+    "github.com/pilacorp/go-credential-sdk/didv2/did"
+    "github.com/pilacorp/go-credential-sdk/didv2/signer"
+    "github.com/pilacorp/go-credential-sdk/didv2/subdid"
+)
+
+// The root DID's primary key.
+rootSigner, err := signer.NewDefaultProvider(rootPrivateKeyHex)
+if err != nil {
+    return err
+}
+
+// The Sub-DID's key, derived from the root key and subID: the same key the
+// platform derives for CreateSubDID. Keep subID to derive it again.
+subKey, err := subdid.DeriveSubDIDKey(rootPrivateKeyHex, subID)
+if err != nil {
+    return err
+}
+subSigner, err := signer.NewDefaultProvider(subKey.GetPrivateKeyHex())
+if err != nil {
+    return err
+}
+
+res, err := subdid.GenerateSubDID(rootDID, subID, subKey.GetPublicKeyHex(), did.DIDTypePeople, nil, rootSigner, subSigner)
+if err != nil {
+    return err
+}
+
+body := map[string]any{
+    "document":  res.Document,
+    "type":      res.Type,
+    "signature": res.Signature,
+}
+// POST body to /api/v3/sub-did/register, with no credentials
+```
+
+| Parameter | Meaning |
+|---|---|
+| `rootDID` | The root DID. It becomes the Sub-DID's `controller` and gives the Sub-DID its method and network. |
+| `subID` | The Sub-DID's id under the root: 8–64 characters of `A-Z a-z 0-9 _ -`, case-sensitive. Required. Written to `didDocumentMetadata.subId`; derive the key from the same value with `DeriveSubDIDKey`. |
+| `subPublicKeyHex` | The Sub-DID's compressed secp256k1 public key. It becomes `#key-1`, and its address is the Sub-DID. |
+| `didType` | The Sub-DID's type, sent as `type`. |
+| `metadata` | Extra values for `didDocumentMetadata`, or `nil`. `subId`, `type` and `rootConsent` are always set by `GenerateSubDID`. |
+| `rootSigner` | The root DID's primary key (`#key-1`). It only signs the string `"Sub-DID " + subDID` and never sees the document. |
+| `subSigner` | The key of `subPublicKeyHex`. It signs the document. |
+
+`subdid.WithSubDIDVerificationMethods(specs...)` publishes secondary keys next
+to `#key-1`.
+
+A key kept in an HSM or Vault works through your own `signer.SignerProvider`:
+`Sign` receives the 32-byte digest to sign as is and returns `r ‖ s ‖ v`. A
+browser wallet that only offers `personal_sign` cannot act as one, because it
+hashes the digest again.
 
 ## Signer Providers
 
