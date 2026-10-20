@@ -459,6 +459,11 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 						// same shape with typ "JWT" and its claims under vc. It
 						// goes to the 1.1 path below, which refuses it with
 						// ErrSDJWTRequiresJOSE.
+						// SD-JWT profiles other than vc+sd-jwt, such as the IETF SD-JWT VC
+						// (dc+sd-jwt), are not read here; name the typ rather than point at JOSE.
+						if strings.HasSuffix(typ, "+sd-jwt") && !isJOSECredentialTyp(typ) {
+							return nil, fmt.Errorf("failed to parse credential: unsupported SD-JWT typ %q: only vc+sd-jwt is read", typ)
+						}
 						if isJOSECredentialTyp(typ) {
 							return ParseJOSECredential(valStr, opts...)
 						}
