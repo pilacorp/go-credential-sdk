@@ -1,0 +1,12 @@
+go-credential-sdk / jose
+Copyright (c) 2026 Pila Corp
+Licensed under the MIT License (see LICENSE at the repository root).
+
+Package jose is written from scratch.
+
+Third-party code: none is copied into this module. It depends on
+github.com/decred/dcrd/dcrec/secp256k1/v4 (ISC License) for secp256k1.
+
+Files ported from Apache-2.0 projects (jose/sdjwt, from sd-jwt-python and
+eudi-lib-jvm-sdjwt-kt) carry a header naming their source file and are listed
+here when they are added.
