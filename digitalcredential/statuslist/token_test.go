@@ -110,6 +110,7 @@ func TestSignTokenRules(t *testing.T) {
 		k    func(*SigningKey)
 	}{
 		{"nil list", nil, nil, nil},
+		{"zero list", &List{}, nil, nil},
 		{"no sub", l, func(c *TokenClaims) { c.Sub = "" }, nil},
 		{"http sub", l, func(c *TokenClaims) { c.Sub = "http://x.example/l" }, nil},
 		{"sub without host", l, func(c *TokenClaims) { c.Sub = "https:///l" }, nil},

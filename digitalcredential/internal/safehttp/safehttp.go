@@ -141,17 +141,36 @@ var (
 	// sharedAddressSpace is 100.64.0.0/10 (RFC 6598, carrier-grade NAT); some
 	// clouds serve instance metadata there (100.100.100.200).
 	sharedAddressSpace = netip.MustParsePrefix("100.64.0.0/10")
-	broadcast          = netip.MustParseAddr("255.255.255.255")
+	// 192.0.0.0/24 (IETF protocol assignments, RFC 6890), 198.18.0.0/15
+	// (benchmarking, RFC 2544) and 240.0.0.0/4 (reserved, RFC 1112; it holds
+	// the broadcast address 255.255.255.255).
+	ietfProtocol = netip.MustParsePrefix("192.0.0.0/24")
+	benchmarking = netip.MustParsePrefix("198.18.0.0/15")
+	reserved     = netip.MustParsePrefix("240.0.0.0/4")
 	// nat64 is the well-known NAT64 prefix 64:ff9b::/96 (RFC 6052): the last
 	// four bytes are an IPv4 address that a NAT64 gateway connects to.
 	nat64 = netip.MustParsePrefix("64:ff9b::/96")
+	// sixToFour is 2002::/16 (RFC 3056): bytes 2 to 5 are the IPv4 address
+	// the packets are tunnelled to.
+	sixToFour = netip.MustParsePrefix("2002::/16")
+	// ipv4Compatible is ::/96, the deprecated IPv4-compatible form
+	// ::a.b.c.d (RFC 4291 §2.5.5.1).
+	ipv4Compatible = netip.MustParsePrefix("::/96")
+	// teredo is 2001::/32 (RFC 4380); the IPv4 addresses it carries are
+	// obfuscated, so the whole prefix is refused.
+	teredo = netip.MustParsePrefix("2001::/32")
+	// siteLocal is the deprecated fec0::/10 (RFC 3879), still routed
+	// internally by some networks.
+	siteLocal = netip.MustParsePrefix("fec0::/10")
 )
 
 // Blocked reports whether a connection to a must be refused: loopback,
 // private (RFC 1918, fc00::/7), link-local (169.254/16, fe80::/10),
-// unspecified, multicast, and the IPv4-mapped (::ffff:a.b.c.d) and NAT64
-// (64:ff9b::a.b.c.d) forms of each. 0.0.0.0/8, 100.64.0.0/10 and
-// 255.255.255.255 are refused too.
+// unspecified, multicast, and the IPv4-mapped (::ffff:a.b.c.d),
+// IPv4-compatible (::a.b.c.d), 6to4 (2002:aabb:ccdd::) and NAT64
+// (64:ff9b::a.b.c.d) forms of each. 0.0.0.0/8, 100.64.0.0/10, 192.0.0.0/24,
+// 198.18.0.0/15, 240.0.0.0/4 (255.255.255.255 included), Teredo 2001::/32 and
+// site-local fec0::/10 are refused too.
 func Blocked(a netip.Addr) bool {
 	a = a.WithZone("")
 	if !a.IsValid() {
@@ -160,9 +179,12 @@ func Blocked(a netip.Addr) bool {
 	if a.Is4In6() {
 		a = a.Unmap()
 	}
-	if nat64.Contains(a) {
-		b := a.As16()
+	b := a.As16()
+	switch {
+	case nat64.Contains(a), ipv4Compatible.Contains(a) && !a.IsUnspecified():
 		a = netip.AddrFrom4([4]byte(b[12:16]))
+	case sixToFour.Contains(a):
+		a = netip.AddrFrom4([4]byte(b[2:6]))
 	}
 	return a.IsLoopback() ||
 		a.IsPrivate() ||
@@ -173,7 +195,11 @@ func Blocked(a netip.Addr) bool {
 		a.IsInterfaceLocalMulticast() ||
 		thisNetwork.Contains(a) ||
 		sharedAddressSpace.Contains(a) ||
-		a == broadcast
+		ietfProtocol.Contains(a) ||
+		benchmarking.Contains(a) ||
+		reserved.Contains(a) ||
+		teredo.Contains(a) ||
+		siteLocal.Contains(a)
 }
 
 func checkRedirect(maxRedirects int) func(*http.Request, []*http.Request) error {

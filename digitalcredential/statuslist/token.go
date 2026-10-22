@@ -60,6 +60,9 @@ func SignToken(l *List, c TokenClaims, key SigningKey) (string, error) {
 	if l == nil {
 		return "", fmt.Errorf("%w: nil list", ErrInvalidArgument)
 	}
+	if !validBits(l.bits) || len(l.data) == 0 {
+		return "", fmt.Errorf("%w: list must come from New or FromBytes", ErrInvalidArgument)
+	}
 	if err := checkTokenClaims(c); err != nil {
 		return "", err
 	}

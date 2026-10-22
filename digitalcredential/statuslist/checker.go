@@ -68,7 +68,8 @@ type Options struct {
 	Issuers IssuerKeyResolver
 	// AllowedAlgs of the token signature; default {"ES256", "ES256K"}.
 	AllowedAlgs []string
-	// ClockSkew allowed on iat and exp; default 1 minute, never negative.
+	// ClockSkew allowed on iat and exp, never negative. 0 means the default
+	// of 1 minute, so zero tolerance cannot be expressed.
 	ClockSkew time.Duration
 	// Now returns the current time; default time.Now.
 	Now func() time.Time
@@ -176,7 +177,7 @@ func NewChecker(o Options) (*Checker, error) {
 // reading of later steps; the token-only Checker does not use it.
 //
 // Steps, in statium's order:
-//  1. a cached list for (iss, ref.URI) that has not expired → step 7;
+//  1. a cached list for (iss, ref.URI) that has not expired → step 9;
 //  2. GET ref.URI with Accept: application/statuslist+jwt, through the
 //     SSRF-checking client, within Timeout, MaxRedirects and MaxBytes; status
 //     200 and Content-Type application/statuslist+jwt;
@@ -187,11 +188,12 @@ func NewChecker(o Options) (*Checker, error) {
 //  5. sub equals ref.URI character for character;
 //  6. iat present and ≤ now + skew; exp, if present, ≥ now − skew;
 //  7. status_list.lst decoded with status_list.bits (1, 2, 4 or 8) within
-//     MaxListBytes; entry ref.Index read (ErrIndexOutOfRange outside);
-//  8. cached until min(now + ttl, now + 24 h, exp); no ttl, no cache.
+//     MaxListBytes;
+//  8. cached until min(now + ttl, now + 24 h, exp); no ttl, no cache;
+//  9. entry ref.Index read (ErrIndexOutOfRange outside).
 //
 // Any failure is returned as an error, never as a status value; nothing that
-// failed is cached.
+// failed steps 2 to 7 is cached.
 func (c *Checker) Status(ctx context.Context, ref Ref, iss, vct string) (*Result, error) {
 	if err := checkHTTPSURI(ref.URI); err != nil {
 		return nil, fmt.Errorf("%w: uri: %v", ErrInvalidArgument, err)
@@ -220,14 +222,13 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss, vct string) (*Result
 	if err != nil {
 		return nil, err
 	}
-	res, err := read(l, ref.Index)
-	if err != nil {
-		return nil, err
-	}
+	// The list is verified: cache it before reading the index, so an index
+	// past its end is answered from the cache next time instead of fetching
+	// the list again.
 	if c.cache != nil && expires.After(now) {
 		c.cache.put(key, l, expires)
 	}
-	return res, nil
+	return read(l, ref.Index)
 }
 
 func read(l *List, i int) (*Result, error) {
@@ -245,8 +246,8 @@ func cacheKey(iss, uri string) string {
 	return strconv.Itoa(len(iss)) + ":" + iss + uri
 }
 
-// verifyToken runs steps 3 to 8 and returns the list and the time its cache
-// entry expires (zero: do not cache).
+// verifyToken runs steps 3 to 7 and returns the list and the time its cache
+// entry expires (step 8; zero: do not cache).
 func (c *Checker) verifyToken(ctx context.Context, token, uri, iss string, now time.Time) (*List, time.Time, error) {
 	var none time.Time
 	header, err := unverifiedHeader(token)

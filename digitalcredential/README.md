@@ -46,8 +46,9 @@ and returns the raw value. Every failure is an error, never a status. The list i
 at most 24 hours and never past `exp`.
 
 Limits: 5 s per fetch, 3 redirects (HTTPS only), 64 KB of token, 16 MB inflated. The default HTTP client refuses
-loopback, private, link-local, unspecified, multicast and IPv4-mapped forms of these at the dialer
-(`ErrBlockedAddress`), which also covers redirects and DNS answers. `Options.AllowPrivateNetworks` exists for tests and
-local development only.
+loopback, private, link-local, CGNAT (100.64/10), 0.0.0.0/8, unspecified, multicast, broadcast, reserved (192.0.0/24,
+198.18/15, 240/4) and site-local (fec0::/10) addresses, the IPv4-mapped, IPv4-compatible, 6to4 and NAT64 forms of
+these, and Teredo (2001::/32), at the dialer (`ErrBlockedAddress`), which also covers redirects and DNS answers.
+`Options.AllowPrivateNetworks` exists for tests and local development only.
 
 Reading a list back from the chain is a follow-up.

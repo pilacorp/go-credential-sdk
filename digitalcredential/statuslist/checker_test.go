@@ -352,6 +352,23 @@ func TestCheckerCacheByTTL(t *testing.T) {
 	}
 }
 
+// TestCheckerCachesBeforeIndex: a verified list is cached even when the index
+// asked for is past its end, so the next status of that list is not fetched
+// again.
+func TestCheckerCachesBeforeIndex(t *testing.T) {
+	e := newEnv(t, Options{})
+	e.serve(t, mustList(t, 16, 1, map[int]byte{3: 1}), TokenClaims{TTL: time.Minute})
+	if _, err := e.status(16); !errors.Is(err, ErrIndexOutOfRange) {
+		t.Fatalf("index 16: %v, want ErrIndexOutOfRange", err)
+	}
+	if res, err := e.status(3); err != nil || res.Value != 1 {
+		t.Fatalf("Status(3) = %v, %v", res, err)
+	}
+	if n := e.srv.count(); n != 1 {
+		t.Fatalf("%d fetches, want 1: the list was not cached after an out-of-range index", n)
+	}
+}
+
 func TestCheckerNoTTLNoCache(t *testing.T) {
 	e := newEnv(t, Options{})
 	e.serve(t, mustList(t, 16, 1, nil), TokenClaims{})
