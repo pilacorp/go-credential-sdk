@@ -12,7 +12,7 @@ import (
 	credentialstatus "github.com/pilacorp/go-credential-sdk/credential/common/credential-status"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
-	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
 // extractFieldFromMap extracts a field value from a map using dot-notation path.
@@ -590,7 +590,7 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 		return fmt.Errorf("failed to parse validUntil: %w", err)
 	}
 
-	return jwtutil.CheckValidityPeriod("credential", validFrom, validUntil, leeway)
+	return vcdm.CheckValidityPeriod("credential", validFrom, validUntil, leeway)
 }
 
 // checkRevocation checks that credentialStatus is present and, if using a

@@ -8,6 +8,11 @@
 // apart, which is a bug this repository has already shipped once.
 package vcdm
 
+import (
+	"fmt"
+	"time"
+)
+
 // ContextV2 is the @context VC Data Model 2.0 § 4.2 requires first on every
 // credential and presentation.
 const ContextV2 = "https://www.w3.org/ns/credentials/v2"
@@ -59,4 +64,32 @@ func FirstContext(v interface{}) string {
 	}
 
 	return ""
+}
+
+// CheckValidityPeriod enforces a document's validFrom/validUntil (RFC 3339
+// strings, empty when absent) at the current time, widened by leeway on both
+// sides. what names the document in the error ("credential", "presentation").
+func CheckValidityPeriod(what, validFrom, validUntil string, leeway time.Duration) error {
+	now := time.Now()
+	if validFrom != "" {
+		t, err := time.Parse(time.RFC3339, validFrom)
+		if err != nil {
+			return fmt.Errorf("failed to parse validFrom: %w", err)
+		}
+		if now.Add(leeway).Before(t) {
+			return fmt.Errorf("%s is not valid yet", what)
+		}
+	}
+
+	if validUntil != "" {
+		t, err := time.Parse(time.RFC3339, validUntil)
+		if err != nil {
+			return fmt.Errorf("failed to parse validUntil: %w", err)
+		}
+		if now.Add(-leeway).After(t) {
+			return fmt.Errorf("%s is expired", what)
+		}
+	}
+
+	return nil
 }

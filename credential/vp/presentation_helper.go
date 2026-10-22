@@ -9,7 +9,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
-	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
@@ -56,7 +56,7 @@ func checkExpiration(p PresentationData, leeway time.Duration) error {
 		return fmt.Errorf("failed to parse validUntil: %w", err)
 	}
 
-	return jwtutil.CheckValidityPeriod("presentation", validFrom, validUntil, leeway)
+	return vcdm.CheckValidityPeriod("presentation", validFrom, validUntil, leeway)
 }
 
 // verifyCredentials verifies every embedded credential's proof, plus whatever
