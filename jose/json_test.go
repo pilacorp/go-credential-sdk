@@ -2,6 +2,8 @@ package jose
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -69,5 +71,33 @@ func TestEncodeJSONNoHTMLEscapingNoNewline(t *testing.T) {
 	}
 	if want := `{"a":"Nguyễn","b":"<a&b>"}`; string(got) != want {
 		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestDecodeJSONCapsNesting(t *testing.T) {
+	nested := func(n int, open, close string) string {
+		return strings.Repeat(open, n) + "1" + strings.Repeat(close, n)
+	}
+	for name, in := range map[string]string{
+		"arrays at the limit":  nested(MaxJSONDepth, "[", "]"),
+		"objects at the limit": nested(MaxJSONDepth, `{"a":`, "}"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeJSON([]byte(in)); err != nil {
+				t.Fatalf("depth %d refused: %v", MaxJSONDepth, err)
+			}
+		})
+	}
+	for name, in := range map[string]string{
+		"arrays one past the limit":  nested(MaxJSONDepth+1, "[", "]"),
+		"objects one past the limit": nested(MaxJSONDepth+1, `{"a":`, "}"),
+		"a megabyte of open arrays":  strings.Repeat("[", 1<<20),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := DecodeJSON([]byte(in))
+			if !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "nesting deeper") {
+				t.Fatalf("got %v, want the nesting limit as ErrMalformed", err)
+			}
+		})
 	}
 }

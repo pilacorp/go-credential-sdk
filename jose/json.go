@@ -9,6 +9,10 @@ import (
 	"unicode/utf8"
 )
 
+// MaxJSONDepth is the deepest nesting of objects and arrays DecodeJSON
+// accepts. Real headers, payloads and disclosures stay far below it.
+const MaxJSONDepth = 64
+
 // DecodeJSON parses data as exactly one JSON value, under the rules every
 // header, payload and disclosure is read with:
 //   - a duplicate key, at any depth, is rejected. encoding/json keeps the last
@@ -18,7 +22,10 @@ import (
 //   - numbers are kept as json.Number, so large integers keep every digit;
 //   - anything after the value but whitespace is rejected;
 //   - the input must be valid UTF-8 (RFC 8259); encoding/json would replace
-//     invalid bytes with U+FFFD silently.
+//     invalid bytes with U+FFFD silently;
+//   - objects and arrays nest at most MaxJSONDepth deep. The check runs while
+//     reading, so a megabyte of "[[[[" is refused at the first level past the
+//     limit instead of being decoded into hundreds of megabytes first.
 //
 // Objects come back as map[string]any, arrays as []any (never nil).
 func DecodeJSON(data []byte) (any, error) {
@@ -27,7 +34,7 @@ func DecodeJSON(data []byte) (any, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	v, err := readJSONValue(dec)
+	v, err := readJSONValue(dec, 0)
 	if err != nil {
 		return nil, fmt.Errorf("%w: JSON: %v", ErrMalformed, err)
 	}
@@ -64,7 +71,7 @@ func EncodeJSON(v any) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-func readJSONValue(dec *json.Decoder) (any, error) {
+func readJSONValue(dec *json.Decoder, depth int) (any, error) {
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, err
@@ -72,6 +79,9 @@ func readJSONValue(dec *json.Decoder) (any, error) {
 	delim, ok := tok.(json.Delim)
 	if !ok {
 		return tok, nil // string, json.Number, bool or nil
+	}
+	if depth >= MaxJSONDepth {
+		return nil, fmt.Errorf("nesting deeper than %d", MaxJSONDepth)
 	}
 	switch delim {
 	case '{':
@@ -88,7 +98,7 @@ func readJSONValue(dec *json.Decoder) (any, error) {
 			if _, dup := obj[key]; dup {
 				return nil, fmt.Errorf("duplicate key %q", key)
 			}
-			val, err := readJSONValue(dec)
+			val, err := readJSONValue(dec, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -101,7 +111,7 @@ func readJSONValue(dec *json.Decoder) (any, error) {
 	case '[':
 		arr := []any{}
 		for dec.More() {
-			val, err := readJSONValue(dec)
+			val, err := readJSONValue(dec, depth+1)
 			if err != nil {
 				return nil, err
 			}
