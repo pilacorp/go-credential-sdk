@@ -545,7 +545,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 
 	// checkExpiration always runs sequentially after parallel validations
 	if options.isCheckExpiration {
-		if err := checkExpiration(e.credentialData); err != nil {
+		if err := checkExpiration(e.credentialData, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}

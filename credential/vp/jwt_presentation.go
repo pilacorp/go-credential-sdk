@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -296,10 +295,10 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 		// The document's own window is reported first, so a presentation that was
 		// already refused keeps the message it had; the RFC 7519 wording appears
 		// only for tokens whose exp or nbf nothing else covers.
-		if err := checkExpiration(PresentationData(j.payloadData)); err != nil {
+		if err := checkExpiration(PresentationData(j.payloadData), options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
-		if err := jwtutil.CheckTimeClaims(j.jwtClaims, time.Now()); err != nil {
+		if err := jwtutil.CheckTimeClaims(j.jwtClaims, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}

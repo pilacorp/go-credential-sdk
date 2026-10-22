@@ -33,12 +33,17 @@ func SetIssuedAt(payload map[string]interface{}, builtAt time.Time) {
 // for processing" on or after exp, nor before nbf. Issuers on other
 // implementations set them even though this SDK does not, and the RFC binds on
 // what the token says rather than on who wrote it.
-func CheckTimeClaims(payload map[string]interface{}, now time.Time) error {
+//
+// leeway widens both bounds to absorb clock skew between issuer and verifier,
+// as RFC 7519 allows ("some small leeway, usually no more than a few minutes").
+// Zero keeps the exact comparison.
+func CheckTimeClaims(payload map[string]interface{}, leeway time.Duration) error {
+	now := time.Now()
 	sec, ok, err := NumericClaim(payload, "nbf")
 	if err != nil {
 		return err
 	}
-	if ok && now.Before(time.Unix(sec, 0)) {
+	if ok && now.Add(leeway).Before(time.Unix(sec, 0)) {
 		return fmt.Errorf("signature is not valid before %s (nbf)", time.Unix(sec, 0).UTC().Format(time.RFC3339))
 	}
 
@@ -46,8 +51,36 @@ func CheckTimeClaims(payload map[string]interface{}, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	if ok && !now.Before(time.Unix(sec, 0)) {
+	if ok && !now.Add(-leeway).Before(time.Unix(sec, 0)) {
 		return fmt.Errorf("signature expired at %s (exp)", time.Unix(sec, 0).UTC().Format(time.RFC3339))
+	}
+
+	return nil
+}
+
+// CheckValidityPeriod enforces a document's validFrom/validUntil (RFC 3339
+// strings, empty when absent) at the current time, widened by leeway on both
+// sides. what names the document in the error ("credential", "presentation").
+func CheckValidityPeriod(what, validFrom, validUntil string, leeway time.Duration) error {
+	now := time.Now()
+	if validFrom != "" {
+		t, err := time.Parse(time.RFC3339, validFrom)
+		if err != nil {
+			return fmt.Errorf("failed to parse validFrom: %w", err)
+		}
+		if now.Add(leeway).Before(t) {
+			return fmt.Errorf("%s is not valid yet", what)
+		}
+	}
+
+	if validUntil != "" {
+		t, err := time.Parse(time.RFC3339, validUntil)
+		if err != nil {
+			return fmt.Errorf("failed to parse validUntil: %w", err)
+		}
+		if now.Add(-leeway).After(t) {
+			return fmt.Errorf("%s is expired", what)
+		}
 	}
 
 	return nil

@@ -130,6 +130,7 @@ type credentialOptions struct {
 	isValidateSchema        bool
 	isVerifyProof           bool
 	isCheckExpiration       bool
+	leeway                  time.Duration
 	isCheckRevocation       bool
 	didBaseURL              string
 	verificationMethodKey   string
@@ -258,6 +259,19 @@ func WithVerifyProof() CredentialOpt {
 func WithCheckExpiration() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckExpiration = true
+	}
+}
+
+// WithLeeway tolerates clock skew between issuer and verifier: every time check
+// against the current time — validFrom/validUntil and the JWT nbf/exp claims —
+// is widened by d on both sides. It turns no check on by itself. Zero, the
+// default, compares exactly; a negative d counts as zero. It does not touch the
+// revocation check, which compares iat with the time a key was revoked, not
+// with the current time. A large d also keeps an expired credential usable for
+// that long, so keep it to the skew you expect, usually seconds.
+func WithLeeway(d time.Duration) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.leeway = max(d, 0)
 	}
 }
 
