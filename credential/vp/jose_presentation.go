@@ -508,7 +508,7 @@ func (j *JOSEPresentation) executeOptions(opts ...PresentationOpt) error {
 			// exp and nbf bound the signature, not the presentation, so they
 			// belong to this check and not to the optional expiry check on
 			// validFrom/validUntil.
-			if err := jwtutil.CheckTimeClaims(j.payloadData, time.Now()); err != nil {
+			if err := jwtutil.CheckTimeClaims(j.payloadData, options.leeway); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
 			if err := j.checkChallengeAndDomain(options); err != nil {
@@ -523,7 +523,7 @@ func (j *JOSEPresentation) executeOptions(opts ...PresentationOpt) error {
 	}
 
 	if options.isCheckExpiration {
-		if err := checkExpiration(j.payloadData); err != nil {
+		if err := checkExpiration(j.payloadData, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}

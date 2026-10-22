@@ -89,6 +89,7 @@ type presentationOptions struct {
 	vcOpts                  []vc.CredentialOpt
 	isVerifyProof           bool
 	isCheckExpiration       bool
+	leeway                  time.Duration
 	didBaseURL              string
 	verificationMethodKey   string
 	resolver                verificationmethod.ResolverProvider
@@ -174,6 +175,19 @@ func WithVerifyProof() PresentationOpt {
 func WithCheckExpiration() PresentationOpt {
 	return func(p *presentationOptions) {
 		p.isCheckExpiration = true
+	}
+}
+
+// WithLeeway tolerates clock skew between holder and verifier: every time check
+// against the current time — validFrom/validUntil and the JWT nbf/exp claims —
+// is widened by d on both sides. It turns no check on by itself. Zero, the
+// default, compares exactly; a negative d counts as zero. With
+// WithVCValidation the same leeway reaches the embedded credentials, unless a
+// vc.WithLeeway passed there says otherwise. A large d also keeps an expired
+// presentation usable for that long, so keep it to the skew you expect.
+func WithLeeway(d time.Duration) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.leeway = max(d, 0)
 	}
 }
 

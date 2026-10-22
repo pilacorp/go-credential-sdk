@@ -392,7 +392,7 @@ func TestCheckExpiration_ValidWindow(t *testing.T) {
 		"validUntil": now.Add(1 * time.Hour).Format(time.RFC3339),
 	}
 
-	err := checkExpiration(credential)
+	err := checkExpiration(credential, 0)
 	assert.NoError(t, err)
 }
 
@@ -402,7 +402,7 @@ func TestCheckExpiration_NotValidYet(t *testing.T) {
 		"validFrom": now.Add(1 * time.Hour).Format(time.RFC3339),
 	}
 
-	err := checkExpiration(credential)
+	err := checkExpiration(credential, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "credential is not valid yet")
 }
@@ -413,7 +413,7 @@ func TestCheckExpiration_Expired(t *testing.T) {
 		"validUntil": now.Add(-1 * time.Hour).Format(time.RFC3339),
 	}
 
-	err := checkExpiration(credential)
+	err := checkExpiration(credential, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "credential is expired")
 }

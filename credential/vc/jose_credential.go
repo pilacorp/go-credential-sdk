@@ -606,7 +606,7 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 			// exp and nbf bound the signature, not the credential, so they
 			// belong to this check and not to the optional expiry check on
 			// validFrom/validUntil.
-			if err := jwtutil.CheckTimeClaims(j.payloadData, time.Now()); err != nil {
+			if err := jwtutil.CheckTimeClaims(j.payloadData, options.leeway); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
 			return nil
@@ -618,7 +618,7 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	if options.isCheckExpiration {
-		if err := checkExpiration(j.payloadData); err != nil {
+		if err := checkExpiration(j.payloadData, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}

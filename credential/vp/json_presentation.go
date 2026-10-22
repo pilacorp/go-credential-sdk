@@ -244,7 +244,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	}
 
 	if options.isCheckExpiration {
-		if err := checkExpiration(PresentationData(e.presentationData)); err != nil {
+		if err := checkExpiration(PresentationData(e.presentationData), options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -403,10 +402,10 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 		// The credential's own window is reported first, so a credential that was
 		// already refused keeps the message it had; the RFC 7519 wording appears
 		// only for tokens whose exp or nbf nothing else covers.
-		if err := checkExpiration(j.payloadData); err != nil {
+		if err := checkExpiration(j.payloadData, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
-		if err := jwtutil.CheckTimeClaims(j.jwtClaims, time.Now()); err != nil {
+		if err := jwtutil.CheckTimeClaims(j.jwtClaims, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}

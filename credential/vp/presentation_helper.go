@@ -9,6 +9,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
@@ -43,44 +44,24 @@ func parseStringField(obj PresentationData, fieldName string) (string, error) {
 	return "", nil
 }
 
-// checkExpiration checks if the presentation is within its valid time window.
-func checkExpiration(p PresentationData) error {
-	// Check if the presentation is valid from a specific time
+// checkExpiration checks that the presentation is inside its validFrom/validUntil
+// window, widened by leeway on both sides to absorb clock skew.
+func checkExpiration(p PresentationData, leeway time.Duration) error {
 	validFrom, err := parseStringField(p, "validFrom")
 	if err != nil {
 		return fmt.Errorf("failed to parse validFrom: %w", err)
 	}
-	if validFrom != "" {
-		validFromTime, err := time.Parse(time.RFC3339, validFrom)
-		if err != nil {
-			return fmt.Errorf("failed to parse validFrom: %w", err)
-		}
-		if time.Now().Before(validFromTime) {
-			return fmt.Errorf("presentation is not valid yet")
-		}
-	}
-
-	// Check if the presentation is valid until a specific time
 	validUntil, err := parseStringField(p, "validUntil")
 	if err != nil {
 		return fmt.Errorf("failed to parse validUntil: %w", err)
 	}
-	if validUntil != "" {
-		validUntilTime, err := time.Parse(time.RFC3339, validUntil)
-		if err != nil {
-			return fmt.Errorf("failed to parse validUntil: %w", err)
-		}
-		if time.Now().After(validUntilTime) {
-			return fmt.Errorf("presentation is expired")
-		}
-	}
 
-	return nil
+	return vcdm.CheckValidityPeriod("presentation", validFrom, validUntil, leeway)
 }
 
 // verifyCredentials verifies every embedded credential's proof, plus whatever
-// vc options WithVCValidation forwarded. The presentation resolver goes first
-// so a caller-supplied vc.WithResolver overrides it.
+// vc options WithVCValidation forwarded. The presentation resolver and leeway
+// go first so a caller-supplied vc.WithResolver or vc.WithLeeway overrides them.
 func verifyCredentials(jsonPresentation PresentationData, options *presentationOptions) error {
 	contents, err := parsePresentationContents(jsonPresentation)
 	if err != nil {
@@ -93,8 +74,8 @@ func verifyCredentials(jsonPresentation PresentationData, options *presentationO
 		return fmt.Errorf("credential input is nil")
 	}
 
-	vcOpts := make([]vc.CredentialOpt, 0, 1+len(options.vcOpts))
-	vcOpts = append(vcOpts, vc.WithResolver(options.resolver))
+	vcOpts := make([]vc.CredentialOpt, 0, 2+len(options.vcOpts))
+	vcOpts = append(vcOpts, vc.WithResolver(options.resolver), vc.WithLeeway(options.leeway))
 	vcOpts = append(vcOpts, options.vcOpts...)
 
 	for i, v := range vcs {

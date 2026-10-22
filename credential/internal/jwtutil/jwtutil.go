@@ -33,12 +33,17 @@ func SetIssuedAt(payload map[string]interface{}, builtAt time.Time) {
 // for processing" on or after exp, nor before nbf. Issuers on other
 // implementations set them even though this SDK does not, and the RFC binds on
 // what the token says rather than on who wrote it.
-func CheckTimeClaims(payload map[string]interface{}, now time.Time) error {
+//
+// leeway widens both bounds to absorb clock skew between issuer and verifier,
+// as RFC 7519 allows ("some small leeway, usually no more than a few minutes").
+// Zero keeps the exact comparison.
+func CheckTimeClaims(payload map[string]interface{}, leeway time.Duration) error {
+	now := time.Now()
 	sec, ok, err := NumericClaim(payload, "nbf")
 	if err != nil {
 		return err
 	}
-	if ok && now.Before(time.Unix(sec, 0)) {
+	if ok && now.Add(leeway).Before(time.Unix(sec, 0)) {
 		return fmt.Errorf("signature is not valid before %s (nbf)", time.Unix(sec, 0).UTC().Format(time.RFC3339))
 	}
 
@@ -46,7 +51,7 @@ func CheckTimeClaims(payload map[string]interface{}, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	if ok && !now.Before(time.Unix(sec, 0)) {
+	if ok && !now.Add(-leeway).Before(time.Unix(sec, 0)) {
 		return fmt.Errorf("signature expired at %s (exp)", time.Unix(sec, 0).UTC().Format(time.RFC3339))
 	}
 

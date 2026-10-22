@@ -27,11 +27,12 @@ func TestSetIssuedAt(t *testing.T) {
 }
 
 func TestCheckTimeClaims(t *testing.T) {
-	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	now := time.Now()
 
 	cases := []struct {
 		name    string
 		payload map[string]interface{}
+		leeway  time.Duration
 		wantErr string
 	}{
 		{
@@ -57,11 +58,39 @@ func TestCheckTimeClaims(t *testing.T) {
 			payload: map[string]interface{}{"exp": float64(now.Unix())},
 			wantErr: "signature expired at",
 		},
+		{
+			name:    "nbf ahead of the verifier clock, within leeway",
+			payload: map[string]interface{}{"nbf": float64(now.Add(5 * time.Second).Unix())},
+			leeway:  10 * time.Second,
+		},
+		{
+			name:    "nbf ahead of the verifier clock, beyond leeway",
+			payload: map[string]interface{}{"nbf": float64(now.Add(15 * time.Second).Unix())},
+			leeway:  10 * time.Second,
+			wantErr: "not valid before",
+		},
+		{
+			name:    "exp just passed, within leeway",
+			payload: map[string]interface{}{"exp": float64(now.Add(-5 * time.Second).Unix())},
+			leeway:  10 * time.Second,
+		},
+		{
+			name:    "exp passed, beyond leeway",
+			payload: map[string]interface{}{"exp": float64(now.Add(-15 * time.Second).Unix())},
+			leeway:  10 * time.Second,
+			wantErr: "signature expired at",
+		},
+		{
+			name:    "exp exactly at the edge of leeway is expired",
+			payload: map[string]interface{}{"exp": float64(now.Add(-10 * time.Second).Unix())},
+			leeway:  10 * time.Second,
+			wantErr: "signature expired at",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckTimeClaims(tc.payload, now)
+			err := CheckTimeClaims(tc.payload, tc.leeway)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
