@@ -1,0 +1,21 @@
+go-credential-sdk / digitalcredential
+Copyright (c) 2026 Pila Corp
+Licensed under the MIT License (see LICENSE at the repository root).
+
+Third-party code: none is copied into this module. It depends on the jose
+module of this repository.
+
+Rewritten following Apache-2.0 projects (the files carry a header naming the
+source they follow):
+- statuslist/list.go, statuslist/checker.go follow eudi-lib-kmp-statium
+  (https://github.com/eu-digital-identity-wallet/eudi-lib-kmp-statium, commit
+  118171ff25c4dcd8f74e6f30ceb58f245ec3ea4e): ReadStatus.kt,
+  GetStatusListToken.kt, StatusListTokenValidations.kt, GetStatus.kt.
+  Copyright the European Commission, Apache License 2.0.
+
+Test data:
+- testdata/statuslist/draft21-appendix-c.json holds the test vectors of
+  Appendix C of draft-ietf-oauth-status-list-21. Copyright (c) 2026 IETF Trust
+  and the persons identified as the document authors; code components are
+  available under the Revised BSD License (BCP 78, IETF Trust Legal
+  Provisions).
