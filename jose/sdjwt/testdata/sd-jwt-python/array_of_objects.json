@@ -1,0 +1,111 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/array_of_objects/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "addresses": [
+      {
+        "street": "123 Main St",
+        "city": "Anytown",
+        "state": "NY",
+        "zip": "12345",
+        "type": "main_address"
+      },
+      {
+        "street": "456 Main St",
+        "city": "Anytown",
+        "state": "NY",
+        "zip": "12345",
+        "type": "secondary_address"
+      }
+    ],
+    "array_with_one_sd_object": [
+      {
+        "foo": "bar"
+      }
+    ]
+  },
+  "conceal": [
+    {
+      "path": [
+        "addresses",
+        1
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "array_with_one_sd_object",
+        0,
+        "foo"
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgeyJzdHJlZXQiOiAiNDU2IE1haW4gU3QiLCAiY2l0eSI6ICJBbnl0b3duIiwgInN0YXRlIjogIk5ZIiwgInppcCI6ICIxMjM0NSIsICJ0eXBlIjogInNlY29uZGFyeV9hZGRyZXNzIn1d",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgImZvbyIsICJiYXIiXQ"
+  ],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "addresses": [
+      {
+        "street": "123 Main St",
+        "city": "Anytown",
+        "state": "NY",
+        "zip": "12345",
+        "type": "main_address"
+      },
+      {
+        "...": "k63-wMoGu03I9dCyrrNnB0ncOXLZhYaA_Q4lCKFIWcU"
+      }
+    ],
+    "array_with_one_sd_object": [
+      {
+        "_sd": [
+          "1R6ziZ1b4uvXf4-DuKx0JSDRoeVTGrzJldw7Jgqac3Q"
+        ]
+      }
+    ],
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {
+    "addresses": [
+      null,
+      true
+    ],
+    "array_with_one_sd_object": [
+      {
+        "foo": true
+      }
+    ]
+  },
+  "presented": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgeyJzdHJlZXQiOiAiNDU2IE1haW4gU3QiLCAiY2l0eSI6ICJBbnl0b3duIiwgInN0YXRlIjogIk5ZIiwgInppcCI6ICIxMjM0NSIsICJ0eXBlIjogInNlY29uZGFyeV9hZGRyZXNzIn1d",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgImZvbyIsICJiYXIiXQ"
+  ],
+  "expect_verified_user_claims": {
+    "addresses": [
+      {
+        "street": "123 Main St",
+        "city": "Anytown",
+        "state": "NY",
+        "zip": "12345",
+        "type": "main_address"
+      },
+      {
+        "street": "456 Main St",
+        "city": "Anytown",
+        "state": "NY",
+        "zip": "12345",
+        "type": "secondary_address"
+      }
+    ],
+    "array_with_one_sd_object": [
+      {
+        "foo": "bar"
+      }
+    ],
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

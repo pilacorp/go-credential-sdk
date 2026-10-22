@@ -2,11 +2,39 @@ go-credential-sdk / jose
 Copyright (c) 2026 Pila Corp
 Licensed under the MIT License (see LICENSE at the repository root).
 
-Package jose is written from scratch.
-
-Third-party code: none is copied into this module. It depends on
+Package jose is written from scratch. It depends on
 github.com/decred/dcrd/dcrec/secp256k1/v4 (ISC License) for secp256k1.
 
-Files ported from Apache-2.0 projects (jose/sdjwt, from sd-jwt-python and
-eudi-lib-jvm-sdjwt-kt) carry a header naming their source file and are listed
-here when they are added.
+Package jose/sdjwt is ported from two projects licensed under the Apache
+License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0). Each ported
+file starts with a header naming its source files. The code was rewritten in
+Go, not copied; the deliberate differences are listed in the package docs.
+
+  sd-jwt-python, commit c5fda017d15e65a6c61a31e696bcdbdab2966b1e
+  https://github.com/openwallet-foundation-labs/sd-jwt-python
+  Copyright the sd-jwt-python contributors (OpenWallet Foundation Labs).
+    sdjwt/disclosure.go  from src/sd_jwt/disclosure.py
+    sdjwt/conceal.go     from src/sd_jwt/issuer.py
+    sdjwt/recreate.go    from src/sd_jwt/verifier.py
+    sdjwt/split.go       from src/sd_jwt/common.py
+    sdjwt/kb.go          from src/sd_jwt/common.py, holder.py, verifier.py
+    sdjwt/testdata/sd-jwt-python/
+                         from tests/testcases/ (claims, holder selection and
+                         expected claims; the issued disclosures and payloads
+                         were produced by the library's own issuer and holder,
+                         see generate.py there)
+
+  eudi-lib-jvm-sdjwt-kt, commit 19f408b901bac0246ae801acf8533b914a920d8c
+  https://github.com/eu-digital-identity-wallet/eudi-lib-jvm-sdjwt-kt
+  Copyright (c) 2023-2026 European Commission.
+    sdjwt/disclosure.go  from Disclosure.kt, Util.kt
+    sdjwt/conceal.go     from DecoyGen.kt
+    sdjwt/recreate.go    from RecreateClaims.kt, SdJwtVerifier.kt
+    sdjwt/kb.go          from SdJwtVerifier.kt
+  (paths under src/main/kotlin/eu/europa/ec/eudi/sdjwt/)
+
+sdjwt/testdata/rfc9901/ holds examples extracted from RFC 9901, Selective
+Disclosure for JSON Web Tokens (SD-JWT). Copyright (c) 2025 IETF Trust and the
+persons identified as the document authors. Code Components are licensed under
+the Revised BSD License, as described in Section 4.e of the IETF Trust Legal
+Provisions.

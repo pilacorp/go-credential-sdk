@@ -1,0 +1,115 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/array_recursive_sd/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "array_with_recursive_sd": [
+      "boring",
+      {
+        "foo": "bar",
+        "baz": {
+          "qux": "quux"
+        }
+      },
+      [
+        "foo",
+        "bar"
+      ]
+    ],
+    "test2": [
+      "foo",
+      "bar"
+    ]
+  },
+  "conceal": [
+    {
+      "path": [
+        "array_with_recursive_sd",
+        1,
+        "baz"
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "array_with_recursive_sd",
+        1
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    },
+    {
+      "path": [
+        "array_with_recursive_sd",
+        2,
+        0
+      ],
+      "salt": "6Ij7tM-a5iVPGboS5tmvVA"
+    },
+    {
+      "path": [
+        "array_with_recursive_sd",
+        2,
+        1
+      ],
+      "salt": "eI8ZWm9QnKPpNPeNenHdhQ"
+    },
+    {
+      "path": [
+        "test2",
+        0
+      ],
+      "salt": "Qg_O64zqAxe412a108iroA"
+    },
+    {
+      "path": [
+        "test2",
+        1
+      ],
+      "salt": "AJx-095VPrpTtN4QMOqROA"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgImJheiIsIHsicXV4IjogInF1dXgifV0",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgeyJfc2QiOiBbInNrd3p0bTY1dWkxUC1jenJjX08wbXFLM2ljdG9yQ0VvanI5OFU2TGtEUWciXSwgImZvbyI6ICJiYXIifV0",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgImZvbyJd",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgImJhciJd",
+    "WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgImZvbyJd",
+    "WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgImJhciJd"
+  ],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "array_with_recursive_sd": [
+      "boring",
+      {
+        "...": "JZvSesAZw0Ngs4RUyukL18dsLlqKWnu05HMa1yA-NKI"
+      },
+      [
+        {
+          "...": "nIfcWQ998mHk0zT6dqjqIFll9vWOOKU20DsJOgObaFo"
+        },
+        {
+          "...": "1xD8iJk249y6qcEhDbsIhz_CtSTvJeUNfx4fpomqxsk"
+        }
+      ]
+    ],
+    "test2": [
+      {
+        "...": "6YBn9BKcOwPfmIAf9O2R7i0aaCcoXzGJr9stMBba0vQ"
+      },
+      {
+        "...": "80Y6N_U6oslJjyn1y7uY6-vFgg75Az0mutem-Z_pBQc"
+      }
+    ],
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {},
+  "presented": [],
+  "expect_verified_user_claims": {
+    "array_with_recursive_sd": [
+      "boring",
+      []
+    ],
+    "test2": [],
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

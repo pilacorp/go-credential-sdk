@@ -1,0 +1,326 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/recursions/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "foo": [
+      "one",
+      "two"
+    ],
+    "bar": {
+      "red": 1,
+      "green": 2
+    },
+    "qux": [
+      [
+        "blue",
+        "yellow"
+      ]
+    ],
+    "baz": [
+      [
+        "orange",
+        "purple"
+      ],
+      [
+        "black",
+        "white"
+      ]
+    ],
+    "animals": {
+      "snake": {
+        "name": "python",
+        "age": 10
+      },
+      "bird": {
+        "name": "eagle",
+        "age": 20
+      }
+    }
+  },
+  "conceal": [
+    {
+      "path": [
+        "foo",
+        0
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "foo",
+        1
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    },
+    {
+      "path": [
+        "bar",
+        "red"
+      ],
+      "salt": "6Ij7tM-a5iVPGboS5tmvVA"
+    },
+    {
+      "path": [
+        "bar",
+        "green"
+      ],
+      "salt": "eI8ZWm9QnKPpNPeNenHdhQ"
+    },
+    {
+      "path": [
+        "qux",
+        0,
+        0
+      ],
+      "salt": "Qg_O64zqAxe412a108iroA"
+    },
+    {
+      "path": [
+        "qux",
+        0,
+        1
+      ],
+      "salt": "AJx-095VPrpTtN4QMOqROA"
+    },
+    {
+      "path": [
+        "qux",
+        0
+      ],
+      "salt": "Pc33JM2LchcU_lHggv_ufQ"
+    },
+    {
+      "path": [
+        "baz",
+        0,
+        0
+      ],
+      "salt": "G02NSrQfjFXQ7Io09syajA"
+    },
+    {
+      "path": [
+        "baz",
+        0,
+        1
+      ],
+      "salt": "lklxF5jMYlGTPUovMNIvCA"
+    },
+    {
+      "path": [
+        "baz",
+        0
+      ],
+      "salt": "nPuoQnkRFq3BIeAm7AnXFA"
+    },
+    {
+      "path": [
+        "baz",
+        1,
+        0
+      ],
+      "salt": "5bPs1IquZNa0hkaFzzzZNw"
+    },
+    {
+      "path": [
+        "baz",
+        1,
+        1
+      ],
+      "salt": "5a2W0_NrlEZzfqmk_7Pq-w"
+    },
+    {
+      "path": [
+        "baz",
+        1
+      ],
+      "salt": "y1sVU5wdfJahVdgwPgS7RQ"
+    },
+    {
+      "path": [
+        "animals",
+        "snake",
+        "name"
+      ],
+      "salt": "HbQ4X8srVW3QDxnIJdqyOA"
+    },
+    {
+      "path": [
+        "animals",
+        "snake",
+        "age"
+      ],
+      "salt": "C9GSoujviJquEgYfojCb1A"
+    },
+    {
+      "path": [
+        "animals",
+        "snake"
+      ],
+      "salt": "kx5kF17V-x0JmwUx9vgvtw"
+    },
+    {
+      "path": [
+        "animals",
+        "bird",
+        "name"
+      ],
+      "salt": "H3o1uswP760Fi2yeGdVCEQ"
+    },
+    {
+      "path": [
+        "animals",
+        "bird",
+        "age"
+      ],
+      "salt": "OBKlTVlvLg-AdwqYGbP8ZA"
+    },
+    {
+      "path": [
+        "animals",
+        "bird"
+      ],
+      "salt": "M0Jb57t41ubrkSuyrDT3xA"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgIm9uZSJd",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgInR3byJd",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgInJlZCIsIDFd",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgImdyZWVuIiwgMl0",
+    "WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgImJsdWUiXQ",
+    "WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgInllbGxvdyJd",
+    "WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgW3siLi4uIjogIkU2UW9lQUxmZUFNZkk0NXlwbjZCd2NoSHNWcW5DWldKcmtOcU9TYU5LYjAifSwgeyIuLi4iOiAiSlp3aURySldpbWVweDJFLUYwTVNjWlJTd3o4YlFPaHM5bFotZWVjRWdObyJ9XV0",
+    "WyJHMDJOU3JRZmpGWFE3SW8wOXN5YWpBIiwgIm9yYW5nZSJd",
+    "WyJsa2x4RjVqTVlsR1RQVW92TU5JdkNBIiwgInB1cnBsZSJd",
+    "WyJuUHVvUW5rUkZxM0JJZUFtN0FuWEZBIiwgW3siLi4uIjogInBKak92U0RySEVaNUdMalhSTk1OQXJvNjk3UVRlajFIaDBxd2JIazZ4UmsifSwgeyIuLi4iOiAiX2N4RklZMjI4QU11ZnZEYUFMSjRFWDRLZEVsSi1JdEFydlVDVml6bnFFOCJ9XV0",
+    "WyI1YlBzMUlxdVpOYTBoa2FGenp6Wk53IiwgImJsYWNrIl0",
+    "WyI1YTJXMF9OcmxFWnpmcW1rXzdQcS13IiwgIndoaXRlIl0",
+    "WyJ5MXNWVTV3ZGZKYWhWZGd3UGdTN1JRIiwgW3siLi4uIjogIm4xZTRub01iVnlJSE9GTzZwVDA2cWxSdnBFMDl6M0FxSVFtQ1cxQUxKSkkifSwgeyIuLi4iOiAiTWZNMGNBR3pVOHRIWkY0ZUw4UGl5Z2h1UWZtZDkwTEU3bUExUzlVdS05NCJ9XV0",
+    "WyJIYlE0WDhzclZXM1FEeG5JSmRxeU9BIiwgIm5hbWUiLCAicHl0aG9uIl0",
+    "WyJDOUdTb3VqdmlKcXVFZ1lmb2pDYjFBIiwgImFnZSIsIDEwXQ",
+    "WyJreDVrRjE3Vi14MEptd1V4OXZndnR3IiwgInNuYWtlIiwgeyJfc2QiOiBbIlBVSmgzdTJIRzRKUGdjLWxvZG5HVXJ6Y3Z0dG1KbWNXN3BHcjdCRjlzbmciLCAiVkVxR1dCQmYzSzZKMzFjdXh4N2NCSURGRTJiR1BHZ3A3ek8xQk12RzdBdyJdfV0",
+    "WyJIM28xdXN3UDc2MEZpMnllR2RWQ0VRIiwgIm5hbWUiLCAiZWFnbGUiXQ",
+    "WyJPQktsVFZsdkxnLUFkd3FZR2JQOFpBIiwgImFnZSIsIDIwXQ",
+    "WyJNMEpiNTd0NDF1YnJrU3V5ckRUM3hBIiwgImJpcmQiLCB7Il9zZCI6IFsiU1hmbk15SkxPeGNxVXc0bi10LVVVeFFGb2FIV1AzTkNpU3NYWTM3TnE5RSIsICJ2bjA0NG5jTG1oNUhnRUZGSFowcGJIUzUtN2EyakkwVVhIcUJCTTFqem44Il19XQ"
+  ],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "foo": [
+      {
+        "...": "YM6MsorVmsaQY11k8yMPdXvDN_EZ_icKF_vDGV2heWw"
+      },
+      {
+        "...": "q5nvo3KwRE93rEX097J-OSqOQ6zup5-VeAJbJ2RvPLo"
+      }
+    ],
+    "bar": {
+      "_sd": [
+        "gw-LxSM_qmLWp_zhc2jTUORn6QRL_I6vvmRQgKoS3PE",
+        "vosbY6505UZsuj8zu472deT25MAGBhQ7rl_VSBMP9-Q"
+      ]
+    },
+    "qux": [
+      {
+        "...": "A133-uhqJ46YrgmT9FzLPP7OfGBlODp4xpXG6BiV7Fg"
+      }
+    ],
+    "baz": [
+      {
+        "...": "Hx8K2kTwfpLu7Fz3DVhbmXKMzFyftGOZB2mwdDojRMk"
+      },
+      {
+        "...": "IoM8imMRVqmoVv6J7NFtuQuh1HpejRHnk6GXVd7sF0o"
+      }
+    ],
+    "animals": {
+      "_sd": [
+        "PbgEig5xH2R2Y7NwnYr4aEy9Zs4_2Ucxpfxq4gNbwhk",
+        "aWyAwcSHHKU65ZFq5yxw72D9Uhw375uwrYpOq9GAjdo"
+      ]
+    },
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {
+    "foo": [
+      false,
+      true
+    ],
+    "bar": {
+      "red": false,
+      "green": true
+    },
+    "qux": [
+      [
+        false,
+        true
+      ]
+    ],
+    "baz": [
+      [
+        false,
+        true
+      ],
+      [
+        true,
+        true
+      ]
+    ],
+    "animals": {
+      "snake": {
+        "name": false,
+        "age": true
+      },
+      "bird": {
+        "name": false,
+        "age": true
+      }
+    }
+  },
+  "presented": [
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgInR3byJd",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgImdyZWVuIiwgMl0",
+    "WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgW3siLi4uIjogIkU2UW9lQUxmZUFNZkk0NXlwbjZCd2NoSHNWcW5DWldKcmtOcU9TYU5LYjAifSwgeyIuLi4iOiAiSlp3aURySldpbWVweDJFLUYwTVNjWlJTd3o4YlFPaHM5bFotZWVjRWdObyJ9XV0",
+    "WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgInllbGxvdyJd",
+    "WyJuUHVvUW5rUkZxM0JJZUFtN0FuWEZBIiwgW3siLi4uIjogInBKak92U0RySEVaNUdMalhSTk1OQXJvNjk3UVRlajFIaDBxd2JIazZ4UmsifSwgeyIuLi4iOiAiX2N4RklZMjI4QU11ZnZEYUFMSjRFWDRLZEVsSi1JdEFydlVDVml6bnFFOCJ9XV0",
+    "WyJsa2x4RjVqTVlsR1RQVW92TU5JdkNBIiwgInB1cnBsZSJd",
+    "WyJ5MXNWVTV3ZGZKYWhWZGd3UGdTN1JRIiwgW3siLi4uIjogIm4xZTRub01iVnlJSE9GTzZwVDA2cWxSdnBFMDl6M0FxSVFtQ1cxQUxKSkkifSwgeyIuLi4iOiAiTWZNMGNBR3pVOHRIWkY0ZUw4UGl5Z2h1UWZtZDkwTEU3bUExUzlVdS05NCJ9XV0",
+    "WyI1YlBzMUlxdVpOYTBoa2FGenp6Wk53IiwgImJsYWNrIl0",
+    "WyI1YTJXMF9OcmxFWnpmcW1rXzdQcS13IiwgIndoaXRlIl0",
+    "WyJNMEpiNTd0NDF1YnJrU3V5ckRUM3hBIiwgImJpcmQiLCB7Il9zZCI6IFsiU1hmbk15SkxPeGNxVXc0bi10LVVVeFFGb2FIV1AzTkNpU3NYWTM3TnE5RSIsICJ2bjA0NG5jTG1oNUhnRUZGSFowcGJIUzUtN2EyakkwVVhIcUJCTTFqem44Il19XQ",
+    "WyJPQktsVFZsdkxnLUFkd3FZR2JQOFpBIiwgImFnZSIsIDIwXQ",
+    "WyJreDVrRjE3Vi14MEptd1V4OXZndnR3IiwgInNuYWtlIiwgeyJfc2QiOiBbIlBVSmgzdTJIRzRKUGdjLWxvZG5HVXJ6Y3Z0dG1KbWNXN3BHcjdCRjlzbmciLCAiVkVxR1dCQmYzSzZKMzFjdXh4N2NCSURGRTJiR1BHZ3A3ek8xQk12RzdBdyJdfV0",
+    "WyJDOUdTb3VqdmlKcXVFZ1lmb2pDYjFBIiwgImFnZSIsIDEwXQ"
+  ],
+  "expect_verified_user_claims": {
+    "foo": [
+      "two"
+    ],
+    "bar": {
+      "green": 2
+    },
+    "qux": [
+      [
+        "yellow"
+      ]
+    ],
+    "baz": [
+      [
+        "purple"
+      ],
+      [
+        "black",
+        "white"
+      ]
+    ],
+    "animals": {
+      "snake": {
+        "age": 10
+      },
+      "bird": {
+        "age": 20
+      }
+    },
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

@@ -1,0 +1,122 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/json_serialization_general/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "sub": "john_doe_42",
+    "given_name": "John",
+    "family_name": "Doe",
+    "email": "johndoe@example.com",
+    "phone_number": "+1-202-555-0101",
+    "address": {
+      "street_address": "123 Main St",
+      "locality": "Anytown",
+      "region": "Anystate",
+      "country": "US"
+    },
+    "birthdate": "1940-01-01"
+  },
+  "conceal": [
+    {
+      "path": [
+        "sub"
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "given_name"
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    },
+    {
+      "path": [
+        "family_name"
+      ],
+      "salt": "6Ij7tM-a5iVPGboS5tmvVA"
+    },
+    {
+      "path": [
+        "email"
+      ],
+      "salt": "eI8ZWm9QnKPpNPeNenHdhQ"
+    },
+    {
+      "path": [
+        "phone_number"
+      ],
+      "salt": "Qg_O64zqAxe412a108iroA"
+    },
+    {
+      "path": [
+        "address"
+      ],
+      "salt": "AJx-095VPrpTtN4QMOqROA"
+    },
+    {
+      "path": [
+        "birthdate"
+      ],
+      "salt": "Pc33JM2LchcU_lHggv_ufQ"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgInN1YiIsICJqb2huX2RvZV80MiJd",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgImdpdmVuX25hbWUiLCAiSm9obiJd",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgImZhbWlseV9uYW1lIiwgIkRvZSJd",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgImVtYWlsIiwgImpvaG5kb2VAZXhhbXBsZS5jb20iXQ",
+    "WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgInBob25lX251bWJlciIsICIrMS0yMDItNTU1LTAxMDEiXQ",
+    "WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgImFkZHJlc3MiLCB7InN0cmVldF9hZGRyZXNzIjogIjEyMyBNYWluIFN0IiwgImxvY2FsaXR5IjogIkFueXRvd24iLCAicmVnaW9uIjogIkFueXN0YXRlIiwgImNvdW50cnkiOiAiVVMifV0",
+    "WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgImJpcnRoZGF0ZSIsICIxOTQwLTAxLTAxIl0"
+  ],
+  "payload": {
+    "_sd": [
+      "4HBn6aIY3WtuGGWTx-qUj6cdk6WBpZygltdFavPa7LY",
+      "8sm1QCf021pNnHACI5sP4m4KZgyNOOAYcTj9HNaC1wY",
+      "SDN79NLpAnHPmkrdeYdEa89XZdsk0M8DKYSQOU2ZxQc",
+      "XzFrzwscM6Gn6CJDc6vVK8BkMnfG8vOSKfpPIZdAfdE",
+      "gbOsI4Edq2x2Kw-w5wPEzakob9hV1cRD0ATN3oQL9JM",
+      "jMCXVz--9b8x37YcoDfXQinzw1wZcccfFRBCFGqdG2o",
+      "oKI1Gd2fwN5WwvjlFkohidGvim-31OulR3q0hrDO078"
+    ],
+    "iss": "https://example.com/issuer",
+    "_sd_alg": "sha-256",
+    "cnf": {
+      "jwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "TCAER19Zvu3OHF4j4W4vfSVoHIP1ILilDls7vCeGemc",
+        "y": "ZxjiWWbZMQGHVWKVQ4hbSIirsVfuecCE6t4jT9F2HZQ"
+      }
+    }
+  },
+  "holder_disclosed_claims": {
+    "given_name": true,
+    "family_name": true,
+    "address": true
+  },
+  "presented": [
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgImZhbWlseV9uYW1lIiwgIkRvZSJd",
+    "WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgImFkZHJlc3MiLCB7InN0cmVldF9hZGRyZXNzIjogIjEyMyBNYWluIFN0IiwgImxvY2FsaXR5IjogIkFueXRvd24iLCAicmVnaW9uIjogIkFueXN0YXRlIiwgImNvdW50cnkiOiAiVVMifV0",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgImdpdmVuX25hbWUiLCAiSm9obiJd"
+  ],
+  "expect_verified_user_claims": {
+    "given_name": "John",
+    "family_name": "Doe",
+    "address": {
+      "street_address": "123 Main St",
+      "locality": "Anytown",
+      "region": "Anystate",
+      "country": "US"
+    },
+    "iss": "https://example.com/issuer",
+    "cnf": {
+      "jwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "TCAER19Zvu3OHF4j4W4vfSVoHIP1ILilDls7vCeGemc",
+        "y": "ZxjiWWbZMQGHVWKVQ4hbSIirsVfuecCE6t4jT9F2HZQ"
+      }
+    }
+  },
+  "key_binding": true
+}

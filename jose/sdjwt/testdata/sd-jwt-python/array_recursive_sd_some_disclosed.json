@@ -1,0 +1,141 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/array_recursive_sd_some_disclosed/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "array_with_recursive_sd": [
+      "boring",
+      {
+        "foo": "bar",
+        "baz": {
+          "qux": "quux"
+        }
+      },
+      [
+        "foo",
+        "bar"
+      ]
+    ],
+    "test2": [
+      "foo",
+      "bar"
+    ]
+  },
+  "conceal": [
+    {
+      "path": [
+        "array_with_recursive_sd",
+        1,
+        "baz"
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "array_with_recursive_sd",
+        2,
+        0
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    },
+    {
+      "path": [
+        "array_with_recursive_sd",
+        2,
+        1
+      ],
+      "salt": "6Ij7tM-a5iVPGboS5tmvVA"
+    },
+    {
+      "path": [
+        "test2",
+        0
+      ],
+      "salt": "eI8ZWm9QnKPpNPeNenHdhQ"
+    },
+    {
+      "path": [
+        "test2",
+        1
+      ],
+      "salt": "Qg_O64zqAxe412a108iroA"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgImJheiIsIHsicXV4IjogInF1dXgifV0",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgImZvbyJd",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgImJhciJd",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgImZvbyJd",
+    "WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgImJhciJd"
+  ],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "array_with_recursive_sd": [
+      "boring",
+      {
+        "_sd": [
+          "skwztm65ui1P-czrc_O0mqK3ictorCEojr98U6LkDQg"
+        ],
+        "foo": "bar"
+      },
+      [
+        {
+          "...": "mzKb13BIohUOs6M2gpqu0EL17P5dSsqOvP93KrZj-io"
+        },
+        {
+          "...": "kcxDf6vvHnazofursZ6pYXtW4u6dQKC-QOsJxg77gOY"
+        }
+      ]
+    ],
+    "test2": [
+      {
+        "...": "G3vWsLv2qk0m1I50K7FWZA7bY-6yFJsCY8CWbd5T2Bg"
+      },
+      {
+        "...": "kQVXjsEKuGtGBQk6tKKLQuLPSEtixld-WduOC9RZkZA"
+      }
+    ],
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {
+    "array_with_recursive_sd": [
+      "None",
+      {
+        "baz": true
+      },
+      [
+        false,
+        true
+      ]
+    ],
+    "test2": [
+      true,
+      true
+    ]
+  },
+  "presented": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgImJheiIsIHsicXV4IjogInF1dXgifV0",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgImJhciJd",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgImZvbyJd",
+    "WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgImJhciJd"
+  ],
+  "expect_verified_user_claims": {
+    "array_with_recursive_sd": [
+      "boring",
+      {
+        "foo": "bar",
+        "baz": {
+          "qux": "quux"
+        }
+      },
+      [
+        "bar"
+      ]
+    ],
+    "test2": [
+      "foo",
+      "bar"
+    ],
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

@@ -1,0 +1,67 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/array_full_sd/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "is_over": {
+      "13": true,
+      "18": false,
+      "21": false
+    }
+  },
+  "conceal": [
+    {
+      "path": [
+        "is_over",
+        "13"
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "is_over",
+        "18"
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    },
+    {
+      "path": [
+        "is_over",
+        "21"
+      ],
+      "salt": "6Ij7tM-a5iVPGboS5tmvVA"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgIjEzIiwgdHJ1ZV0",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgIjE4IiwgZmFsc2Vd",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgIjIxIiwgZmFsc2Vd"
+  ],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "is_over": {
+      "_sd": [
+        "ELwfU4oqsabsRCmQEj2tKy4G0zmrD1x7MmNuwhyYZPc",
+        "oZQatqMJeaos3MTxH48AmMr3HvV1ydSN8zjgfMgcfBI",
+        "qZudBH-hsTx2u3MVQpwVtnnIQVaMsMqhpjYzfiDnJLE"
+      ]
+    },
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {
+    "is_over": {
+      "21": false,
+      "18": true,
+      "13": false
+    }
+  },
+  "presented": [
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgIjE4IiwgZmFsc2Vd"
+  ],
+  "expect_verified_user_claims": {
+    "is_over": {
+      "18": false
+    },
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

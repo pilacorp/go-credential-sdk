@@ -1,0 +1,232 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/object_data_types/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "value_data_types": {
+      "test_null": null,
+      "test_int": 42,
+      "test_float": 3.14,
+      "test_str": "foo",
+      "test_bool": true,
+      "test_arr": [
+        "Test"
+      ],
+      "test_object": {
+        "foo": "bar"
+      }
+    },
+    "key_data_types": {
+      "null": "key_null",
+      "42": "key_int",
+      "3.14": "key_float",
+      "foo": "key_str",
+      "True": "key_bool",
+      "[\"Test\"]": "key_arr",
+      "{\"foo\": \"bar\"}": "key_object"
+    }
+  },
+  "conceal": [
+    {
+      "path": [
+        "value_data_types",
+        "test_null"
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "value_data_types",
+        "test_int"
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    },
+    {
+      "path": [
+        "value_data_types",
+        "test_float"
+      ],
+      "salt": "6Ij7tM-a5iVPGboS5tmvVA"
+    },
+    {
+      "path": [
+        "value_data_types",
+        "test_str"
+      ],
+      "salt": "eI8ZWm9QnKPpNPeNenHdhQ"
+    },
+    {
+      "path": [
+        "value_data_types",
+        "test_bool"
+      ],
+      "salt": "Qg_O64zqAxe412a108iroA"
+    },
+    {
+      "path": [
+        "value_data_types",
+        "test_arr"
+      ],
+      "salt": "AJx-095VPrpTtN4QMOqROA"
+    },
+    {
+      "path": [
+        "value_data_types",
+        "test_object"
+      ],
+      "salt": "Pc33JM2LchcU_lHggv_ufQ"
+    },
+    {
+      "path": [
+        "key_data_types",
+        "null"
+      ],
+      "salt": "G02NSrQfjFXQ7Io09syajA"
+    },
+    {
+      "path": [
+        "key_data_types",
+        "42"
+      ],
+      "salt": "lklxF5jMYlGTPUovMNIvCA"
+    },
+    {
+      "path": [
+        "key_data_types",
+        "3.14"
+      ],
+      "salt": "nPuoQnkRFq3BIeAm7AnXFA"
+    },
+    {
+      "path": [
+        "key_data_types",
+        "foo"
+      ],
+      "salt": "5bPs1IquZNa0hkaFzzzZNw"
+    },
+    {
+      "path": [
+        "key_data_types",
+        "True"
+      ],
+      "salt": "5a2W0_NrlEZzfqmk_7Pq-w"
+    },
+    {
+      "path": [
+        "key_data_types",
+        "[\"Test\"]"
+      ],
+      "salt": "y1sVU5wdfJahVdgwPgS7RQ"
+    },
+    {
+      "path": [
+        "key_data_types",
+        "{\"foo\": \"bar\"}"
+      ],
+      "salt": "HbQ4X8srVW3QDxnIJdqyOA"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgInRlc3RfbnVsbCIsIG51bGxd",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgInRlc3RfaW50IiwgNDJd",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgInRlc3RfZmxvYXQiLCAzLjE0XQ",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgInRlc3Rfc3RyIiwgImZvbyJd",
+    "WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgInRlc3RfYm9vbCIsIHRydWVd",
+    "WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgInRlc3RfYXJyIiwgWyJUZXN0Il1d",
+    "WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgInRlc3Rfb2JqZWN0IiwgeyJmb28iOiAiYmFyIn1d",
+    "WyJHMDJOU3JRZmpGWFE3SW8wOXN5YWpBIiwgIm51bGwiLCAia2V5X251bGwiXQ",
+    "WyJsa2x4RjVqTVlsR1RQVW92TU5JdkNBIiwgIjQyIiwgImtleV9pbnQiXQ",
+    "WyJuUHVvUW5rUkZxM0JJZUFtN0FuWEZBIiwgIjMuMTQiLCAia2V5X2Zsb2F0Il0",
+    "WyI1YlBzMUlxdVpOYTBoa2FGenp6Wk53IiwgImZvbyIsICJrZXlfc3RyIl0",
+    "WyI1YTJXMF9OcmxFWnpmcW1rXzdQcS13IiwgIlRydWUiLCAia2V5X2Jvb2wiXQ",
+    "WyJ5MXNWVTV3ZGZKYWhWZGd3UGdTN1JRIiwgIltcIlRlc3RcIl0iLCAia2V5X2FyciJd",
+    "WyJIYlE0WDhzclZXM1FEeG5JSmRxeU9BIiwgIntcImZvb1wiOiBcImJhclwifSIsICJrZXlfb2JqZWN0Il0"
+  ],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "value_data_types": {
+      "_sd": [
+        "-NZJop0rJf_8L9qs-vKhYYFGsNxH0_SqUiq0CjoAMJs",
+        "-pcJv9hrTIzjICJDHk0V9gJMYUMu4i1Tl7CCaMM2YVs",
+        "0wrNUeCTM8LCP90Z441itxEbm6CLMGchSPAaTV0dFjM",
+        "5ii5y6DGhAC7gXYbGMALtVYoH0l3Tb2sfUfBG99LoHs",
+        "8-VkGP36dOmWLNRqsN7GbaHR7SrjT3TZBhCHNQmM2oY",
+        "G2DeaR4949gGiVNcmZgA37DyFXU1qLoBBt-GZcTFGg0",
+        "ddQu8LmkHtW91D59jVKBprwgx1_Nu4ZdfVpmPWUZ4dk"
+      ]
+    },
+    "key_data_types": {
+      "_sd": [
+        "4BpgexL0pZgIc8wJPXzwKxvrdpeEpe5fPXUKb2ExeEk",
+        "879dQp4mwaJaRJ1YCRWlzo_I4GYQiYOtGF36cM-wqDY",
+        "LUrRrEzdsUAuag7uycyfd8ftGUSkoLKFP_F8AX1brn8",
+        "fh7naHUn3Z4Kj0DlincizajiAQhoq-WPLoH6N6iHzXs",
+        "q9k1aDhcvXNpLlf3_dIXN5ppZD7CJl78CBrO6hLG7nY",
+        "wtnS0crMcOb3i4rwwzuWbiWV8LYdfynjacMiw4uyZrU",
+        "xIbALNsTf3l94xOaldLNcLL79Qs6PzwVbnxjf6wrRCA"
+      ]
+    },
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {
+    "value_data_types": {
+      "test_null": true,
+      "test_int": true,
+      "test_float": true,
+      "test_str": true,
+      "test_bool": true,
+      "test_arr": true,
+      "test_object": true
+    },
+    "key_data_types": {
+      "null": true,
+      "42": true,
+      "3.14": true,
+      "foo": true,
+      "True": true,
+      "[\"Test\"]": true,
+      "{\"foo\": \"bar\"}": true
+    }
+  },
+  "presented": [
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgInRlc3Rfc3RyIiwgImZvbyJd",
+    "WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgInRlc3Rfb2JqZWN0IiwgeyJmb28iOiAiYmFyIn1d",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgInRlc3RfaW50IiwgNDJd",
+    "WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgInRlc3RfYXJyIiwgWyJUZXN0Il1d",
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgInRlc3RfbnVsbCIsIG51bGxd",
+    "WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgInRlc3RfYm9vbCIsIHRydWVd",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgInRlc3RfZmxvYXQiLCAzLjE0XQ",
+    "WyJuUHVvUW5rUkZxM0JJZUFtN0FuWEZBIiwgIjMuMTQiLCAia2V5X2Zsb2F0Il0",
+    "WyJIYlE0WDhzclZXM1FEeG5JSmRxeU9BIiwgIntcImZvb1wiOiBcImJhclwifSIsICJrZXlfb2JqZWN0Il0",
+    "WyJHMDJOU3JRZmpGWFE3SW8wOXN5YWpBIiwgIm51bGwiLCAia2V5X251bGwiXQ",
+    "WyI1YTJXMF9OcmxFWnpmcW1rXzdQcS13IiwgIlRydWUiLCAia2V5X2Jvb2wiXQ",
+    "WyI1YlBzMUlxdVpOYTBoa2FGenp6Wk53IiwgImZvbyIsICJrZXlfc3RyIl0",
+    "WyJsa2x4RjVqTVlsR1RQVW92TU5JdkNBIiwgIjQyIiwgImtleV9pbnQiXQ",
+    "WyJ5MXNWVTV3ZGZKYWhWZGd3UGdTN1JRIiwgIltcIlRlc3RcIl0iLCAia2V5X2FyciJd"
+  ],
+  "expect_verified_user_claims": {
+    "value_data_types": {
+      "test_null": null,
+      "test_int": 42,
+      "test_float": 3.14,
+      "test_str": "foo",
+      "test_bool": true,
+      "test_arr": [
+        "Test"
+      ],
+      "test_object": {
+        "foo": "bar"
+      }
+    },
+    "key_data_types": {
+      "null": "key_null",
+      "42": "key_int",
+      "3.14": "key_float",
+      "foo": "key_str",
+      "True": "key_bool",
+      "[\"Test\"]": "key_arr",
+      "{\"foo\": \"bar\"}": "key_object"
+    },
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

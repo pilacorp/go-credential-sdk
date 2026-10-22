@@ -1,0 +1,42 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/array_in_sd/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "sd_array": [
+      32,
+      23
+    ]
+  },
+  "conceal": [
+    {
+      "path": [
+        "sd_array"
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgInNkX2FycmF5IiwgWzMyLCAyM11d"
+  ],
+  "payload": {
+    "_sd": [
+      "0L4NSi1iP7pNwrkqqc63NcfnPJkSzSV6Rg2h3TlPoQw"
+    ],
+    "iss": "https://example.com/issuer",
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {
+    "sd_array": true
+  },
+  "presented": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgInNkX2FycmF5IiwgWzMyLCAyM11d"
+  ],
+  "expect_verified_user_claims": {
+    "sd_array": [
+      32,
+      23
+    ],
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

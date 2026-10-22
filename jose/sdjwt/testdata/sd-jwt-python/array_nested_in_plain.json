@@ -1,0 +1,106 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/array_nested_in_plain/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "nested_array": [
+      [
+        "foo",
+        "bar"
+      ],
+      [
+        "baz",
+        "qux"
+      ]
+    ]
+  },
+  "conceal": [
+    {
+      "path": [
+        "nested_array",
+        0,
+        0
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "nested_array",
+        0,
+        1
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    },
+    {
+      "path": [
+        "nested_array",
+        1,
+        0
+      ],
+      "salt": "6Ij7tM-a5iVPGboS5tmvVA"
+    },
+    {
+      "path": [
+        "nested_array",
+        1,
+        1
+      ],
+      "salt": "eI8ZWm9QnKPpNPeNenHdhQ"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgImZvbyJd",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgImJhciJd",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgImJheiJd",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgInF1eCJd"
+  ],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "nested_array": [
+      [
+        {
+          "...": "mqNDlUqaXeGytZ9YZYGswWt8xRTPh1VgsAe3Gu7Pbrg"
+        },
+        {
+          "...": "JI_v3xSjjPc5DifxX0QFR-ggED_WP4BWacCYsUwM5mk"
+        }
+      ],
+      [
+        {
+          "...": "Zq9cw_TAmUwpkxboXIrj0cERkIyqroerrPjN0aDtWsM"
+        },
+        {
+          "...": "vLOyBOF_Zzum3LUAKf2cBptu_ldk4dMXz_HAJb3a1MA"
+        }
+      ]
+    ],
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {
+    "nested_array": [
+      [
+        true,
+        false
+      ],
+      [
+        false,
+        true
+      ]
+    ]
+  },
+  "presented": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgImZvbyJd",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgInF1eCJd"
+  ],
+  "expect_verified_user_claims": {
+    "nested_array": [
+      [
+        "foo"
+      ],
+      [
+        "qux"
+      ]
+    ],
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

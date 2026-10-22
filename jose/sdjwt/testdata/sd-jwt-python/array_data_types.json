@@ -1,0 +1,143 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/array_data_types/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "data_types": [
+      null,
+      42,
+      3.14,
+      "foo",
+      true,
+      [
+        "Test"
+      ],
+      {
+        "foo": "bar"
+      }
+    ]
+  },
+  "conceal": [
+    {
+      "path": [
+        "data_types",
+        0
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "data_types",
+        1
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    },
+    {
+      "path": [
+        "data_types",
+        2
+      ],
+      "salt": "6Ij7tM-a5iVPGboS5tmvVA"
+    },
+    {
+      "path": [
+        "data_types",
+        3
+      ],
+      "salt": "eI8ZWm9QnKPpNPeNenHdhQ"
+    },
+    {
+      "path": [
+        "data_types",
+        4
+      ],
+      "salt": "Qg_O64zqAxe412a108iroA"
+    },
+    {
+      "path": [
+        "data_types",
+        5
+      ],
+      "salt": "AJx-095VPrpTtN4QMOqROA"
+    },
+    {
+      "path": [
+        "data_types",
+        6
+      ],
+      "salt": "Pc33JM2LchcU_lHggv_ufQ"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgbnVsbF0",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgNDJd",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgMy4xNF0",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgImZvbyJd",
+    "WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgdHJ1ZV0",
+    "WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgWyJUZXN0Il1d",
+    "WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgeyJmb28iOiAiYmFyIn1d"
+  ],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "data_types": [
+      {
+        "...": "fgOUo68ph7AqD4cfJavBSYdaRnUpBrFA_y4lYATQJh4"
+      },
+      {
+        "...": "abOBmlVU6ZgdY1ysrfcRrK7XN991LvqJF0aHw-7LylU"
+      },
+      {
+        "...": "_UH8hqENUchmi3Bkd25-MQ1Ic0geqhhHKQkIbLfJfR8"
+      },
+      {
+        "...": "G3vWsLv2qk0m1I50K7FWZA7bY-6yFJsCY8CWbd5T2Bg"
+      },
+      {
+        "...": "Aqpu6h900QGL3cnJqlATZGR-Df1aRmh06Gz5vEFjsmw"
+      },
+      {
+        "...": "IIZLfzRKY48uxV5otu_Cpr78lzF07SAUBq1GsoBz4gc"
+      },
+      {
+        "...": "q5aauDHhfDIOje9z8W3xKkWJybM3ghO8V2r-NNxh-E0"
+      }
+    ],
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {
+    "data_types": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "presented": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgbnVsbF0",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgNDJd",
+    "WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgMy4xNF0",
+    "WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgImZvbyJd",
+    "WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgdHJ1ZV0",
+    "WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgWyJUZXN0Il1d",
+    "WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgeyJmb28iOiAiYmFyIn1d"
+  ],
+  "expect_verified_user_claims": {
+    "data_types": [
+      null,
+      42,
+      3.14,
+      "foo",
+      true,
+      [
+        "Test"
+      ],
+      {
+        "foo": "bar"
+      }
+    ],
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

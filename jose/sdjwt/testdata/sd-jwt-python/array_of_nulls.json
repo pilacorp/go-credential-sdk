@@ -1,0 +1,56 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/array_of_nulls/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "null_values": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "conceal": [
+    {
+      "path": [
+        "null_values",
+        1
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "null_values",
+        2
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgbnVsbF0",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgbnVsbF0"
+  ],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "null_values": [
+      null,
+      {
+        "...": "fgOUo68ph7AqD4cfJavBSYdaRnUpBrFA_y4lYATQJh4"
+      },
+      {
+        "...": "OgGrwYNbIl-IXiBIM6FmIBGRijN27IATvn0pPyxt9UQ"
+      },
+      null
+    ],
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {},
+  "presented": [],
+  "expect_verified_user_claims": {
+    "null_values": [
+      null,
+      null
+    ],
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

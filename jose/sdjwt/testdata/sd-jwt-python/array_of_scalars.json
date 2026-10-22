@@ -1,0 +1,61 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/array_of_scalars/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "nationalities": [
+      "US",
+      "CA",
+      "DE"
+    ]
+  },
+  "conceal": [
+    {
+      "path": [
+        "nationalities",
+        0
+      ],
+      "salt": "2GLC42sKQveCfGfryNRN9w"
+    },
+    {
+      "path": [
+        "nationalities",
+        1
+      ],
+      "salt": "eluV5Og3gSNII8EYnsxA_A"
+    }
+  ],
+  "disclosures": [
+    "WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgIlVTIl0",
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgIkNBIl0"
+  ],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "nationalities": [
+      {
+        "...": "i7eKdHc_ZMOnhiyu3TJj5GVDQ7ZwJOMXFD3XgUbo8GQ"
+      },
+      {
+        "...": "usWXFPKaqKMreTrj72QD24wB8xc7lQ4zCnrnn8ZRVeo"
+      },
+      "DE"
+    ],
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {
+    "nationalities": [
+      false,
+      true
+    ]
+  },
+  "presented": [
+    "WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgIkNBIl0"
+  ],
+  "expect_verified_user_claims": {
+    "nationalities": [
+      "CA",
+      "DE"
+    ],
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

@@ -1,0 +1,69 @@
+{
+  "source": "sd-jwt-python c5fda017 tests/testcases/no_sd/specification.yml",
+  "user_claims": {
+    "iss": "https://example.com/issuer",
+    "recursive": [
+      "boring",
+      {
+        "foo": "bar",
+        "baz": {
+          "qux": "quux"
+        }
+      },
+      [
+        "foo",
+        "bar"
+      ]
+    ],
+    "test2": [
+      "foo",
+      "bar"
+    ]
+  },
+  "conceal": [],
+  "disclosures": [],
+  "payload": {
+    "iss": "https://example.com/issuer",
+    "recursive": [
+      "boring",
+      {
+        "foo": "bar",
+        "baz": {
+          "qux": "quux"
+        }
+      },
+      [
+        "foo",
+        "bar"
+      ]
+    ],
+    "test2": [
+      "foo",
+      "bar"
+    ],
+    "_sd_alg": "sha-256"
+  },
+  "holder_disclosed_claims": {},
+  "presented": [],
+  "expect_verified_user_claims": {
+    "recursive": [
+      "boring",
+      {
+        "foo": "bar",
+        "baz": {
+          "qux": "quux"
+        }
+      },
+      [
+        "foo",
+        "bar"
+      ]
+    ],
+    "test2": [
+      "foo",
+      "bar"
+    ],
+    "iss": "https://example.com/issuer"
+  },
+  "key_binding": false
+}

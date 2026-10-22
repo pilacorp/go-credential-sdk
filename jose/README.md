@@ -46,3 +46,24 @@ credential is accepted only by verifiers that choose to support secp256k1. Issue
 
 `none`, `HS*`, `RS*`, `PS*` and `EdDSA` are always refused. The key decides the algorithm: a P-256 key verifies only
 `ES256`, a secp256k1 key only `ES256K`.
+
+## Package `sdjwt`
+
+`github.com/pilacorp/go-credential-sdk/jose/sdjwt` is the RFC 9901 core (sections 4 and 7.1), ported from
+[sd-jwt-python](https://github.com/openwallet-foundation-labs/sd-jwt-python) and
+[eudi-lib-jvm-sdjwt-kt](https://github.com/eu-digital-identity-wallet/eudi-lib-jvm-sdjwt-kt) (Apache-2.0, see `NOTICE`).
+It knows nothing about `vct`, `iss` or validity.
+
+- `Conceal(claims, paths, opts)` (issuer): makes the claims at `paths` selectively disclosable and returns the payload
+  and the disclosures. `Path{"address", "locality"}`, `Path{"nationalities", 0}`; deepest paths first, so a child
+  concealed with its parent sits inside the parent's disclosure. Decoys go into every `_sd` array, which is sorted.
+- `ParseDisclosure(encoded)`: reads a received disclosure; its digest is computed over the string as received.
+- `Split(compact)`: `<issuer JWT>~<D1>~…~<Dn>~<KB-JWT>`; empty and repeated disclosures and inputs over 1 MB are refused.
+- `Recreate(payload, disclosures)` (holder and verifier): the processed payload, plus `Disclosures(path)`, the
+  disclosures that open a claim (its concealed ancestors, then its own), which a holder selects from.
+  At most 1,000 disclosures and 32 levels of nesting by default (`Limits`).
+- `SDHash`, `NewKBJWT`, `VerifyKBJWT`: the Key Binding JWT; `aud`, `nonce` and `sd_hash` are always checked.
+
+Errors wrap sentinels (`ErrDuplicateDigest`, `ErrUnreferencedDisclosure`, `ErrKBAudience`, …) for `errors.Is`.
+Tests run every case of sd-jwt-python's `tests/testcases/` (`Conceal` reproduces its disclosures byte for byte) and the
+examples of RFC 9901 section 5 and Appendix A (`testdata/`).
