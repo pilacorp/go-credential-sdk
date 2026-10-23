@@ -8,27 +8,32 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/internal/ec"
 )
 
 // ErrBadKey wraps every error of ToPublicKey and FromPublicKey: the JWK is
-// not a public EC key on P-256 or secp256k1, or the *ecdsa.PublicKey is nil,
-// on another curve, or not on its curve. No standard defines it.
+// not a public EC key on P-256 or secp256k1, or fails the RFC 8812 §3.2
+// checks, or the *ecdsa.PublicKey is nil, on another curve, or not on its
+// curve. No standard defines it.
 var ErrBadKey = errors.New("jwk: bad key")
 
 const (
 	crvP256      = "P-256"     // RFC 7518 §6.2.1.1
 	crvSecp256k1 = "secp256k1" // RFC 8812 §3.1
+	algES256K    = "ES256K"    // RFC 8812 §3.2
 )
 
 // ToPublicKey reads an EC public key from a JWK. Only kty "EC" with crv
 // "P-256" or "secp256k1" is accepted; x and y must decode to exactly 32 bytes
 // (no stripped leading zeros) and the point must be on the curve. A JWK
-// carrying "d" is rejected. RFC 8812 §3.2 sets MUSTs on a JWK's alg, use and
-// key_ops for ES256K; ToPublicKey reads the key only and leaves those checks,
-// and kid, to the caller.
+// carrying "d" is rejected. On crv "secp256k1" it makes the checks of RFC
+// 8812 §3.2, here rather than in the caller, which no longer sees the JWK: alg,
+// if present, is "ES256K"; use, if present, is "sig"; key_ops, if present,
+// includes "verify", the operation the returned key is for. RFC 7517 and RFC
+// 7518 set no such values for P-256, so those members, and kid, are not read.
 //
 // A secp256k1 key comes back as *ecdsa.PublicKey with Curve secp256k1.S256().
 func ToPublicKey(m map[string]any) (*ecdsa.PublicKey, error) {
@@ -52,6 +57,11 @@ func ToPublicKey(m map[string]any) (*ecdsa.PublicKey, error) {
 		return nil, fmt.Errorf("%w: crv %q is neither P-256 nor secp256k1", ErrBadKey, crv)
 	}
 	p.Kind = kind
+	if kind == ec.Secp256k1 {
+		if err := checkES256KMembers(m); err != nil {
+			return nil, err
+		}
+	}
 	var err error
 	if p.X, err = coordinate(m, "x"); err != nil {
 		return nil, err
@@ -99,6 +109,38 @@ func coordinate(m map[string]any, name string) ([32]byte, error) {
 	}
 	new(big.Int).SetBytes(b).FillBytes(out[:])
 	return out, nil
+}
+
+// checkES256KMembers makes the RFC 8812 §3.2 checks on a secp256k1 JWK. A
+// member of the wrong JSON type fails too: it cannot represent the value the
+// RFC requires.
+func checkES256KMembers(m map[string]any) error {
+	if v, ok := m["alg"]; ok {
+		if alg, _ := v.(string); alg != algES256K {
+			return fmt.Errorf("%w: alg of a secp256k1 key must be ES256K (RFC 8812 §3.2)", ErrBadKey)
+		}
+	}
+	if v, ok := m["use"]; ok {
+		if use, _ := v.(string); use != "sig" {
+			return fmt.Errorf("%w: use of a secp256k1 key must be sig (RFC 8812 §3.2)", ErrBadKey)
+		}
+	}
+	if v, ok := m["key_ops"]; ok && !includesVerify(v) {
+		return fmt.Errorf("%w: key_ops of a secp256k1 key must include verify (RFC 8812 §3.2)", ErrBadKey)
+	}
+	return nil
+}
+
+// includesVerify reports whether key_ops is an array holding "verify". JSON
+// decodes to []any; []string is what a caller building the map in Go writes.
+func includesVerify(keyOps any) bool {
+	switch ops := keyOps.(type) {
+	case []any:
+		return slices.Contains(ops, any("verify"))
+	case []string:
+		return slices.Contains(ops, "verify")
+	}
+	return false
 }
 
 // crvOf panics on an invalid kind, like ec.Kind.Name.

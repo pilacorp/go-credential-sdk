@@ -160,3 +160,48 @@ func TestCrvOfInvalidKindPanics(t *testing.T) {
 	}()
 	crvOf(0)
 }
+
+// RFC 8812 §3.2: a JWK for ES256K is checked on alg, use and key_ops when
+// present. ToPublicKey gives a key to verify with, so key_ops must include
+// "verify".
+func TestToPublicKeySecp256k1MemberChecks(t *testing.T) {
+	base, _ := FromPublicKey(newSecpKey(t))
+	with := func(k string, v any) map[string]any {
+		m := map[string]any{k: v}
+		for kk, vv := range base {
+			m[kk] = vv
+		}
+		return m
+	}
+	for name, tc := range map[string]struct {
+		jwk map[string]any
+		ok  bool
+	}{
+		"alg ES256K": {with("alg", "ES256K"), true},
+		"alg ES256":  {with("alg", "ES256"), false},
+		"alg es256k": {with("alg", "es256k"), false}, // RFC 7517 §4.4: case-sensitive
+		"alg number": {with("alg", 1), false},
+		"use sig":    {with("use", "sig"), true},
+		"use enc":    {with("use", "enc"), false},
+		"use null":   {with("use", nil), false},
+
+		"key_ops [verify]":         {with("key_ops", []any{"verify"}), true},
+		"key_ops [sign, verify]":   {with("key_ops", []any{"sign", "verify"}), true},
+		"key_ops []string{verify}": {with("key_ops", []string{"verify"}), true},
+		"key_ops [sign]":           {with("key_ops", []any{"sign"}), false},
+		"key_ops []":               {with("key_ops", []any{}), false},
+		"key_ops [Verify]":         {with("key_ops", []any{"Verify"}), false}, // RFC 7517 §4.3: case-sensitive
+		"key_ops not an array":     {with("key_ops", "verify"), false},
+		"key_ops holding an array": {with("key_ops", []any{[]any{}, "verify"}), true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ToPublicKey(tc.jwk)
+			if tc.ok && err != nil {
+				t.Fatalf("got %v, want the key", err)
+			}
+			if !tc.ok {
+				wantErr(t, err, ErrBadKey)
+			}
+		})
+	}
+}

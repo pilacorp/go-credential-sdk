@@ -14,7 +14,8 @@ One package per standard:
   `jws.Verify(token, key, allowed)` checks it against a key the caller supplies (never one taken from the header) and
   returns the header and the original payload bytes.
 - `jose/jwk`: `jwk.ToPublicKey` / `jwk.FromPublicKey` convert EC public keys (`kty: EC`, `crv: P-256 | secp256k1`,
-  RFC 7517, RFC 7518, RFC 8812).
+  RFC 7517, RFC 7518, RFC 8812). A secp256k1 JWK that carries `alg`, `use` or `key_ops` must have `ES256K`, `sig`, or
+  a list including `verify` (RFC 8812 §3.2).
 - `jose`: `EncodeSegment` / `DecodeSegment` and `EncodeJSON` / `DecodeJSON` (the strict encodings every part of a
   token is read with), and `ErrMalformed` / `ErrInvalidArgument`, which `jose/jws` returns too. Each other package
   has its own errors.
