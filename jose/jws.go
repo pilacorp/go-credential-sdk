@@ -1,3 +1,6 @@
+// Package jose signs and verifies compact JWS (RFC 7515) with ES256 (P-256)
+// and ES256K (secp256k1), and converts EC public keys to and from JWK. See
+// README.md for the rules it reads tokens with.
 package jose
 
 import (
