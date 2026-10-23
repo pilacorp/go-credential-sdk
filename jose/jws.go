@@ -5,7 +5,6 @@ package jose
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/sha256"
 	"fmt"
 	"math/big"
@@ -161,18 +160,18 @@ func Verify(compact string, key *ecdsa.PublicKey, allowed []string) (Header, []b
 	if len(allowed) > 0 && !slices.Contains(allowed, alg) {
 		return nil, nil, fmt.Errorf("%w: %q is not in the allowed list", ErrAlgNotAllowed, alg)
 	}
-	kind, x, y, err := coordinates(key)
+	pt, err := coordinates(key)
 	if err != nil {
 		return nil, nil, err
 	}
-	if kind.alg() != alg {
-		return nil, nil, fmt.Errorf("%w: header alg %q, key on %s", ErrAlgKeyMismatch, alg, kind.crv())
+	if pt.kind.alg() != alg {
+		return nil, nil, fmt.Errorf("%w: header alg %q, key on %s", ErrAlgKeyMismatch, alg, pt.kind.crv())
 	}
 
 	if len(sig) != 64 {
 		return nil, nil, fmt.Errorf("%w: signature is %d bytes, want 64-byte r||s", ErrBadSignature, len(sig))
 	}
-	n := kind.curve().Params().N
+	n := pt.kind.curve().Params().N
 	r := new(big.Int).SetBytes(sig[:32])
 	s := new(big.Int).SetBytes(sig[32:])
 	if !inScalarRange(r, n) || !inScalarRange(s, n) {
@@ -181,11 +180,10 @@ func Verify(compact string, key *ecdsa.PublicKey, allowed []string) (Header, []b
 
 	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
 	var valid bool
-	if kind == curveP256 {
-		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x[:]), Y: new(big.Int).SetBytes(y[:])}
-		valid = ecdsa.Verify(pub, digest[:], r, s)
+	if pt.kind == curveP256 {
+		valid = ecdsa.Verify(pt.publicKey(), digest[:], r, s)
 	} else {
-		valid = verifySecp256k1(digest[:], sig, x, y)
+		valid = verifySecp256k1(digest[:], sig, pt)
 	}
 	if !valid {
 		return nil, nil, fmt.Errorf("%w", ErrBadSignature)
@@ -193,10 +191,10 @@ func Verify(compact string, key *ecdsa.PublicKey, allowed []string) (Header, []b
 	return header, payload, nil
 }
 
-func verifySecp256k1(digest, sig []byte, x, y [32]byte) bool {
+func verifySecp256k1(digest, sig []byte, pt ecPoint) bool {
 	var fx, fy secp256k1.FieldVal
-	fx.SetBytes(&x)
-	fy.SetBytes(&y)
+	fx.SetBytes(&pt.x)
+	fy.SetBytes(&pt.y)
 	var r, s secp256k1.ModNScalar
 	r.SetByteSlice(sig[:32])
 	s.SetByteSlice(sig[32:])

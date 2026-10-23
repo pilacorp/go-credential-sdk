@@ -25,45 +25,40 @@ func PublicKeyFromJWK(jwk map[string]any) (*ecdsa.PublicKey, error) {
 		return nil, fmt.Errorf("%w: kty must be EC", ErrBadKey)
 	}
 	crv, _ := jwk["crv"].(string)
-	var kind curveKind
+	var p ecPoint
 	switch crv {
 	case crvP256:
-		kind = curveP256
+		p.kind = curveP256
 	case crvSecp256k1:
-		kind = curveSecp256k1
+		p.kind = curveSecp256k1
 	default:
 		return nil, fmt.Errorf("%w: crv %q is neither P-256 nor secp256k1", ErrBadKey, crv)
 	}
-	x, err := jwkCoordinate(jwk, "x")
-	if err != nil {
+	var err error
+	if p.x, err = jwkCoordinate(jwk, "x"); err != nil {
 		return nil, err
 	}
-	y, err := jwkCoordinate(jwk, "y")
-	if err != nil {
+	if p.y, err = jwkCoordinate(jwk, "y"); err != nil {
 		return nil, err
 	}
-	if err := checkOnCurve(kind, x, y); err != nil {
+	if err := p.checkOnCurve(); err != nil {
 		return nil, err
 	}
-	return &ecdsa.PublicKey{
-		Curve: kind.curve(),
-		X:     new(big.Int).SetBytes(x[:]),
-		Y:     new(big.Int).SetBytes(y[:]),
-	}, nil
+	return p.publicKey(), nil
 }
 
 // JWKFromPublicKey writes key as a JWK carrying kty, crv, x and y only, with
 // x and y left-padded to 32 bytes.
 func JWKFromPublicKey(key *ecdsa.PublicKey) (map[string]any, error) {
-	kind, x, y, err := coordinates(key)
+	p, err := coordinates(key)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
 		"kty": "EC",
-		"crv": kind.crv(),
-		"x":   EncodeSegment(x[:]),
-		"y":   EncodeSegment(y[:]),
+		"crv": p.kind.crv(),
+		"x":   EncodeSegment(p.x[:]),
+		"y":   EncodeSegment(p.y[:]),
 	}, nil
 }
 

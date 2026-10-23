@@ -117,43 +117,59 @@ func inScalarRange(v, n *big.Int) bool {
 	return v != nil && n != nil && v.Sign() > 0 && v.Cmp(n) < 0
 }
 
-// coordinates returns the key's affine coordinates as 32 bytes each, and
-// checks the point is on the key's curve. A key that fails is ErrBadKey.
-func coordinates(key *ecdsa.PublicKey) (curveKind, [32]byte, [32]byte, error) {
-	var x, y [32]byte
+// ecPoint is a public key reduced to what this package works with: its curve
+// and its affine coordinates, 32 bytes each.
+type ecPoint struct {
+	kind curveKind
+	x, y [32]byte
+}
+
+// publicKey returns p as an *ecdsa.PublicKey on the curve of its kind.
+func (p ecPoint) publicKey() *ecdsa.PublicKey {
+	return &ecdsa.PublicKey{
+		Curve: p.kind.curve(),
+		X:     new(big.Int).SetBytes(p.x[:]),
+		Y:     new(big.Int).SetBytes(p.y[:]),
+	}
+}
+
+// coordinates returns the key's curve and affine coordinates, and checks the
+// point is on the key's curve. A key that fails is ErrBadKey.
+func coordinates(key *ecdsa.PublicKey) (ecPoint, error) {
 	if key == nil || key.X == nil || key.Y == nil {
-		return 0, x, y, fmt.Errorf("%w: nil key", ErrBadKey)
+		return ecPoint{}, fmt.Errorf("%w: nil key", ErrBadKey)
 	}
 	kind, ok := kindOf(key.Curve)
 	if !ok {
-		return 0, x, y, fmt.Errorf("%w: curve is neither P-256 nor secp256k1", ErrBadKey)
+		return ecPoint{}, fmt.Errorf("%w: curve is neither P-256 nor secp256k1", ErrBadKey)
 	}
 	if key.X.Sign() < 0 || key.Y.Sign() < 0 || key.X.BitLen() > 256 || key.Y.BitLen() > 256 {
-		return 0, x, y, fmt.Errorf("%w: coordinate out of range", ErrBadKey)
+		return ecPoint{}, fmt.Errorf("%w: coordinate out of range", ErrBadKey)
 	}
-	key.X.FillBytes(x[:])
-	key.Y.FillBytes(y[:])
-	if err := checkOnCurve(kind, x, y); err != nil {
-		return 0, x, y, err
+	p := ecPoint{kind: kind}
+	key.X.FillBytes(p.x[:])
+	key.Y.FillBytes(p.y[:])
+	if err := p.checkOnCurve(); err != nil {
+		return ecPoint{}, err
 	}
-	return kind, x, y, nil
+	return p, nil
 }
 
 // checkOnCurve uses the curve libraries' own point decoding, which rejects
 // coordinates >= p and points off the curve.
-func checkOnCurve(kind curveKind, x, y [32]byte) error {
+func (p ecPoint) checkOnCurve() error {
 	uncompressed := make([]byte, 0, 65)
 	uncompressed = append(uncompressed, 0x04)
-	uncompressed = append(uncompressed, x[:]...)
-	uncompressed = append(uncompressed, y[:]...)
+	uncompressed = append(uncompressed, p.x[:]...)
+	uncompressed = append(uncompressed, p.y[:]...)
 	var err error
-	if kind == curveP256 {
+	if p.kind == curveP256 {
 		_, err = ecdh.P256().NewPublicKey(uncompressed)
 	} else {
 		_, err = secp256k1.ParsePubKey(uncompressed)
 	}
 	if err != nil {
-		return fmt.Errorf("%w: point is not on %s: %v", ErrBadKey, kind.crv(), err)
+		return fmt.Errorf("%w: point is not on %s: %v", ErrBadKey, p.kind.crv(), err)
 	}
 	return nil
 }
