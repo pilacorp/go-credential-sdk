@@ -1,3 +1,5 @@
+// Strict JSON for JOSE headers and claims: RFC 8259, RFC 7515 §10.12.
+
 package jose
 
 import (
@@ -10,25 +12,28 @@ import (
 )
 
 // MaxJSONDepth is the deepest nesting of objects and arrays DecodeJSON
-// accepts. Real headers, payloads and disclosures stay far below it.
+// accepts (RFC 8259 §9: a parser may limit nesting depth). Real headers,
+// payloads and disclosures stay far below it.
 const MaxJSONDepth = 64
 
 // DecodeJSON parses data as exactly one JSON value, under the rules every
 // header, payload and disclosure is read with:
-//   - a duplicate key, at any depth, is rejected. encoding/json keeps the last
-//     one silently, which would let two parties read different values (two
-//     _sd arrays) from one object; RFC 7519 allows rejecting. Keys are compared
-//     after unescaping, so "a" and "\u0061" are the same key;
-//   - numbers are kept as json.Number, so large integers keep every digit;
+//   - a duplicate key, at any depth, is rejected (see readJSONValue).
+//     encoding/json keeps the last one silently, which would let two parties
+//     read different values (two _sd arrays) from one object. Keys are
+//     compared after unescaping, so "a" and "\u0061" are the same key;
+//   - numbers are kept as json.Number, so large integers keep every digit
+//     (RFC 8259 §6 leaves range and precision to the implementation);
 //   - anything after the value but whitespace is rejected;
-//   - the input must be valid UTF-8 (RFC 8259); encoding/json would replace
-//     invalid bytes with U+FFFD silently;
+//   - the input must be valid UTF-8; encoding/json would replace invalid
+//     bytes with U+FFFD silently;
 //   - objects and arrays nest at most MaxJSONDepth deep. The check runs while
 //     reading, so a megabyte of "[[[[" is refused at the first level past the
 //     limit instead of being decoded into hundreds of megabytes first.
 //
 // Objects come back as map[string]any, arrays as []any (never nil).
 func DecodeJSON(data []byte) (any, error) {
+	// RFC 8259 §8.1, RFC 7515 §5.2 step 3 and RFC 8725 §3.7: UTF-8 only.
 	if !utf8.Valid(data) {
 		return nil, fmt.Errorf("%w: JSON is not valid UTF-8", ErrMalformed)
 	}
@@ -38,6 +43,8 @@ func DecodeJSON(data []byte) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: JSON: %v", ErrMalformed, err)
 	}
+	// RFC 7515 §10.12: input with extra significant characters after a valid
+	// JSON value MUST be considered invalid.
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%w: JSON: data after the value", ErrMalformed)
 	}
@@ -58,9 +65,10 @@ func DecodeJSONObject(data []byte) (map[string]any, error) {
 }
 
 // EncodeJSON encodes v compactly, without HTML escaping (encoding/json turns
-// <, > and & into \u003c, \u003e and \u0026 by default) and with UTF-8 kept
-// as is. Map keys come out sorted, so the same value always gives the same
-// bytes. A value encoding/json cannot encode (a channel, a function, NaN) is
+// <, > and & into \u003c, \u003e and \u0026 by default; RFC 8259 §7 needs
+// none of them escaped) and with UTF-8 kept as is (RFC 8259 §8.1). Map keys
+// come out sorted, so the same value always gives the same bytes. A value
+// encoding/json cannot encode (a channel, a function, NaN) is
 // ErrInvalidArgument.
 func EncodeJSON(v any) ([]byte, error) {
 	var buf bytes.Buffer
@@ -96,6 +104,13 @@ func readJSONValue(dec *json.Decoder, depth int) (any, error) {
 			if !ok {
 				return nil, fmt.Errorf("object key is not a string")
 			}
+			// RFC 7515 §4 (header) and RFC 7519 §4 (claims): names MUST be
+			// unique and parsers MUST either reject duplicates or keep the
+			// lexically last; this package rejects. Below the top level, RFC
+			// 8259 §4 says SHOULD, and RFC 7515 §10.12 treats such ambiguity as
+			// exploitable, so nested duplicates are rejected too. Keys are
+			// compared after unescaping (RFC 8259 §8.3, RFC 7515 §10.13), so
+			// "alg" and "\u0061lg" are duplicates.
 			if _, dup := obj[key]; dup {
 				return nil, fmt.Errorf("duplicate key %q", key)
 			}

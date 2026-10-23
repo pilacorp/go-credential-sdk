@@ -1,4 +1,4 @@
-package jose
+package jwk
 
 import (
 	"crypto/ecdsa"
@@ -8,21 +8,23 @@ import (
 	"testing"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+
+	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
 func TestJWKRoundTrip(t *testing.T) {
-	_, p256 := newP256Signer(t)
-	_, k1 := newSecpSigner(t, false)
+	p256 := newP256Key(t)
+	k1 := newSecpKey(t)
 	for name, key := range map[string]*ecdsa.PublicKey{"P-256": p256, "secp256k1": k1} {
 		t.Run(name, func(t *testing.T) {
-			jwk, err := JWKFromPublicKey(key)
+			jwk, err := FromPublicKey(key)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(jwk) != 4 || jwk["kty"] != "EC" || jwk["crv"] != name {
 				t.Fatalf("got %v, want kty, crv=%s, x, y only", jwk, name)
 			}
-			back, err := PublicKeyFromJWK(jwk)
+			back, err := ToPublicKey(jwk)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -33,10 +35,10 @@ func TestJWKRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPublicKeyFromJWKSecp256k1UsesDecredCurve(t *testing.T) {
-	_, k1 := newSecpSigner(t, false)
-	jwk, _ := JWKFromPublicKey(k1)
-	back, err := PublicKeyFromJWK(jwk)
+func TestToPublicKeySecp256k1UsesDecredCurve(t *testing.T) {
+	k1 := newSecpKey(t)
+	jwk, _ := FromPublicKey(k1)
+	back, err := ToPublicKey(jwk)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,37 +64,37 @@ func keyWithLeadingZeroX(t *testing.T) *ecdsa.PublicKey {
 	return nil
 }
 
-func TestPublicKeyFromJWKRejectsStrippedLeadingZero(t *testing.T) {
+func TestToPublicKeyRejectsStrippedLeadingZero(t *testing.T) {
 	key := keyWithLeadingZeroX(t)
-	jwk, err := JWKFromPublicKey(key)
+	jwk, err := FromPublicKey(key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if x, _ := DecodeSegment(jwk["x"].(string)); len(x) != 32 {
-		t.Fatalf("JWKFromPublicKey wrote %d-byte x, want 32 (left-padded)", len(x))
+	if x, _ := jose.DecodeSegment(jwk["x"].(string)); len(x) != 32 {
+		t.Fatalf("FromPublicKey wrote %d-byte x, want 32 (left-padded)", len(x))
 	}
-	jwk["x"] = EncodeSegment(key.X.Bytes()) // 31 bytes, same point
-	_, err = PublicKeyFromJWK(jwk)
-	wantErr(t, err, ErrBadKey)
+	jwk["x"] = jose.EncodeSegment(key.X.Bytes()) // 31 bytes, same point
+	_, err = ToPublicKey(jwk)
+	wantErr(t, err, jose.ErrBadKey)
 }
 
-func TestPublicKeyFromJWKRejectsPointNotOnCurve(t *testing.T) {
-	_, p256 := newP256Signer(t)
-	_, k1 := newSecpSigner(t, false)
+func TestToPublicKeyRejectsPointNotOnCurve(t *testing.T) {
+	p256 := newP256Key(t)
+	k1 := newSecpKey(t)
 	for _, key := range []*ecdsa.PublicKey{p256, k1} {
-		jwk, _ := JWKFromPublicKey(key)
+		jwk, _ := FromPublicKey(key)
 		y := new(big.Int).Add(key.Y, big.NewInt(1))
 		yb := make([]byte, 32)
 		y.FillBytes(yb)
-		jwk["y"] = EncodeSegment(yb)
-		_, err := PublicKeyFromJWK(jwk)
-		wantErr(t, err, ErrBadKey)
+		jwk["y"] = jose.EncodeSegment(yb)
+		_, err := ToPublicKey(jwk)
+		wantErr(t, err, jose.ErrBadKey)
 	}
 }
 
-func TestPublicKeyFromJWKRejects(t *testing.T) {
-	_, p256 := newP256Signer(t)
-	base, _ := JWKFromPublicKey(p256)
+func TestToPublicKeyRejects(t *testing.T) {
+	p256 := newP256Key(t)
+	base, _ := FromPublicKey(p256)
 	with := func(k string, v any) map[string]any {
 		m := map[string]any{}
 		for kk, vv := range base {
@@ -115,22 +117,22 @@ func TestPublicKeyFromJWKRejects(t *testing.T) {
 		"y missing":     with("y", nil),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := PublicKeyFromJWK(jwk)
-			wantErr(t, err, ErrBadKey)
+			_, err := ToPublicKey(jwk)
+			wantErr(t, err, jose.ErrBadKey)
 		})
 	}
-	_, err := PublicKeyFromJWK(nil)
-	wantErr(t, err, ErrBadKey)
+	_, err := ToPublicKey(nil)
+	wantErr(t, err, jose.ErrBadKey)
 }
 
-func TestJWKFromPublicKeyRejectsBadKeys(t *testing.T) {
+func TestFromPublicKeyRejectsBadKeys(t *testing.T) {
 	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-	_, p256 := newP256Signer(t)
+	p256 := newP256Key(t)
 	off := &ecdsa.PublicKey{Curve: p256.Curve, X: p256.X, Y: new(big.Int).Add(p256.Y, big.NewInt(1))}
 	for name, key := range map[string]*ecdsa.PublicKey{"nil": nil, "P-384": &p384.PublicKey, "off curve": off} {
 		t.Run(name, func(t *testing.T) {
-			_, err := JWKFromPublicKey(key)
-			wantErr(t, err, ErrBadKey)
+			_, err := FromPublicKey(key)
+			wantErr(t, err, jose.ErrBadKey)
 		})
 	}
 }
@@ -138,14 +140,23 @@ func TestJWKFromPublicKeyRejectsBadKeys(t *testing.T) {
 // A secp256k1 key built on another implementation of the curve (go-ethereum's,
 // here a copy of the parameters) is recognised by its parameters.
 func TestCurveRecognisedByParameters(t *testing.T) {
-	_, k1 := newSecpSigner(t, false)
+	k1 := newSecpKey(t)
 	params := *secp256k1.S256().Params()
 	foreign := &ecdsa.PublicKey{Curve: &params, X: k1.X, Y: k1.Y}
-	jwk, err := JWKFromPublicKey(foreign)
+	jwk, err := FromPublicKey(foreign)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if jwk["crv"] != "secp256k1" {
 		t.Fatalf("crv %v, want secp256k1", jwk["crv"])
 	}
+}
+
+func TestCrvOfInvalidKindPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("no panic for an invalid curve kind")
+		}
+	}()
+	crvOf(0)
 }

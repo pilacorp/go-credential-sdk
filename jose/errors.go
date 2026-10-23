@@ -1,9 +1,11 @@
+// Error sentinels of jose, jose/jws and jose/jwk. No standard defines them.
+
 package jose
 
 import "errors"
 
-// Every error the package returns wraps one of these, so a caller maps it with
-// errors.Is and keeps the wrapped detail for logs.
+// Every error jose, jose/jws and jose/jwk return wraps one of these, so a
+// caller maps it with errors.Is and keeps the wrapped detail for logs.
 var (
 	// ErrMalformed: the token, a segment or a JSON value does not have the
 	// required shape.
