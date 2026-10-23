@@ -1,22 +1,21 @@
 // Package ec holds the two curves the JOSE packages accept, P-256 (RFC 7518
 // §6.2.1.1) and secp256k1 (RFC 8812 §3.1), an EC public key as a point on one
-// of them, its partial public-key validation, and steps 3 to 9 of ECDSA
-// verification by it (FIPS 186-5 §6.4.2); each dispatches on the curve in one
-// place. Steps 1 (r and s in [1, n-1]) and 2 (the SHA-256 digest) are done by
-// jose/jws. Which alg or crv names a curve is left to jose/jws and jose/jwk.
+// of them, its partial public-key validation, and ECDSA verification by it
+// (FIPS 186-5 §6.4.2, every step but 2); each dispatches on the curve in one
+// place. Step 2, hashing the message, and how r||s is encoded are left to the
+// caller, as is which alg or crv names a curve (jose/jws and jose/jwk).
 package ec
 
 import (
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"errors"
 	"fmt"
 	"math/big"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	decredecdsa "github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
-
-	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
 // Kind names one of the two supported curves.
@@ -91,17 +90,18 @@ func (p Point) PublicKey() *ecdsa.PublicKey {
 }
 
 // FromPublicKey returns the key's curve and affine coordinates, and checks the
-// point is on the key's curve. A key that fails is jose.ErrBadKey.
+// point is on the key's curve. Its errors wrap no sentinel: the caller wraps
+// them in its own.
 func FromPublicKey(key *ecdsa.PublicKey) (Point, error) {
 	if key == nil || key.X == nil || key.Y == nil {
-		return Point{}, fmt.Errorf("%w: nil key", jose.ErrBadKey)
+		return Point{}, errors.New("nil key")
 	}
 	kind, ok := kindOf(key.Curve)
 	if !ok {
-		return Point{}, fmt.Errorf("%w: curve is neither P-256 nor secp256k1", jose.ErrBadKey)
+		return Point{}, errors.New("curve is neither P-256 nor secp256k1")
 	}
 	if key.X.Sign() < 0 || key.Y.Sign() < 0 || key.X.BitLen() > 256 || key.Y.BitLen() > 256 {
-		return Point{}, fmt.Errorf("%w: coordinate out of range", jose.ErrBadKey)
+		return Point{}, errors.New("coordinate out of range")
 	}
 	p := Point{Kind: kind}
 	key.X.FillBytes(p.X[:])
@@ -131,28 +131,45 @@ func (p Point) CheckOnCurve() error {
 		panic(fmt.Sprintf("jose: invalid curve kind %d", p.Kind))
 	}
 	if err != nil {
-		return fmt.Errorf("%w: point is not on %s: %v", jose.ErrBadKey, p.Kind.Name(), err)
+		return fmt.Errorf("point is not on %s: %v", p.Kind.Name(), err)
 	}
 	return nil
 }
 
-// VerifyRS runs FIPS 186-5 §6.4.2 steps 3 to 9: it reports whether sig, a
-// 64-byte r||s, is an ECDSA signature by p over digest. The caller must have
-// done step 1: the secp256k1 verifier reduces r and s mod n, so n+1 acts as 1.
-func (p Point) VerifyRS(digest, sig []byte) bool {
+// VerifyRS runs ECDSA verification (FIPS 186-5 §6.4.2, steps 1 and 3 to 9) of
+// sig, r||s with 32 bytes each, by p over digest, the step 2 hash. Its errors
+// wrap no sentinel: the caller wraps them in its own.
+func (p Point) VerifyRS(digest, sig []byte) error {
+	n := p.Kind.Curve().Params().N
+	r := new(big.Int).SetBytes(sig[:32])
+	s := new(big.Int).SetBytes(sig[32:])
+	// Step 1 (= SEC 1 v2.0 §4.1.4 step 1). The secp256k1 verifier below
+	// reduces r and s mod n, so without this check n+1 would pass as 1.
+	if !inScalarRange(r, n) || !inScalarRange(s, n) {
+		return errors.New("r or s outside [1, n-1]")
+	}
+	var ok bool
 	switch p.Kind {
 	case P256:
-		r := new(big.Int).SetBytes(sig[:32])
-		s := new(big.Int).SetBytes(sig[32:])
-		return ecdsa.Verify(p.PublicKey(), digest, r, s)
+		ok = ecdsa.Verify(p.PublicKey(), digest, r, s)
 	case Secp256k1:
 		var fx, fy secp256k1.FieldVal
 		fx.SetBytes(&p.X)
 		fy.SetBytes(&p.Y)
-		var r, s secp256k1.ModNScalar
-		r.SetByteSlice(sig[:32])
-		s.SetByteSlice(sig[32:])
-		return decredecdsa.NewSignature(&r, &s).Verify(digest, secp256k1.NewPublicKey(&fx, &fy))
+		var rs, ss secp256k1.ModNScalar
+		rs.SetByteSlice(sig[:32])
+		ss.SetByteSlice(sig[32:])
+		ok = decredecdsa.NewSignature(&rs, &ss).Verify(digest, secp256k1.NewPublicKey(&fx, &fy))
+	default:
+		panic(fmt.Sprintf("jose: invalid curve kind %d", p.Kind))
 	}
-	panic(fmt.Sprintf("jose: invalid curve kind %d", p.Kind))
+	if !ok {
+		return errors.New("signature does not verify")
+	}
+	return nil
+}
+
+// inScalarRange reports whether 1 <= v <= n-1; nil is never in range.
+func inScalarRange(v, n *big.Int) bool {
+	return v != nil && n != nil && v.Sign() > 0 && v.Cmp(n) < 0
 }

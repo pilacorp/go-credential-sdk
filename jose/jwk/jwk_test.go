@@ -75,7 +75,7 @@ func TestToPublicKeyRejectsStrippedLeadingZero(t *testing.T) {
 	}
 	jwk["x"] = jose.EncodeSegment(key.X.Bytes()) // 31 bytes, same point
 	_, err = ToPublicKey(jwk)
-	wantErr(t, err, jose.ErrBadKey)
+	wantErr(t, err, ErrBadKey)
 }
 
 func TestToPublicKeyRejectsPointNotOnCurve(t *testing.T) {
@@ -88,7 +88,7 @@ func TestToPublicKeyRejectsPointNotOnCurve(t *testing.T) {
 		y.FillBytes(yb)
 		jwk["y"] = jose.EncodeSegment(yb)
 		_, err := ToPublicKey(jwk)
-		wantErr(t, err, jose.ErrBadKey)
+		wantErr(t, err, ErrBadKey)
 	}
 }
 
@@ -118,11 +118,11 @@ func TestToPublicKeyRejects(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ToPublicKey(jwk)
-			wantErr(t, err, jose.ErrBadKey)
+			wantErr(t, err, ErrBadKey)
 		})
 	}
 	_, err := ToPublicKey(nil)
-	wantErr(t, err, jose.ErrBadKey)
+	wantErr(t, err, ErrBadKey)
 }
 
 func TestFromPublicKeyRejectsBadKeys(t *testing.T) {
@@ -132,7 +132,7 @@ func TestFromPublicKeyRejectsBadKeys(t *testing.T) {
 	for name, key := range map[string]*ecdsa.PublicKey{"nil": nil, "P-384": &p384.PublicKey, "off curve": off} {
 		t.Run(name, func(t *testing.T) {
 			_, err := FromPublicKey(key)
-			wantErr(t, err, jose.ErrBadKey)
+			wantErr(t, err, ErrBadKey)
 		})
 	}
 }

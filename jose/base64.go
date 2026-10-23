@@ -1,9 +1,10 @@
 // Package jose holds what the JOSE packages of this module share: strict
 // base64url (RFC 4648 §5 alphabet; RFC 7515 §2, no padding, line breaks or
 // other characters; RFC 4648 §3.3 and §3.5), strict JSON (RFC 8259, RFC 7515
-// §10.12) and the error sentinels. Compact JWS with ES256 and ES256K (RFC
-// 7515, RFC 7518 §3.4, RFC 8812 §3.2) is in jose/jws; EC public keys as JWK
-// (RFC 7517, RFC 7518 §6.2, RFC 8812 §3.1) are in jose/jwk.
+// §10.12) and the errors for malformed input and caller mistakes, which
+// jose/jws returns too. Compact JWS with ES256 and ES256K (RFC 7515, RFC 7518
+// §3.4, RFC 8812 §3.2) is in jose/jws; EC public keys as JWK (RFC 7517, RFC
+// 7518 §6.2, RFC 8812 §3.1) are in jose/jwk.
 package jose
 
 import (

@@ -36,7 +36,7 @@ func (s *p256Signer) Sign(digest []byte) ([]byte, error) {
 }
 
 // secpSigner signs with secp256k1. withRecovery makes it answer r||s||v (65
-// bytes), the go-ethereum format a Vault callback or DefaultProvider returns.
+// bytes): r||s followed by a recovery id.
 type secpSigner struct {
 	priv         *secp256k1.PrivateKey
 	withRecovery bool
@@ -67,6 +67,17 @@ type funcSigner func(digest []byte) ([]byte, error)
 
 func (f funcSigner) Sign(digest []byte) ([]byte, error) { return f(digest) }
 
+// countingSigner counts the calls to Sign.
+type countingSigner struct {
+	Signer
+	calls int
+}
+
+func (c *countingSigner) Sign(digest []byte) ([]byte, error) {
+	c.calls++
+	return c.Signer.Sign(digest)
+}
+
 // highS wraps a signer and flips its s to n-s, the other valid encoding.
 func highS(inner Signer, curve elliptic.Curve) Signer {
 	return funcSigner(func(digest []byte) ([]byte, error) {
@@ -86,9 +97,9 @@ func highS(inner Signer, curve elliptic.Curve) Signer {
 	})
 }
 
-func mustSign(t *testing.T, s Signer, alg string, header map[string]any, payload string) string {
+func mustSign(t *testing.T, s Signer, pub *ecdsa.PublicKey, header map[string]any, payload string) string {
 	t.Helper()
-	token, err := Sign(s, alg, header, []byte(payload))
+	token, err := Sign(s, pub, header, []byte(payload))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}

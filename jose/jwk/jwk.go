@@ -5,12 +5,18 @@ package jwk
 
 import (
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"math/big"
 
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/internal/ec"
 )
+
+// ErrBadKey wraps every error of ToPublicKey and FromPublicKey: the JWK is
+// not a public EC key on P-256 or secp256k1, or the *ecdsa.PublicKey is nil,
+// on another curve, or not on its curve. No standard defines it.
+var ErrBadKey = errors.New("jwk: bad key")
 
 const (
 	crvP256      = "P-256"     // RFC 7518 §6.2.1.1
@@ -27,23 +33,23 @@ const (
 // A secp256k1 key comes back as *ecdsa.PublicKey with Curve secp256k1.S256().
 func ToPublicKey(m map[string]any) (*ecdsa.PublicKey, error) {
 	if m == nil {
-		return nil, fmt.Errorf("%w: nil JWK", jose.ErrBadKey)
+		return nil, fmt.Errorf("%w: nil JWK", ErrBadKey)
 	}
 	// Stricter than RFC 7517, which lets a JWK carry the private key: this is
 	// the path for public keys (cnf, issuer metadata), and accepting d here
 	// invites callers to pass, store or log private keys through it.
 	if _, ok := m["d"]; ok {
-		return nil, fmt.Errorf("%w: JWK carries a private key (d)", jose.ErrBadKey)
+		return nil, fmt.Errorf("%w: JWK carries a private key (d)", ErrBadKey)
 	}
 	// RFC 7517 §4.1 and RFC 7518 §6.2: kty "EC" for an EC key.
 	if kty, _ := m["kty"].(string); kty != "EC" {
-		return nil, fmt.Errorf("%w: kty must be EC", jose.ErrBadKey)
+		return nil, fmt.Errorf("%w: kty must be EC", ErrBadKey)
 	}
 	var p ec.Point
 	crv, _ := m["crv"].(string)
 	kind, ok := kindForCrv(crv)
 	if !ok {
-		return nil, fmt.Errorf("%w: crv %q is neither P-256 nor secp256k1", jose.ErrBadKey, crv)
+		return nil, fmt.Errorf("%w: crv %q is neither P-256 nor secp256k1", ErrBadKey, crv)
 	}
 	p.Kind = kind
 	var err error
@@ -54,7 +60,7 @@ func ToPublicKey(m map[string]any) (*ecdsa.PublicKey, error) {
 		return nil, err
 	}
 	if err := p.CheckOnCurve(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrBadKey, err)
 	}
 	return p.PublicKey(), nil
 }
@@ -65,7 +71,7 @@ func ToPublicKey(m map[string]any) (*ecdsa.PublicKey, error) {
 func FromPublicKey(key *ecdsa.PublicKey) (map[string]any, error) {
 	p, err := ec.FromPublicKey(key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrBadKey, err)
 	}
 	return map[string]any{
 		"kty": "EC",
@@ -79,17 +85,17 @@ func coordinate(m map[string]any, name string) ([32]byte, error) {
 	var out [32]byte
 	s, ok := m[name].(string)
 	if !ok {
-		return out, fmt.Errorf("%w: %s must be a string", jose.ErrBadKey, name)
+		return out, fmt.Errorf("%w: %s must be a string", ErrBadKey, name)
 	}
 	b, err := jose.DecodeSegment(s)
 	if err != nil {
-		return out, fmt.Errorf("%w: %s: %v", jose.ErrBadKey, name, err)
+		return out, fmt.Errorf("%w: %s: %v", ErrBadKey, name, err)
 	}
 	// RFC 7518 §6.2.1.2 and §6.2.1.3, RFC 8812 §3.1: the full 32 bytes,
 	// leading zeros kept. A shorter value names the same integer, so without
 	// this check two JWKs would encode one key.
 	if len(b) != 32 {
-		return out, fmt.Errorf("%w: %s must be 32 bytes, got %d", jose.ErrBadKey, name, len(b))
+		return out, fmt.Errorf("%w: %s must be 32 bytes, got %d", ErrBadKey, name, len(b))
 	}
 	new(big.Int).SetBytes(b).FillBytes(out[:])
 	return out, nil
