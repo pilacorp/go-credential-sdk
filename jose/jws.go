@@ -15,14 +15,25 @@ import (
 	decredecdsa "github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 )
 
-// Signer signs a 32-byte SHA-256 digest and returns r||s (64 bytes), or
-// r||s||v (65 bytes, go-ethereum style). The private key stays with the
-// signer (in memory, Vault, HSM).
+// Signer signs a 32-byte SHA-256 digest and returns r||s (64 bytes), or, for
+// secp256k1 only, r||s||v (65 bytes, go-ethereum style). The private key stays
+// with the signer (in memory, Vault, HSM).
 //
 // Same method set as credential/common/signer.SignerProvider, so existing
 // providers satisfy it without this module importing go-ethereum.
 type Signer interface {
 	Sign(digest []byte) ([]byte, error)
+}
+
+// KeyedSigner is a Signer that knows its public key. A Signer alone cannot
+// tell Sign which curve its key is on, so a key on the wrong curve for alg
+// would yield a token nobody can verify; with Public, Sign refuses the
+// mismatch before signing and verifies the token before returning it.
+// credential/common/signer.P256Provider satisfies it. A nil Public() means
+// the key is unknown and both checks are skipped.
+type KeyedSigner interface {
+	Signer
+	Public() *ecdsa.PublicKey
 }
 
 // Header is a decoded JWS header.
@@ -48,10 +59,15 @@ func (h Header) str(name string) string {
 //  2. the header is encoded with EncodeJSON (no HTML escaping, UTF-8 kept);
 //  3. payload is signed exactly as given, never re-encoded;
 //  4. the SHA-256 digest of base64url(header) "." base64url(payload) goes to s;
-//  5. a 64-byte answer is r||s; a 65-byte one is r||s||v and the last byte is
-//     dropped; anything else (DER included) is ErrSignatureFormat;
+//  5. a 64-byte answer is r||s; a 65-byte one is r||s||v, accepted for
+//     ES256K only (a P-256 signer has no recovery id, so 65 bytes under ES256
+//     means a secp256k1 key) and the last byte is dropped; anything else (DER
+//     included) is ErrSignatureFormat;
 //  6. r and s must be in [1, n-1], then s is normalised to low-S on both
-//     curves, so one token has one encoding.
+//     curves, so one token has one encoding;
+//  7. when s is a KeyedSigner with a non-nil Public, the key must be on the
+//     curve of alg (ErrAlgKeyMismatch, checked before s is called) and the
+//     token must verify with it (ErrSignatureFormat).
 //
 // A header with crit, or with b64 other than true, is refused: Verify would
 // refuse the token it produces.
@@ -62,6 +78,19 @@ func Sign(s Signer, alg string, header Header, payload []byte) (string, error) {
 	}
 	if s == nil {
 		return "", fmt.Errorf("%w: nil signer", ErrInvalidArgument)
+	}
+	var pub *ecdsa.PublicKey
+	if ks, ok := s.(KeyedSigner); ok {
+		pub = ks.Public()
+	}
+	if pub != nil {
+		pt, err := coordinates(pub)
+		if err != nil {
+			return "", fmt.Errorf("signer public key: %w", err)
+		}
+		if pt.kind != kind {
+			return "", fmt.Errorf("%w: alg %q, signer key on %s", ErrAlgKeyMismatch, alg, pt.kind.crv())
+		}
 	}
 	h := make(map[string]any, len(header)+1)
 	for k, v := range header {
@@ -89,6 +118,9 @@ func Sign(s Signer, alg string, header Header, payload []byte) (string, error) {
 	switch len(raw) {
 	case 64:
 	case 65:
+		if kind != curveSecp256k1 {
+			return "", fmt.Errorf("%w: signer returned 65-byte r||s||v under %s; a recovery id comes from a secp256k1 key", ErrSignatureFormat, alg)
+		}
 		raw = raw[:64]
 	default:
 		return "", fmt.Errorf("%w: signer returned %d bytes, want 64-byte r||s (65 with a trailing recovery id)", ErrSignatureFormat, len(raw))
@@ -105,7 +137,13 @@ func Sign(s Signer, alg string, header Header, payload []byte) (string, error) {
 	sig := make([]byte, 64)
 	r.FillBytes(sig[:32])
 	sv.FillBytes(sig[32:])
-	return signingInput + "." + EncodeSegment(sig), nil
+	token := signingInput + "." + EncodeSegment(sig)
+	if pub != nil {
+		if _, _, err := Verify(token, pub, []string{alg}); err != nil {
+			return "", fmt.Errorf("%w: signature does not verify with the signer's public key: %w", ErrSignatureFormat, err)
+		}
+	}
+	return token, nil
 }
 
 // Verify checks a compact JWS against key and returns its header and the

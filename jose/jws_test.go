@@ -326,3 +326,75 @@ func TestVerifyManyDotsAllocatesLittle(t *testing.T) {
 		t.Fatalf("Verify allocated %d bytes for 1 MB of dots, want under 64 KB", n)
 	}
 }
+
+// keyed adds Public to a Signer and counts the calls to Sign.
+type keyed struct {
+	Signer
+	pub   *ecdsa.PublicKey
+	calls int
+}
+
+func (k *keyed) Public() *ecdsa.PublicKey { return k.pub }
+
+func (k *keyed) Sign(digest []byte) ([]byte, error) {
+	k.calls++
+	return k.Signer.Sign(digest)
+}
+
+// A 65-byte r||s||v only comes from a secp256k1 key: under ES256 it is
+// refused, so a secp256k1 Vault key configured as ES256 fails at Sign.
+func TestSignAccepts65BytesForES256KOnly(t *testing.T) {
+	k1v, _ := newSecpSigner(t, true)
+	_, err := Sign(k1v, AlgES256, nil, []byte(`{}`))
+	wantErr(t, err, ErrSignatureFormat)
+
+	p256, _ := newP256Signer(t)
+	padded := funcSigner(func(d []byte) ([]byte, error) {
+		raw, err := p256.Sign(d)
+		return append(raw, 0), err
+	})
+	_, err = Sign(padded, AlgES256, nil, []byte(`{}`))
+	wantErr(t, err, ErrSignatureFormat)
+}
+
+func TestSignKeyedSigner(t *testing.T) {
+	p256, p256Pub := newP256Signer(t)
+	k1, k1Pub := newSecpSigner(t, false)
+	_, otherP256 := newP256Signer(t)
+
+	t.Run("matching key", func(t *testing.T) {
+		for _, tc := range []struct {
+			s   *keyed
+			alg string
+		}{{&keyed{Signer: p256, pub: p256Pub}, AlgES256}, {&keyed{Signer: k1, pub: k1Pub}, AlgES256K}} {
+			tok, err := Sign(tc.s, tc.alg, nil, []byte(`{}`))
+			if err != nil {
+				t.Fatalf("%s: %v", tc.alg, err)
+			}
+			if _, _, err := Verify(tok, tc.s.pub, nil); err != nil {
+				t.Fatalf("%s: %v", tc.alg, err)
+			}
+		}
+	})
+	t.Run("key on the other curve is refused before signing", func(t *testing.T) {
+		for _, tc := range []struct {
+			s   *keyed
+			alg string
+		}{{&keyed{Signer: k1, pub: k1Pub}, AlgES256}, {&keyed{Signer: p256, pub: p256Pub}, AlgES256K}} {
+			_, err := Sign(tc.s, tc.alg, nil, []byte(`{}`))
+			wantErr(t, err, ErrAlgKeyMismatch)
+			if tc.s.calls != 0 {
+				t.Fatalf("%s: signer called %d times, want 0", tc.alg, tc.s.calls)
+			}
+		}
+	})
+	t.Run("signature that does not verify with Public", func(t *testing.T) {
+		_, err := Sign(&keyed{Signer: p256, pub: otherP256}, AlgES256, nil, []byte(`{}`))
+		wantErr(t, err, ErrSignatureFormat)
+	})
+	t.Run("nil Public skips the checks", func(t *testing.T) {
+		if _, err := Sign(&keyed{Signer: p256}, AlgES256, nil, []byte(`{}`)); err != nil {
+			t.Fatal(err)
+		}
+	})
+}

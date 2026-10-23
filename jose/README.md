@@ -24,9 +24,14 @@ header, payload, err := jose.Verify(token, issuerKey, []string{jose.AlgES256, jo
 
 `jose.Signer` has one method, `Sign(digest []byte) ([]byte, error)` — the same as
 `credential/common/signer.SignerProvider`, so existing providers (in-memory, Vault callback) work as they are. The signer
-receives the 32-byte SHA-256 digest and may answer `r||s` (64 bytes) or `r||s||v` (65 bytes, go-ethereum style; the last
-byte is dropped). DER and any other length are refused. `Sign` always emits a low-S signature, so a signed token has
-one encoding.
+receives the 32-byte SHA-256 digest and may answer `r||s` (64 bytes) or, under ES256K only, `r||s||v` (65 bytes,
+go-ethereum style; the last byte is dropped). DER and any other length are refused. `Sign` always emits a low-S
+signature, so a signed token has one encoding.
+
+A bare `Signer` does not say which curve its key is on, so a key on the wrong curve for `alg` (a secp256k1 Vault key
+called with ES256) would give a token nobody can verify. A signer that also has `Public() *ecdsa.PublicKey`
+(`jose.KeyedSigner`, which `signer.P256Provider` satisfies) closes that: `Sign` refuses a key on the other curve before
+calling it (`ErrAlgKeyMismatch`) and verifies the token with the key before returning it.
 
 ## Strict reading
 

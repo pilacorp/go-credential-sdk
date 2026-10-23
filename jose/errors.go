@@ -15,7 +15,8 @@ var (
 	// ErrAlgKeyMismatch: the header alg does not match the curve of the key.
 	ErrAlgKeyMismatch = errors.New("jose: alg does not match the key")
 	// ErrSignatureFormat (Sign only): the signer returned something that is not
-	// 64-byte r||s or 65-byte r||s||v, or r or s outside [1, n-1].
+	// 64-byte r||s (or 65-byte r||s||v under ES256K), r or s outside [1, n-1],
+	// or a signature that does not verify with its own public key.
 	ErrSignatureFormat = errors.New("jose: signature format")
 	// ErrBadSignature (Verify only): the token's signature is not 64-byte
 	// r||s, has r or s outside [1, n-1], or does not verify.
