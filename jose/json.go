@@ -60,13 +60,14 @@ func DecodeJSONObject(data []byte) (map[string]any, error) {
 // EncodeJSON encodes v compactly, without HTML escaping (encoding/json turns
 // <, > and & into \u003c, \u003e and \u0026 by default) and with UTF-8 kept
 // as is. Map keys come out sorted, so the same value always gives the same
-// bytes.
+// bytes. A value encoding/json cannot encode (a channel, a function, NaN) is
+// ErrInvalidArgument.
 func EncodeJSON(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: encode JSON: %w", ErrInvalidArgument, err)
 	}
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }

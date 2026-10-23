@@ -56,20 +56,20 @@ func (h Header) str(name string) string {
 //
 // A header with crit, or with b64 other than true, is refused: Verify would
 // refuse the token it produces.
-func Sign(s Signer, alg string, header map[string]any, payload []byte) (string, error) {
+func Sign(s Signer, alg string, header Header, payload []byte) (string, error) {
 	kind, ok := kindForAlg(alg)
 	if !ok {
 		return "", fmt.Errorf("%w: %q (want ES256 or ES256K)", ErrAlgNotAllowed, alg)
 	}
 	if s == nil {
-		return "", fmt.Errorf("jose: nil signer")
+		return "", fmt.Errorf("%w: nil signer", ErrInvalidArgument)
 	}
 	h := make(map[string]any, len(header)+1)
 	for k, v := range header {
 		h[k] = v
 	}
 	if v, ok := h["alg"]; ok && v != alg {
-		return "", fmt.Errorf("%w: header alg %v differs from %q", ErrAlgNotAllowed, v, alg)
+		return "", fmt.Errorf("%w: header alg %v differs from %q", ErrInvalidArgument, v, alg)
 	}
 	if err := checkHeaderExtensions(h); err != nil {
 		return "", err
@@ -78,14 +78,14 @@ func Sign(s Signer, alg string, header map[string]any, payload []byte) (string, 
 
 	headerJSON, err := EncodeJSON(h)
 	if err != nil {
-		return "", fmt.Errorf("jose: encode header: %w", err)
+		return "", fmt.Errorf("header: %w", err)
 	}
 	signingInput := EncodeSegment(headerJSON) + "." + EncodeSegment(payload)
 	digest := sha256.Sum256([]byte(signingInput))
 
 	raw, err := s.Sign(digest[:])
 	if err != nil {
-		return "", fmt.Errorf("jose: signer: %w", err)
+		return "", fmt.Errorf("%w: %w", ErrSigner, err)
 	}
 	switch len(raw) {
 	case 64:
@@ -120,11 +120,13 @@ func Sign(s Signer, alg string, header map[string]any, payload []byte) (string, 
 //     if listed) and in allowed (nil or empty means both); the key decides the
 //     algorithm, P-256 ⇒ ES256, secp256k1 ⇒ ES256K, else ErrAlgKeyMismatch;
 //  6. the signature is exactly 64 bytes (no DER, no 65 bytes on this side),
-//     r and s in [1, n-1];
+//     r and s in [1, n-1], else ErrBadSignature;
 //  7. SHA-256 over the received header.payload string. Low-S and high-S both
 //     verify.
 func Verify(compact string, key *ecdsa.PublicKey, allowed []string) (Header, []byte, error) {
-	parts := strings.Split(compact, ".")
+	// SplitN, not Split: a megabyte of dots must not become a million strings
+	// before the count is checked.
+	parts := strings.SplitN(compact, ".", 4)
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return nil, nil, fmt.Errorf("%w: a compact JWS has three non-empty parts", ErrMalformed)
 	}
@@ -168,7 +170,7 @@ func Verify(compact string, key *ecdsa.PublicKey, allowed []string) (Header, []b
 	}
 
 	if len(sig) != 64 {
-		return nil, nil, fmt.Errorf("%w: signature is %d bytes, want 64-byte r||s", ErrSignatureFormat, len(sig))
+		return nil, nil, fmt.Errorf("%w: signature is %d bytes, want 64-byte r||s", ErrBadSignature, len(sig))
 	}
 	n := kind.curve().Params().N
 	r := new(big.Int).SetBytes(sig[:32])

@@ -101,3 +101,10 @@ func TestDecodeJSONCapsNesting(t *testing.T) {
 		})
 	}
 }
+
+func TestEncodeJSONRejectsUnencodable(t *testing.T) {
+	_, err := EncodeJSON(map[string]any{"f": func() {}})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("got %v, want ErrInvalidArgument", err)
+	}
+}

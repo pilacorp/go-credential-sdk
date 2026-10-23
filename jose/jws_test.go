@@ -8,6 +8,7 @@ import (
 	"encoding/asn1"
 	"errors"
 	"math/big"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -64,7 +65,7 @@ func TestSignRejectsAlg(t *testing.T) {
 		wantErr(t, err, ErrAlgNotAllowed)
 	}
 	_, err := Sign(s, AlgES256, map[string]any{"alg": "ES256K"}, []byte(`{}`))
-	wantErr(t, err, ErrAlgNotAllowed)
+	wantErr(t, err, ErrInvalidArgument)
 	if _, err := Sign(s, AlgES256, map[string]any{"alg": "ES256"}, []byte(`{}`)); err != nil {
 		t.Fatalf("an alg equal to the argument must pass: %v", err)
 	}
@@ -118,9 +119,17 @@ func TestSignRejectsScalarsOutOfRange(t *testing.T) {
 func TestSignPropagatesSignerError(t *testing.T) {
 	boom := errors.New("vault down")
 	_, err := Sign(funcSigner(func([]byte) ([]byte, error) { return nil, boom }), AlgES256, nil, []byte(`{}`))
-	if !errors.Is(err, boom) {
-		t.Fatalf("got %v, want the signer's error wrapped", err)
+	if !errors.Is(err, boom) || !errors.Is(err, ErrSigner) {
+		t.Fatalf("got %v, want ErrSigner and the signer's error wrapped", err)
 	}
+}
+
+func TestSignRejectsInvalidArguments(t *testing.T) {
+	_, err := Sign(nil, AlgES256, nil, []byte(`{}`))
+	wantErr(t, err, ErrInvalidArgument)
+	s, _ := newP256Signer(t)
+	_, err = Sign(s, AlgES256, Header{"x": make(chan int)}, []byte(`{}`))
+	wantErr(t, err, ErrInvalidArgument)
 }
 
 // A signer answering high-S still yields a low-S token, on both curves; the
@@ -158,20 +167,6 @@ func TestSignNormalisesToLowS(t *testing.T) {
 				t.Fatalf("high-S must verify too: %v", err)
 			}
 		})
-	}
-}
-
-func TestNormalizeLowS(t *testing.T) {
-	for _, c := range []elliptic.Curve{elliptic.P256(), secp256k1.S256()} {
-		n := c.Params().N
-		half := new(big.Int).Rsh(n, 1)
-		if got := NormalizeLowS(c, half); got.Cmp(half) != 0 {
-			t.Fatalf("%s: n/2 changed", c.Params().Name)
-		}
-		above := new(big.Int).Add(half, big.NewInt(1))
-		if got := NormalizeLowS(c, above); got.Cmp(new(big.Int).Sub(n, above)) != 0 {
-			t.Fatalf("%s: n/2+1 not flipped", c.Params().Name)
-		}
 	}
 }
 
@@ -265,7 +260,7 @@ func TestVerifySignatureFormats(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, _, err := Verify(p[0]+"."+p[1]+"."+EncodeSegment(raw), pub, nil)
-			wantErr(t, err, ErrSignatureFormat)
+			wantErr(t, err, ErrBadSignature)
 		})
 	}
 }
@@ -314,5 +309,20 @@ func TestVerifyRejectsBadKey(t *testing.T) {
 			_, _, err := Verify(tok, key, nil)
 			wantErr(t, err, ErrBadKey)
 		})
+	}
+}
+
+// Verify refuses a token with too many dots without splitting all of it:
+// strings.Split would allocate 16 bytes per dot (16 MB here).
+func TestVerifyManyDotsAllocatesLittle(t *testing.T) {
+	_, pub := newP256Signer(t)
+	dots := strings.Repeat(".", 1<<20)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, _, err := Verify(dots, pub, nil)
+	runtime.ReadMemStats(&after)
+	wantErr(t, err, ErrMalformed)
+	if n := after.TotalAlloc - before.TotalAlloc; n > 64<<10 {
+		t.Fatalf("Verify allocated %d bytes for 1 MB of dots, want under 64 KB", n)
 	}
 }

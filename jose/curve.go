@@ -49,25 +49,37 @@ func sameCurve(a, b *elliptic.CurveParams) bool {
 	return a.P != nil && a.N != nil && a.P.Cmp(b.P) == 0 && a.N.Cmp(b.N) == 0
 }
 
+// alg, crv and curve panic on a curveKind that is neither P-256 nor
+// secp256k1: every curveKind comes from kindOf or kindForAlg after their ok is
+// checked, so another value is a bug in this package, not bad input.
 func (k curveKind) alg() string {
-	if k == curveP256 {
+	switch k {
+	case curveP256:
 		return AlgES256
+	case curveSecp256k1:
+		return AlgES256K
 	}
-	return AlgES256K
+	panic(fmt.Sprintf("jose: invalid curveKind %d", k))
 }
 
 func (k curveKind) crv() string {
-	if k == curveP256 {
+	switch k {
+	case curveP256:
 		return crvP256
+	case curveSecp256k1:
+		return crvSecp256k1
 	}
-	return crvSecp256k1
+	panic(fmt.Sprintf("jose: invalid curveKind %d", k))
 }
 
 func (k curveKind) curve() elliptic.Curve {
-	if k == curveP256 {
+	switch k {
+	case curveP256:
 		return elliptic.P256()
+	case curveSecp256k1:
+		return secp256k1.S256()
 	}
-	return secp256k1.S256()
+	panic(fmt.Sprintf("jose: invalid curveKind %d", k))
 }
 
 func kindForAlg(alg string) (curveKind, bool) {
@@ -85,17 +97,24 @@ func kindForAlg(alg string) (curveKind, bool) {
 // token, so a hash over the token (the anchoring leaf) is stable. Same rule as
 // credential/common/signer.NormalizeLowS, which this module cannot import
 // without pulling in go-ethereum.
+//
+// s must be a valid signature scalar, 1 <= s <= n-1 (check it first; Sign and
+// anchor.Leaf do). A nil curve or s gives nil. The result is otherwise always
+// a new big.Int, never s itself, so changing it never changes s.
 func NormalizeLowS(curve elliptic.Curve, s *big.Int) *big.Int {
+	if curve == nil || s == nil || curve.Params() == nil || curve.Params().N == nil {
+		return nil
+	}
 	n := curve.Params().N
 	if s.Cmp(new(big.Int).Rsh(n, 1)) > 0 {
 		return new(big.Int).Sub(n, s)
 	}
-	return s
+	return new(big.Int).Set(s)
 }
 
-// inScalarRange reports whether 1 <= v <= n-1.
+// inScalarRange reports whether 1 <= v <= n-1; nil is never in range.
 func inScalarRange(v, n *big.Int) bool {
-	return v.Sign() > 0 && v.Cmp(n) < 0
+	return v != nil && n != nil && v.Sign() > 0 && v.Cmp(n) < 0
 }
 
 // coordinates returns the key's affine coordinates as 32 bytes each, and
