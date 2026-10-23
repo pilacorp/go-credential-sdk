@@ -740,6 +740,73 @@ A key kept in an HSM or Vault works through your own `signer.SignerProvider`:
 browser wallet that only offers `personal_sign` cannot act as one, because it
 hashes the digest again.
 
+### Verifying a Sub-DID
+
+A verifier keeps its own per-chain configuration: for each catalog chain code,
+the EVM chain id, an RPC client and that chain's DIDRegistry address. Contract
+addresses are never taken from a response.
+
+```go
+didClient, err := ethclient.Dial("https://rpc-did.example")
+if err != nil {
+    return err
+}
+traceClient, err := ethclient.Dial("https://rpc-trace.example")
+if err != nil {
+    return err
+}
+
+verifier, err := subdid.NewVerifier(
+    subdid.Chain{Code: "did", EVMChainID: 704, DIDRegistry: common.HexToAddress("0x..."), Client: didClient},
+    subdid.Chain{Code: "trace", EVMChainID: 705, DIDRegistry: common.HexToAddress("0x..."), Client: traceClient},
+)
+if err != nil {
+    return err
+}
+
+// proof is GET /api/v3/sub-did/{did}/proof decoded into subdid.ProofResponse;
+// doc is the resolved Sub-DID document, or nil for a revoked Sub-DID.
+res, err := verifier.VerifySubDID(ctx, subdid.VerifyRequest{
+    SubDID:   subDID,
+    Document: doc,
+    Proof:    &proof,
+    Chain:    "trace",
+})
+```
+
+`VerifySubDID` checks one chain per call; call it once for each chain you
+trust. On the chain named by `Chain` it:
+
+1. checks that the proof answers for `SubDID` under a root with the same prefix;
+2. takes the proof's entry for that chain (none → `ErrNotAnchored`; retry later
+   or check another chain);
+3. picks the leaf by the entry's `status`: `activated` needs `Document`
+   (`ErrDocumentRequired` without it) and checks it with `ValidateSubDID` and
+   `VerifyRootConsent`, then uses its `DocHash`; `deactivated` uses `RevokedLeaf`;
+4. folds `path` onto the leaf and compares it with the entry's `root`
+   (`proof_mismatch`);
+5. checks the node's chain id (`ErrChainMismatch`), reads the receipt of the
+   entry's `tx_hash`, decodes its `BatchSubtreesAnchoredByWriter` events from the
+   configured DIDRegistry, takes the last one for the root DID and tree index,
+   compares its root, and checks that its writer still holds
+   `SUBTREE_WRITER_ROLE`.
+
+The result is `StatusActive`, `StatusRevoked`, or `StatusInvalid` with one of
+these `Reason` values: `response_mismatch`, `id_mismatch`, `consent_invalid`,
+`no_anchor`, `root_mismatch`, `writer_revoked`, `proof_mismatch`. A chain that
+cannot be read is an error wrapping `ErrChainUnavailable`, never
+`StatusInvalid`; when the node does not know the entry's `tx_hash`, the error
+also wraps `ethereum.NotFound`. A Sub-DID whose root is deactivated has no
+proof: the proof call answers `DID_DEACTIVATED`, which a verifier treats as
+invalid.
+
+- The verifier checks the anchoring the proof names. It does not show that no
+  later anchoring replaced that root: a proof fetched before a revoke still
+  verifies until you fetch a new one.
+- The writer's role is read at the latest block. Once the old writer loses its
+  role, a proof it anchored reads `writer_revoked` until that tree changes and
+  is anchored again; fetching a new proof does not help before then.
+
 ## Signer Providers
 
 The SDK uses a `SignerProvider` interface for signing capability payloads. You can implement your own signer or use the provided default implementation.
