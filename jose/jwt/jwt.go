@@ -1,5 +1,6 @@
 // Package jwt reads JSON Web Token claim values under the rules of RFC 7519:
-// NumericDate (§2), the type of exp, nbf and iat (§4.1.4 to §4.1.6).
+// NumericDate (§2), the type of exp, nbf and iat (§4.1.4 to §4.1.6), and
+// checks exp and nbf against a time (§4.1.4, §4.1.5).
 package jwt
 
 import (
@@ -39,6 +40,51 @@ func NumericDate(v any) (time.Time, error) {
 		return fromFloat(float64(n))
 	}
 	return time.Time{}, fmt.Errorf("%w: NumericDate is %T, not a number", jose.ErrMalformed, v)
+}
+
+// DateClaim reads the NumericDate claim name from claims, as
+// jose.DecodeJSONObject yields them; ok is false when it is absent. A present
+// value that NumericDate refuses is jose.ErrMalformed.
+func DateClaim(claims map[string]any, name string) (t time.Time, ok bool, err error) {
+	v, ok := claims[name]
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	t, err = NumericDate(v)
+	if err != nil {
+		return time.Time{}, true, fmt.Errorf("%s: %w", name, err)
+	}
+	return t, true, nil
+}
+
+// CheckExpNbf checks the exp and nbf claims, when present, against now with
+// a leeway of skew. exp refuses when now ≥ exp + skew (RFC 7519 §4.1.4: "on
+// or after"), nbf when now < nbf − skew (§4.1.5: "after or equal"). A
+// negative skew is jose.ErrInvalidArgument, a malformed value
+// jose.ErrMalformed; a failing one is an error with no sentinel, which
+// callers wrap in their own.
+func CheckExpNbf(claims map[string]any, now time.Time, skew time.Duration) error {
+	// Negating math.MinInt64 overflows to itself, which would move the exp
+	// edge into the distant past and accept an expired token.
+	if skew < 0 {
+		return fmt.Errorf("%w: jwt: negative skew", jose.ErrInvalidArgument)
+	}
+	// Shifting now, not the claim, keeps a far-off date from overflowing.
+	exp, ok, err := DateClaim(claims, "exp")
+	if err != nil {
+		return err
+	}
+	if ok && !now.Add(-skew).Before(exp) {
+		return fmt.Errorf("jwt: expired at %s", exp)
+	}
+	nbf, ok, err := DateClaim(claims, "nbf")
+	if err != nil {
+		return err
+	}
+	if ok && now.Add(skew).Before(nbf) {
+		return fmt.Errorf("jwt: not valid before %s", nbf)
+	}
+	return nil
 }
 
 func fromFloat(f float64) (time.Time, error) {
