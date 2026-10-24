@@ -21,6 +21,11 @@ One package per standard:
 - `jose/jwk`: `jwk.ToPublicKey` / `jwk.FromPublicKey` convert EC public keys (`kty: EC`, `crv: P-256 | secp256k1`,
   RFC 7517, RFC 7518, RFC 8812). A secp256k1 JWK that carries `alg`, `use` or `key_ops` must have `ES256K`, `sig`, or
   a list including `verify` (RFC 8812 §3.2).
+- `jose/sdjwt`: the SD-JWT format of RFC 9901. `sdjwt.Conceal(claims, paths, opts)` makes the claims at `paths`
+  selectively disclosable and returns the payload to sign and the disclosures, with decoy digests up to
+  `opts.MinDigests` in every object and array; `sdjwt.Split` separates the compact form; `sdjwt.Recreate(payload,
+  disclosures)` rebuilds the claims (§7.1 steps 3 to 5) and tells which disclosures each claim needs. It neither
+  signs nor checks validity claims, and has no Key Binding JWT yet.
 - `jose`: `EncodeSegment` / `DecodeSegment` and `EncodeJSON` / `DecodeJSON` (the strict encodings every part of a
   token is read with), and `ErrMalformed` / `ErrInvalidArgument`, which `jose/jws` returns too. Each other package
   has its own errors.
