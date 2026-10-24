@@ -4,11 +4,11 @@ package jws
 
 import "errors"
 
-// Sign and Verify wrap one of these, or a jose sentinel, so a caller maps
-// every error with errors.Is:
-//   - jose.ErrMalformed (Verify): not three dot-separated parts, a part that
-//     is not strict base64url, a header that is not a JSON object read by
-//     jose.DecodeJSONObject, or an alg that is not a string;
+// Sign, Verify and UnverifiedHeader wrap one of these, or a jose sentinel, so
+// a caller maps every error with errors.Is:
+//   - jose.ErrMalformed (Verify, UnverifiedHeader): not three dot-separated
+//     parts, a part that is not strict base64url, a header that is not a JSON
+//     object read by jose.DecodeJSONObject, or an alg that is not a string;
 //   - jose.ErrInvalidArgument (Sign): a nil signer, a header alg that differs
 //     from the alg of pub, or a header EncodeJSON cannot write or Verify could
 //     not read back.

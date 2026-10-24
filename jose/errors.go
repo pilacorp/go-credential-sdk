@@ -6,7 +6,8 @@ import "errors"
 
 // Every error jose returns wraps one of these, so a caller maps it with
 // errors.Is and keeps the wrapped detail for logs. jose/jws returns these too;
-// see its errors for when. jose/jwk has its own ErrBadKey.
+// see its errors for when. jose/jwt returns ErrMalformed. jose/jwk has its own
+// ErrBadKey.
 var (
 	// ErrMalformed: a base64url segment or a JSON value does not have the
 	// required shape.

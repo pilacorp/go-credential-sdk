@@ -39,6 +39,55 @@ func (h Header) Typ() string { return h.str("typ") }
 // Kid returns the kid member, or "" when absent or not a string.
 func (h Header) Kid() string { return h.str("kid") }
 
+// TypIs reports whether the typ member names mediaType, for applications that
+// use explicit typing (RFC 8725 §3.11). As RFC 7515 §4.1.9 says, case is
+// ignored and a value without '/' on either side means "application/" + value.
+// It is false when typ is absent, not a string or empty, when mediaType is
+// empty, and when either carries parameters (';').
+func (h Header) TypIs(mediaType string) bool {
+	typ, ok := fullMediaType(h.Typ())
+	want, wantOK := fullMediaType(mediaType)
+	return ok && wantOK && equalFoldASCII(typ, want)
+}
+
+// fullMediaType applies RFC 7515 §4.1.9: a recipient MUST treat a value
+// without '/' as if "application/" were prepended. A value with parameters is
+// refused: the explicit types this SDK reads (kb+jwt, RFC 9901 §11.2.3;
+// dc+sd-jwt, draft-ietf-oauth-sd-jwt-vc-19 §9.2.1; statuslist+jwt,
+// draft-ietf-oauth-status-list-21 §14.7) register no parameters, so this
+// matches their registrations.
+func fullMediaType(v string) (string, bool) {
+	if v == "" || strings.Contains(v, ";") {
+		return "", false
+	}
+	if !strings.Contains(v, "/") {
+		return "application/" + v, true
+	}
+	return v, true
+}
+
+// equalFoldASCII compares ignoring ASCII case only (RFC 7515 §4.1.9: media
+// type values are case insensitive). strings.EqualFold also folds Unicode, so
+// U+212A KELVIN SIGN would equal "k" and a non-ASCII typ could match.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if lowerASCII(a[i]) != lowerASCII(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func lowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
 func (h Header) str(name string) string {
 	s, _ := h[name].(string)
 	return s
@@ -129,41 +178,11 @@ func Sign(s Signer, pub *ecdsa.PublicKey, header Header, payload []byte) (string
 //     verification, which accepts any s in [1, n-1] (FIPS 186-5 §6.4.2 step
 //     1).
 func Verify(compact string, key *ecdsa.PublicKey, allowed []string) (Header, []byte, error) {
-	// RFC 7515 §5.2 step 1 and §7.1: three parts separated by exactly two
-	// periods. SplitN, not Split: a megabyte of dots must not become a million
-	// strings before the count is checked.
-	parts := strings.SplitN(compact, ".", 4)
-	if len(parts) != 3 {
-		return nil, nil, fmt.Errorf("%w: a compact JWS has three parts", jose.ErrMalformed)
-	}
-	// RFC 7515 §5.2 steps 2, 6 and 7: strict base64url, no line breaks.
-	headerJSON, err := jose.DecodeSegment(parts[0])
+	tok, err := parse(compact)
 	if err != nil {
-		return nil, nil, fmt.Errorf("header: %w", err)
-	}
-	payload, err := jose.DecodeSegment(parts[1])
-	if err != nil {
-		return nil, nil, fmt.Errorf("payload: %w", err)
-	}
-	sig, err := jose.DecodeSegment(parts[2])
-	if err != nil {
-		return nil, nil, fmt.Errorf("signature: %w", err)
-	}
-	// RFC 7515 §5.2 steps 3 and 4: a valid JSON object without duplicate
-	// Header Parameter names.
-	obj, err := jose.DecodeJSONObject(headerJSON)
-	if err != nil {
-		return nil, nil, fmt.Errorf("header: %w", err)
-	}
-	header := Header(obj)
-	// RFC 7515 §4.1.1: alg MUST be present; its value is a string.
-	alg, ok := header["alg"].(string)
-	if !ok {
-		return nil, nil, fmt.Errorf("%w: header alg must be a string", jose.ErrMalformed)
-	}
-	if err := checkHeaderExtensions(header); err != nil {
 		return nil, nil, err
 	}
+	header, alg, sig := tok.header, tok.header.Alg(), tok.sig
 
 	// RFC 7515 §5.2 (last paragraph), RFC 7518 §8.5 and RFC 8725 §3.1: the
 	// caller names the algorithms it accepts; only ES256 and ES256K ever are,
@@ -194,11 +213,76 @@ func Verify(compact string, key *ecdsa.PublicKey, allowed []string) (Header, []b
 
 	// RFC 7515 §5.2 step 8, RFC 7518 §3.4 and RFC 8812 §3.2 step 1: SHA-256
 	// over the received header.payload string, the JWS Signing Input.
-	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	digest := sha256.Sum256([]byte(tok.signingInput))
 	if err := pt.VerifyRS(digest[:], sig); err != nil {
 		return nil, nil, fmt.Errorf("%w: %v", ErrBadSignature, err)
 	}
-	return header, payload, nil
+	return header, tok.payload, nil
+}
+
+// UnverifiedHeader returns the header of a compact JWS without checking its
+// signature, so a caller can choose the key, by kid (RFC 7515 §4.1.4) for
+// instance, before calling Verify with it. It refuses the same malformed
+// tokens as Verify, with the same errors (steps 1 to 3: three parts,
+// base64url, a header that is a JSON object, alg a string, crit and b64);
+// whether alg is supported, allowed and matches the key is checked by Verify
+// only. The header is untrusted until Verify succeeds: anyone can write any
+// kid, typ or alg into it.
+func UnverifiedHeader(compact string) (Header, error) {
+	tok, err := parse(compact)
+	if err != nil {
+		return nil, err
+	}
+	return tok.header, nil
+}
+
+// parsed is a compact JWS taken apart, before any check of alg, key or
+// signature.
+type parsed struct {
+	header       Header
+	payload, sig []byte
+	signingInput string // the received header.payload (RFC 7515 §5.2 step 8)
+}
+
+// parse holds the structural checks of Verify (steps 1 to 3), so every
+// function that reads a compact JWS rejects the same malformed tokens with the
+// same errors. alg is not checked against the supported or allowed list here.
+func parse(compact string) (parsed, error) {
+	// RFC 7515 §5.2 step 1 and §7.1: three parts separated by exactly two
+	// periods. SplitN, not Split: a megabyte of dots must not become a million
+	// strings before the count is checked.
+	parts := strings.SplitN(compact, ".", 4)
+	if len(parts) != 3 {
+		return parsed{}, fmt.Errorf("%w: a compact JWS has three parts", jose.ErrMalformed)
+	}
+	// RFC 7515 §5.2 steps 2, 6 and 7: strict base64url, no line breaks.
+	headerJSON, err := jose.DecodeSegment(parts[0])
+	if err != nil {
+		return parsed{}, fmt.Errorf("header: %w", err)
+	}
+	payload, err := jose.DecodeSegment(parts[1])
+	if err != nil {
+		return parsed{}, fmt.Errorf("payload: %w", err)
+	}
+	sig, err := jose.DecodeSegment(parts[2])
+	if err != nil {
+		return parsed{}, fmt.Errorf("signature: %w", err)
+	}
+	// RFC 7515 §5.2 steps 3 and 4: a valid JSON object without duplicate
+	// Header Parameter names.
+	obj, err := jose.DecodeJSONObject(headerJSON)
+	if err != nil {
+		return parsed{}, fmt.Errorf("header: %w", err)
+	}
+	header := Header(obj)
+	// RFC 7515 §4.1.1: alg MUST be present; its value is a string.
+	if _, ok := header["alg"].(string); !ok {
+		return parsed{}, fmt.Errorf("%w: header alg must be a string", jose.ErrMalformed)
+	}
+	if err := checkHeaderExtensions(header); err != nil {
+		return parsed{}, err
+	}
+	return parsed{header: header, payload: payload, sig: sig, signingInput: parts[0] + "." + parts[1]}, nil
 }
 
 // checkHeaderExtensions refuses the two header members that change how a JWS

@@ -563,3 +563,48 @@ func TestAlgOfInvalidKindPanics(t *testing.T) {
 	}()
 	algOf(0)
 }
+
+// UnverifiedHeader reads the header without any key, and refuses what Verify
+// refuses before the signature check.
+func TestUnverifiedHeader(t *testing.T) {
+	s, pub := newP256Signer(t)
+	token := mustSign(t, s, pub, map[string]any{"kid": "key-1"}, `{}`)
+	h, err := UnverifiedHeader(token)
+	if err != nil {
+		t.Fatalf("UnverifiedHeader: %v", err)
+	}
+	if h.Kid() != "key-1" || h.Alg() != AlgES256 {
+		t.Fatalf("header %v", h)
+	}
+	_, err = UnverifiedHeader(token[:strings.LastIndex(token, ".")])
+	wantErr(t, err, jose.ErrMalformed)
+}
+
+// Cases from RFC 7515 §4.1.9: case-insensitive, "application/" implied when
+// the value has no '/', and parameters never shortened.
+func TestHeaderTypIs(t *testing.T) {
+	for _, tc := range []struct {
+		typ       any
+		mediaType string
+		want      bool
+	}{
+		{"kb+jwt", "application/kb+jwt", true},
+		{"application/kb+jwt", "kb+jwt", true},
+		{"KB+JWT", "kb+jwt", true},
+		{"kb+jwt", "Application/KB+JWT", true},
+		{"text/kb+jwt", "application/kb+jwt", false},
+		{`application/example;part="1/2"`, `application/example;part="1/2"`, false},
+		{"kb+jwt ", "kb+jwt", false},
+		{"\u212Ab+jwt", "kb+jwt", false}, // KELVIN SIGN folds to k only under Unicode rules
+		{nil, "", false},
+		{123, "123", false},
+	} {
+		h := Header{"alg": AlgES256}
+		if tc.typ != nil {
+			h["typ"] = tc.typ
+		}
+		if got := h.TypIs(tc.mediaType); got != tc.want {
+			t.Errorf("typ %#v TypIs(%q) = %v, want %v", tc.typ, tc.mediaType, got, tc.want)
+		}
+	}
+}
