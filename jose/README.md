@@ -12,7 +12,12 @@ One package per standard:
 - `jose/jws`: `jws.Sign(signer, pub, header, payload)` builds a compact JWS (RFC 7515) with `ES256` (P-256, RFC 7518)
   or `ES256K` (secp256k1, RFC 8812), chosen by the curve of `pub`. The private key stays with the signer.
   `jws.Verify(token, key, allowed)` checks it against a key the caller supplies (never one taken from the header) and
-  returns the header and the original payload bytes.
+  returns the header and the original payload bytes. `jws.UnverifiedHeader(token)` reads the header with the
+  structural checks of `Verify`, so the caller can pick the key by `kid`; alg is checked only by `Verify`, and nothing
+  in the header is trusted until `Verify` succeeds. `Header.TypIs(mediaType)` compares `typ` as RFC 7515 §4.1.9 says
+  (explicit typing, RFC 8725 §3.11).
+- `jose/jwt`: `jwt.NumericDate(v)` turns an `exp`, `nbf` or `iat` value into a `time.Time` (RFC 7519 §2), fractions
+  included; a non-number, NaN, ±Inf or a value `time.Time` cannot hold is `jose.ErrMalformed`.
 - `jose/jwk`: `jwk.ToPublicKey` / `jwk.FromPublicKey` convert EC public keys (`kty: EC`, `crv: P-256 | secp256k1`,
   RFC 7517, RFC 7518, RFC 8812). A secp256k1 JWK that carries `alg`, `use` or `key_ops` must have `ES256K`, `sig`, or
   a list including `verify` (RFC 8812 §3.2).
