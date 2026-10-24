@@ -17,7 +17,9 @@ One package per standard:
   in the header is trusted until `Verify` succeeds. `Header.TypIs(mediaType)` compares `typ` as RFC 7515 §4.1.9 says
   (explicit typing, RFC 8725 §3.11).
 - `jose/jwt`: `jwt.NumericDate(v)` turns an `exp`, `nbf` or `iat` value into a `time.Time` (RFC 7519 §2), fractions
-  included; a non-number, NaN, ±Inf or a value `time.Time` cannot hold is `jose.ErrMalformed`.
+  included; a non-number, NaN, ±Inf or a value `time.Time` cannot hold is `jose.ErrMalformed`. `jwt.DateClaim`
+  reads one such claim from a payload. `jwt.CheckExpNbf(claims, now, skew)` checks `exp` and `nbf` when present
+  (RFC 7519 §4.1.4, §4.1.5); `VerifyKBJWT` takes the rule from it, and the skew is the caller's policy.
 - `jose/jwk`: `jwk.ToPublicKey` / `jwk.FromPublicKey` convert EC public keys (`kty: EC`, `crv: P-256 | secp256k1`,
   RFC 7517, RFC 7518, RFC 8812). A secp256k1 JWK that carries `alg`, `use` or `key_ops` must have `ES256K`, `sig`, or
   a list including `verify` (RFC 8812 §3.2).
@@ -25,7 +27,11 @@ One package per standard:
   selectively disclosable and returns the payload to sign and the disclosures, with decoy digests up to
   `opts.MinDigests` in every object and array; `sdjwt.Split` separates the compact form; `sdjwt.Recreate(payload,
   disclosures)` rebuilds the claims (§7.1 steps 3 to 5) and tells which disclosures each claim needs. It neither
-  signs nor checks validity claims, and has no Key Binding JWT yet.
+  signs the Issuer-signed JWT nor checks its validity claims.
+- `jose/sdjwt`, Key Binding JWT (RFC 9901 §4.3, §7.3): `SDHash`, `NewKBJWT` and `VerifyKBJWT` (check order in its
+  godoc), which returns `ErrKBInvalid`, `ErrKBAudience`, `ErrKBNonce` or `ErrKBSDHash`, and `jose.ErrInvalidArgument`
+  for caller mistakes. `VerifyKBJWT` accepts only the alg of the holder key (ES256 or ES256K, never none); whether
+  that alg is acceptable (§7.3 step 5b) the caller checks first, with `jws.UnverifiedHeader` against its allowlist.
 - `jose`: `EncodeSegment` / `DecodeSegment` and `EncodeJSON` / `DecodeJSON` (the strict encodings every part of a
   token is read with), and `ErrMalformed` / `ErrInvalidArgument`, which `jose/jws` returns too. Each other package
   has its own errors.

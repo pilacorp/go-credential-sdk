@@ -44,3 +44,40 @@ func TestNumericDate(t *testing.T) {
 		})
 	}
 }
+
+// RFC 7519 §4.1.4 refuses on or after exp, §4.1.5 before nbf; with a skew of
+// 60 s the edges are now = exp + 60 (refused) and now = nbf − 60 (accepted).
+func TestCheckExpNbf(t *testing.T) {
+	now := time.Unix(1748537244, 0)
+	for _, tc := range []struct {
+		name   string
+		claims map[string]any
+		ok     bool
+		skew   time.Duration // zero: one minute
+		err    error         // checked with errors.Is when not nil
+	}{
+		{name: "neither", claims: map[string]any{}, ok: true},
+		{name: "exp one second before the edge", claims: map[string]any{"exp": json.Number("1748537185")}, ok: true},
+		{name: "exp at the edge", claims: map[string]any{"exp": json.Number("1748537184")}},
+		{name: "nbf at the edge", claims: map[string]any{"nbf": json.Number("1748537304")}, ok: true},
+		{name: "nbf one second past the edge", claims: map[string]any{"nbf": json.Number("1748537305")}},
+		{name: "exp not a number", claims: map[string]any{"exp": "1748537304"}, err: jose.ErrMalformed},
+		// A negative skew is a caller mistake; MinInt64 would overflow when
+		// negated and let an expired token pass.
+		{name: "negative skew", claims: map[string]any{"exp": json.Number("1748537184")}, skew: math.MinInt64, err: jose.ErrInvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			skew := time.Minute
+			if tc.skew != 0 {
+				skew = tc.skew
+			}
+			err := CheckExpNbf(tc.claims, now, skew)
+			switch {
+			case tc.ok && err != nil, !tc.ok && err == nil:
+				t.Fatalf("got %v, want ok=%v", err, tc.ok)
+			case tc.err != nil && !errors.Is(err, tc.err):
+				t.Fatalf("got %v, want %v", err, tc.err)
+			}
+		})
+	}
+}
