@@ -28,6 +28,8 @@ its source files.
     sdjwt/recreate.go    from RecreateClaims.kt, SdJwtVerifier.kt
   (paths under src/main/kotlin/eu/europa/ec/eudi/sdjwt/)
 
+sdjwt/kb.go is written from RFC 9901 Sections 4.3 and 7.3, not ported.
+
 sdjwt/testdata/rfc9901-examples.json holds the examples of RFC 9901,
 Selective Disclosure for JSON Web Tokens, Section 5.2 and Appendix A.1 to
 A.4, under this notice:
