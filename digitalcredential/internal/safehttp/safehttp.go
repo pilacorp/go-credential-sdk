@@ -1,13 +1,14 @@
 // Package safehttp fetches documents whose URL comes from untrusted input.
 //
-// draft-ietf-oauth-sd-jwt-vc-19 §3 and §7.1: an https URL with a host on every
-// hop (RFC 9110 §4.2.2), a bounded number of redirects, time and size bounds,
-// a 2xx status (RFC 9110 §15.3) of the expected media type, and no connection
-// to an address that is not globally reachable. draft-ietf-oauth-status-list-21
-// §8.2: a 2xx status and the registered media type; §11.4 (redirect loops):
-// bounded by the redirect limit. Applying the sd-jwt-vc-19 rules to a status
-// list uri is this package's policy: status-list-21 §6.2 leaves further
-// restrictions on that uri to the Relying Party.
+// draft-ietf-oauth-sd-jwt-vc-19 §3 and §7.1: an https URL with a host and no
+// userinfo on every hop (RFC 9110 §4.2.2, §4.2.4), a bounded number of
+// redirects, time and size bounds, a 2xx status (RFC 9110 §15.3) of the
+// expected media type, and no connection to an address that is not globally
+// reachable. draft-ietf-oauth-status-list-21 §8.2: a 2xx status and the
+// registered media type; §11.4 (redirect loops): bounded by the redirect
+// limit. Applying the sd-jwt-vc-19 rules to a status list uri is this
+// package's policy: status-list-21 §6.2 leaves further restrictions on that
+// uri to the Relying Party.
 //
 // The address check sits in the dialer of NewClient, so it sees the address
 // actually connected to, after DNS resolution and on every redirect. It cannot
@@ -78,16 +79,18 @@ func control(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
-// HTTPSURL reports whether u is an https URL with a host, the only URLs Get
-// requests and follows: draft-ietf-oauth-sd-jwt-vc-19 §3 (HTTPS only) and RFC
-// 9110 §4.2.2 (an https URI with an empty host is invalid; dialing ":443"
-// reaches the local host).
+// HTTPSURL reports whether u is an https URL with a host and no userinfo, the
+// only URLs Get requests and follows: draft-ietf-oauth-sd-jwt-vc-19 §3 (HTTPS
+// only), RFC 9110 §4.2.2 (an https URI with an empty host is invalid; dialing
+// ":443" reaches the local host) and §4.2.4 (a recipient SHOULD treat userinfo
+// as an error, since it can obscure the authority; this package always does).
+// A nil u is false.
 func HTTPSURL(u *url.URL) bool {
-	return u.Scheme == "https" && u.Hostname() != ""
+	return u != nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
 // Get fetches rawURL and returns the body and the response header. rawURL and
-// every redirect target must be https with a host, and at most l.MaxRedirects
+// every redirect target must pass HTTPSURL, and at most l.MaxRedirects
 // redirects are followed, both checked before the next request is sent. The
 // whole fetch ends within l.Timeout. The status must be 2xx, and the media
 // type of Content-Type must be mediaType (ASCII case ignored, parameters
@@ -118,7 +121,7 @@ func Get(ctx context.Context, c *http.Client, rawURL, mediaType string, l Limits
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil || !HTTPSURL(u) {
-		return nil, nil, errors.New("safehttp: URL is not https with a host")
+		return nil, nil, errors.New("safehttp: URL is not https with a host and no userinfo")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, l.Timeout)
@@ -141,7 +144,7 @@ func Get(ctx context.Context, c *http.Client, rawURL, mediaType string, l Limits
 			}
 		}
 		if !HTTPSURL(r.URL) {
-			return errors.New("safehttp: redirect to a URL that is not https with a host")
+			return errors.New("safehttp: redirect to a URL that is not https with a host and no userinfo")
 		}
 		if len(via) > l.MaxRedirects {
 			return fmt.Errorf("safehttp: more than %d redirects", l.MaxRedirects)

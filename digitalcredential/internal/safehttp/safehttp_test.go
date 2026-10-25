@@ -131,9 +131,9 @@ func TestGetRefusesCompressedBodyOverCap(t *testing.T) {
 	}
 }
 
-// draft-ietf-oauth-sd-jwt-vc-19 §3 (HTTPS only) and RFC 9110 §4.2.2 (an https
-// URI with an empty host is invalid): refused before any request, whatever the
-// client.
+// draft-ietf-oauth-sd-jwt-vc-19 §3 (HTTPS only), RFC 9110 §4.2.2 (an https
+// URI with an empty host is invalid) and §4.2.4 (a recipient SHOULD treat
+// userinfo as an error): refused before any request, whatever the client.
 func TestGetRefusesURL(t *testing.T) {
 	var hits atomic.Int32
 	plain := jsonServer(t, false, "{}", &hits)
@@ -143,7 +143,7 @@ func TestGetRefusesURL(t *testing.T) {
 	// than by the TLS handshake.
 	c.Transport.(*http.Transport).TLSClientConfig.ServerName = "127.0.0.1"
 	_, port, _ := net.SplitHostPort(s.Listener.Addr().String())
-	for _, u := range []string{plain.URL, "https://:" + port + "/"} {
+	for _, u := range []string{plain.URL, "https://:" + port + "/", "https://user:pass@127.0.0.1:" + port + "/"} {
 		if _, _, err := Get(context.Background(), c, u, "application/json", limits); err == nil {
 			t.Errorf("Get(%s): err = nil", u)
 		}

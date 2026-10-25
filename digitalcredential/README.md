@@ -15,8 +15,8 @@ that do not compress: a larger list signs only while it compresses well, and `Si
 make it less compressible, so size or split lists for the highest change rate expected (draft 21 §13.4, App. B).
 Checking a token comes later.
 
-`internal/safehttp` fetches documents whose URL comes from a token, such as a status list or issuer metadata: HTTPS on
-every hop, a bounded number of redirects, time and size bounds (draft-ietf-oauth-sd-jwt-vc-19 §3), and no connection
-to an address that is not globally reachable (§7.1). Status lists get the same rules as this SDK's policy, since
-draft-ietf-oauth-status-list-21 §6.2 leaves them to the Relying Party. The address check cannot know hosts reachable
-only inside your own network; block those with your egress policy.
+`internal/safehttp` fetches documents whose URL comes from a token, such as a status list or issuer metadata: HTTPS
+without userinfo on every hop (RFC 9110 §4.2.4), a bounded number of redirects, time and size bounds
+(draft-ietf-oauth-sd-jwt-vc-19 §3), and no connection to an address that is not globally reachable (§7.1). Status lists
+get the same rules as this SDK's policy, since draft-ietf-oauth-status-list-21 §6.2 leaves them to the Relying Party.
+The address check cannot know hosts reachable only inside your own network; block those with your egress policy.

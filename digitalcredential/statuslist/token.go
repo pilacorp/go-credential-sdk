@@ -29,8 +29,9 @@ type TokenClaims struct {
 	// Sub is the URI of the token, the uri the Referenced Tokens carry
 	// (§6.2); §5.1 requires the two to be equal, which is the caller's to
 	// keep. It must be a URI (RFC 7519 §2: a StringOrURI holding ":" MUST be
-	// one; RFC 3986 §3), and an https URL with a host, the only URLs this
-	// module fetches, as §6.2 lets the Relying Party restrict uri.
+	// one; RFC 3986 §3), and an https URL with a host and no userinfo (RFC
+	// 9110 §4.2.4), the only URLs this module fetches, as §6.2 lets the
+	// Relying Party restrict uri.
 	Sub string
 	// IssuedAt is iat, required (§5.1); written in whole seconds, the
 	// fraction dropped.
@@ -77,7 +78,7 @@ func SignToken(l *List, c TokenClaims, key SigningKey) (string, error) {
 		return "", fmt.Errorf("%w: statuslist: Sub is not a URI (RFC 3986)", jose.ErrInvalidArgument)
 	}
 	if u, err := url.Parse(c.Sub); err != nil || !safehttp.HTTPSURL(u) {
-		return "", fmt.Errorf("%w: statuslist: Sub is not an https URL with a host", jose.ErrInvalidArgument)
+		return "", fmt.Errorf("%w: statuslist: Sub is not an https URL with a host and no userinfo", jose.ErrInvalidArgument)
 	}
 	if c.IssuedAt.IsZero() {
 		return "", fmt.Errorf("%w: statuslist: IssuedAt is required", jose.ErrInvalidArgument)
