@@ -12,9 +12,9 @@ import (
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
 
-// maxTokenBytes caps a Status List Token in compact form: the cap the Status
-// List Token checker (next change) applies, and SignToken refuses a larger
-// token, so no signed token exceeds it. Draft 21 sets no limit (§13.4). With
+// maxTokenBytes caps a Status List Token in compact form: the cap the Checker
+// applies to the response body, and SignToken refuses a larger token, so no
+// signed token exceeds it. Draft 21 sets no limit (§13.4). With
 // lst base64url-encoded inside the base64url payload, the cap holds only
 // about 576 KiB of list bytes that do not compress.
 const maxTokenBytes = 1 << 20
@@ -48,7 +48,10 @@ type TokenClaims struct {
 type SigningKey struct {
 	Signer jws.Signer       // holds the private key of Public
 	Public *ecdsa.PublicKey // decides alg (RFC 8725 §3.1: one algorithm per key)
-	KID    string           // the kid header; empty writes none (RFC 7515 §4.1.4: optional)
+	// KID is the kid header; empty writes none (RFC 7515 §4.1.4: optional),
+	// and a verifier selecting keys with issuerkey.Select then accepts the
+	// token only from an issuer that publishes exactly one key.
+	KID string
 }
 
 // SignToken signs l as a Status List Token in JWT format (draft 21 §5.1):
