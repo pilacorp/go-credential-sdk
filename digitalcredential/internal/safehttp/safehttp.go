@@ -78,10 +78,11 @@ func control(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
-// httpsURL: draft-ietf-oauth-sd-jwt-vc-19 §3 (HTTPS only) and RFC 9110 §4.2.2
-// (an https URI with an empty host is invalid; dialing ":443" reaches the
-// local host).
-func httpsURL(u *url.URL) bool {
+// HTTPSURL reports whether u is an https URL with a host, the only URLs Get
+// requests and follows: draft-ietf-oauth-sd-jwt-vc-19 §3 (HTTPS only) and RFC
+// 9110 §4.2.2 (an https URI with an empty host is invalid; dialing ":443"
+// reaches the local host).
+func HTTPSURL(u *url.URL) bool {
 	return u.Scheme == "https" && u.Hostname() != ""
 }
 
@@ -116,7 +117,7 @@ func Get(ctx context.Context, c *http.Client, rawURL, mediaType string, l Limits
 		return nil, nil, fmt.Errorf("safehttp: max bytes %d out of range", l.MaxBytes)
 	}
 	u, err := url.Parse(rawURL)
-	if err != nil || !httpsURL(u) {
+	if err != nil || !HTTPSURL(u) {
 		return nil, nil, errors.New("safehttp: URL is not https with a host")
 	}
 
@@ -139,7 +140,7 @@ func Get(ctx context.Context, c *http.Client, rawURL, mediaType string, l Limits
 				return err
 			}
 		}
-		if !httpsURL(r.URL) {
+		if !HTTPSURL(r.URL) {
 			return errors.New("safehttp: redirect to a URL that is not https with a host")
 		}
 		if len(via) > l.MaxRedirects {
