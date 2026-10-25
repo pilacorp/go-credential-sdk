@@ -35,7 +35,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := `{"iss":"https://x", "name":"Nguyễn <a&b>"}`
-			token := mustSign(t, tc.s, tc.pub, map[string]any{"typ": "dc+sd-jwt", "kid": "did:x#key-2"}, payload)
+			token := mustSign(t, tc.s, tc.pub, map[string]any{"typ": "dc+sd-jwt", "kid": "key-2"}, payload)
 			h, got, err := Verify(token, tc.pub, nil)
 			if err != nil {
 				t.Fatalf("Verify: %v", err)
@@ -43,7 +43,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 			if string(got) != payload {
 				t.Fatalf("payload %q, want the signed bytes unchanged %q", got, payload)
 			}
-			if h.Alg() != tc.alg || h.Typ() != "dc+sd-jwt" || h.Kid() != "did:x#key-2" {
+			if h.Alg() != tc.alg || h.Typ() != "dc+sd-jwt" || h.Kid() != "key-2" {
 				t.Fatalf("header %v", h)
 			}
 			if sig, _ := jose.DecodeSegment(token[strings.LastIndex(token, ".")+1:]); len(sig) != 64 {
@@ -288,7 +288,7 @@ func TestSignKeepsSignerSignature(t *testing.T) {
 
 func TestSignPropagatesSignerError(t *testing.T) {
 	_, pub := newP256Signer(t)
-	boom := errors.New("vault down")
+	boom := errors.New("signer down")
 	_, err := Sign(funcSigner(func([]byte) ([]byte, error) { return nil, boom }), pub, nil, []byte(`{}`))
 	if !errors.Is(err, boom) || !errors.Is(err, ErrSigner) {
 		t.Fatalf("got %v, want ErrSigner and the signer's error wrapped", err)

@@ -27,8 +27,8 @@ var (
 	ErrBadKey = errors.New("jws: bad key")
 	// ErrUnsupportedHeader: a header with crit or b64.
 	ErrUnsupportedHeader = errors.New("jws: unsupported header")
-	// ErrSigner (Sign only): the Signer returned an error (Vault, HSM or
-	// network down); the signer's own error is wrapped too.
+	// ErrSigner (Sign only): the Signer returned an error (its key store or the
+	// network is down); the signer's own error is wrapped too.
 	ErrSigner = errors.New("jws: signer failed")
 	// ErrSelfCheck (Sign only): the token does not verify with pub: the
 	// signer used another key, or answered something other than 64-byte r||s.

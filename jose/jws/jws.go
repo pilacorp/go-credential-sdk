@@ -21,8 +21,8 @@ const (
 
 // Signer signs a 32-byte SHA-256 digest and returns the signature as 64-byte
 // r||s, 32 bytes each (RFC 7518 §3.4, RFC 8812 §3.2). The private key stays
-// with the signer (in memory, Vault, HSM). Sign uses the answer as is, so DER
-// or r||s||v fails with ErrSelfCheck.
+// with the signer (in memory, a key management service or an HSM). Sign uses
+// the answer as is, so DER or r||s||v fails with ErrSelfCheck.
 type Signer interface {
 	Sign(digest []byte) ([]byte, error)
 }
