@@ -2,8 +2,12 @@ go-credential-sdk / digitalcredential
 Copyright (c) 2026 Pila Corp
 Licensed under the MIT License (see LICENSE at the repository root).
 
-Packages digitalcredential and digitalcredential/internal/safehttp are written
-from scratch.
+Packages digitalcredential, digitalcredential/internal/safehttp and
+digitalcredential/statuslist are written from scratch.
 
-Third-party code: none is copied into this module, and it depends on nothing
-outside the Go standard library.
+Test vectors in the statuslist tests and testdata are copied from
+draft-ietf-oauth-status-list-21 (§4.2 and Appendix C).
+
+Third-party code: none is copied into this module. It depends on module
+github.com/pilacorp/go-credential-sdk/jose of this repository, and through it
+on github.com/decred/dcrd/dcrec/secp256k1/v4 (ISC License).
