@@ -1,0 +1,9 @@
+go-credential-sdk / digitalcredential
+Copyright (c) 2026 Pila Corp
+Licensed under the MIT License (see LICENSE at the repository root).
+
+Packages digitalcredential and digitalcredential/internal/safehttp are written
+from scratch.
+
+Third-party code: none is copied into this module, and it depends on nothing
+outside the Go standard library.
