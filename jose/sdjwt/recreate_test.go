@@ -122,3 +122,46 @@ func TestRecreateRejects(t *testing.T) {
 		})
 	}
 }
+
+// RFC 9901 §4.2.6 and §7.2 presentation steps 1 and 2: a path selects its
+// concealed ancestors and its own disclosure, nothing else, even when another
+// concealed claim shares a name with an element of the path.
+func TestDisclosuresSelectOnlyThePath(t *testing.T) {
+	claims := map[string]any{"x": map[string]any{"y": "1"}, "y": "2", "a": map[string]any{"y": "3"}}
+	payload, ds, err := Conceal(claims, []Path{{"y"}, {"a"}, {"a", "y"}}, ConcealOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := map[string]string{}
+	for _, d := range ds {
+		name[d.Encoded] = fmt.Sprint(d.Name, "=", d.Value)
+	}
+	r, err := Recreate(payload, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path Path
+		ok   bool
+		want string
+	}{
+		{Path{"x", "y"}, true, "[]"},
+		{Path{"y"}, true, "[y=2]"},
+		{Path{"a", "y"}, true, "[a=map[] y=3]"},
+		{Path{"a", "zz"}, false, "[]"},
+		{Path{}, false, "[]"},
+	} {
+		got, ok := r.Disclosures(tc.path)
+		var names []string
+		for _, d := range got {
+			n := name[d.Encoded]
+			if d.Name == "a" {
+				n = "a=map[]"
+			}
+			names = append(names, n)
+		}
+		if s := fmt.Sprint(names); ok != tc.ok || (ok && s != tc.want) {
+			t.Errorf("%v: got %s %v, want %s %v", tc.path, s, ok, tc.want, tc.ok)
+		}
+	}
+}

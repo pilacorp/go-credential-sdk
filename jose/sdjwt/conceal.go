@@ -6,7 +6,6 @@
 package sdjwt
 
 import (
-	"cmp"
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
@@ -27,7 +26,8 @@ type ConcealOptions struct {
 
 // Conceal makes the claims at paths selectively disclosable (issuer side). It
 // returns the SD-JWT payload and the disclosures, in the order to write them
-// in the compact SD-JWT: deeper paths first, then by path.
+// in the compact SD-JWT: deeper paths first, then by path, element by element
+// (a name before an index, names by bytes, indices by value).
 //
 //  1. claims is copied through JSON (jose.EncodeJSON, jose.DecodeJSON), so
 //     any JSON-encodable Go value works, numbers come back as json.Number,
@@ -70,15 +70,10 @@ func Conceal(claims map[string]any, paths []Path, opts ConcealOptions) (map[stri
 	if err := checkClaims(payload, nil); err != nil {
 		return nil, nil, err
 	}
-	seen := make(map[string]bool, len(paths))
 	for _, p := range paths {
 		if err := p.validate(); err != nil {
 			return nil, nil, err
 		}
-		if seen[p.key()] {
-			return nil, nil, fmt.Errorf("%w: sdjwt: path %s given twice", jose.ErrInvalidArgument, p)
-		}
-		seen[p.key()] = true
 		// Checked here, on the claims as given: once concealing starts, an
 		// object holds an _sd that a later path such as {"_sd"} would find.
 		if _, ok := lookup(payload, p); !ok {
@@ -88,13 +83,14 @@ func Conceal(claims map[string]any, paths []Path, opts ConcealOptions) (map[stri
 
 	// Deeper paths go first, so no later path runs through a value already
 	// concealed, and every lookup below finds the value the caller meant.
+	// Sorted, a path given twice sits next to itself.
 	order := slices.Clone(paths)
-	slices.SortStableFunc(order, func(a, b Path) int {
-		if len(a) != len(b) {
-			return len(b) - len(a)
+	slices.SortFunc(order, Path.compare)
+	for i := 1; i < len(order); i++ {
+		if order[i-1].compare(order[i]) == 0 {
+			return nil, nil, fmt.Errorf("%w: sdjwt: path %s given twice", jose.ErrInvalidArgument, order[i])
 		}
-		return cmp.Compare(a.key(), b.key())
-	})
+	}
 	c := concealer{minDigests: opts.MinDigests}
 	disclosures := make([]Disclosure, 0, len(order))
 	for _, p := range order {
