@@ -20,7 +20,8 @@ type ConcealOptions struct {
 	// MinDigests pads every object's _sd and every array's {"...": digest}
 	// placeholders with decoy digests up to MinDigests, in the payload and in
 	// every disclosed value (RFC 9901 §4.2.5; §10.4 recommends decoys where
-	// the number of claims reveals something). From 0 to 1000.
+	// the number of claims reveals something). From 0 to 1000, and the
+	// objects and arrays of the claims times MinDigests at most 20000.
 	MinDigests int
 }
 
@@ -31,12 +32,14 @@ type ConcealOptions struct {
 //
 //  1. claims is copied through JSON (jose.EncodeJSON, jose.DecodeJSON), so
 //     any JSON-encodable Go value works, numbers come back as json.Number,
-//     and the caller's map is never modified.
+//     nesting is at most jose.MaxJSONDepth, and the caller's map is never
+//     modified.
 //  2. claims must not hold _sd or ... at any depth (§4.1 rule 7), nor
 //     _sd_alg: §4.1.1 forbids it below the top level, and Conceal writes the
-//     top-level one itself, so a caller's value would conflict. Objects and
-//     arrays must not nest deeper than 32; at most 1000 paths. Every path
-//     must exist and be given once.
+//     top-level one itself, so a caller's value would conflict. At most 1000
+//     paths; every path must exist and be given once. The objects and arrays
+//     of claims times opts.MinDigests must be at most 20000, which bounds the
+//     decoys of step 5; this is checked before any salt or decoy is made.
 //  3. Paths are processed deepest first, so a claim concealed together with
 //     its parent ends up inside the parent's disclosure (§4.2.6).
 //  4. An object property becomes [salt, name, value] (§4.2.1), is removed,
@@ -60,15 +63,20 @@ func Conceal(claims map[string]any, paths []Path, opts ConcealOptions) (map[stri
 	if opts.MinDigests < 0 || opts.MinDigests > maxMinDigests {
 		return nil, nil, fmt.Errorf("%w: sdjwt: MinDigests %d is outside [0, %d]", jose.ErrInvalidArgument, opts.MinDigests, maxMinDigests)
 	}
-	if len(paths) > maxDisclosures {
-		return nil, nil, fmt.Errorf("%w: sdjwt: %d paths, at most %d", jose.ErrInvalidArgument, len(paths), maxDisclosures)
+	if len(paths) > maxPaths {
+		return nil, nil, fmt.Errorf("%w: sdjwt: %d paths, at most %d", jose.ErrInvalidArgument, len(paths), maxPaths)
 	}
 	payload, err := copyClaims(claims)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := checkClaims(payload, nil); err != nil {
+	containers, err := checkClaims(payload, nil)
+	if err != nil {
 		return nil, nil, err
+	}
+	// Step 5 pads every object and array up to MinDigests.
+	if opts.MinDigests > 0 && containers > maxDigests/opts.MinDigests {
+		return nil, nil, fmt.Errorf("%w: sdjwt: %d objects and arrays × MinDigests %d is over %d digests", jose.ErrInvalidArgument, containers, opts.MinDigests, maxDigests)
 	}
 	for _, p := range paths {
 		if err := p.validate(); err != nil {
@@ -242,29 +250,31 @@ func copyClaims(claims map[string]any) (map[string]any, error) {
 	return obj, nil
 }
 
-// checkClaims refuses reserved names and nesting deeper than Recreate
-// accepts, counted the same way: the value at p is at level len(p)+1, the
-// claims object at level 1.
-func checkClaims(v any, p Path) error {
-	if len(p)+1 > maxDepth && nests(v) {
-		return fmt.Errorf("%w: sdjwt: claims nest deeper than %d at %s", jose.ErrInvalidArgument, maxDepth, p)
-	}
+// checkClaims refuses reserved names and counts the objects and arrays in v,
+// v included.
+func checkClaims(v any, p Path) (containers int, err error) {
 	switch t := v.(type) {
 	case map[string]any:
+		containers = 1
 		for k, child := range t {
 			if reserved(k) {
-				return fmt.Errorf("%w: sdjwt: claims hold the reserved name %q at %s", jose.ErrInvalidArgument, k, p)
+				return 0, fmt.Errorf("%w: sdjwt: claims hold the reserved name %q at %s", jose.ErrInvalidArgument, k, p)
 			}
-			if err := checkClaims(child, p.child(k)); err != nil {
-				return err
+			n, err := checkClaims(child, p.child(k))
+			if err != nil {
+				return 0, err
 			}
+			containers += n
 		}
 	case []any:
+		containers = 1
 		for i, child := range t {
-			if err := checkClaims(child, p.child(i)); err != nil {
-				return err
+			n, err := checkClaims(child, p.child(i))
+			if err != nil {
+				return 0, err
 			}
+			containers += n
 		}
 	}
-	return nil
+	return containers, nil
 }
