@@ -2,6 +2,6 @@
 // draft-ietf-oauth-sd-jwt-vc-19); for a W3C VC secured with SD-JWT
 // (vc+sd-jwt) use credential/vc.
 //
-// Nothing is exported yet: issuing, presenting and verifying come in later
-// changes.
+// Issue signs an SD-JWT VC for an issuer. Parsing, presenting and verifying
+// come in later changes.
 package digitalcredential

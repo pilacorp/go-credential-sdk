@@ -4,20 +4,15 @@ package statuslist
 
 import (
 	"crypto/ecdsa"
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
-
-// maxTokenBytes caps a Status List Token in compact form: the cap the Checker
-// applies to the response body, and SignToken refuses a larger token, so no
-// signed token exceeds it. Draft 21 sets no limit (§13.4). With
-// lst base64url-encoded inside the base64url payload, the cap holds only
-// about 576 KiB of list bytes that do not compress.
-const maxTokenBytes = 1 << 20
 
 // typStatusList: draft 21 §5.1, typ MUST be statuslist+jwt.
 const typStatusList = "statuslist+jwt"
@@ -26,25 +21,26 @@ const typStatusList = "statuslist+jwt"
 type TokenClaims struct {
 	// Sub is the URI of the token, the uri the Referenced Tokens carry
 	// (§6.2); §5.1 requires the two to be equal, which is the caller's to
-	// keep. It must be a URI (RFC 7519 §2: a StringOrURI holding ":" MUST be
-	// one; RFC 3986 §3), and an https URL with a host and no userinfo (RFC
-	// 9110 §4.2.4), the only URLs this module fetches, as §6.2 lets the
-	// Relying Party restrict uri.
+	// keep. It must be a URI (§6.2; RFC 7519 §2: a StringOrURI holding ":"
+	// MUST be one; RFC 3986 §3), with a host when it is http or https (RFC
+	// 9110 §4.2.1, §4.2.2); any scheme, since the scheme a verifier fetches
+	// is the Relying Party's choice (§6.2).
 	Sub string
 	// IssuedAt is iat, required (§5.1); written in whole seconds, the
 	// fraction dropped.
 	IssuedAt time.Time
 	// Expiry is exp (§5.1: RECOMMENDED); zero writes none. Written in whole
-	// seconds, which must come after those of IssuedAt.
+	// seconds, the fraction dropped.
 	Expiry time.Time
 	// TTL is ttl, how long a verifier may cache the token (§5.1:
-	// RECOMMENDED, a positive number of seconds); zero writes none. It must
-	// be a whole number of seconds: ttl is written as a JSON integer, and a
-	// fraction is refused rather than dropped, though §5.1 allows one.
+	// RECOMMENDED, a positive number of seconds); zero writes none and a
+	// negative one is refused. Whole seconds are written as a JSON integer,
+	// a fraction as a JSON number with up to nine decimals.
 	TTL time.Duration
 }
 
-// SigningKey is the issuer key a Status List Token is signed with.
+// SigningKey is an issuer's signing key: the Signer, the public key that
+// decides alg, and an optional kid.
 type SigningKey struct {
 	Signer jws.Signer       // holds the private key of Public
 	Public *ecdsa.PublicKey // decides alg (RFC 8725 §3.1: one algorithm per key)
@@ -61,17 +57,16 @@ type SigningKey struct {
 // only when set, lst from l.Encode.
 //
 // A list not made by New, FromBytes or Decode, or claims breaking the rules
-// of TokenClaims, are jose.ErrInvalidArgument, and so is a token over 1 MiB,
-// refused before key.Signer is called when the payload alone is that long.
-// jws.Sign errors are wrapped unchanged, a nil key.Signer or key.Public
-// included; the token is verified with key.Public before it is returned, so a
-// signer holding another key gives jws.ErrSelfCheck.
+// of TokenClaims, are jose.ErrInvalidArgument. jws.Sign errors are wrapped
+// unchanged, a nil key.Signer or key.Public included; the token is verified
+// with key.Public before it is returned, so a signer holding another key
+// gives jws.ErrSelfCheck.
 //
-// The 1 MiB token holds only about 576 KiB of list bytes that do not
-// compress: a larger list signs only while it compresses well, and SignToken
-// refuses it once status changes make it less compressible, so size or split
-// lists for the highest change rate expected (draft 21 §13.4, Appendix B).
-// Encode uses the best compression level (§4.1 step 4 RECOMMENDS it), whose
+// Draft 21 sets no size limit (§13.4), and SignToken signs a token of any
+// size. A Checker refuses one over 1 MiB, which holds only about 576 KiB of
+// list bytes that do not compress: a larger list reads only while it
+// compresses well, so size or split lists for the highest change rate
+// expected (draft 21 §13.4, Appendix B). Encode uses the best compression level (§4.1 step 4 RECOMMENDS it), whose
 // CPU time grows with the list size, so sign on each status change and before
 // exp, and serve the stored token.
 func SignToken(l *List, c TokenClaims, key SigningKey) (string, error) {
@@ -83,17 +78,14 @@ func SignToken(l *List, c TokenClaims, key SigningKey) (string, error) {
 	}
 	claims := map[string]any{"sub": c.Sub, "iat": c.IssuedAt.Unix()}
 	if !c.Expiry.IsZero() {
-		// Compared in the seconds written, so exp never equals iat.
-		if c.Expiry.Unix() <= c.IssuedAt.Unix() {
-			return "", fmt.Errorf("%w: statuslist: Expiry is not after IssuedAt", jose.ErrInvalidArgument)
-		}
 		claims["exp"] = c.Expiry.Unix()
 	}
 	if c.TTL != 0 {
-		if c.TTL < 0 || c.TTL%time.Second != 0 {
-			return "", fmt.Errorf("%w: statuslist: TTL %v is not a positive whole number of seconds", jose.ErrInvalidArgument, c.TTL)
+		// §5.1: ttl MUST be a positive number.
+		if c.TTL < 0 {
+			return "", fmt.Errorf("%w: statuslist: TTL %v is not positive", jose.ErrInvalidArgument, c.TTL)
 		}
-		claims["ttl"] = int64(c.TTL / time.Second)
+		claims["ttl"] = ttlNumber(c.TTL)
 	}
 	lst, err := l.Encode() // refuses a list not made by New, FromBytes or Decode
 	if err != nil {
@@ -104,12 +96,6 @@ func SignToken(l *List, c TokenClaims, key SigningKey) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("statuslist: %w", err)
 	}
-	// RFC 7515 §7.1: the payload segment is part of the token, so a payload
-	// already over the cap is refused before the signer is called; the exact
-	// check after signing covers the header and signature.
-	if n := base64.RawURLEncoding.EncodedLen(len(payload)); n > maxTokenBytes {
-		return "", fmt.Errorf("%w: statuslist: payload encodes to %d bytes, over %d", jose.ErrInvalidArgument, n, maxTokenBytes)
-	}
 
 	header := jws.Header{"typ": typStatusList}
 	if key.KID != "" {
@@ -119,8 +105,15 @@ func SignToken(l *List, c TokenClaims, key SigningKey) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("statuslist: %w", err)
 	}
-	if len(token) > maxTokenBytes {
-		return "", fmt.Errorf("%w: statuslist: token is %d bytes, over %d", jose.ErrInvalidArgument, len(token), maxTokenBytes)
-	}
 	return token, nil
+}
+
+// ttlNumber writes d, a positive duration, in seconds as a JSON number:
+// exact in decimal, an integer when d is whole seconds.
+func ttlNumber(d time.Duration) json.Number {
+	s := strconv.FormatInt(int64(d/time.Second), 10)
+	if frac := d % time.Second; frac != 0 {
+		s += "." + strings.TrimRight(fmt.Sprintf("%09d", int64(frac)), "0")
+	}
+	return json.Number(s)
 }

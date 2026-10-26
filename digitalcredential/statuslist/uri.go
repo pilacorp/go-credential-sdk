@@ -8,25 +8,44 @@ package statuslist
 import (
 	"errors"
 	"net/netip"
-	"net/url"
 	"strings"
-
-	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 )
 
-// checkListURI is the one rule for the uri of a Status List Token, which the
-// token's sub and the Referenced Token's uri must both meet (draft 21 §5.1:
-// the two are equal). It must be a URI (draft 21 §6.2; RFC 7519 §2: a
-// StringOrURI holding ":" MUST be one) and a URL safehttp fetches, as §6.2
-// lets the Relying Party restrict uri.
+// checkListURI is the rule for the uri of a Status List Token, which the
+// token's sub and the Referenced Token's uri both meet (draft 21 §5.1: the
+// two are equal): a URI conforming to RFC 3986 (§6.2; RFC 7519 §2: a
+// StringOrURI holding ":" MUST be one), and with an http or https scheme a
+// host, since RFC 9110 §4.2.1 and §4.2.2 forbid a sender to generate one with
+// an empty host. Any other scheme is accepted.
 func checkListURI(s string) error {
 	if !isURI(s) {
 		return errors.New("is not a URI (RFC 3986)")
 	}
-	if u, err := url.Parse(s); err != nil || !safehttp.HTTPSURL(u) {
-		return errors.New("is not an https URL with a host and no userinfo")
+	// RFC 3986 §3.1: a scheme compares case-insensitively.
+	scheme, rest, _ := strings.Cut(s, ":")
+	if (strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https")) && !hasHost(rest) {
+		return errors.New("is an http or https URI without a host (RFC 9110 §4.2.1, §4.2.2)")
 	}
 	return nil
+}
+
+// hasHost reports whether the part of a URI after "scheme:" starts with an
+// authority whose host is not empty; isURI has checked its syntax.
+func hasHost(rest string) bool {
+	rest, ok := strings.CutPrefix(rest, "//")
+	if !ok {
+		return false
+	}
+	authority := rest
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		authority = rest[:i]
+	}
+	if _, hostport, ok := strings.Cut(authority, "@"); ok {
+		authority = hostport
+	}
+	host, _, _ := strings.Cut(authority, ":")
+	// An IP-literal starts with "[", which isURI checked is not empty.
+	return host != "" || strings.HasPrefix(authority, "[")
 }
 
 // isURI reports whether s is a URI by RFC 3986 §3, checked per component on

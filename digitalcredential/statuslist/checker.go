@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -32,6 +33,11 @@ const (
 	clockSkew        = time.Minute                    // RFC 7519 §4.1.4, §4.1.5: small leeway
 	maxCacheLifetime = 24 * time.Hour                 // upper bound on ttl (§11.5)
 	maxCacheBytes    = 32 << 20                       // list capacity plus key lengths
+	// maxTokenBytes caps the token read, in compact form (draft 21 sets no
+	// limit, §13.4). With lst base64url-encoded inside the base64url
+	// payload, it holds only about 576 KiB of list bytes that do not
+	// compress.
+	maxTokenBytes = 1 << 20
 	// decodeSlots bounds concurrent Decode calls: an lst of a few KiB can
 	// inflate to 16 MiB, and each Decode allocates several times that.
 	decodeSlots = 4
@@ -40,12 +46,29 @@ const (
 // Ref is the status_list member of a Referenced Token's status claim (draft
 // 21 §6.2).
 type Ref struct {
-	// URI is uri, the URI of the Status List Token; it must meet the rule of
-	// TokenClaims.Sub.
+	// URI is uri, the URI of the Status List Token, equal to its sub (§5.1);
+	// it must be a URI conforming to RFC 3986 (§6.2), with a host when it
+	// is http or https (RFC 9110 §4.2.1, §4.2.2).
 	URI string
 	// Index is idx, the entry of the Referenced Token; it must not be
 	// negative.
 	Index int
+}
+
+// Validate checks r against draft 21 §6.2, wrapping jose.ErrInvalidArgument:
+// uri is a URI (RFC 3986), with a host when it is http or https (RFC 9110
+// §4.2.1, §4.2.2), and idx is not negative. An issuer writing r into
+// a Referenced Token checks it here; Checker.Status applies it too, and then
+// its own https rule (see WithInsecureHTTP).
+func (r Ref) Validate() error {
+	if err := checkListURI(r.URI); err != nil {
+		return fmt.Errorf("%w: statuslist: Ref.URI %v", jose.ErrInvalidArgument, err)
+	}
+	// §6.2: idx is a non-negative integer.
+	if r.Index < 0 {
+		return fmt.Errorf("%w: statuslist: Ref.Index %d is negative", jose.ErrInvalidArgument, r.Index)
+	}
+	return nil
 }
 
 // Checker reads the status of Referenced Tokens from their Status List
@@ -53,13 +76,13 @@ type Ref struct {
 // the decode bound, the cache and the default client's connections belong to
 // the instance. It is safe for concurrent use.
 //
-// Its limits are fixed: the fetch of a token ends within 5 seconds, follows at
-// most 3 redirects and reads at most 1 MiB, the cap SignToken signs to; a list
-// inflates to at most 16 MiB; the clock skew is 1 minute. It caches verified
-// lists for the token's ttl, at most 24 hours and never past exp; a token
-// without ttl is not cached. The cache counts 32 MiB of list bytes (their
-// capacity) plus key lengths, not total heap. When live entries fill it, a new
-// list is not cached until one expires; no live entry is evicted.
+// Its limits are fixed: the fetch of a token ends within 5 seconds, follows
+// at most 3 redirects and reads at most 1 MiB; a list inflates to at most 16
+// MiB; the clock skew is 1 minute. It caches verified lists for the token's
+// ttl, at most 24 hours and never past exp; a token without ttl is not
+// cached. The cache counts 32 MiB of list bytes (their capacity) plus key
+// lengths, not total heap. When live entries fill it, a new list is not
+// cached until one expires; no live entry is evicted.
 //
 // At most 4 lists are decoded at once, in arrival order. Each cache miss holds
 // up to about 1 MiB of token data until its decode runs, and the issuer's
@@ -71,11 +94,15 @@ type Ref struct {
 // hosts reachable only inside the deployment's own network are known to no
 // registry: the deployment's egress policy must block them
 // (draft-ietf-oauth-sd-jwt-vc-19 §7.1).
+//
+// It fetches only https URLs with a host and no userinfo, on every redirect
+// too, unless WithInsecureHTTP allows http.
 type Checker struct {
-	issuers issuerkey.Resolver
-	client  *http.Client
-	now     func() time.Time
-	slots   chan struct{}
+	issuers      issuerkey.Resolver
+	client       *http.Client
+	insecureHTTP bool
+	now          func() time.Time
+	slots        chan struct{}
 
 	mu    sync.Mutex
 	cache map[cacheKey]cacheEntry
@@ -99,6 +126,16 @@ func WithHTTPClient(c *http.Client) Option {
 			ch.client = c
 		}
 	}
+}
+
+// WithInsecureHTTP makes the Checker fetch http status list uris and follow
+// redirects to http, as well as https; the default is https only, which
+// draft-ietf-oauth-status-list-21 §6.2 leaves to the Relying Party. Over
+// http an on-path attacker can serve an older signed list, so a revoked
+// credential reads valid until that list's exp, and sees which lists are
+// fetched. Meant for local development or a trusted network.
+func WithInsecureHTTP() Option {
+	return func(ch *Checker) { ch.insecureHTTP = true }
 }
 
 // NewChecker returns a Checker that verifies Status List Tokens with the keys
@@ -140,12 +177,17 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 // Ref are jose.ErrInvalidArgument; so is an index outside the list, which
 // makes the Referenced Token invalid (§8.3 step 6) rather than being a caller
 // mistake. Any error means no statement about the status can be made (§8.3),
-// and is never a status: a failed fetch, a token that is malformed, not
-// signed by a key of iss (issuerkey.Select), carrying an iss claim other
-// than iss (RFC 8725 §3.8), or failing a check of §5.1 or §8.3, an lst
-// Decode refuses, or an index outside the list. Errors of the fetch, the
-// resolver, jose/jws and jose/jwt are wrapped unchanged, so context.Canceled
-// stays visible.
+// and is never a status: a uri the Checker does not fetch (not https, unless
+// WithInsecureHTTP), a failed fetch, a token that is malformed, not signed by
+// a key of iss (issuerkey.Select), carrying an iss claim other than iss (RFC
+// 8725 §3.8), or failing a check of §5.1 or §8.3, an lst Decode refuses, or
+// an index outside the list. Errors of the resolver, jose/jws and jose/jwt
+// are wrapped unchanged. No error of the fetch holds the status list uri or
+// a redirect target, which may carry a secret: safehttp writes its own text
+// for its checks and passes every net/http error through an allowlist. A
+// network error through a proxy of the WithHTTPClient client can still quote
+// certificate names. errors.Is still reaches the cause, such as
+// context.Canceled.
 func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error) {
 	if c == nil || c.issuers == nil {
 		return 0, fmt.Errorf("%w: statuslist: Checker not made by NewChecker", jose.ErrInvalidArgument)
@@ -153,12 +195,15 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 	if ctx == nil {
 		return 0, fmt.Errorf("%w: statuslist: nil context", jose.ErrInvalidArgument)
 	}
-	if err := checkListURI(ref.URI); err != nil {
-		return 0, fmt.Errorf("%w: statuslist: Ref.URI %v", jose.ErrInvalidArgument, err)
+	if err := ref.Validate(); err != nil {
+		return 0, err
 	}
-	// §6.2: idx is a non-negative integer.
-	if ref.Index < 0 {
-		return 0, fmt.Errorf("%w: statuslist: Ref.Index %d is negative", jose.ErrInvalidArgument, ref.Index)
+	// The SDK's verifier default, which §6.2 leaves to the Relying Party.
+	// Not jose.ErrInvalidArgument: the uri comes from the credential, and the
+	// caller made no mistake. The uri stays out of the error: it may carry a
+	// password in its userinfo (RFC 3986 §7.5) or a token in its query.
+	if u, err := url.Parse(ref.URI); !c.insecureHTTP && (err != nil || !safehttp.HTTPSURL(u)) {
+		return 0, errors.New("statuslist: status list uri: Checker fetches only https URLs with a host and no userinfo (WithInsecureHTTP allows http)")
 	}
 	// Keyed by iss too: keyed by uri alone, a list verified with one issuer's
 	// key would answer for another issuer's token pointing to the same uri.
@@ -180,7 +225,7 @@ func (c *Checker) load(ctx context.Context, key cacheKey) (*List, error) {
 	fetched := c.now()
 	// §8.1, §8.2; redirects bounded (§11.4) to maxRedirects.
 	body, _, err := safehttp.Get(ctx, c.client, key.uri, mediaTypeJWT,
-		safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, MaxBytes: maxTokenBytes})
+		safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, MaxBytes: maxTokenBytes, AllowHTTP: c.insecureHTTP})
 	if err != nil {
 		return nil, fmt.Errorf("statuslist: %w", err)
 	}
