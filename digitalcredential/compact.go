@@ -10,7 +10,7 @@ import (
 
 // compactSDJWT writes an SD-JWT in compact form (RFC 9901 §4): the
 // Issuer-signed JWT, then each disclosure, each followed by "~", the last one
-// too.
+// too. Issue and Present both write through it.
 func compactSDJWT(issuerJWT string, disclosures []sdjwt.Disclosure) string {
 	var b strings.Builder
 	b.WriteString(issuerJWT)
