@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -305,5 +306,80 @@ func TestCheckerRefusesPrivateAddress(t *testing.T) {
 	}
 	if n := s.hits.Load(); n != 0 {
 		t.Fatalf("server got %d requests, want 0", n)
+	}
+}
+
+// draft-ietf-oauth-status-list-21 §6.2 leaves the scheme of uri to the
+// Relying Party. By default the Checker fetches https only, on the uri and on
+// every redirect, and an http uri is not jose.ErrInvalidArgument: it comes
+// from the credential. WithInsecureHTTP fetches http, redirects included.
+func TestCheckerHTTP(t *testing.T) {
+	signer, pub := newP256Signer(t)
+	l, err := New(16, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Set(3, 1); err != nil {
+		t.Fatal(err)
+	}
+	var token string
+	var plainHits atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plainHits.Add(1)
+		if r.URL.Path == "/statuslists/1" {
+			http.Redirect(w, r, "/lists/1", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/statuslist+jwt")
+		w.Write([]byte(token))
+	}))
+	t.Cleanup(plain.Close)
+	uri := plain.URL + "/statuslists/1"
+	if token, err = SignToken(l, TokenClaims{Sub: uri, IssuedAt: time.Unix(1686920170, 0)}, SigningKey{Signer: signer, Public: pub}); err != nil {
+		t.Fatal(err)
+	}
+	issuers := keySet{"https://a.example": {{Key: pub}}}
+	ref := Ref{URI: uri, Index: 3}
+
+	c, err := NewChecker(issuers, WithHTTPClient(plain.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.Status(context.Background(), ref, "https://a.example"); err == nil || errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("default, http uri: Status = %d, %v; want an error other than jose.ErrInvalidArgument", got, err)
+	}
+	if n := plainHits.Load(); n != 0 {
+		t.Errorf("default, http uri: server got %d requests, want 0", n)
+	}
+	// The refusal leaves the uri out: a credential's uri may carry a password
+	// in its userinfo (RFC 3986 §7.5) or a token in its query.
+	for _, uri := range []string{"http://alice:SYNTHETIC_PASSWORD@status.example/list", "http://status.example/list?token=SYNTHETIC_QUERY_SECRET"} {
+		_, err := c.Status(context.Background(), Ref{URI: uri}, "https://a.example")
+		if err == nil || errors.Is(err, jose.ErrInvalidArgument) || strings.Contains(err.Error(), "SYNTHETIC") {
+			t.Errorf("default, %s: Status error %v; want one other than jose.ErrInvalidArgument, without the uri", uri, err)
+		}
+	}
+
+	downgrade := httptest.NewTLSServer(http.RedirectHandler(uri, http.StatusFound))
+	t.Cleanup(downgrade.Close)
+	if c, err = NewChecker(issuers, WithHTTPClient(downgrade.Client())); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.Status(context.Background(), Ref{URI: downgrade.URL + "/statuslists/1"}, "https://a.example"); err == nil {
+		t.Errorf("default, redirect to http: Status = %d, nil; want an error", got)
+	}
+	if n := plainHits.Load(); n != 0 {
+		t.Errorf("default, redirect to http: http server got %d requests, want 0", n)
+	}
+
+	if c, err = NewChecker(issuers, WithHTTPClient(plain.Client()), WithInsecureHTTP()); err != nil {
+		t.Fatal(err)
+	}
+	c.now = func() time.Time { return draft21Now }
+	if got, err := c.Status(context.Background(), ref, "https://a.example"); err != nil || got != 1 {
+		t.Errorf("WithInsecureHTTP: Status = %d, %v; want 1", got, err)
+	}
+	if n := plainHits.Load(); n != 2 {
+		t.Errorf("WithInsecureHTTP: server got %d requests, want 2 (a redirect, then the token)", n)
 	}
 }

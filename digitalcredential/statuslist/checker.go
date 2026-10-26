@@ -54,7 +54,7 @@ type Ref struct {
 // uri is a URI (RFC 3986), with a host when it is http or https (RFC 9110
 // §4.2.1, §4.2.2), and idx is not negative. An issuer writing r into
 // a Referenced Token checks it here; Checker.Status applies it too, and then
-// its own https rule.
+// its own https rule (see WithInsecureHTTP).
 func (r Ref) Validate() error {
 	if err := checkListURI(r.URI); err != nil {
 		return fmt.Errorf("%w: statuslist: Ref.URI %v", jose.ErrInvalidArgument, err)
@@ -89,11 +89,15 @@ func (r Ref) Validate() error {
 // hosts reachable only inside the deployment's own network are known to no
 // registry: the deployment's egress policy must block them
 // (draft-ietf-oauth-sd-jwt-vc-19 §7.1).
+//
+// It fetches only https URLs with a host and no userinfo, on every redirect
+// too, unless WithInsecureHTTP allows http.
 type Checker struct {
-	issuers issuerkey.Resolver
-	client  *http.Client
-	now     func() time.Time
-	slots   chan struct{}
+	issuers      issuerkey.Resolver
+	client       *http.Client
+	insecureHTTP bool
+	now          func() time.Time
+	slots        chan struct{}
 
 	mu    sync.Mutex
 	cache map[cacheKey]cacheEntry
@@ -117,6 +121,16 @@ func WithHTTPClient(c *http.Client) Option {
 			ch.client = c
 		}
 	}
+}
+
+// WithInsecureHTTP makes the Checker fetch http status list uris and follow
+// redirects to http, as well as https; the default is https only, which
+// draft-ietf-oauth-status-list-21 §6.2 leaves to the Relying Party. Over
+// http an on-path attacker can serve an older signed list, so a revoked
+// credential reads valid until that list's exp, and sees which lists are
+// fetched. Meant for local development or a trusted network.
+func WithInsecureHTTP() Option {
+	return func(ch *Checker) { ch.insecureHTTP = true }
 }
 
 // NewChecker returns a Checker that verifies Status List Tokens with the keys
@@ -154,17 +168,16 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 // validates the Referenced Token first (§8.3: its processing rules precede
 // any status evaluation).
 //
-// A Checker not made by NewChecker, a nil ctx, a ref breaking the rules of
-// Ref, or a ref.URI that is not an https URL with a host and no userinfo are
-// jose.ErrInvalidArgument; so is an index outside the list, which
+// A Checker not made by NewChecker, a nil ctx, or a ref breaking the rules of
+// Ref are jose.ErrInvalidArgument; so is an index outside the list, which
 // makes the Referenced Token invalid (§8.3 step 6) rather than being a caller
 // mistake. Any error means no statement about the status can be made (§8.3),
-// and is never a status: a failed fetch, a token that is malformed, not
-// signed by a key of iss (issuerkey.Select), carrying an iss claim other
-// than iss (RFC 8725 §3.8), or failing a check of §5.1 or §8.3, an lst
-// Decode refuses, or an index outside the list. Errors of the fetch, the
-// resolver, jose/jws and jose/jwt are wrapped unchanged, so context.Canceled
-// stays visible.
+// and is never a status: a uri the Checker does not fetch (not https, unless
+// WithInsecureHTTP), a failed fetch, a token that is malformed, not signed by
+// a key of iss (issuerkey.Select), carrying an iss claim other than iss (RFC
+// 8725 §3.8), or failing a check of §5.1 or §8.3, an lst Decode refuses, or
+// an index outside the list. Errors of the fetch, the resolver, jose/jws and
+// jose/jwt are wrapped unchanged, so context.Canceled stays visible.
 func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error) {
 	if c == nil || c.issuers == nil {
 		return 0, fmt.Errorf("%w: statuslist: Checker not made by NewChecker", jose.ErrInvalidArgument)
@@ -175,10 +188,12 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 	if err := ref.Validate(); err != nil {
 		return 0, err
 	}
-	// The SDK's verifier default: §6.2 leaves restrictions on uri to the
-	// Relying Party.
-	if u, err := url.Parse(ref.URI); err != nil || !safehttp.HTTPSURL(u) {
-		return 0, fmt.Errorf("%w: statuslist: Ref.URI is not an https URL with a host and no userinfo", jose.ErrInvalidArgument)
+	// The SDK's verifier default, which §6.2 leaves to the Relying Party.
+	// Not jose.ErrInvalidArgument: the uri comes from the credential, and the
+	// caller made no mistake. The uri stays out of the error: it may carry a
+	// password in its userinfo (RFC 3986 §7.5) or a token in its query.
+	if u, err := url.Parse(ref.URI); !c.insecureHTTP && (err != nil || !safehttp.HTTPSURL(u)) {
+		return 0, errors.New("statuslist: status list uri: Checker fetches only https URLs with a host and no userinfo (WithInsecureHTTP allows http)")
 	}
 	// Keyed by iss too: keyed by uri alone, a list verified with one issuer's
 	// key would answer for another issuer's token pointing to the same uri.
@@ -200,7 +215,7 @@ func (c *Checker) load(ctx context.Context, key cacheKey) (*List, error) {
 	fetched := c.now()
 	// §8.1, §8.2; redirects bounded (§11.4) to maxRedirects.
 	body, _, err := safehttp.Get(ctx, c.client, key.uri, mediaTypeJWT,
-		safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, MaxBytes: maxTokenBytes})
+		safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, MaxBytes: maxTokenBytes, AllowHTTP: c.insecureHTTP})
 	if err != nil {
 		return nil, fmt.Errorf("statuslist: %w", err)
 	}

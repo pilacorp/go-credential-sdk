@@ -8,7 +8,7 @@
 // registered media type; §11.4 (redirect loops): bounded by the redirect
 // limit. Applying the sd-jwt-vc-19 rules to a status list uri is this
 // package's policy: status-list-21 §6.2 leaves further restrictions on that
-// uri to the Relying Party.
+// uri to the Relying Party, so a caller may allow http (Limits.AllowHTTP).
 //
 // The address check sits in the dialer of NewClient, so it sees the address
 // actually connected to, after DNS resolution and on every redirect. It cannot
@@ -43,6 +43,10 @@ type Limits struct {
 	Timeout      time.Duration // whole fetch: connecting, redirects, headers and body; must be > 0
 	MaxRedirects int           // redirects followed; 0 or less follows none
 	MaxBytes     int64         // largest body accepted; 0 < MaxBytes < math.MaxInt64
+	// AllowHTTP lets the URL and every redirect target be http as well as
+	// https, for a caller whose standard leaves the scheme to it; the host
+	// and userinfo rules of HTTPSURL still hold.
+	AllowHTTP bool
 }
 
 // maxHeaderBytes caps response headers, which would otherwise default to
@@ -80,17 +84,35 @@ func control(_, address string, _ syscall.RawConn) error {
 }
 
 // HTTPSURL reports whether u is an https URL with a host and no userinfo, the
-// only URLs Get requests and follows: draft-ietf-oauth-sd-jwt-vc-19 §3 (HTTPS
-// only), RFC 9110 §4.2.2 (an https URI with an empty host is invalid; dialing
-// ":443" reaches the local host) and §4.2.4 (a recipient SHOULD treat userinfo
-// as an error, since it can obscure the authority; this package always does).
-// A nil u is false.
+// only URLs Get requests and follows unless Limits.AllowHTTP also lets http
+// ones through: draft-ietf-oauth-sd-jwt-vc-19 §3 (HTTPS only), RFC 9110 §4.2.2
+// (an https URI with an empty host is invalid; dialing ":443" reaches the local
+// host) and §4.2.4 (a recipient SHOULD treat userinfo as an error, since it can
+// obscure the authority; this package always does). A nil u is false.
 func HTTPSURL(u *url.URL) bool {
 	return u != nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
+// allows reports whether Get may request u: HTTPSURL, or with AllowHTTP the
+// same rules for an http URL.
+func (l Limits) allows(u *url.URL) bool {
+	if l.AllowHTTP && u != nil && u.Scheme == "http" {
+		return u.Hostname() != "" && u.User == nil
+	}
+	return HTTPSURL(u)
+}
+
+// schemes names what allows accepts, for errors.
+func (l Limits) schemes() string {
+	if l.AllowHTTP {
+		return "http or https"
+	}
+	return "https"
+}
+
 // Get fetches rawURL and returns the body and the response header. rawURL and
-// every redirect target must pass HTTPSURL, and at most l.MaxRedirects
+// every redirect target must pass HTTPSURL (with l.AllowHTTP, or be an http
+// URL with a host and no userinfo), and at most l.MaxRedirects
 // redirects are followed, both checked before the next request is sent. The
 // whole fetch ends within l.Timeout. The status must be 2xx, and the media
 // type of Content-Type must be mediaType (ASCII case ignored, parameters
@@ -120,8 +142,8 @@ func Get(ctx context.Context, c *http.Client, rawURL, mediaType string, l Limits
 		return nil, nil, fmt.Errorf("safehttp: max bytes %d out of range", l.MaxBytes)
 	}
 	u, err := url.Parse(rawURL)
-	if err != nil || !HTTPSURL(u) {
-		return nil, nil, errors.New("safehttp: URL is not https with a host and no userinfo")
+	if err != nil || !l.allows(u) {
+		return nil, nil, fmt.Errorf("safehttp: URL is not %s with a host and no userinfo", l.schemes())
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, l.Timeout)
@@ -143,8 +165,8 @@ func Get(ctx context.Context, c *http.Client, rawURL, mediaType string, l Limits
 				return err
 			}
 		}
-		if !HTTPSURL(r.URL) {
-			return errors.New("safehttp: redirect to a URL that is not https with a host and no userinfo")
+		if !l.allows(r.URL) {
+			return fmt.Errorf("safehttp: redirect to a URL that is not %s with a host and no userinfo", l.schemes())
 		}
 		if len(via) > l.MaxRedirects {
 			return fmt.Errorf("safehttp: more than %d redirects", l.MaxRedirects)
