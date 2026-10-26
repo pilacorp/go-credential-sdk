@@ -564,8 +564,8 @@ func TestAlgOfInvalidKindPanics(t *testing.T) {
 	algOf(0)
 }
 
-// UnverifiedHeader reads the header without any key, and refuses what Verify
-// refuses before the signature check.
+// UnverifiedHeader and UnverifiedPayload read without any key, and refuse what
+// Verify refuses before the signature check.
 func TestUnverifiedHeader(t *testing.T) {
 	s, pub := newP256Signer(t)
 	token := mustSign(t, s, pub, map[string]any{"kid": "key-1"}, `{}`)
@@ -577,6 +577,13 @@ func TestUnverifiedHeader(t *testing.T) {
 		t.Fatalf("header %v", h)
 	}
 	_, err = UnverifiedHeader(token[:strings.LastIndex(token, ".")])
+	wantErr(t, err, jose.ErrMalformed)
+
+	payload, err := UnverifiedPayload(token)
+	if err != nil || string(payload) != `{}` {
+		t.Fatalf("UnverifiedPayload: %q, %v", payload, err)
+	}
+	_, err = UnverifiedPayload(token[:strings.LastIndex(token, ".")])
 	wantErr(t, err, jose.ErrMalformed)
 }
 

@@ -14,7 +14,8 @@ One package per standard:
   `jws.Verify(token, key, allowed)` checks it against a key the caller supplies (never one taken from the header) and
   returns the header and the original payload bytes. `jws.UnverifiedHeader(token)` reads the header with the
   structural checks of `Verify`, so the caller can pick the key by `kid`; alg is checked only by `Verify`, and nothing
-  in the header is trusted until `Verify` succeeds. `Header.TypIs(mediaType)` compares `typ` as RFC 7515 §4.1.9 says
+  in the header is trusted until `Verify` succeeds. `jws.UnverifiedPayload(token)` reads the payload with the same
+  checks, for a reader that needs the claims before or without `Verify`; nothing in it is trusted either. `Header.TypIs(mediaType)` compares `typ` as RFC 7515 §4.1.9 says
   (explicit typing, RFC 8725 §3.11).
 - `jose/jwt`: `jwt.NumericDate(v)` turns an `exp`, `nbf` or `iat` value into a `time.Time` (RFC 7519 §2), fractions
   included; a non-number, NaN, ±Inf or a value `time.Time` cannot hold is `jose.ErrMalformed`. `jwt.DateClaim`
