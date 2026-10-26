@@ -6,17 +6,15 @@ import (
 	"crypto/ecdsa"
 	"encoding/base64"
 	"fmt"
-	"net/url"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
 
-// maxTokenBytes caps a Status List Token in compact form: the cap the Status
-// List Token checker (next change) applies, and SignToken refuses a larger
-// token, so no signed token exceeds it. Draft 21 sets no limit (§13.4). With
+// maxTokenBytes caps a Status List Token in compact form: the cap the Checker
+// applies to the response body, and SignToken refuses a larger token, so no
+// signed token exceeds it. Draft 21 sets no limit (§13.4). With
 // lst base64url-encoded inside the base64url payload, the cap holds only
 // about 576 KiB of list bytes that do not compress.
 const maxTokenBytes = 1 << 20
@@ -29,8 +27,9 @@ type TokenClaims struct {
 	// Sub is the URI of the token, the uri the Referenced Tokens carry
 	// (§6.2); §5.1 requires the two to be equal, which is the caller's to
 	// keep. It must be a URI (RFC 7519 §2: a StringOrURI holding ":" MUST be
-	// one; RFC 3986 §3), and an https URL with a host, the only URLs this
-	// module fetches, as §6.2 lets the Relying Party restrict uri.
+	// one; RFC 3986 §3), and an https URL with a host and no userinfo (RFC
+	// 9110 §4.2.4), the only URLs this module fetches, as §6.2 lets the
+	// Relying Party restrict uri.
 	Sub string
 	// IssuedAt is iat, required (§5.1); written in whole seconds, the
 	// fraction dropped.
@@ -49,7 +48,10 @@ type TokenClaims struct {
 type SigningKey struct {
 	Signer jws.Signer       // holds the private key of Public
 	Public *ecdsa.PublicKey // decides alg (RFC 8725 §3.1: one algorithm per key)
-	KID    string           // the kid header; empty writes none (RFC 7515 §4.1.4: optional)
+	// KID is the kid header; empty writes none (RFC 7515 §4.1.4: optional),
+	// and a verifier selecting keys with issuerkey.Select then accepts the
+	// token only from an issuer that publishes exactly one key.
+	KID string
 }
 
 // SignToken signs l as a Status List Token in JWT format (draft 21 §5.1):
@@ -73,11 +75,8 @@ type SigningKey struct {
 // CPU time grows with the list size, so sign on each status change and before
 // exp, and serve the stored token.
 func SignToken(l *List, c TokenClaims, key SigningKey) (string, error) {
-	if !isURI(c.Sub) {
-		return "", fmt.Errorf("%w: statuslist: Sub is not a URI (RFC 3986)", jose.ErrInvalidArgument)
-	}
-	if u, err := url.Parse(c.Sub); err != nil || !safehttp.HTTPSURL(u) {
-		return "", fmt.Errorf("%w: statuslist: Sub is not an https URL with a host", jose.ErrInvalidArgument)
+	if err := checkListURI(c.Sub); err != nil {
+		return "", fmt.Errorf("%w: statuslist: Sub %v", jose.ErrInvalidArgument, err)
 	}
 	if c.IssuedAt.IsZero() {
 		return "", fmt.Errorf("%w: statuslist: IssuedAt is required", jose.ErrInvalidArgument)

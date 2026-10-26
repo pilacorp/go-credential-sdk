@@ -1,16 +1,20 @@
 // Package statuslist implements the Status List and the Status List Token in
 // JWT format of Token Status List, draft-ietf-oauth-status-list-21: the byte
-// array and its encoding (§4.1, §4.2), status values (§7) and signing the
-// token (§5.1). Checking a token comes in a later change.
+// array and its encoding (§4.1, §4.2), status values (§7), signing the token
+// (§5.1), and reading the status of a Referenced Token from a fetched token
+// (Checker, §8).
 //
 // Errors carry no sentinel of this package. Malformed input to Decode wraps
 // jose.ErrMalformed; a caller mistake (an index or value out of range, a list
 // not made by this package, missing claims) wraps jose.ErrInvalidArgument;
 // SignToken wraps the jose/jws errors unchanged, so a nil key gives
 // jose.ErrInvalidArgument or jws.ErrBadKey and a signer holding another key
-// gives jws.ErrSelfCheck.
+// gives jws.ErrSelfCheck. Every error of Checker.Status means no statement
+// about the status can be made (§8.3); there an index outside a fetched list
+// also wraps jose.ErrInvalidArgument, though it makes the Referenced Token
+// invalid (§8.3 step 6) rather than being a caller mistake.
 //
-// A List is not safe for concurrent use while Set runs.
+// A List is not safe for concurrent use while Set runs; a Checker is.
 package statuslist
 
 import (

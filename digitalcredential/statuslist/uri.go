@@ -1,12 +1,33 @@
-// URI syntax for the sub claim: RFC 7519 §2 (a StringOrURI holding ":" MUST be
-// a URI) and RFC 3986 §3, rule URI of Appendix A.
+// The uri of a Status List Token, as its sub claim and as the uri of a
+// Referenced Token (draft-ietf-oauth-status-list-21 §5.1, §6.2): RFC 7519 §2
+// (a StringOrURI holding ":" MUST be a URI) and RFC 3986 §3, rule URI of
+// Appendix A.
 
 package statuslist
 
 import (
+	"errors"
 	"net/netip"
+	"net/url"
 	"strings"
+
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 )
+
+// checkListURI is the one rule for the uri of a Status List Token, which the
+// token's sub and the Referenced Token's uri must both meet (draft 21 §5.1:
+// the two are equal). It must be a URI (draft 21 §6.2; RFC 7519 §2: a
+// StringOrURI holding ":" MUST be one) and a URL safehttp fetches, as §6.2
+// lets the Relying Party restrict uri.
+func checkListURI(s string) error {
+	if !isURI(s) {
+		return errors.New("is not a URI (RFC 3986)")
+	}
+	if u, err := url.Parse(s); err != nil || !safehttp.HTTPSURL(u) {
+		return errors.New("is not an https URL with a host and no userinfo")
+	}
+	return nil
+}
 
 // isURI reports whether s is a URI by RFC 3986 §3, checked per component on
 // the raw string: url.Parse accepts characters RFC 3986 does not, and
