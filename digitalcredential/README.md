@@ -14,8 +14,10 @@ mechanism; `iss` and `vct` never. The claims draft 19 §2.2.2.3 forbids disclosi
 added after the concealed claims, so they carry neither a disclosure nor a decoy, and a `Disclose` path starting at one
 is refused. `aka_vcts` must be a non-empty array of strings without the value of `vct` (§2.2.2.2). Decoys need at least
 one `Disclose` path (§2.2.2.5). The key is a `statuslist.SigningKey`, as for `SignToken`: `alg` follows the curve of its
-`Public` and `typ` is `dc+sd-jwt`. `Issue` sets no size limit, but holders and verifiers built on this SDK refuse a
-credential over 1 MiB (`sdjwt.Split`).
+`Public` and `typ` is `dc+sd-jwt`. `Issue` sets no size or depth limit, but holders and verifiers built on this SDK
+refuse a credential over 1 MiB, with more than 1000 disclosures, or nested deeper than 32 levels (`sdjwt.Split`,
+`sdjwt.Recreate`). `Issue` writes at most 1000 disclosures, but it signs a credential over 1 MiB or nested 33 to 64
+levels deep, which those readers refuse.
 
 `statuslist` builds Token Status Lists (draft-ietf-oauth-status-list-21): `New(size, bits)` or `FromBytes(b, bits)`
 makes a list of 1-, 2-, 4- or 8-bit entries (§4.1), `Set` and `Get` write and read entry `i`, `Encode` and
