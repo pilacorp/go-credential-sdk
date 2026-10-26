@@ -100,14 +100,41 @@ func TestSignTokenRejects(t *testing.T) {
 		}
 	})
 
-	// A 1 MiB kid passes the payload check and makes the signed token too
-	// long, so this reaches the exact check made after signing.
-	t.Run("token over 1 MiB", func(t *testing.T) {
-		_, err := SignToken(small, claims, SigningKey{Signer: signer, Public: pub, KID: strings.Repeat("k", 1<<20)})
+	// §5.1: ttl MUST be a positive number.
+	t.Run("negative TTL", func(t *testing.T) {
+		c := claims
+		c.TTL = -time.Second
+		_, err := SignToken(small, c, SigningKey{Signer: signer, Public: pub})
 		if !errors.Is(err, jose.ErrInvalidArgument) {
 			t.Fatalf("SignToken = %v, want jose.ErrInvalidArgument", err)
 		}
 	})
+}
+
+// Draft 21 §5.1 allows a fractional ttl ("a positive number") and sets no
+// order between exp and iat, so both are signed as given.
+func TestSignTokenDraft21Allows(t *testing.T) {
+	signer, pub := newP256Signer(t)
+	l, err := New(16, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iat := time.Unix(1686920170, 0)
+	token, err := SignToken(l, TokenClaims{Sub: "https://example.com/statuslists/1", IssuedAt: iat, Expiry: iat, TTL: 1500 * time.Millisecond},
+		SigningKey{Signer: signer, Public: pub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, payload, err := jws.Verify(token, pub, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"exp":1686920170,"iat":1686920170`; !strings.Contains(string(payload), want) {
+		t.Errorf("payload = %s, want it to hold %s", payload, want)
+	}
+	if want := `"ttl":1.5}`; !strings.HasSuffix(string(payload), want) {
+		t.Errorf("payload = %s, want it to end with %s", payload, want)
+	}
 }
 
 // RFC 7519 §2: a sub holding ":" MUST be a URI (RFC 3986 §3), and an https

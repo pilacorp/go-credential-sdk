@@ -9,10 +9,10 @@ neither go-ethereum nor the root module of go-credential-sdk; it imports module 
 makes a list of 1-, 2-, 4- or 8-bit entries (§4.1), `Set` and `Get` write and read entry `i`, `Encode` and
 `Decode(lst, bits)` convert the byte array to and from `lst` (ZLIB, then base64url, §4.2), and `SignToken` signs a
 Status List Token (§5.1) with a `jws.Signer`. The bit width is the issuer's choice. A list holds at most 16 MiB once
-inflated, and `Decode` refuses a larger one, a preset dictionary and a bad checksum; `SignToken` refuses a token over
-1 MiB, the cap the `Checker` applies. That token holds only about 576 KiB of list bytes
-that do not compress: a larger list signs only while it compresses well, and `SignToken` refuses it once status changes
-make it less compressible, so size or split lists for the highest change rate expected (draft 21 §13.4, App. B).
+inflated, and `Decode` refuses a larger one, a preset dictionary and a bad checksum. `SignToken` signs a token of any
+size (draft 21 sets no limit), but the `Checker` refuses one over 1 MiB, which holds only about 576 KiB of list bytes
+that do not compress: a larger list reads only while it compresses well, so size or split lists for the highest change
+rate expected (draft 21 §13.4, App. B).
 
 `statuslist.Checker` reads the status of a Referenced Token (draft 21 §8): `NewChecker(issuers)` takes the
 `issuerkey.Resolver` the credential is verified with, and `Status(ctx, Ref{URI, Index}, iss)` fetches the token at

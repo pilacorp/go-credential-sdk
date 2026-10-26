@@ -23,12 +23,11 @@ import (
 	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
-// maxListBytes caps the byte array of a list: New and FromBytes refuse to
-// build a larger one and Decode refuses to inflate past it, so an issuer
-// cannot build a list Decode refuses to read; signing it is bounded by the
-// token cap instead (see SignToken). Draft 21 sets no limit
-// (§13.4); without one, zeros compress about 1000:1 and the lst of a 1 MiB
-// token inflates to hundreds of MiB.
+// maxListBytes caps the byte array of a list. New and FromBytes refuse a
+// larger one, which bounds what they allocate and what Encode and SignToken
+// compress and sign; Decode refuses to inflate past it, which bounds a
+// reader. Draft 21 sets no limit (§13.4); without one, zeros compress about
+// 1000:1 and the lst of a 1 MiB token inflates to hundreds of MiB.
 const maxListBytes = 16 << 20
 
 // List is a Status List (draft 21 §4.1): entries of bits bits each,
@@ -51,9 +50,9 @@ func validBits(bits int) bool {
 // step 2), and the list holds every entry those bytes carry, as Decode reads
 // it back; a size·bits divisible by 8 (§13.4: RECOMMENDED) gives exactly
 // size. size must be positive, bits 1, 2, 4 or 8, and the byte array at most
-// 16 MiB. A list over about 576 KiB fits the 1 MiB token of SignToken only
-// while it compresses well; size or split lists for the highest status change
-// rate expected (draft 21 §13.4, Appendix B).
+// 16 MiB. A list over about 576 KiB fits the 1 MiB token a Checker reads
+// only while it compresses well; size or split lists for the highest status
+// change rate expected (draft 21 §13.4, Appendix B).
 func New(size, bits int) (*List, error) {
 	if !validBits(bits) {
 		return nil, fmt.Errorf("%w: statuslist: bits %d, want 1, 2, 4 or 8", jose.ErrInvalidArgument, bits)

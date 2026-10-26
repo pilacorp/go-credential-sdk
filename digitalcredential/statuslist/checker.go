@@ -33,6 +33,11 @@ const (
 	clockSkew        = time.Minute                    // RFC 7519 §4.1.4, §4.1.5: small leeway
 	maxCacheLifetime = 24 * time.Hour                 // upper bound on ttl (§11.5)
 	maxCacheBytes    = 32 << 20                       // list capacity plus key lengths
+	// maxTokenBytes caps the token read, in compact form (draft 21 sets no
+	// limit, §13.4). With lst base64url-encoded inside the base64url
+	// payload, it holds only about 576 KiB of list bytes that do not
+	// compress.
+	maxTokenBytes = 1 << 20
 	// decodeSlots bounds concurrent Decode calls: an lst of a few KiB can
 	// inflate to 16 MiB, and each Decode allocates several times that.
 	decodeSlots = 4
@@ -71,13 +76,13 @@ func (r Ref) Validate() error {
 // the decode bound, the cache and the default client's connections belong to
 // the instance. It is safe for concurrent use.
 //
-// Its limits are fixed: the fetch of a token ends within 5 seconds, follows at
-// most 3 redirects and reads at most 1 MiB, the cap SignToken signs to; a list
-// inflates to at most 16 MiB; the clock skew is 1 minute. It caches verified
-// lists for the token's ttl, at most 24 hours and never past exp; a token
-// without ttl is not cached. The cache counts 32 MiB of list bytes (their
-// capacity) plus key lengths, not total heap. When live entries fill it, a new
-// list is not cached until one expires; no live entry is evicted.
+// Its limits are fixed: the fetch of a token ends within 5 seconds, follows
+// at most 3 redirects and reads at most 1 MiB; a list inflates to at most 16
+// MiB; the clock skew is 1 minute. It caches verified lists for the token's
+// ttl, at most 24 hours and never past exp; a token without ttl is not
+// cached. The cache counts 32 MiB of list bytes (their capacity) plus key
+// lengths, not total heap. When live entries fill it, a new list is not
+// cached until one expires; no live entry is evicted.
 //
 // At most 4 lists are decoded at once, in arrival order. Each cache miss holds
 // up to about 1 MiB of token data until its decode runs, and the issuer's
