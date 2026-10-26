@@ -110,8 +110,9 @@ func TestSignTokenRejects(t *testing.T) {
 	})
 }
 
-// RFC 7519 §2: a sub holding ":" MUST be a URI (RFC 3986 §3). url.Parse
-// accepts each of these https URLs, so only the URI check refuses them.
+// RFC 7519 §2: a sub holding ":" MUST be a URI (RFC 3986 §3), and an https
+// one has a host (RFC 9110 §4.2.2). url.Parse accepts each of these https
+// URLs, so parsing alone refuses none of them.
 func TestSignTokenSubURI(t *testing.T) {
 	signer, pub := newP256Signer(t)
 	key := SigningKey{Signer: signer, Public: pub}
@@ -125,6 +126,7 @@ func TestSignTokenSubURI(t *testing.T) {
 		"https://example.com/?x=[1]", // nor in a query (§3.4)
 		"https://ü.example/x",        // not ASCII (§2)
 		"https://example.com/?x=%zz", // pct-encoded is "%" HEXDIG HEXDIG (§2.1)
+		"https:///x",                 // RFC 9110 §4.2.2: no https URI with an empty host
 	} {
 		_, err := SignToken(l, TokenClaims{Sub: sub, IssuedAt: time.Unix(1686920170, 0)}, key)
 		if !errors.Is(err, jose.ErrInvalidArgument) {

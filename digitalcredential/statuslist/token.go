@@ -6,8 +6,10 @@ import (
 	"crypto/ecdsa"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
@@ -77,6 +79,9 @@ type SigningKey struct {
 func SignToken(l *List, c TokenClaims, key SigningKey) (string, error) {
 	if err := checkListURI(c.Sub); err != nil {
 		return "", fmt.Errorf("%w: statuslist: Sub %v", jose.ErrInvalidArgument, err)
+	}
+	if u, err := url.Parse(c.Sub); err != nil || !safehttp.HTTPSURL(u) {
+		return "", fmt.Errorf("%w: statuslist: Sub is not an https URL with a host and no userinfo", jose.ErrInvalidArgument)
 	}
 	if c.IssuedAt.IsZero() {
 		return "", fmt.Errorf("%w: statuslist: IssuedAt is required", jose.ErrInvalidArgument)

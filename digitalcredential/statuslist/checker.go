@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -40,12 +41,29 @@ const (
 // Ref is the status_list member of a Referenced Token's status claim (draft
 // 21 §6.2).
 type Ref struct {
-	// URI is uri, the URI of the Status List Token; it must meet the rule of
-	// TokenClaims.Sub.
+	// URI is uri, the URI of the Status List Token, equal to its sub (§5.1);
+	// it must be a URI conforming to RFC 3986 (§6.2), with a host when it
+	// is http or https (RFC 9110 §4.2.1, §4.2.2).
 	URI string
 	// Index is idx, the entry of the Referenced Token; it must not be
 	// negative.
 	Index int
+}
+
+// Validate checks r against draft 21 §6.2, wrapping jose.ErrInvalidArgument:
+// uri is a URI (RFC 3986), with a host when it is http or https (RFC 9110
+// §4.2.1, §4.2.2), and idx is not negative. An issuer writing r into
+// a Referenced Token checks it here; Checker.Status applies it too, and then
+// its own https rule.
+func (r Ref) Validate() error {
+	if err := checkListURI(r.URI); err != nil {
+		return fmt.Errorf("%w: statuslist: Ref.URI %v", jose.ErrInvalidArgument, err)
+	}
+	// §6.2: idx is a non-negative integer.
+	if r.Index < 0 {
+		return fmt.Errorf("%w: statuslist: Ref.Index %d is negative", jose.ErrInvalidArgument, r.Index)
+	}
+	return nil
 }
 
 // Checker reads the status of Referenced Tokens from their Status List
@@ -136,8 +154,9 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 // validates the Referenced Token first (§8.3: its processing rules precede
 // any status evaluation).
 //
-// A Checker not made by NewChecker, a nil ctx, or a ref breaking the rules of
-// Ref are jose.ErrInvalidArgument; so is an index outside the list, which
+// A Checker not made by NewChecker, a nil ctx, a ref breaking the rules of
+// Ref, or a ref.URI that is not an https URL with a host and no userinfo are
+// jose.ErrInvalidArgument; so is an index outside the list, which
 // makes the Referenced Token invalid (§8.3 step 6) rather than being a caller
 // mistake. Any error means no statement about the status can be made (§8.3),
 // and is never a status: a failed fetch, a token that is malformed, not
@@ -153,12 +172,13 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 	if ctx == nil {
 		return 0, fmt.Errorf("%w: statuslist: nil context", jose.ErrInvalidArgument)
 	}
-	if err := checkListURI(ref.URI); err != nil {
-		return 0, fmt.Errorf("%w: statuslist: Ref.URI %v", jose.ErrInvalidArgument, err)
+	if err := ref.Validate(); err != nil {
+		return 0, err
 	}
-	// §6.2: idx is a non-negative integer.
-	if ref.Index < 0 {
-		return 0, fmt.Errorf("%w: statuslist: Ref.Index %d is negative", jose.ErrInvalidArgument, ref.Index)
+	// The SDK's verifier default: §6.2 leaves restrictions on uri to the
+	// Relying Party.
+	if u, err := url.Parse(ref.URI); err != nil || !safehttp.HTTPSURL(u) {
+		return 0, fmt.Errorf("%w: statuslist: Ref.URI is not an https URL with a host and no userinfo", jose.ErrInvalidArgument)
 	}
 	// Keyed by iss too: keyed by uri alone, a list verified with one issuer's
 	// key would answer for another issuer's token pointing to the same uri.
