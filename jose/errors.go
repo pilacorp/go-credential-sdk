@@ -13,7 +13,8 @@ import "errors"
 // jose/jws errors when signing one fails. VerifyKBJWT wraps the jws or jose
 // cause under ErrKBInvalid, so a malformed KB-JWT matches both ErrKBInvalid
 // and ErrMalformed, and a caller tests the ErrKB* errors first. jose/jwk has
-// its own ErrBadKey.
+// its own ErrBadKey, and ErrUnsupportedKey, apart from it, for a valid JWK of
+// a key type it does not convert.
 var (
 	// ErrMalformed: a base64url segment or a JSON value does not have the
 	// required shape.

@@ -14,11 +14,17 @@ import (
 	"github.com/pilacorp/go-credential-sdk/jose/internal/ec"
 )
 
-// ErrBadKey wraps every error of ToPublicKey and FromPublicKey: the JWK is
-// not a public EC key on P-256 or secp256k1, or fails the RFC 8812 §3.2
-// checks, or the *ecdsa.PublicKey is nil, on another curve, or not on its
-// curve. No standard defines it.
+// ErrBadKey wraps every error of ToPublicKey and FromPublicKey except
+// ErrUnsupportedKey: the JWK is not a valid public key of a type ToPublicKey
+// converts, or fails the RFC 8812 §3.2 checks, or the *ecdsa.PublicKey is
+// nil, on another curve, or not on its curve. No standard defines it.
 var ErrBadKey = errors.New("jwk: bad key")
+
+// ErrUnsupportedKey: ToPublicKey got a JWK whose kty, or crv of an EC key, is
+// a string it does not convert. Other key types and curves can be registered
+// (RFC 7517 §4.1, RFC 7518 §6.2.1.1), so the JWK may be valid: it does not
+// wrap ErrBadKey, and FromPublicKey never returns it. No standard defines it.
+var ErrUnsupportedKey = errors.New("jwk: unsupported key type")
 
 const (
 	crvP256      = "P-256"     // RFC 7518 §6.2.1.1
@@ -35,6 +41,10 @@ const (
 // includes "verify", the operation the returned key is for. RFC 7517 and RFC
 // 7518 set no such values for P-256, so those members, and kid, are not read.
 //
+// A kty other than "EC", or a crv other than those two, the empty string
+// included, is ErrUnsupportedKey; a missing or non-string kty or crv is
+// ErrBadKey.
+//
 // A secp256k1 key comes back as *ecdsa.PublicKey with Curve secp256k1.S256().
 func ToPublicKey(m map[string]any) (*ecdsa.PublicKey, error) {
 	if m == nil {
@@ -46,15 +56,25 @@ func ToPublicKey(m map[string]any) (*ecdsa.PublicKey, error) {
 	if _, ok := m["d"]; ok {
 		return nil, fmt.Errorf("%w: JWK carries a private key (d)", ErrBadKey)
 	}
-	// RFC 7517 §4.1 and RFC 7518 §6.2: kty "EC" for an EC key.
-	if kty, _ := m["kty"].(string); kty != "EC" {
-		return nil, fmt.Errorf("%w: kty must be EC", ErrBadKey)
+	// RFC 7517 §4.1: kty MUST be present, a case-sensitive string; RFC 7518
+	// §6.2.1 and §6.2.1.1: so is crv of an EC key. Both come from the JWK's
+	// sender, so they are quoted and cut at 16 characters, more than any name
+	// the IANA JOSE registries hold.
+	kty, ok := m["kty"].(string)
+	if !ok {
+		return nil, fmt.Errorf("%w: kty is missing or not a string", ErrBadKey)
+	}
+	if kty != "EC" {
+		return nil, fmt.Errorf("%w: kty %.16q; only EC keys on P-256 or secp256k1 are converted", ErrUnsupportedKey, kty)
+	}
+	crv, ok := m["crv"].(string)
+	if !ok {
+		return nil, fmt.Errorf("%w: crv is missing or not a string", ErrBadKey)
 	}
 	var p ec.Point
-	crv, _ := m["crv"].(string)
 	kind, ok := kindForCrv(crv)
 	if !ok {
-		return nil, fmt.Errorf("%w: crv %q is neither P-256 nor secp256k1", ErrBadKey, crv)
+		return nil, fmt.Errorf("%w: crv %.16q; only P-256 and secp256k1 are converted", ErrUnsupportedKey, crv)
 	}
 	p.Kind = kind
 	if kind == ec.Secp256k1 {
