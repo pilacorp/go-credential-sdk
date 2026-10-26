@@ -11,8 +11,9 @@
 // jose.ErrInvalidArgument or jws.ErrBadKey and a signer holding another key
 // gives jws.ErrSelfCheck. Every error of Checker.Status means no statement
 // about the status can be made (§8.3); there an index outside a fetched list
-// also wraps jose.ErrInvalidArgument, though it makes the Referenced Token
-// invalid (§8.3 step 6) rather than being a caller mistake.
+// wraps no sentinel: the Referenced Token MUST be rejected
+// (draft-ietf-oauth-status-list-21 §8.3 step 6), and the caller made no
+// mistake.
 //
 // A List is not safe for concurrent use while Set runs; a Checker is.
 package statuslist
@@ -89,7 +90,7 @@ func (l *List) position(i int) (byteIndex int, shift uint, err error) {
 	if !l.valid() {
 		return 0, 0, fmt.Errorf("%w: statuslist: list not made by New, FromBytes or Decode", jose.ErrInvalidArgument)
 	}
-	if n := len(l.b) * 8 / l.bits; i < 0 || i >= n {
+	if n := l.entries(); i < 0 || i >= n {
 		return 0, 0, fmt.Errorf("%w: statuslist: index %d outside [0, %d)", jose.ErrInvalidArgument, i, n)
 	}
 	perByte := 8 / l.bits
@@ -119,6 +120,11 @@ func (l *List) Set(i int, v uint8) error {
 	}
 	l.b[at] = l.b[at]&^(l.mask()<<shift) | v<<shift
 	return nil
+}
+
+// entries is the number of entries in a valid list.
+func (l *List) entries() int {
+	return len(l.b) * 8 / l.bits
 }
 
 func (l *List) mask() uint8 {

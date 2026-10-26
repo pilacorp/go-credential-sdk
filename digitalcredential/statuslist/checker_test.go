@@ -161,8 +161,10 @@ func TestCheckerRejects(t *testing.T) {
 	c := s.checker(t, issuers)
 	for i, tt := range tests {
 		ref := Ref{URI: base + strconv.Itoa(i), Index: tt.index}
-		if got, err := c.Status(context.Background(), ref, "https://a.example"); err == nil || got != 0 {
-			t.Errorf("%s: Status = %d, %v; want an error", tt.name, got, err)
+		// None is a caller mistake: an index outside the list included
+		// (draft 21 §8.3 step 6).
+		if got, err := c.Status(context.Background(), ref, "https://a.example"); err == nil || got != 0 || errors.Is(err, jose.ErrInvalidArgument) {
+			t.Errorf("%s: Status = %d, %v; want an error that is not jose.ErrInvalidArgument", tt.name, got, err)
 		}
 	}
 }

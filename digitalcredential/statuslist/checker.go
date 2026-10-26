@@ -174,15 +174,16 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 // any status evaluation).
 //
 // A Checker not made by NewChecker, a nil ctx, or a ref breaking the rules of
-// Ref are jose.ErrInvalidArgument; so is an index outside the list, which
-// makes the Referenced Token invalid (§8.3 step 6) rather than being a caller
-// mistake. Any error means no statement about the status can be made (§8.3),
-// and is never a status: a uri the Checker does not fetch (not https, unless
-// WithInsecureHTTP), a failed fetch, a token that is malformed, not signed by
-// a key of iss (issuerkey.Select), carrying an iss claim other than iss (RFC
-// 8725 §3.8), or failing a check of §5.1 or §8.3, an lst Decode refuses, or
-// an index outside the list. Errors of the resolver, jose/jws and jose/jwt
-// are wrapped unchanged. No error of the fetch holds the status list uri or
+// Ref are jose.ErrInvalidArgument. Any error means no statement about the
+// status can be made (§8.3), and is never a status: a uri the Checker does
+// not fetch (not https, unless WithInsecureHTTP), a failed fetch, a token
+// that is malformed, not signed by a key of iss (issuerkey.Select), carrying
+// an iss claim other than iss (RFC 8725 §3.8), or failing a check of §5.1 or
+// §8.3, an lst Decode refuses, or an index outside the list, which wraps no
+// sentinel: the Referenced Token MUST be rejected
+// (draft-ietf-oauth-status-list-21 §8.3 step 6), and the caller made no
+// mistake. Errors of the resolver, jose/jws and jose/jwt are
+// wrapped unchanged. No error of the fetch holds the status list uri or
 // a redirect target, which may carry a secret: safehttp writes its own text
 // for its checks and passes every net/http error through an allowlist. A
 // network error through a proxy of the WithHTTPClient client can still quote
@@ -214,6 +215,11 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 		if l, err = c.load(ctx, key); err != nil {
 			return 0, err
 		}
+	}
+	// Not jose.ErrInvalidArgument, which Get would wrap: the index comes from
+	// the Referenced Token, not from a caller mistake.
+	if n := l.entries(); ref.Index >= n {
+		return 0, fmt.Errorf("statuslist: index %d is outside the list of %d entries (draft-ietf-oauth-status-list-21 §8.3 step 6)", ref.Index, n)
 	}
 	return l.Get(ref.Index)
 }
