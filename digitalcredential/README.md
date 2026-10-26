@@ -5,6 +5,18 @@ IETF SD-JWT VC (`dc+sd-jwt`); for a W3C VC secured with SD-JWT (`vc+sd-jwt`) use
 Module `github.com/pilacorp/go-credential-sdk/digitalcredential`, tagged `digitalcredential/v0.x.y`. It imports
 neither go-ethereum nor the root module of go-credential-sdk; it imports module `jose`.
 
+`Issue(req, key)` signs an SD-JWT VC and returns it in compact form, `<JWT>~<D1>~…~<Dn>~`. `IssueRequest` sets `vct`
+(required by draft 19), `iss`, `iat`, `nbf` and `exp` (each optional, the times in whole seconds), `cnf.jwk` from the
+holder key and `status.status_list` from a `statuslist.Ref`; `Claims` holds every other claim and `Disclose` the paths
+to conceal. A claim whose field is unset may come in `Claims` instead, in any form the standards allow and unchecked:
+`iat`, `nbf` or `exp` as a NumericDate with a fraction (RFC 7519 §2), `cnf` in any RFC 7800 form, `status` with any
+mechanism; `iss` and `vct` never. The claims draft 19 §2.2.2.3 forbids disclosing, those given in `Claims` included, are
+added after the concealed claims, so they carry neither a disclosure nor a decoy, and a `Disclose` path starting at one
+is refused. `aka_vcts` must be a non-empty array of strings without the value of `vct` (§2.2.2.2). Decoys need at least
+one `Disclose` path (§2.2.2.5). The key is a `statuslist.SigningKey`, as for `SignToken`: `alg` follows the curve of its
+`Public` and `typ` is `dc+sd-jwt`. `Issue` sets no size limit, but holders and verifiers built on this SDK refuse a
+credential over 1 MiB (`sdjwt.Split`).
+
 `statuslist` builds Token Status Lists (draft-ietf-oauth-status-list-21): `New(size, bits)` or `FromBytes(b, bits)`
 makes a list of 1-, 2-, 4- or 8-bit entries (§4.1), `Set` and `Get` write and read entry `i`, `Encode` and
 `Decode(lst, bits)` convert the byte array to and from `lst` (ZLIB, then base64url, §4.2), and `SignToken` signs a

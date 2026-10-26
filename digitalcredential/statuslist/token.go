@@ -39,7 +39,8 @@ type TokenClaims struct {
 	TTL time.Duration
 }
 
-// SigningKey is the issuer key a Status List Token is signed with.
+// SigningKey is an issuer's signing key: the Signer, the public key that
+// decides alg, and an optional kid.
 type SigningKey struct {
 	Signer jws.Signer       // holds the private key of Public
 	Public *ecdsa.PublicKey // decides alg (RFC 8725 §3.1: one algorithm per key)
