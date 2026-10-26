@@ -98,6 +98,40 @@ func TestGetRefusesRedirect(t *testing.T) {
 	}
 }
 
+// A fetch error leaves out the URL: a credential's uri may carry a token in
+// its query, and a refused redirect's Location a password in its userinfo
+// (RFC 3986 §7.5). The cause is kept.
+func TestGetErrorOmitsURL(t *testing.T) {
+	redirect := httptest.NewTLSServer(http.RedirectHandler("https://alice:SYNTHETIC_PW@status.example/x?token=SYNTHETIC_Q", http.StatusFound))
+	t.Cleanup(redirect.Close)
+	_, _, err := Get(context.Background(), redirect.Client(), redirect.URL, "application/json", limits)
+	if err == nil || strings.Contains(err.Error(), "SYNTHETIC") || !strings.Contains(err.Error(), "redirect to a URL that is not https") {
+		t.Errorf("refused redirect: err = %v; want the refusal without the URL", err)
+	}
+
+	// net/http parses a Location before CheckRedirect sees it and quotes the
+	// raw header when the parse fails.
+	var hops atomic.Int32
+	malformed := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hops.Add(1)
+		w.Header().Set("Location", "https://alice:SYNTHETIC_PASSWORD@status.example/%zz?token=SYNTHETIC_QUERY_SECRET")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(malformed.Close)
+	_, _, err = Get(context.Background(), malformed.Client(), malformed.URL, "application/json", limits)
+	if err == nil || strings.Contains(err.Error(), "SYNTHETIC") || hops.Load() != 1 {
+		t.Errorf("malformed Location: err = %v after %d requests; want an error without the URL after 1", err, hops.Load())
+	}
+
+	// The test server listens on 127.0.0.1, which the dialer of NewClient refuses.
+	var hits atomic.Int32
+	s := jsonServer(t, true, "{}", &hits)
+	_, _, err = Get(context.Background(), NewClient(), s.URL+"/?token=SYNTHETIC_Q", "application/json", limits)
+	if !errors.Is(err, ErrBlockedAddress) || strings.Contains(err.Error(), "SYNTHETIC") {
+		t.Errorf("blocked address: err = %v; want ErrBlockedAddress without the URL", err)
+	}
+}
+
 func TestGetRefusesBodyOverCap(t *testing.T) {
 	var hits atomic.Int32
 	s := jsonServer(t, true, strings.Repeat("a", int(limits.MaxBytes)+1), &hits)

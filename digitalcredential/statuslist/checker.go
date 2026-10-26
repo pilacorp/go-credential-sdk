@@ -176,8 +176,13 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 // WithInsecureHTTP), a failed fetch, a token that is malformed, not signed by
 // a key of iss (issuerkey.Select), carrying an iss claim other than iss (RFC
 // 8725 §3.8), or failing a check of §5.1 or §8.3, an lst Decode refuses, or
-// an index outside the list. Errors of the fetch, the resolver, jose/jws and
-// jose/jwt are wrapped unchanged, so context.Canceled stays visible.
+// an index outside the list. Errors of the resolver, jose/jws and jose/jwt
+// are wrapped unchanged. No error of the fetch holds the status list uri or
+// a redirect target, which may carry a secret: safehttp writes its own text
+// for its checks and passes every net/http error through an allowlist. A
+// network error through a proxy of the WithHTTPClient client can still quote
+// certificate names. errors.Is still reaches the cause, such as
+// context.Canceled.
 func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error) {
 	if c == nil || c.issuers == nil {
 		return 0, fmt.Errorf("%w: statuslist: Checker not made by NewChecker", jose.ErrInvalidArgument)
