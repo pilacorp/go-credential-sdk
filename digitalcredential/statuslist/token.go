@@ -6,10 +6,8 @@ import (
 	"crypto/ecdsa"
 	"encoding/base64"
 	"fmt"
-	"net/url"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
@@ -28,10 +26,10 @@ const typStatusList = "statuslist+jwt"
 type TokenClaims struct {
 	// Sub is the URI of the token, the uri the Referenced Tokens carry
 	// (§6.2); §5.1 requires the two to be equal, which is the caller's to
-	// keep. It must be a URI (RFC 7519 §2: a StringOrURI holding ":" MUST be
-	// one; RFC 3986 §3), and an https URL with a host and no userinfo (RFC
-	// 9110 §4.2.4), the only URLs this module fetches, as §6.2 lets the
-	// Relying Party restrict uri.
+	// keep. It must be a URI (§6.2; RFC 7519 §2: a StringOrURI holding ":"
+	// MUST be one; RFC 3986 §3), with a host when it is http or https (RFC
+	// 9110 §4.2.1, §4.2.2); any scheme, since the scheme a verifier fetches
+	// is the Relying Party's choice (§6.2).
 	Sub string
 	// IssuedAt is iat, required (§5.1); written in whole seconds, the
 	// fraction dropped.
@@ -79,9 +77,6 @@ type SigningKey struct {
 func SignToken(l *List, c TokenClaims, key SigningKey) (string, error) {
 	if err := checkListURI(c.Sub); err != nil {
 		return "", fmt.Errorf("%w: statuslist: Sub %v", jose.ErrInvalidArgument, err)
-	}
-	if u, err := url.Parse(c.Sub); err != nil || !safehttp.HTTPSURL(u) {
-		return "", fmt.Errorf("%w: statuslist: Sub is not an https URL with a host and no userinfo", jose.ErrInvalidArgument)
 	}
 	if c.IssuedAt.IsZero() {
 		return "", fmt.Errorf("%w: statuslist: IssuedAt is required", jose.ErrInvalidArgument)
