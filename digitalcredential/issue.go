@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
@@ -197,15 +196,7 @@ func Issue(req IssueRequest, key statuslist.SigningKey) (string, error) {
 		return "", fmt.Errorf("digitalcredential: %w", err)
 	}
 
-	// RFC 9901 §4: each disclosure is followed by "~", the last one too.
-	var b strings.Builder
-	b.WriteString(token)
-	b.WriteByte('~')
-	for _, d := range disclosures {
-		b.WriteString(d.Encoded)
-		b.WriteByte('~')
-	}
-	return b.String(), nil
+	return compactSDJWT(token, disclosures), nil
 }
 
 // checkRequest applies the rules of IssueRequest that sdjwt.Conceal and
