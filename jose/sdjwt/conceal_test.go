@@ -91,9 +91,10 @@ func TestConcealRoundTrip(t *testing.T) {
 
 // Caller mistakes that would produce an SD-JWT a verifier misreads or refuses.
 func TestConcealRejects(t *testing.T) {
-	deep := map[string]any{}
-	for range 32 { // 33 levels with the claims object
-		deep = map[string]any{"a": deep}
+	// 21 objects and arrays (the claims, "a" and 19 elements) × 1000 decoys.
+	wide := make([]any, 19)
+	for i := range wide {
+		wide[i] = map[string]any{}
 	}
 	many := map[string]any{}
 	var manyPaths []Path
@@ -111,7 +112,7 @@ func TestConcealRejects(t *testing.T) {
 		// §4.1 rule 7: an _sd in the input would read as digests.
 		{"_sd in claims", map[string]any{"a": map[string]any{"_sd": []any{"x"}}}, nil, ConcealOptions{}},
 		{"MinDigests 1001", map[string]any{"a": 1}, nil, ConcealOptions{MinDigests: 1001}},
-		{"depth 33", deep, nil, ConcealOptions{}},
+		{"21 containers × MinDigests 1000", map[string]any{"a": wide}, nil, ConcealOptions{MinDigests: 1000}},
 		{"1001 paths", many, manyPaths, ConcealOptions{}},
 		// {"A"} goes first and gives the claims object an _sd, which {"_sd"}
 		// must not then conceal.

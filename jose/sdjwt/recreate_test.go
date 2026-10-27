@@ -78,7 +78,7 @@ func disclose(jsonText string) (encoded, digest string) {
 // The rejections RFC 9901 §7.1 requires, and the bounds on untrusted input.
 func TestRecreateRejects(t *testing.T) {
 	given, givenDigest := disclose(`["s1","given_name","A"]`)
-	_, elemDigest := disclose(`["s2","VN"]`)
+	elem, elemDigest := disclose(`["s2","VN"]`)
 	dots, dotsDigest := disclose(`["s3","...","x"]`)
 
 	// 1001 disclosures, each referenced from the top-level _sd.
@@ -105,6 +105,10 @@ func TestRecreateRejects(t *testing.T) {
 		{"disclosure named ...", fmt.Sprintf(`{"_sd":[%q]}`, dotsDigest), []Disclosure{{Encoded: dots}}},
 		// §4.1.1, §7.1 step 2d: only sha-256 is supported.
 		{"_sd_alg sha-512", `{"_sd_alg":"sha-512"}`, nil},
+		// §7.1 step 3c.ii.1: a digest in _sd needs a [salt, name, value] disclosure.
+		{"_sd references [salt, value]", fmt.Sprintf(`{"_sd":[%q]}`, elemDigest), []Disclosure{{Encoded: elem}}},
+		// §7.1 step 3c.iii.1: an array element needs a [salt, value] disclosure.
+		{"array element references [salt, name, value]", fmt.Sprintf(`{"a":[{"...":%q}]}`, givenDigest), []Disclosure{{Encoded: given}}},
 		// §7.1 step 3c.ii.3.
 		{"claim name exists", fmt.Sprintf(`{"given_name":"X","_sd":[%q]}`, givenDigest), []Disclosure{{Encoded: given}}},
 		{"1001 disclosures", `{"_sd":[` + strings.Join(manyDigests, ",") + `]}`, many},
@@ -120,5 +124,48 @@ func TestRecreateRejects(t *testing.T) {
 				t.Fatalf("got %v, want jose.ErrMalformed", err)
 			}
 		})
+	}
+}
+
+// RFC 9901 §4.2.6 and §7.2 presentation steps 1 and 2: a path selects its
+// concealed ancestors and its own disclosure, nothing else, even when another
+// concealed claim shares a name with an element of the path.
+func TestDisclosuresSelectOnlyThePath(t *testing.T) {
+	claims := map[string]any{"x": map[string]any{"y": "1"}, "y": "2", "a": map[string]any{"y": "3"}}
+	payload, ds, err := Conceal(claims, []Path{{"y"}, {"a"}, {"a", "y"}}, ConcealOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := map[string]string{}
+	for _, d := range ds {
+		name[d.Encoded] = fmt.Sprint(d.Name, "=", d.Value)
+	}
+	r, err := Recreate(payload, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path Path
+		ok   bool
+		want string
+	}{
+		{Path{"x", "y"}, true, "[]"},
+		{Path{"y"}, true, "[y=2]"},
+		{Path{"a", "y"}, true, "[a=map[] y=3]"},
+		{Path{"a", "zz"}, false, "[]"},
+		{Path{}, false, "[]"},
+	} {
+		got, ok := r.Disclosures(tc.path)
+		var names []string
+		for _, d := range got {
+			n := name[d.Encoded]
+			if d.Name == "a" {
+				n = "a=map[]"
+			}
+			names = append(names, n)
+		}
+		if s := fmt.Sprint(names); ok != tc.ok || (ok && s != tc.want) {
+			t.Errorf("%v: got %s %v, want %s %v", tc.path, s, ok, tc.want, tc.ok)
+		}
 	}
 }

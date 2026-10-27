@@ -14,7 +14,8 @@ One package per standard:
   `jws.Verify(token, key, allowed)` checks it against a key the caller supplies (never one taken from the header) and
   returns the header and the original payload bytes. `jws.UnverifiedHeader(token)` reads the header with the
   structural checks of `Verify`, so the caller can pick the key by `kid`; alg is checked only by `Verify`, and nothing
-  in the header is trusted until `Verify` succeeds. `Header.TypIs(mediaType)` compares `typ` as RFC 7515 §4.1.9 says
+  in the header is trusted until `Verify` succeeds. `jws.UnverifiedPayload(token)` reads the payload with the same
+  checks, for a reader that needs the claims before or without `Verify`; nothing in it is trusted either. `Header.TypIs(mediaType)` compares `typ` as RFC 7515 §4.1.9 says
   (explicit typing, RFC 8725 §3.11).
 - `jose/jwt`: `jwt.NumericDate(v)` turns an `exp`, `nbf` or `iat` value into a `time.Time` (RFC 7519 §2), fractions
   included; a non-number, NaN, ±Inf or a value `time.Time` cannot hold is `jose.ErrMalformed`. `jwt.DateClaim`
@@ -22,7 +23,9 @@ One package per standard:
   (RFC 7519 §4.1.4, §4.1.5); `VerifyKBJWT` takes the rule from it, and the skew is the caller's policy.
 - `jose/jwk`: `jwk.ToPublicKey` / `jwk.FromPublicKey` convert EC public keys (`kty: EC`, `crv: P-256 | secp256k1`,
   RFC 7517, RFC 7518, RFC 8812). A secp256k1 JWK that carries `alg`, `use` or `key_ops` must have `ES256K`, `sig`, or
-  a list including `verify` (RFC 8812 §3.2).
+  a list including `verify` (RFC 8812 §3.2). `ToPublicKey` refuses a public JWK whose `kty`, or `crv` of an EC key,
+  is a string it does not convert with `jwk.ErrUnsupportedKey`, without checking the rest of the key, which may be
+  valid or broken. Every other refusal, a JWK carrying `d` included, is `jwk.ErrBadKey`; no error matches both.
 - `jose/sdjwt`: the SD-JWT format of RFC 9901. `sdjwt.Conceal(claims, paths, opts)` makes the claims at `paths`
   selectively disclosable and returns the payload to sign and the disclosures, with decoy digests up to
   `opts.MinDigests` in every object and array; `sdjwt.Split` separates the compact form; `sdjwt.Recreate(payload,

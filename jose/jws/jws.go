@@ -236,6 +236,19 @@ func UnverifiedHeader(compact string) (Header, error) {
 	return tok.header, nil
 }
 
+// UnverifiedPayload returns the payload of a compact JWS without checking its
+// signature, for a reader that needs the claims before or without Verify: a
+// Holder selecting disclosures, or a Verifier choosing the key by iss. It
+// refuses the same malformed tokens as UnverifiedHeader, with the same errors.
+// The payload is untrusted until Verify succeeds.
+func UnverifiedPayload(compact string) ([]byte, error) {
+	tok, err := parse(compact)
+	if err != nil {
+		return nil, err
+	}
+	return tok.payload, nil
+}
+
 // parsed is a compact JWS taken apart, before any check of alg, key or
 // signature.
 type parsed struct {
@@ -285,11 +298,13 @@ func parse(compact string) (parsed, error) {
 	return parsed{header: header, payload: payload, sig: sig, signingInput: parts[0] + "." + parts[1]}, nil
 }
 
-// checkHeaderExtensions refuses the two header members that change how a JWS
-// is processed. RFC 7515 §4.1.11: the recipient MUST understand every
-// extension crit lists, and none is supported. RFC 7797 §6: crit MUST
-// accompany b64, so a conforming b64, true or false, always comes with a crit
-// and is refused with it; a b64 without crit does not conform.
+// checkHeaderExtensions refuses a header that has crit or b64, whatever their
+// value: this package implements no extension crit can list, and not b64
+// (RFC 7797). RFC 7515 §4.1.11: a JWS whose crit lists an extension the
+// recipient does not support is invalid. A b64 without crit, or crit [], also
+// breaks a producer MUST (RFC 7797 §6, RFC 7515 §4.1.11), but the class stays
+// ErrUnsupportedHeader: a recipient that implements b64 could still process
+// such a token, so the refusal says what this package lacks.
 func checkHeaderExtensions(h map[string]any) error {
 	if _, ok := h["crit"]; ok {
 		return fmt.Errorf("%w: crit", ErrUnsupportedHeader)

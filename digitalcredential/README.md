@@ -14,8 +14,20 @@ mechanism; `iss` and `vct` never. The claims draft 19 §2.2.2.3 forbids disclosi
 added after the concealed claims, so they carry neither a disclosure nor a decoy, and a `Disclose` path starting at one
 is refused. `aka_vcts` must be a non-empty array of strings without the value of `vct` (§2.2.2.2). Decoys need at least
 one `Disclose` path (§2.2.2.5). The key is a `statuslist.SigningKey`, as for `SignToken`: `alg` follows the curve of its
-`Public` and `typ` is `dc+sd-jwt`. `Issue` sets no size limit, but holders and verifiers built on this SDK refuse a
-credential over 1 MiB (`sdjwt.Split`).
+`Public` and `typ` is `dc+sd-jwt`. `Issue` sets no size or depth limit, but holders and verifiers built on this SDK
+refuse a credential over 1 MiB, with more than 1000 disclosures, or nested deeper than 32 levels (`sdjwt.Split`,
+`sdjwt.Recreate`). `Issue` writes at most 1000 disclosures, but it signs a credential over 1 MiB or nested 33 to 64
+levels deep, which those readers refuse.
+
+`Present(issued, reveal, kb)` builds what the holder sends to a verifier (RFC 9901 §7.2): the issuer-signed JWT with only the
+disclosures of the claims in `reveal` and of their concealed ancestors, each once and in the issued order, and, with a
+`KeyBinding`, a Key Binding JWT signed with the key of `cnf.jwk`. An empty `reveal` sends no disclosure. Naming a claim
+inside a concealed object sends that object's disclosure too, which shows its other plain members. `Present` does not
+verify the issuer's signature: check the credential when you receive it. With a `KeyBinding`, a credential with no `cnf`,
+in the Issuer-signed JWT or any Disclosure, is `jose.ErrInvalidArgument`; a `cnf` or `cnf.jwk` in a Disclosure, which
+draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids, is `jose.ErrMalformed`. A `cnf` with no `jwk` anywhere, or a `cnf.jwk`
+whose `kty` (`oct` aside) or `crv` jose/jwk does not convert, is `ErrKeyBindingUnsupported`, which says nothing about
+whether the `cnf` is valid; any other `cnf` that is not a usable public key, `oct` included, is `jose.ErrMalformed`.
 
 `statuslist` builds Token Status Lists (draft-ietf-oauth-status-list-21): `New(size, bits)` or `FromBytes(b, bits)`
 makes a list of 1-, 2-, 4- or 8-bit entries (§4.1), `Set` and `Get` write and read entry `i`, `Encode` and

@@ -17,7 +17,17 @@ type Recreated struct {
 	// Claims is the Processed SD-JWT Payload (RFC 9901 §7.1): every disclosed
 	// claim in place, every _sd and _sd_alg removed.
 	Claims map[string]any
-	opened map[string]Disclosure // Path.key → the disclosure that opened the claim there
+	// An index of the opened claims and their ancestors, never of the whole
+	// payload: steps leads from a node one path element down, opened holds
+	// the disclosure that opened the claim at a node. Node 0 is Claims.
+	steps  map[step]int
+	opened map[int]Disclosure
+}
+
+// step is one path element below node parent.
+type step struct {
+	parent int
+	el     any // string or int
 }
 
 // Disclosures returns what a holder must send for a verifier to see the claim
@@ -35,8 +45,14 @@ func (r *Recreated) Disclosures(path Path) (ds []Disclosure, ok bool) {
 		return nil, false
 	}
 	ds = []Disclosure{}
-	for i := 1; i <= len(path); i++ {
-		if d, ok := r.opened[path[:i].key()]; ok {
+	node := 0
+	for _, el := range path {
+		next, ok := r.steps[step{node, el}]
+		if !ok {
+			break // nothing below is concealed
+		}
+		node = next
+		if d, ok := r.opened[node]; ok {
 			ds = append(ds, d)
 		}
 	}
@@ -70,12 +86,15 @@ func Recreate(payload map[string]any, disclosures []Disclosure) (*Recreated, err
 		return nil, fmt.Errorf("%w: sdjwt: %d disclosures, at most %d", jose.ErrMalformed, len(disclosures), maxDisclosures)
 	}
 	if alg, ok := payload[keySDAlg]; ok && alg != sdAlgSHA256 {
-		return nil, fmt.Errorf("%w: sdjwt: _sd_alg %v is not supported, only %q", jose.ErrMalformed, alg, sdAlgSHA256)
+		// A payload value: its type and at most 32 characters of it, never raw.
+		name, _ := alg.(string)
+		return nil, fmt.Errorf("%w: sdjwt: _sd_alg %T %.32q is not supported, only %q", jose.ErrMalformed, alg, name, sdAlgSHA256)
 	}
 	r := recreator{
 		byDigest: make(map[string]Disclosure, len(disclosures)),
 		seen:     map[string]bool{},
-		opened:   map[string]Disclosure{},
+		steps:    map[step]int{},
+		opened:   map[int]Disclosure{},
 	}
 	order := make([]string, 0, len(disclosures)) // digests in the order received
 	for _, given := range disclosures {
@@ -90,7 +109,7 @@ func Recreate(payload map[string]any, disclosures []Disclosure) (*Recreated, err
 		order = append(order, d.Digest)
 	}
 
-	claims, err := r.object(payload, nil)
+	claims, err := r.object(payload, &at{})
 	if err != nil {
 		return nil, err
 	}
@@ -99,37 +118,71 @@ func Recreate(payload map[string]any, disclosures []Disclosure) (*Recreated, err
 			return nil, fmt.Errorf("%w: sdjwt: no digest references disclosure %s", jose.ErrMalformed, digest)
 		}
 	}
-	return &Recreated{Claims: claims, opened: r.opened}, nil
+	return &Recreated{Claims: claims, steps: r.steps, opened: r.opened}, nil
 }
 
-// The value at path p is at nesting level len(p)+1, the payload at level 1.
 type recreator struct {
 	byDigest map[string]Disclosure
 	seen     map[string]bool // every digest met so far
-	opened   map[string]Disclosure
+	steps    map[step]int
+	opened   map[int]Disclosure
 }
 
-func (r *recreator) value(v any, p Path) (any, error) {
-	if len(p)+1 > maxDepth && nests(v) {
-		return nil, fmt.Errorf("%w: sdjwt: nesting deeper than %d at %s", jose.ErrMalformed, maxDepth, p)
+// at is the place of a value in the recreated claims, linked to its parent's,
+// so a child costs one small allocation whatever the length of the names
+// above it. The value at depth d is at nesting level d+1, the payload at 1.
+type at struct {
+	up    *at
+	el    any // string or int; nil for the payload
+	depth int
+	node  int // node in Recreated.steps; 0 for the payload, -1 until indexed
+}
+
+func (a *at) child(el any) *at {
+	return &at{up: a, el: el, depth: a.depth + 1, node: -1}
+}
+
+// path is a's Path, built for error text only.
+func (a *at) path() Path {
+	p := make(Path, a.depth)
+	for n := a; n.up != nil; n = n.up {
+		p[n.depth-1] = n.el
+	}
+	return p
+}
+
+// index adds a and its ancestors not yet indexed to steps and returns a's
+// node. Each place is indexed once, so the index costs O(input).
+func (r *recreator) index(a *at) int {
+	if a.node < 0 {
+		parent := r.index(a.up)
+		a.node = len(r.steps) + 1
+		r.steps[step{parent, a.el}] = a.node
+	}
+	return a.node
+}
+
+func (r *recreator) value(v any, a *at) (any, error) {
+	if a.depth+1 > maxDepth && nests(v) {
+		return nil, fmt.Errorf("%w: sdjwt: nesting deeper than %d at %s", jose.ErrMalformed, maxDepth, a.path())
 	}
 	switch t := v.(type) {
 	case map[string]any:
-		return r.object(t, p)
+		return r.object(t, a)
 	case []any:
-		return r.array(t, p)
+		return r.array(t, a)
 	default:
 		return v, nil
 	}
 }
 
-func (r *recreator) object(obj map[string]any, p Path) (map[string]any, error) {
+func (r *recreator) object(obj map[string]any, a *at) (map[string]any, error) {
 	// Placeholders are handled by array before they get here.
 	if _, ok := obj[keyEllipsis]; ok {
-		return nil, fmt.Errorf("%w: sdjwt: %q at %s is not an array element placeholder", jose.ErrMalformed, keyEllipsis, p)
+		return nil, fmt.Errorf("%w: sdjwt: %q at %s is not an array element placeholder", jose.ErrMalformed, keyEllipsis, a.path())
 	}
-	if _, ok := obj[keySDAlg]; ok && len(p) > 0 {
-		return nil, fmt.Errorf("%w: sdjwt: _sd_alg below the top level, at %s", jose.ErrMalformed, p)
+	if _, ok := obj[keySDAlg]; ok && a.depth > 0 {
+		return nil, fmt.Errorf("%w: sdjwt: _sd_alg below the top level, at %s", jose.ErrMalformed, a.path())
 	}
 	out := make(map[string]any, len(obj))
 	keys := make([]string, 0, len(obj))
@@ -140,7 +193,7 @@ func (r *recreator) object(obj map[string]any, p Path) (map[string]any, error) {
 	}
 	slices.Sort(keys) // the same input fails with the same error
 	for _, k := range keys {
-		v, err := r.value(obj[k], p.child(k))
+		v, err := r.value(obj[k], a.child(k))
 		if err != nil {
 			return nil, err
 		}
@@ -153,12 +206,12 @@ func (r *recreator) object(obj map[string]any, p Path) (map[string]any, error) {
 	}
 	digests, ok := sd.([]any)
 	if !ok {
-		return nil, fmt.Errorf("%w: sdjwt: _sd at %s is not an array", jose.ErrMalformed, p)
+		return nil, fmt.Errorf("%w: sdjwt: _sd at %s is not an array", jose.ErrMalformed, a.path())
 	}
 	for _, item := range digests {
 		digest, ok := item.(string)
 		if !ok {
-			return nil, fmt.Errorf("%w: sdjwt: _sd at %s holds a %T, not a string", jose.ErrMalformed, p, item)
+			return nil, fmt.Errorf("%w: sdjwt: _sd at %s holds a %T, not a string", jose.ErrMalformed, a.path(), item)
 		}
 		d, ok, err := r.match(digest)
 		if err != nil {
@@ -168,14 +221,14 @@ func (r *recreator) object(obj map[string]any, p Path) (map[string]any, error) {
 			continue // a decoy, or a claim not disclosed
 		}
 		if d.ArrayElement {
-			return nil, fmt.Errorf("%w: sdjwt: _sd at %s references the array element disclosure %s", jose.ErrMalformed, p, digest)
+			return nil, fmt.Errorf("%w: sdjwt: _sd at %s references the array element disclosure %s", jose.ErrMalformed, a.path(), digest)
 		}
 		if _, exists := out[d.Name]; exists {
-			return nil, fmt.Errorf("%w: sdjwt: disclosure %s repeats the claim %q at %s", jose.ErrMalformed, digest, d.Name, p)
+			return nil, fmt.Errorf("%w: sdjwt: disclosure %s repeats the claim %q at %s", jose.ErrMalformed, digest, d.Name, a.path())
 		}
-		cp := p.child(d.Name)
-		r.opened[cp.key()] = d
-		v, err := r.value(d.Value, cp)
+		ca := a.child(d.Name)
+		r.opened[r.index(ca)] = d
+		v, err := r.value(d.Value, ca)
 		if err != nil {
 			return nil, err
 		}
@@ -184,12 +237,12 @@ func (r *recreator) object(obj map[string]any, p Path) (map[string]any, error) {
 	return out, nil
 }
 
-func (r *recreator) array(arr []any, p Path) ([]any, error) {
+func (r *recreator) array(arr []any, a *at) ([]any, error) {
 	out := make([]any, 0, len(arr))
 	for _, el := range arr {
 		digest, isPlaceholder := placeholder(el)
 		if !isPlaceholder {
-			v, err := r.value(el, p.child(len(out)))
+			v, err := r.value(el, a.child(len(out)))
 			if err != nil {
 				return nil, err
 			}
@@ -204,11 +257,11 @@ func (r *recreator) array(arr []any, p Path) ([]any, error) {
 			continue // a decoy, or an element not disclosed: removed
 		}
 		if !d.ArrayElement {
-			return nil, fmt.Errorf("%w: sdjwt: array element at %s references the object property disclosure %s", jose.ErrMalformed, p, digest)
+			return nil, fmt.Errorf("%w: sdjwt: array element at %s references the object property disclosure %s", jose.ErrMalformed, a.path(), digest)
 		}
-		cp := p.child(len(out))
-		r.opened[cp.key()] = d
-		v, err := r.value(d.Value, cp)
+		ca := a.child(len(out))
+		r.opened[r.index(ca)] = d
+		v, err := r.value(d.Value, ca)
 		if err != nil {
 			return nil, err
 		}
@@ -221,7 +274,9 @@ func (r *recreator) array(arr []any, p Path) ([]any, error) {
 // none was received.
 func (r *recreator) match(digest string) (d Disclosure, ok bool, err error) {
 	if r.seen[digest] {
-		return Disclosure{}, false, fmt.Errorf("%w: sdjwt: digest %s appears more than once", jose.ErrMalformed, digest)
+		// Any payload string can sit here: quoted, and cut at 64 characters,
+		// which a real digest (43) never reaches.
+		return Disclosure{}, false, fmt.Errorf("%w: sdjwt: digest %.64q appears more than once", jose.ErrMalformed, digest)
 	}
 	r.seen[digest] = true
 	d, ok = r.byDigest[digest]

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
@@ -114,9 +113,14 @@ type IssueRequest struct {
 // the signer's own randomness).
 //
 // Work and output grow with (the objects and arrays in Claims, plus the top
-// level) × MinDigests. Issue sets no size limit (RFC 9901 and draft 19 set
-// none), but holders and verifiers built on this SDK refuse a compact over
-// 1 MiB (sdjwt.Split).
+// level) × MinDigests. Issue sets no size or depth limit (RFC 9901 and draft
+// 19 set none), but holders and verifiers built on this SDK refuse an SD-JWT
+// over 1 MiB (sdjwt.Split), with more than 1000 disclosures (sdjwt.Split,
+// sdjwt.Recreate), or nested deeper than 32 levels, the payload counted
+// (sdjwt.Recreate). Issue can sign the first and the last: Claims may nest up
+// to jose.MaxJSONDepth (64) levels, so a credential nested 33 to 64 deep is
+// signed and then refused by every reader on this SDK. sdjwt.Conceal takes at
+// most 1000 paths, one disclosure each, so the second is never reached.
 //
 // Errors: a request breaking the rules of IssueRequest is
 // jose.ErrInvalidArgument naming the field, a Status failing Validate
@@ -154,8 +158,9 @@ func Issue(req IssueRequest, key statuslist.SigningKey) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("digitalcredential: %w", err)
 	}
-	// Through Conceal with no path and no decoy: a copy, and the reserved
-	// names and depth checked as for the rest (RFC 9901 §4.1 rule 7).
+	// Through Conceal with no path and no decoy: a copy, nested at most
+	// jose.MaxJSONDepth, with the reserved names checked as for the rest
+	// (RFC 9901 §4.1 rule 7).
 	plainPayload, _, err := sdjwt.Conceal(plain, nil, sdjwt.ConcealOptions{})
 	if err != nil {
 		return "", fmt.Errorf("digitalcredential: %w", err)
@@ -191,15 +196,7 @@ func Issue(req IssueRequest, key statuslist.SigningKey) (string, error) {
 		return "", fmt.Errorf("digitalcredential: %w", err)
 	}
 
-	// RFC 9901 §4: each disclosure is followed by "~", the last one too.
-	var b strings.Builder
-	b.WriteString(token)
-	b.WriteByte('~')
-	for _, d := range disclosures {
-		b.WriteString(d.Encoded)
-		b.WriteByte('~')
-	}
-	return b.String(), nil
+	return compactSDJWT(token, disclosures), nil
 }
 
 // checkRequest applies the rules of IssueRequest that sdjwt.Conceal and

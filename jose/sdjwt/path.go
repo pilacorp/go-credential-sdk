@@ -1,6 +1,7 @@
 package sdjwt
 
 import (
+	"cmp"
 	"fmt"
 	"strconv"
 	"strings"
@@ -34,14 +35,8 @@ func (p Path) validate() error {
 
 // String writes the path as a JSON-like array, e.g. ["nationalities",0].
 func (p Path) String() string {
-	return "[" + p.key() + "]"
-}
-
-// key is a canonical form of the path, used as a map key: quoted strings are
-// self-delimiting and indices are bare digits, so distinct paths never share
-// a key.
-func (p Path) key() string {
 	var b strings.Builder
+	b.WriteByte('[')
 	for i, el := range p {
 		if i > 0 {
 			b.WriteByte(',')
@@ -55,7 +50,37 @@ func (p Path) key() string {
 			fmt.Fprintf(&b, "%T(%v)", el, el)
 		}
 	}
+	b.WriteByte(']')
 	return b.String()
+}
+
+// compare orders valid paths longer first, then element by element: a name
+// before an index, names by bytes, indices by value. It is 0 only for equal
+// paths, and it allocates nothing, so sorting paths costs no more than reading
+// them.
+func (p Path) compare(q Path) int {
+	if len(p) != len(q) {
+		return len(q) - len(p)
+	}
+	for i := range p {
+		a, aName := p[i].(string)
+		b, bName := q[i].(string)
+		switch {
+		case aName && bName:
+			if c := strings.Compare(a, b); c != 0 {
+				return c
+			}
+		case aName:
+			return -1
+		case bName:
+			return 1
+		default:
+			if c := cmp.Compare(p[i].(int), q[i].(int)); c != 0 {
+				return c
+			}
+		}
+	}
+	return 0
 }
 
 // child returns a new path one element longer that never shares the backing

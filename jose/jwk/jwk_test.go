@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
 	"math/big"
 	"testing"
 
@@ -107,18 +108,27 @@ func TestToPublicKeyRejects(t *testing.T) {
 		}
 		return m
 	}
-	for name, jwk := range map[string]map[string]any{
-		"private key d": with("d", "AAAA"),
-		"kty RSA":       with("kty", "RSA"),
-		"kty missing":   with("kty", nil),
-		"crv P-384":     with("crv", "P-384"),
-		"x not string":  with("x", 1),
-		"x bad base64":  with("x", "QR"),
-		"y missing":     with("y", nil),
+	// unsupported: kty or crv is a string ToPublicKey does not convert, so the
+	// JWK may be valid; the others are not valid public keys. Each refusal
+	// matches exactly one of the two errors.
+	for name, tc := range map[string]struct {
+		jwk         map[string]any
+		unsupported bool
+	}{
+		"private key d": {with("d", "AAAA"), false},
+		"kty RSA":       {with("kty", "RSA"), true},
+		"kty missing":   {with("kty", nil), false},
+		"crv P-384":     {with("crv", "P-384"), true},
+		"crv missing":   {with("crv", nil), false},
+		"x not string":  {with("x", 1), false},
+		"x bad base64":  {with("x", "QR"), false},
+		"y missing":     {with("y", nil), false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ToPublicKey(jwk)
-			wantErr(t, err, ErrBadKey)
+			_, err := ToPublicKey(tc.jwk)
+			if err == nil || errors.Is(err, ErrUnsupportedKey) != tc.unsupported || errors.Is(err, ErrBadKey) == tc.unsupported {
+				t.Errorf("got %v, want ErrUnsupportedKey %v and ErrBadKey %v", err, tc.unsupported, !tc.unsupported)
+			}
 		})
 	}
 	_, err := ToPublicKey(nil)
