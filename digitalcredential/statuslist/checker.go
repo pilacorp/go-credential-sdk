@@ -356,9 +356,9 @@ func checkClaims(claims map[string]any, iss, uri string, now time.Time) (listCla
 	}
 	// RFC 7519 §4.1.3: a JWT with aud MUST be rejected by a principal that
 	// does not identify itself with a value in it, and the Checker has no
-	// identity to match.
-	if _, ok := claims["aud"]; ok {
-		return tc, errors.New("statuslist: token has aud")
+	// identity to match, so any aud fails.
+	if err := jwt.CheckAud(claims, ""); err != nil {
+		return tc, fmt.Errorf("statuslist: token: %w", err)
 	}
 	// §5.1: ttl, when present, is a positive number of seconds, a fraction
 	// allowed; values over 24 hours, the SDK's bound (§11.5 gives no

@@ -153,6 +153,10 @@ func TestCheckerRejects(t *testing.T) {
 		{"iss naming another issuer", signClaims(t, signerA, pubA, header, claims(base+"6", func(m map[string]any) {
 			m["iss"] = "https://b.example"
 		})), 0, false},
+		// RFC 7519 §4.1.3: the Checker is named in no aud, so any aud fails.
+		{"aud present", signClaims(t, signerA, pubA, header, claims(base+"7", func(m map[string]any) {
+			m["aud"] = []any{"https://verifier.example"}
+		})), 0, false},
 	}
 	tokens := map[string]string{}
 	for i, tt := range tests {
