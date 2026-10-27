@@ -77,7 +77,9 @@ func (r *Recreated) Disclosures(path Path) (ds []Disclosure, ok bool) {
 //     {"a": {"...": d}} or [{"...": d, "x": 1}];
 //   - a digest that appears twice, in the payload or in disclosed values
 //     (§7.1 step 4);
-//   - a disclosure no digest references (§7.1 step 5);
+//   - a referenced disclosure ParseDisclosure refuses;
+//   - a disclosure no digest references (§7.1 step 5), whatever it holds:
+//     it is hashed, never parsed, so its cost is its length;
 //   - nesting deeper than 32 objects and arrays, disclosed values in place.
 //
 // A digest with no disclosure is ignored, and an array element it stands for
@@ -92,22 +94,21 @@ func Recreate(payload map[string]any, disclosures []Disclosure) (*Recreated, err
 		return nil, fmt.Errorf("%w: sdjwt: _sd_alg %T %s is not supported, only %q", jose.ErrMalformed, alg, errtext.Quote(name), sdAlgSHA256)
 	}
 	r := recreator{
-		byDigest: make(map[string]Disclosure, len(disclosures)),
+		byDigest: make(map[string]string, len(disclosures)),
 		seen:     map[string]bool{},
 		steps:    map[step]int{},
 		opened:   map[int]Disclosure{},
 	}
 	order := make([]string, 0, len(disclosures)) // digests in the order received
+	// The digest is over the encoded string (§4.2.3), so duplicates and
+	// references are found without a parse; match parses the ones referenced.
 	for _, given := range disclosures {
-		d, err := ParseDisclosure(given.Encoded)
-		if err != nil {
-			return nil, err
+		digest := digestOf(given.Encoded)
+		if _, dup := r.byDigest[digest]; dup {
+			return nil, fmt.Errorf("%w: sdjwt: disclosure %s given twice", jose.ErrMalformed, digest)
 		}
-		if _, dup := r.byDigest[d.Digest]; dup {
-			return nil, fmt.Errorf("%w: sdjwt: disclosure %s given twice", jose.ErrMalformed, d.Digest)
-		}
-		r.byDigest[d.Digest] = d
-		order = append(order, d.Digest)
+		r.byDigest[digest] = given.Encoded
+		order = append(order, digest)
 	}
 
 	claims, err := r.object(payload, &at{})
@@ -123,8 +124,8 @@ func Recreate(payload map[string]any, disclosures []Disclosure) (*Recreated, err
 }
 
 type recreator struct {
-	byDigest map[string]Disclosure
-	seen     map[string]bool // every digest met so far
+	byDigest map[string]string // encoded disclosure by digest
+	seen     map[string]bool   // every digest met so far
 	steps    map[step]int
 	opened   map[int]Disclosure
 }
@@ -273,8 +274,8 @@ func (r *recreator) array(arr []any, a *at) ([]any, error) {
 	return out, nil
 }
 
-// match records digest as seen and returns its disclosure; ok is false when
-// none was received.
+// match records digest as seen and returns its disclosure, parsed only now;
+// ok is false when none was received.
 func (r *recreator) match(digest string) (d Disclosure, ok bool, err error) {
 	if r.seen[digest] {
 		// Any payload string can sit here: quoted, and cut at 64 characters,
@@ -282,8 +283,15 @@ func (r *recreator) match(digest string) (d Disclosure, ok bool, err error) {
 		return Disclosure{}, false, fmt.Errorf("%w: sdjwt: digest %.64q appears more than once", jose.ErrMalformed, digest)
 	}
 	r.seen[digest] = true
-	d, ok = r.byDigest[digest]
-	return d, ok, nil
+	encoded, ok := r.byDigest[digest]
+	if !ok {
+		return Disclosure{}, false, nil
+	}
+	d, err = ParseDisclosure(encoded)
+	if err != nil {
+		return Disclosure{}, false, err
+	}
+	return d, true, nil
 }
 
 // placeholder reports whether el is {"...": "<digest>"}, an array element
