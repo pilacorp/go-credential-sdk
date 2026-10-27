@@ -57,6 +57,14 @@ is trusted code, and the address check below exists only in the default one.
 `issuerkey.Select` picks the key a JWS header names: a `kid` must match exactly one published key, and a token
 without `kid` needs an issuer that publishes exactly one key; keys are never tried in turn.
 
+`anchor` holds NDA DID's anchoring conventions for these credentials. `anchor.Leaf(token)` returns the leaf of a
+credential for NDA DID's Merkle tree, whose root is anchored: SHA-256 of the bytes of its Issuer-signed JWT exactly as
+given, the part before the first `~`, so a credential and each presentation of it have one leaf. Any other serialization,
+the same token with its signature's S flipped included, is a different credential with no anchored leaf. `Leaf` verifies
+nothing, so take the leaf of the string `Issue` returned or of a token you verified as an SD-JWT VC.
+`anchor.ChainListID(bits, listID)` returns the id a status list is anchored under,
+`dc-b<bits>-<listID>`. No other package of this module imports `anchor`.
+
 `internal/safehttp` fetches documents whose URL comes from a token, such as a status list or issuer metadata: HTTPS
 without userinfo on every hop (RFC 9110 §4.2.4), or http too only when the caller opts in (`WithInsecureHTTP` for a
 `Checker`), a bounded number of redirects, time and size bounds (draft-ietf-oauth-sd-jwt-vc-19 §3), and no connection to
