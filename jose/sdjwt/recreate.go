@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/pilacorp/go-credential-sdk/jose"
+	"github.com/pilacorp/go-credential-sdk/jose/internal/errtext"
 )
 
 // Recreated is the result of Recreate.
@@ -86,9 +87,9 @@ func Recreate(payload map[string]any, disclosures []Disclosure) (*Recreated, err
 		return nil, fmt.Errorf("%w: sdjwt: %d disclosures, at most %d", jose.ErrMalformed, len(disclosures), maxDisclosures)
 	}
 	if alg, ok := payload[keySDAlg]; ok && alg != sdAlgSHA256 {
-		// A payload value: its type and at most 32 characters of it, never raw.
+		// A payload value: its type and a bounded prefix of it, never raw.
 		name, _ := alg.(string)
-		return nil, fmt.Errorf("%w: sdjwt: _sd_alg %T %.32q is not supported, only %q", jose.ErrMalformed, alg, name, sdAlgSHA256)
+		return nil, fmt.Errorf("%w: sdjwt: _sd_alg %T %s is not supported, only %q", jose.ErrMalformed, alg, errtext.Quote(name), sdAlgSHA256)
 	}
 	r := recreator{
 		byDigest: make(map[string]Disclosure, len(disclosures)),
@@ -142,13 +143,15 @@ func (a *at) child(el any) *at {
 	return &at{up: a, el: el, depth: a.depth + 1, node: -1}
 }
 
-// path is a's Path, built for error text only.
-func (a *at) path() Path {
+// path is a's Path written for error text only, each name cut by
+// errtext.Quote: names come from the received payload and disclosures, and
+// depth is at most maxDepth, so the text stays bounded.
+func (a *at) path() string {
 	p := make(Path, a.depth)
 	for n := a; n.up != nil; n = n.up {
 		p[n.depth-1] = n.el
 	}
-	return p
+	return p.format(errtext.Quote)
 }
 
 // index adds a and its ancestors not yet indexed to steps and returns a's
@@ -224,7 +227,7 @@ func (r *recreator) object(obj map[string]any, a *at) (map[string]any, error) {
 			return nil, fmt.Errorf("%w: sdjwt: _sd at %s references the array element disclosure %s", jose.ErrMalformed, a.path(), digest)
 		}
 		if _, exists := out[d.Name]; exists {
-			return nil, fmt.Errorf("%w: sdjwt: disclosure %s repeats the claim %q at %s", jose.ErrMalformed, digest, d.Name, a.path())
+			return nil, fmt.Errorf("%w: sdjwt: disclosure %s repeats the claim %s at %s", jose.ErrMalformed, digest, errtext.Quote(d.Name), a.path())
 		}
 		ca := a.child(d.Name)
 		r.opened[r.index(ca)] = d

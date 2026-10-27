@@ -12,6 +12,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/internal/ec"
+	"github.com/pilacorp/go-credential-sdk/jose/internal/errtext"
 )
 
 const (
@@ -133,7 +134,11 @@ func Sign(s Signer, pub *ecdsa.PublicKey, header Header, payload []byte) (string
 	// RFC 7515 §5.1 step 5: alg must accurately represent the algorithm used;
 	// RFC 8725 §3.1: the header alg is the algorithm of the operation.
 	if v, ok := h["alg"]; ok && v != alg {
-		return "", fmt.Errorf("%w: header alg %#v differs from %q, the alg of the signer's key", jose.ErrInvalidArgument, v, alg)
+		got := fmt.Sprintf("of type %T", v)
+		if s, ok := v.(string); ok {
+			got = errtext.Quote(s)
+		}
+		return "", fmt.Errorf("%w: header alg %s differs from %q, the alg of the signer's key", jose.ErrInvalidArgument, got, alg)
 	}
 	if err := checkHeaderExtensions(h); err != nil {
 		return "", err
@@ -200,10 +205,10 @@ func Verify(compact string, key *ecdsa.PublicKey, allowed []string) (Header, []b
 	// caller names the algorithms it accepts; only ES256 and ES256K ever are,
 	// so none (RFC 7518 §3.6) is never accepted.
 	if !isSupportedAlg(alg) {
-		return nil, nil, fmt.Errorf("%w: %q", ErrAlgNotAllowed, alg)
+		return nil, nil, fmt.Errorf("%w: %s", ErrAlgNotAllowed, errtext.Quote(alg))
 	}
 	if len(allowed) > 0 && !slices.Contains(allowed, alg) {
-		return nil, nil, fmt.Errorf("%w: %q is not in the allowed list", ErrAlgNotAllowed, alg)
+		return nil, nil, fmt.Errorf("%w: %s is not in the allowed list", ErrAlgNotAllowed, errtext.Quote(alg))
 	}
 	pt, err := ec.FromPublicKey(key)
 	if err != nil {

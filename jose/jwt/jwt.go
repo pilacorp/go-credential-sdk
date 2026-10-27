@@ -5,6 +5,7 @@ package jwt
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -29,6 +30,12 @@ func NumericDate(v any) (time.Time, error) {
 	case json.Number:
 		f, err := strconv.ParseFloat(string(n), 64)
 		if err != nil {
+			// The cause only: a *strconv.NumError quotes the whole literal,
+			// which a received token makes as long as it likes.
+			var ne *strconv.NumError
+			if errors.As(err, &ne) {
+				err = ne.Err
+			}
 			return time.Time{}, fmt.Errorf("%w: NumericDate: %v", jose.ErrMalformed, err)
 		}
 		return fromFloat(f)

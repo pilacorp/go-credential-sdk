@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"unicode/utf8"
+
+	"github.com/pilacorp/go-credential-sdk/jose/internal/errtext"
 )
 
 // MaxJSONDepth is the deepest nesting of objects and arrays DecodeJSON
@@ -112,7 +114,7 @@ func readJSONValue(dec *json.Decoder, depth int) (any, error) {
 			// compared after unescaping (RFC 8259 §8.3, RFC 7515 §10.13), so
 			// "alg" and "\u0061lg" are duplicates.
 			if _, dup := obj[key]; dup {
-				return nil, fmt.Errorf("duplicate key %q", key)
+				return nil, fmt.Errorf("duplicate key %s", errtext.Quote(key))
 			}
 			val, err := readJSONValue(dec, depth+1)
 			if err != nil {
