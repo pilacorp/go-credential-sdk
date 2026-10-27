@@ -16,16 +16,16 @@ import (
 	"github.com/pilacorp/go-credential-sdk/jose/sdjwt"
 )
 
-// ErrKeyBindingUnsupported: Present was asked for a Key Binding JWT and the
-// credential's cnf is in a form this SDK cannot use: a cnf without jwk, or a
-// cnf.jwk of a key type jose/jwk does not convert (then jwk.ErrUnsupportedKey
-// too). draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 lets cnf hold any RFC 7800
-// confirmation method and recommends a JWK; binding only to cnf.jwk with an
-// EC key on P-256 or secp256k1 is this SDK's restriction. The SDK does not
-// check a cnf it cannot use, so the credential may be valid or broken: the
-// error claims neither, and wraps neither jose.ErrMalformed nor
+// ErrKeyBindingUnsupported: the credential's cnf is in a form this SDK cannot
+// use for Key Binding, here when Present makes a Key Binding JWT: a cnf
+// without jwk, or a cnf.jwk of a key type jose/jwk does not convert (then
+// jwk.ErrUnsupportedKey too). draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 lets cnf
+// hold any RFC 7800 confirmation method and recommends a JWK; binding only to
+// cnf.jwk with an EC key on P-256 or secp256k1 is this SDK's restriction. The
+// SDK does not check a cnf it cannot use, so the credential may be valid or
+// broken: the error claims neither, and wraps neither jose.ErrMalformed nor
 // jose.ErrInvalidArgument. No standard defines it.
-var ErrKeyBindingUnsupported = errors.New("digitalcredential: this SDK cannot make a Key Binding JWT for this credential")
+var ErrKeyBindingUnsupported = errors.New("digitalcredential: this SDK cannot use this credential's cnf for Key Binding")
 
 // KeyBinding asks Present for a Key Binding JWT (RFC 9901 §4.3). Every field
 // is required. Signer must hold the private key of the credential's cnf.jwk
@@ -83,10 +83,11 @@ type KeyBinding struct {
 //     also jwk.ErrUnsupportedKey;
 //   - kb given and a cnf the Issuer got wrong: jose.ErrMalformed. A cnf or
 //     cnf.jwk in a Disclosure, which draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3
-//     forbids for cnf and its sub-claims, is that alone; a cnf or cnf.jwk that
-//     is not an object, a symmetric cnf.jwk (RFC 7800 §3.2 allows one only in
-//     an encrypted JWT), or a key jwk.ToPublicKey refuses as broken also
-//     matches jwk.ErrBadKey;
+//     forbids for cnf and its sub-claims, and a cnf with more than one of jwk,
+//     jwe and jku (RFC 7800 §3.1: one key), are that alone; a cnf or
+//     cnf.jwk that is not an object, a symmetric cnf.jwk (RFC 7800 §3.2
+//     allows one only in an encrypted JWT), or a key jwk.ToPublicKey refuses
+//     as broken also matches jwk.ErrBadKey;
 //   - sdjwt.NewKBJWT errors unchanged: jose.ErrInvalidArgument for an empty
 //     KeyBinding field, jws.ErrSigner, and jws.ErrSelfCheck for a Signer that
 //     does not hold the cnf.jwk key.
@@ -210,8 +211,9 @@ var errNoCnf = errors.New("digitalcredential: the Issuer-signed JWT has no cnf c
 // holderKey reads the Holder's public key from cnf.jwk of an Issuer-signed
 // JWT payload (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3, RFC 7800 §3.2). It is
 // this package's one reader of cnf.jwk, and its errors describe the
-// credential, not a request: no cnf in the payload is errNoCnf; a cnf
-// without jwk, or a cnf.jwk of a key type jose/jwk does not convert, is
+// credential, not a request: no cnf in the payload is errNoCnf; a cnf with
+// more than one of jwk, jwe and jku is jose.ErrMalformed; a cnf without jwk,
+// or a cnf.jwk of a key type jose/jwk does not convert, is
 // ErrKeyBindingUnsupported; a cnf or jwk that is not an object, a symmetric
 // jwk, or a key jwk.ToPublicKey refuses as broken is jose.ErrMalformed and
 // jwk.ErrBadKey.
@@ -222,6 +224,17 @@ func holderKey(payload map[string]any) (*ecdsa.PublicKey, error) {
 	}
 	obj, isObject := cnf.(map[string]any)
 	if isObject {
+		// RFC 7800 §3.1: cnf MUST represent a single proof-of-possession key,
+		// so at most one of jwk, jwe and jku may be present.
+		n := 0
+		for _, m := range []string{"jwk", "jwe", "jku"} {
+			if _, ok := obj[m]; ok {
+				n++
+			}
+		}
+		if n > 1 {
+			return nil, fmt.Errorf("%w: digitalcredential: the credential's cnf has more than one of jwk, jwe and jku, and RFC 7800 §3.1 allows one, so the Issuer must reissue it", jose.ErrMalformed)
+		}
 		if _, ok := obj["jwk"]; !ok {
 			return nil, fmt.Errorf("%w: its cnf has no jwk member, and this SDK binds only to cnf.jwk holding an EC P-256 or secp256k1 key", ErrKeyBindingUnsupported)
 		}

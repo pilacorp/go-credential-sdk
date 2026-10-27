@@ -204,6 +204,9 @@ func TestPresentRefusesKeyBinding(t *testing.T) {
 		{"no cnf", unbound, jose.ErrInvalidArgument, nil},
 		{"cnf in a Disclosure", concealedCnf, jose.ErrMalformed, nil},
 		{"cnf.jwk in a Disclosure", concealedJWK, jose.ErrMalformed, nil},
+		// RFC 7800 §3.1: one proof-of-possession key, so one of jwk, jwe and
+		// jku. The jwk is the signer's, so binding to it would succeed.
+		{"cnf with jwk and jku", withCnf(`{"jwk":` + encodeJSON(t, otherJWK) + `,"jku":"https://issuer.example/jwks"}`), jose.ErrMalformed, nil},
 		// RFC 7800 §3.4: cnf may name the key by kid alone.
 		{"cnf without jwk", withCnf(`{"kid":"x"}`), ErrKeyBindingUnsupported, nil},
 		// RFC 7800 §3.2 allows any asymmetric public JWK; this SDK binds EC only.
