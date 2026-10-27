@@ -12,7 +12,8 @@ import "errors"
 //     jose.DecodeJSONObject, or an alg that is not a string;
 //   - jose.ErrInvalidArgument (Sign): a nil signer, a header alg that differs
 //     from the alg of pub, or a header EncodeJSON cannot write, over 64 KiB,
-//     or Verify could not read back.
+//     or Verify could not read back; (Verify) an allowed entry other than
+//     ES256 and ES256K.
 var (
 	// ErrAlgNotAllowed (Verify only): the header alg is not ES256 or ES256K,
 	// or not in the allowed list.

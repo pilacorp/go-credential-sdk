@@ -60,6 +60,35 @@ func (r *Recreated) Disclosures(path Path) (ds []Disclosure, ok bool) {
 	return ds, true
 }
 
+// Disclosed reports whether the claim at path arrived through a disclosure:
+// the claim, one of its ancestors or one of its descendants was opened from
+// one (RFC 9901 §4.2). It is false for a nil r, an invalid path and a path not
+// in Claims. Array indices count the elements of the recreated arrays. A
+// profile that forbids a claim and its sub-claims in disclosures checks it
+// with this.
+func (r *Recreated) Disclosed(path Path) bool {
+	if r == nil || path.validate() != nil {
+		return false
+	}
+	if _, ok := lookup(r.Claims, path); !ok {
+		return false
+	}
+	node := 0
+	for _, el := range path {
+		next, ok := r.steps[step{node, el}]
+		if !ok {
+			return false // neither concealed nor under a concealed claim
+		}
+		node = next
+		if _, ok := r.opened[node]; ok {
+			return true
+		}
+	}
+	// steps holds only opened nodes and their ancestors, so a node reached
+	// without an opened one on the way has an opened descendant.
+	return true
+}
+
 // Recreate rebuilds the payload from the Issuer-signed JWT payload and the
 // disclosures received with it: RFC 9901 §7.1 steps 3 to 5. It does not
 // modify payload. Only Encoded of each disclosure is read, so the name, value

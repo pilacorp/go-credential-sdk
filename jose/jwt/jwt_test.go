@@ -58,9 +58,9 @@ func TestCheckExpNbf(t *testing.T) {
 	}{
 		{name: "neither", claims: map[string]any{}, ok: true},
 		{name: "exp one second before the edge", claims: map[string]any{"exp": json.Number("1748537185")}, ok: true},
-		{name: "exp at the edge", claims: map[string]any{"exp": json.Number("1748537184")}},
+		{name: "exp at the edge", claims: map[string]any{"exp": json.Number("1748537184")}, err: ErrExpired},
 		{name: "nbf at the edge", claims: map[string]any{"nbf": json.Number("1748537304")}, ok: true},
-		{name: "nbf one second past the edge", claims: map[string]any{"nbf": json.Number("1748537305")}},
+		{name: "nbf one second past the edge", claims: map[string]any{"nbf": json.Number("1748537305")}, err: ErrNotYetValid},
 		{name: "exp not a number", claims: map[string]any{"exp": "1748537304"}, err: jose.ErrMalformed},
 		// A negative skew is a caller mistake; MinInt64 would overflow when
 		// negated and let an expired token pass.
@@ -76,6 +76,37 @@ func TestCheckExpNbf(t *testing.T) {
 			case tc.ok && err != nil, !tc.ok && err == nil:
 				t.Fatalf("got %v, want ok=%v", err, tc.ok)
 			case tc.err != nil && !errors.Is(err, tc.err):
+				t.Fatalf("got %v, want %v", err, tc.err)
+			}
+		})
+	}
+}
+
+// RFC 7519 §4.1.3: a recipient not listed in a present aud MUST reject.
+func TestCheckAud(t *testing.T) {
+	const me = "https://verifier.example"
+	for _, tc := range []struct {
+		name     string
+		aud      any // nil: absent
+		audience string
+		err      error // nil: accepted
+	}{
+		{name: "absent", audience: me},
+		{name: "listed in an array", aud: []any{"https://other.example", me}, audience: me},
+		{name: "string differs", aud: "https://other.example", audience: me, err: ErrAudience},
+		{name: "empty array", aud: []any{}, audience: me, err: ErrAudience},
+		// An audience of "" must not match an aud of "".
+		{name: "no audience given", aud: "", audience: "", err: ErrAudience},
+		{name: "array holding a number", aud: []any{me, json.Number("1")}, audience: me, err: jose.ErrMalformed},
+		{name: "object", aud: map[string]any{}, audience: me, err: jose.ErrMalformed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := map[string]any{}
+			if tc.aud != nil {
+				claims["aud"] = tc.aud
+			}
+			err := CheckAud(claims, tc.audience)
+			if tc.err == nil && err != nil || tc.err != nil && !errors.Is(err, tc.err) {
 				t.Fatalf("got %v, want %v", err, tc.err)
 			}
 		})

@@ -173,3 +173,30 @@ func TestDisclosuresSelectOnlyThePath(t *testing.T) {
 		}
 	}
 }
+
+// A claim is disclosed when it, an ancestor or a descendant came from a
+// disclosure: draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids some claims
+// "including any of their sub-claims" in disclosures.
+func TestDisclosed(t *testing.T) {
+	claims := map[string]any{"a": map[string]any{"b": "1"}, "c": map[string]any{"d": "2"}, "e": "3"}
+	payload, ds, err := Conceal(claims, []Path{{"a"}, {"c", "d"}}, ConcealOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := Recreate(payload, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path Path
+		want bool
+	}{
+		{Path{"a", "b"}, true}, // inside a concealed object
+		{Path{"c"}, true},      // holds a concealed claim
+		{Path{"e"}, false},
+	} {
+		if got := r.Disclosed(tc.path); got != tc.want {
+			t.Errorf("Disclosed(%v) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}

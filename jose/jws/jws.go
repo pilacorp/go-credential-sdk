@@ -185,9 +185,12 @@ func Sign(s Signer, pub *ecdsa.PublicKey, header Header, payload []byte) (string
 //  4. the key is never taken from the header: jwk, x5c, jku and x5u are
 //     ignored. RFC 7515 §6 and §10.3: the caller supplies the key from a
 //     source whose origin it has authenticated;
-//  5. alg must be ES256 or ES256K (none, HS*, RS*, PS*, EdDSA are refused even
-//     if listed) and in allowed (nil or empty means both); the key decides the
-//     algorithm, P-256 ⇒ ES256, secp256k1 ⇒ ES256K, else ErrAlgKeyMismatch;
+//  5. alg must be ES256 or ES256K (none, HS*, RS*, PS*, EdDSA are refused)
+//     and in allowed (nil or empty means both); the key decides the
+//     algorithm, P-256 ⇒ ES256, secp256k1 ⇒ ES256K, else ErrAlgKeyMismatch.
+//     An allowed entry other than ES256 and ES256K is jose.ErrInvalidArgument,
+//     returned before compact is read: a typo in the caller's list must not
+//     read as a bad token;
 //  6. the signature is exactly 64 bytes (no DER, no 65-byte r||s||v),
 //     r and s in [1, n-1], else ErrBadSignature;
 //  7. SHA-256 over the received header.payload string. Low-S and high-S both
@@ -195,6 +198,11 @@ func Sign(s Signer, pub *ecdsa.PublicKey, header Header, payload []byte) (string
 //     verification, which accepts any s in [1, n-1] (FIPS 186-5 §6.4.2 step
 //     1).
 func Verify(compact string, key *ecdsa.PublicKey, allowed []string) (Header, []byte, error) {
+	for _, a := range allowed {
+		if !isSupportedAlg(a) {
+			return nil, nil, fmt.Errorf("%w: allowed algs list %s; this package supports only %s and %s", jose.ErrInvalidArgument, errtext.Quote(a), AlgES256, AlgES256K)
+		}
+	}
 	tok, err := parse(compact)
 	if err != nil {
 		return nil, nil, err

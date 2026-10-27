@@ -7,8 +7,9 @@ import "errors"
 // Every error jose returns wraps one of these, so a caller maps it with
 // errors.Is and keeps the wrapped detail for logs. jose/jws returns these too;
 // see its errors for when. jose/jwt returns ErrMalformed for a value that is
-// not a NumericDate and ErrInvalidArgument for a negative skew; an exp or nbf
-// that fails CheckExpNbf carries no sentinel, and callers wrap it in their own. jose/sdjwt returns
+// not a NumericDate or an aud of the wrong type and ErrInvalidArgument for a
+// negative skew; an exp, nbf or aud that fails its check wraps jwt.ErrExpired,
+// jwt.ErrNotYetValid or jwt.ErrAudience. jose/sdjwt returns
 // both, plus its four ErrKB* errors when a Key Binding JWT fails and the
 // jose/jws errors when signing one fails. VerifyKBJWT wraps the jws or jose
 // cause under ErrKBInvalid, so a malformed KB-JWT matches both ErrKBInvalid

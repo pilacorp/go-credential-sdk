@@ -358,8 +358,15 @@ func TestVerifyAlgRules(t *testing.T) {
 
 	for _, alg := range []string{"none", "HS256", "RS256", "PS256", "EdDSA"} {
 		tok := craft(t, p256, `{"alg":"`+alg+`"}`, `{}`)
-		_, _, err := Verify(tok, p256Pub, []string{alg, AlgES256})
+		_, _, err := Verify(tok, p256Pub, nil)
 		wantErr(t, err, ErrAlgNotAllowed)
+		// RFC 8725 §3.1: the caller names the algorithms; one this package
+		// cannot verify is the caller's mistake, not the token's.
+		_, _, err = Verify(tok, p256Pub, []string{alg, AlgES256})
+		wantErr(t, err, jose.ErrInvalidArgument)
+		if errors.Is(err, ErrAlgNotAllowed) {
+			t.Fatalf("allowed %q: %v also matches ErrAlgNotAllowed", alg, err)
+		}
 	}
 
 	es256k := mustSign(t, k1, k1Pub, nil, `{}`)

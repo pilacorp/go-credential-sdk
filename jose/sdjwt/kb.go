@@ -27,17 +27,18 @@ const (
 // jose.ErrInvalidArgument instead; a non-nil holder that jws rejects (wrong
 // curve, off-curve) is ErrKBInvalid.
 var (
-	// ErrKBInvalid: not a compact JWS, an alg other than the holder key's, a
-	// crit or b64 header, a signature that does not verify with the holder
-	// key, a typ other than kb+jwt, a payload that is not a JSON object, a
-	// missing or malformed iat or one outside the window, or an exp or nbf
-	// that fails.
+	// ErrKBInvalid: not a compact JWS, an alg other than the holder key's or
+	// not in KBWant.AllowedAlgs, a crit or b64 header, a signature that does
+	// not verify with the holder key, a typ other than kb+jwt, a payload that
+	// is not a JSON object, a missing or malformed iat or one outside the
+	// window, an aud, nonce or sd_hash that is missing or not a single string
+	// (RFC 9901 §4.3), or an exp or nbf that fails.
 	ErrKBInvalid = errors.New("sdjwt: key binding JWT invalid")
-	// ErrKBAudience: aud is missing, not a single string, or differs.
+	// ErrKBAudience: aud is a string that differs from KBWant.Audience.
 	ErrKBAudience = errors.New("sdjwt: key binding JWT aud mismatch")
-	// ErrKBNonce: nonce is missing, not a string, or differs.
+	// ErrKBNonce: nonce is a string that differs from KBWant.Nonce.
 	ErrKBNonce = errors.New("sdjwt: key binding JWT nonce mismatch")
-	// ErrKBSDHash: sd_hash is missing, not a string, or differs.
+	// ErrKBSDHash: sd_hash is a string that differs from KBWant.SDHash.
 	ErrKBSDHash = errors.New("sdjwt: key binding JWT sd_hash mismatch")
 )
 
@@ -103,14 +104,17 @@ type KBWant struct {
 	Now       time.Time     // zero: time.Now()
 	MaxAge    time.Duration // how old iat may be; zero: 5 minutes
 	ClockSkew time.Duration // leeway on iat, exp and nbf; zero: 1 minute
+	// AllowedAlgs are the KB-JWT algorithms this application deems secure
+	// (RFC 9901 §7.3 step 5b), as jws.Verify takes them: nil or empty means
+	// ES256 and ES256K, and any other entry is jose.ErrInvalidArgument.
+	AllowedAlgs []string
 }
 
 // VerifyKBJWT checks kb, the Key Binding JWT of a presentation, with the key
 // the SD-JWT binds (cnf, RFC 9901 §4.3.2), in the order of RFC 9901 §7.3 step
 // 5, and returns at the first failure:
-//   - 5c: jws.Verify with holder; the key decides alg, ES256 or ES256K. Which
-//     algorithms the application accepts (5b) is the caller's check, before
-//     this one. ErrKBInvalid;
+//   - 5b and 5c: jws.Verify with holder and AllowedAlgs; the key decides
+//     alg, ES256 or ES256K, and it must be in AllowedAlgs. ErrKBInvalid;
 //   - 5d: typ is kb+jwt, as jws.Header.TypIs compares it; then the payload is a
 //     JSON object (RFC 7519 §7.2 step 10). ErrKBInvalid;
 //   - 5e: iat is present, a NumericDate (RFC 7519 §2), and within
@@ -118,17 +122,22 @@ type KBWant struct {
 //     ErrKBInvalid;
 //   - 5f: aud is a string equal to Audience, else ErrKBAudience; nonce is a
 //     string equal to Nonce, else ErrKBNonce;
-//   - 5g: sd_hash is a string equal to SDHash. ErrKBSDHash;
+//   - 5g: sd_hash is a string equal to SDHash, else ErrKBSDHash;
 //   - 5h: exp and nbf, when present, pass jwt.CheckExpNbf with ClockSkew, so
 //     Now = exp + ClockSkew is refused and Now = nbf − ClockSkew passes.
 //     ErrKBInvalid.
 //
+// In 5f and 5g a claim that is missing or not a single string is
+// ErrKBInvalid (RFC 9901 §4.3: REQUIRED, a string), not the mismatch error,
+// which means a well-formed KB-JWT made for another verifier, transaction or
+// presentation.
+//
 // Other claims are ignored, and so are other header members except crit and
 // b64, which jws.Verify refuses. aud, nonce and sd_hash are compared byte for
 // byte after JSON unescaping, without Unicode normalization (RFC 7519 §7.3,
-// RFC 8259 §8.3). A nil holder, an empty Audience, Nonce or SDHash, or a
-// negative MaxAge or ClockSkew is jose.ErrInvalidArgument, checked before kb
-// is read.
+// RFC 8259 §8.3). A nil holder, an empty Audience, Nonce or SDHash, a
+// negative MaxAge or ClockSkew, or an AllowedAlgs entry jws cannot verify is
+// jose.ErrInvalidArgument, checked before kb is read.
 //
 // It keeps no state: that Nonce was issued by this Verifier and is used once
 // is the caller's check. ECDSA signatures are malleable, so a replay cannot
@@ -154,7 +163,11 @@ func VerifyKBJWT(kb string, holder *ecdsa.PublicKey, want KBWant) error {
 		skew = defaultKBClockSkew
 	}
 
-	header, raw, err := jws.Verify(kb, holder, nil)
+	header, raw, err := jws.Verify(kb, holder, want.AllowedAlgs)
+	if errors.Is(err, jose.ErrInvalidArgument) {
+		// jws refuses the list before it reads kb: a caller mistake.
+		return fmt.Errorf("sdjwt: KBWant.AllowedAlgs: %w", err)
+	}
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrKBInvalid, err)
 	}
@@ -198,16 +211,16 @@ func VerifyKBJWT(kb string, holder *ecdsa.PublicKey, want KBWant) error {
 	return nil
 }
 
-// stringClaim checks that claim name is a string equal to want, and wraps
-// sentinel when it is not.
+// stringClaim checks that claim name is a string equal to want. A missing or
+// non-string claim is ErrKBInvalid; a string that differs wraps sentinel.
 func stringClaim(claims map[string]any, name, want string, sentinel error) error {
 	v, ok := claims[name]
 	if !ok {
-		return fmt.Errorf("%w: %s is missing", sentinel, name)
+		return fmt.Errorf("%w: %s is missing", ErrKBInvalid, name)
 	}
 	s, ok := v.(string)
 	if !ok {
-		return fmt.Errorf("%w: %s is %T, not a string", sentinel, name, v)
+		return fmt.Errorf("%w: %s is %T, not a string", ErrKBInvalid, name, v)
 	}
 	if s != want {
 		return fmt.Errorf("%w: %s differs from the expected value", sentinel, name)
