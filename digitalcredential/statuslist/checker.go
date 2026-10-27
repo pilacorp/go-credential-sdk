@@ -179,8 +179,8 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 // not fetch (not https, unless WithInsecureHTTP), a failed fetch, a token
 // that is malformed, not signed by a key of iss (issuerkey.Select), carrying
 // an iss claim other than iss (RFC 8725 §3.8), or failing a check of §5.1 or
-// §8.3, an lst Decode refuses, or an index outside the list, which wraps no
-// sentinel: the Referenced Token MUST be rejected
+// §8.3, an lst Decode refuses, or an index outside the list, which wraps
+// ErrIndexOutOfBounds: the Referenced Token MUST be rejected
 // (draft-ietf-oauth-status-list-21 §8.3 step 6), and the caller made no
 // mistake. Errors of the resolver, jose/jws and jose/jwt are
 // wrapped unchanged. No error of the fetch holds the status list uri or
@@ -219,7 +219,7 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 	// Not jose.ErrInvalidArgument, which Get would wrap: the index comes from
 	// the Referenced Token, not from a caller mistake.
 	if n := l.entries(); ref.Index >= n {
-		return 0, fmt.Errorf("statuslist: index %d is outside the list of %d entries (draft-ietf-oauth-status-list-21 §8.3 step 6)", ref.Index, n)
+		return 0, fmt.Errorf("%w: index %d is outside the list of %d entries (draft-ietf-oauth-status-list-21 §8.3 step 6)", ErrIndexOutOfBounds, ref.Index, n)
 	}
 	return l.Get(ref.Index)
 }

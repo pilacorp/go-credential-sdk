@@ -133,25 +133,26 @@ func TestCheckerRejects(t *testing.T) {
 		name  string
 		token string
 		index int
+		oob   bool // ErrIndexOutOfBounds, and only this row
 	}{
 		{"lst inflates past 16 MiB", signClaims(t, signerA, pubA, header, claims(base+"0", func(m map[string]any) {
 			lst := base64.RawURLEncoding.EncodeToString(deflate(t, make([]byte, 16<<20+1)))
 			m["status_list"] = map[string]any{"bits": 1, "lst": lst}
-		})), 0},
-		{"index outside the list", signClaims(t, signerA, pubA, header, claims(base+"1", nil)), 16},
-		{"sub is not the uri", signClaims(t, signerA, pubA, header, claims(base+"other", nil)), 0},
+		})), 0, false},
+		{"index outside the list", signClaims(t, signerA, pubA, header, claims(base+"1", nil)), 16, true},
+		{"sub is not the uri", signClaims(t, signerA, pubA, header, claims(base+"other", nil)), 0, false},
 		// kid "a" names issuer A's key, but issuer B signed.
-		{"signed by another issuer's key", signClaims(t, signerB, pubB, header, claims(base+"3", nil)), 0},
+		{"signed by another issuer's key", signClaims(t, signerB, pubB, header, claims(base+"3", nil)), 0, false},
 		// RFC 7519 §4.1.4: an old list replayed after its exp.
 		{"expired", signClaims(t, signerA, pubA, header, claims(base+"4", func(m map[string]any) {
 			m["exp"] = draft21Now.Add(-2 * time.Minute).Unix()
-		})), 0},
+		})), 0, false},
 		// RFC 8725 §3.11: another JWT of the issuer must not pass as a list.
-		{"typ is not statuslist+jwt", signClaims(t, signerA, pubA, jws.Header{"typ": "JWT", "kid": "a"}, claims(base+"5", nil)), 0},
+		{"typ is not statuslist+jwt", signClaims(t, signerA, pubA, jws.Header{"typ": "JWT", "kid": "a"}, claims(base+"5", nil)), 0, false},
 		// RFC 8725 §3.8: signed with issuer A's key, but iss names issuer B.
 		{"iss naming another issuer", signClaims(t, signerA, pubA, header, claims(base+"6", func(m map[string]any) {
 			m["iss"] = "https://b.example"
-		})), 0},
+		})), 0, false},
 	}
 	tokens := map[string]string{}
 	for i, tt := range tests {
@@ -163,8 +164,13 @@ func TestCheckerRejects(t *testing.T) {
 		ref := Ref{URI: base + strconv.Itoa(i), Index: tt.index}
 		// None is a caller mistake: an index outside the list included
 		// (draft 21 §8.3 step 6).
-		if got, err := c.Status(context.Background(), ref, "https://a.example"); err == nil || got != 0 || errors.Is(err, jose.ErrInvalidArgument) {
+		got, err := c.Status(context.Background(), ref, "https://a.example")
+		if err == nil || got != 0 || errors.Is(err, jose.ErrInvalidArgument) {
 			t.Errorf("%s: Status = %d, %v; want an error that is not jose.ErrInvalidArgument", tt.name, got, err)
+		}
+		// Only §8.3 step 6 is a MUST reject; a caller tells it apart.
+		if errors.Is(err, ErrIndexOutOfBounds) != tt.oob {
+			t.Errorf("%s: errors.Is(%v, ErrIndexOutOfBounds) = %v, want %v", tt.name, err, !tt.oob, tt.oob)
 		}
 	}
 }
