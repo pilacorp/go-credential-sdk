@@ -168,6 +168,7 @@ func TestSignRejectsHeaderVerifyWouldRefuse(t *testing.T) {
 	for name, h := range map[string]Header{
 		"nesting deeper than MaxJSONDepth": {"x": deep},
 		"duplicate key in a raw value":     {"x": json.RawMessage(`{"a":1,"a":2}`)},
+		"over the 64 KiB Verify reads":     {"x": strings.Repeat("a", 64<<10)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := &countingSigner{Signer: p256}
@@ -329,6 +330,8 @@ func TestVerifyMalformed(t *testing.T) {
 		"duplicate alg":     craft(t, s, `{"alg":"ES256","alg":"ES256K"}`, `{}`),
 		"header trailing":   craft(t, s, `{"alg":"ES256"}x`, `{}`),
 		"header not base64": "@@@." + p[1] + "." + p[2],
+		// Own bound: the header is parsed before the signature is checked.
+		"header over 64 KiB": craft(t, s, `{"alg":"ES256","x":"`+strings.Repeat("a", 64<<10)+`"}`, `{}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, _, err := Verify(tok, pub, nil)

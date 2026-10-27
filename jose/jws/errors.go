@@ -8,11 +8,11 @@ import "errors"
 // jose sentinel, so a caller maps every error with errors.Is:
 //   - jose.ErrMalformed (Verify, UnverifiedHeader, UnverifiedPayload): not
 //     three dot-separated parts, a part that is not strict base64url, a
-//     header that is not a JSON object read by jose.DecodeJSONObject, or an
-//     alg that is not a string;
+//     header over 64 KiB or not a JSON object read by
+//     jose.DecodeJSONObject, or an alg that is not a string;
 //   - jose.ErrInvalidArgument (Sign): a nil signer, a header alg that differs
-//     from the alg of pub, or a header EncodeJSON cannot write or Verify could
-//     not read back.
+//     from the alg of pub, or a header EncodeJSON cannot write, over 64 KiB,
+//     or Verify could not read back.
 var (
 	// ErrAlgNotAllowed (Verify only): the header alg is not ES256 or ES256K,
 	// or not in the allowed list.

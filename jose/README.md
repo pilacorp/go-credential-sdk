@@ -63,6 +63,9 @@ One token has one reading:
 - JSON without duplicate keys at any depth (Go's decoder keeps the last one silently), without data after the value,
   in valid UTF-8, with numbers kept as `json.Number`;
 - a header with `crit` or `b64` is refused (RFC 7797 §6 requires `crit` with `b64`);
+- a header over 64 KiB is refused before it is decoded, by `jws.Verify`, `UnverifiedHeader` and `UnverifiedPayload`
+  (`jose.ErrMalformed`) and by `jws.Sign` (`jose.ErrInvalidArgument`); no standard sets a size, this bounds the work
+  done before a signature is checked;
 - the signature is exactly 64-byte `r||s`; low-S and high-S both verify, since RFC 7518 §3.4 and RFC 8812 §3.2 put no
   limit on `s` beyond ECDSA verification, which accepts any `s` in `[1, n-1]` (FIPS 186-5 §6.4.2 step 1).
 

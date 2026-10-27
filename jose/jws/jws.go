@@ -19,6 +19,15 @@ const (
 	AlgES256K = "ES256K" // ECDSA secp256k1 with SHA-256 (RFC 8812 §3.2)
 )
 
+// maxHeaderBytes bounds the decoded JOSE Header. No standard sets a size; this
+// is a resource bound: every reader decodes and parses the header as JSON
+// before any signature is checked. An x5c chain fits many times over.
+const maxHeaderBytes = 64 << 10
+
+// maxHeaderSegment is the base64url length of maxHeaderBytes without padding,
+// ceil(4n/3), so parse refuses an oversized header before decoding it.
+const maxHeaderSegment = (4*maxHeaderBytes + 2) / 3
+
 // Signer signs a 32-byte SHA-256 digest and returns the signature as 64-byte
 // r||s, 32 bytes each (RFC 7518 §3.4, RFC 8812 §3.2). The private key stays
 // with the signer (in memory, a key management service or an HSM). Sign uses
@@ -98,10 +107,10 @@ func (h Header) str(name string) string {
 //  1. pub decides alg: ES256 on P-256, ES256K on secp256k1 (RFC 7518 §3.4,
 //     RFC 8812 §3.2); an alg the caller put in header must equal it;
 //  2. the header is encoded with jose.EncodeJSON (no HTML escaping, UTF-8
-//     kept) and must read back with jose.DecodeJSONObject, as Verify reads
-//     it; a header with crit or b64 is refused by the check Verify applies.
-//     These are jose.ErrInvalidArgument or ErrUnsupportedHeader, returned
-//     before s is called;
+//     kept), must be at most 64 KiB and must read back with
+//     jose.DecodeJSONObject, as Verify reads it; a header with crit or b64 is
+//     refused by the check Verify applies. These are jose.ErrInvalidArgument
+//     or ErrUnsupportedHeader, returned before s is called;
 //  3. payload is signed exactly as given, never re-encoded; it may be empty;
 //  4. the SHA-256 digest of base64url(header) "." base64url(payload) goes to
 //     s, and its answer becomes the signature unchanged;
@@ -135,6 +144,9 @@ func Sign(s Signer, pub *ecdsa.PublicKey, header Header, payload []byte) (string
 	if err != nil {
 		return "", fmt.Errorf("header: %w", err)
 	}
+	if len(headerJSON) > maxHeaderBytes {
+		return "", fmt.Errorf("%w: header is %d bytes; Verify reads at most %d", jose.ErrInvalidArgument, len(headerJSON), maxHeaderBytes)
+	}
 	// A header Verify cannot read (too deep, or a json.RawMessage with a
 	// duplicate key) would cost a signer call and then fail the self-check.
 	if _, err := jose.DecodeJSONObject(headerJSON); err != nil {
@@ -162,7 +174,7 @@ func Sign(s Signer, pub *ecdsa.PublicKey, header Header, payload []byte) (string
 // Verify checks a compact JWS against key and returns its header and the
 // original payload bytes (not decoded as JSON):
 //  1. exactly three dot-separated parts, each strict base64url; the payload
-//     may be empty;
+//     may be empty; the header is at most 64 KiB decoded;
 //  2. the header is a JSON object (jose.DecodeJSON rules) with a string alg;
 //  3. crit or b64 is ErrUnsupportedHeader;
 //  4. the key is never taken from the header: jwk, x5c, jku and x5u are
@@ -267,6 +279,9 @@ func parse(compact string) (parsed, error) {
 	parts := strings.SplitN(compact, ".", 4)
 	if len(parts) != 3 {
 		return parsed{}, fmt.Errorf("%w: a compact JWS has three parts", jose.ErrMalformed)
+	}
+	if len(parts[0]) > maxHeaderSegment {
+		return parsed{}, fmt.Errorf("%w: header is over %d bytes, the most this package reads", jose.ErrMalformed, maxHeaderBytes)
 	}
 	// RFC 7515 §5.2 steps 2, 6 and 7: strict base64url, no line breaks.
 	headerJSON, err := jose.DecodeSegment(parts[0])
