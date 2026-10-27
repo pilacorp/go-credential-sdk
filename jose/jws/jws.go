@@ -323,7 +323,11 @@ func parse(compact string) (parsed, error) {
 	if err := checkHeaderExtensions(header); err != nil {
 		return parsed{}, err
 	}
-	return parsed{header: header, payload: payload, sig: sig, signingInput: parts[0] + "." + parts[1]}, nil
+	// compact is exactly parts[0] "." parts[1] "." parts[2], so the signing
+	// input is a prefix of it: slicing does not copy a megabyte-long token
+	// once more on every parse.
+	signingInput := compact[:len(parts[0])+1+len(parts[1])]
+	return parsed{header: header, payload: payload, sig: sig, signingInput: signingInput}, nil
 }
 
 // checkHeaderExtensions refuses a header that has crit or b64, whatever their
