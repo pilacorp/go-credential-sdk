@@ -25,14 +25,31 @@ type Key struct {
 	Key *ecdsa.PublicKey // P-256 or secp256k1; the curve decides alg (RFC 8725 §3.1)
 }
 
+// ErrIssuerNotSupported is what a Resolver wraps when this verifier does not
+// accept iss at all: an issuer outside its trust list, or an identifier
+// scheme it does not resolve. It is a definite answer, unlike any other
+// error, which means the keys could not be found out.
+var ErrIssuerNotSupported = errors.New("issuerkey: issuer not supported")
+
 // Resolver returns the keys an issuer publishes for signing. Keys may be
 // called from several goroutines at once and should return when ctx is done:
 // a statuslist.Checker calls it on every cache miss, outside its 5-second
-// fetch bound.
+// fetch bound. iss is untrusted and may be long (see Keys): an error should
+// not quote it whole, since callers such as digitalcredential.Verify pass the
+// error on as returned.
 type Resolver interface {
 	// Keys returns the keys iss currently publishes for signing, and only
-	// those that may still verify: revocation is the resolver's policy. An
-	// issuer with no usable key is an empty set, not an error.
+	// those that may still verify: revocation is the resolver's policy. It
+	// has three outcomes, which callers map apart:
+	//   - a set, empty when the issuer has no usable key (unknown, rotated
+	//     out or deactivated): no key verifies the token;
+	//   - an error wrapping ErrIssuerNotSupported: iss is not accepted;
+	//   - any other error: the keys could not be found out (a network or
+	//     store failure), and a later call may succeed.
+	//
+	// iss comes from a token whose signature is not verified yet, so anyone
+	// can write it. It may be "" (iss is OPTIONAL in draft 19 §2.2.2.3) and
+	// has no length bound beyond the token's own (up to about 0.75 MiB).
 	Keys(ctx context.Context, iss string) ([]Key, error)
 }
 

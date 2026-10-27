@@ -17,14 +17,15 @@ import (
 )
 
 // ErrKeyBindingUnsupported: the credential's cnf is in a form this SDK cannot
-// use for Key Binding, here when Present makes a Key Binding JWT: a cnf
-// without jwk, or a cnf.jwk of a key type jose/jwk does not convert (then
-// jwk.ErrUnsupportedKey too). draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 lets cnf
-// hold any RFC 7800 confirmation method and recommends a JWK; binding only to
-// cnf.jwk with an EC key on P-256 or secp256k1 is this SDK's restriction. The
-// SDK does not check a cnf it cannot use, so the credential may be valid or
-// broken: the error claims neither, and wraps neither jose.ErrMalformed nor
-// jose.ErrInvalidArgument. No standard defines it.
+// use for Key Binding, when Present makes a Key Binding JWT or Verify requires
+// one: a cnf without jwk, or a cnf.jwk of a key type jose/jwk does not
+// convert (then jwk.ErrUnsupportedKey too). draft-ietf-oauth-sd-jwt-vc-19
+// §2.2.2.3 lets cnf hold any RFC 7800 confirmation method and recommends a
+// JWK; binding only to cnf.jwk with an EC key on P-256 or secp256k1 is this
+// SDK's restriction. The SDK does not check a cnf it cannot use, so the
+// credential may be valid or broken: the error claims neither, and wraps
+// neither jose.ErrMalformed nor jose.ErrInvalidArgument. No standard defines
+// it.
 var ErrKeyBindingUnsupported = errors.New("digitalcredential: this SDK cannot use this credential's cnf for Key Binding")
 
 // KeyBinding asks Present for a Key Binding JWT (RFC 9901 §4.3). Every field
@@ -184,8 +185,8 @@ func Present(issued string, reveal []sdjwt.Path, kb *KeyBinding) (string, error)
 }
 
 // readCompact splits an SD-JWT or SD-JWT+KB (RFC 9901 §4) and decodes the
-// payload of its Issuer-signed JWT, which it does not verify. It is this
-// package's one reader of the compact form. Every error wraps
+// payload of its Issuer-signed JWT, which it does not verify; Present reads
+// the credential with it. Every error wraps
 // jose.ErrMalformed, except jws.ErrUnsupportedHeader for an Issuer-signed JWT
 // whose header has crit or b64.
 func readCompact(compact string) (issuerJWT string, disclosures []string, kbJWT string, payload map[string]any, err error) {

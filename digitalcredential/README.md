@@ -27,7 +27,21 @@ verify the issuer's signature: check the credential when you receive it. With a 
 in the Issuer-signed JWT or any Disclosure, is `jose.ErrInvalidArgument`; a `cnf` or `cnf.jwk` in a Disclosure, which
 draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids, is `jose.ErrMalformed`. A `cnf` with no `jwk` anywhere, or a `cnf.jwk`
 whose `kty` (`oct` aside) or `crv` jose/jwk does not convert, is `ErrKeyBindingUnsupported`, which says nothing about
-whether the `cnf` is valid; any other `cnf` that is not a usable public key, `oct` included, is `jose.ErrMalformed`.
+whether the `cnf` is valid; any other `cnf` that is not a usable public key, one that is not a JSON object (RFC 7800 §3)
+and `oct` (§3.2) included, and a `cnf` with more than one of `jwk`, `jwe` and `jku` (§3.1), is `jose.ErrMalformed`.
+
+`Verify(ctx, presented, policy)` checks what a verifier receives (draft-ietf-oauth-sd-jwt-vc-19 §2.4) and returns the
+processed claims (RFC 9901 §7.1): `typ` `dc+sd-jwt`, the issuer key from `Policy.Issuers` by `iss` and `kid`, the
+signature with `Policy.AllowedAlgs` (ES256 and ES256K), the Disclosures, none of a claim §2.2.2.3 keeps out of them,
+`exp` and `nbf` with `Policy.ClockSkew`, `aud` against `Policy.CredentialAudience`, `vct`, Key Binding (RFC 9901
+§7.3) against `Policy.Audience` and `Policy.Nonce`, and status last, through `Policy.Status` (a `statuslist.Checker`).
+`Policy.KeyBinding` decides when Key Binding is required, as §7.3 step 1 leaves to the verifier: by default exactly when
+the credential has `cnf`, so a credential without `cnf` passes with `KeyBound` false; `KeyBindingRequired` for every
+credential; `KeyBindingNotRequired` for a holder or a verifier expecting an SD-JWT, which refuse a Key Binding JWT (RFC
+9901 §7.2, §4); a verifier that merely does not need one sets `IgnoreUncheckedKBJWT` too. `SkipStatus` accepts a
+credential without checking its status, and `Result.StatusSkipped` says so. A refused token is an `*Error` whose `Code`
+the caller branches on; `ErrPolicy` is the caller's own mistake, and can show for some tokens only; any other error is
+the caller's `ctx` ending. A claim concealed and not disclosed leaves no trace, so a withheld `cnf` reads as no `cnf`.
 
 `statuslist` builds Token Status Lists (draft-ietf-oauth-status-list-21): `New(size, bits)` or `FromBytes(b, bits)`
 makes a list of 1-, 2-, 4- or 8-bit entries (§4.1), `Set` and `Get` write and read entry `i`, `Encode` and
@@ -61,7 +75,7 @@ without `kid` needs an issuer that publishes exactly one key; keys are never tri
 credential for NDA DID's Merkle tree, whose root is anchored: SHA-256 of the bytes of its Issuer-signed JWT exactly as
 given, the part before the first `~`, so a credential and each presentation of it have one leaf. Any other serialization,
 the same token with its signature's S flipped included, is a different credential with no anchored leaf. `Leaf` verifies
-nothing, so take the leaf of the string `Issue` returned or of a token you verified as an SD-JWT VC.
+nothing, so take the leaf of the string `Issue` returned or of a token `Verify` accepted.
 `anchor.ChainListID(bits, listID)` returns the id a status list is anchored under,
 `dc-b<bits>-<listID>`. No other package of this module imports `anchor`.
 
