@@ -66,6 +66,86 @@ func DecodeJSONObject(data []byte) (map[string]any, error) {
 	return obj, nil
 }
 
+// DecodeJSONStringMember returns the top-level member name of the JSON object
+// in data, which must be a string, and whether it is present, without
+// building any other value: the other members are only scanned as JSON, and a
+// member name of another type is refused unread. It lets a caller read one
+// string claim of a payload it has not verified yet, such as iss to find the
+// key, at the cost of a scan instead of a decode.
+//
+// It follows DecodeJSON on what it reads: valid UTF-8, one object and nothing
+// after it but whitespace, and keys compared after unescaping, so a name
+// present twice, spelled the same way or not, is ErrMalformed. A member name
+// that is not a string is ErrMalformed too. Duplicate keys and nesting depth
+// inside the other members are left to DecodeJSON, which may still refuse
+// data this accepts.
+func DecodeJSONStringMember(data []byte, name string) (string, bool, error) {
+	if !utf8.Valid(data) {
+		return "", false, fmt.Errorf("%w: JSON is not valid UTF-8", ErrMalformed)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return "", false, fmt.Errorf("%w: JSON value is not an object", ErrMalformed)
+	}
+	var member json.RawMessage
+	found := false
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", false, fmt.Errorf("%w: JSON: %v", ErrMalformed, err)
+		}
+		key, _ := tok.(string) // the decoder yields only strings as keys
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return "", false, fmt.Errorf("%w: JSON: %v", ErrMalformed, err)
+		}
+		if key != name {
+			continue
+		}
+		if found {
+			return "", false, fmt.Errorf("%w: JSON: duplicate key %s", ErrMalformed, errtext.Quote(name))
+		}
+		member, found = raw, true
+	}
+	if _, err := dec.Token(); err != nil { // '}'
+		return "", false, fmt.Errorf("%w: JSON: %v", ErrMalformed, err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return "", false, fmt.Errorf("%w: JSON: data after the value", ErrMalformed)
+	}
+	if !found {
+		return "", false, nil
+	}
+	// The scan proved member is one JSON value, so its first byte names its
+	// type. Only a string is decoded: anything else could be a megabyte of
+	// small values, built for nothing.
+	if member[0] != '"' {
+		return "", false, fmt.Errorf("%w: JSON: member %s is %s, not a string", ErrMalformed, errtext.Quote(name), jsonKind(member[0]))
+	}
+	v, err := DecodeJSON(member)
+	if err != nil {
+		return "", false, err
+	}
+	s, _ := v.(string) // a value starting with '"' decodes to a string
+	return s, true, nil
+}
+
+// jsonKind names the type of the JSON value that starts with c.
+func jsonKind(c byte) string {
+	switch c {
+	case '{':
+		return "an object"
+	case '[':
+		return "an array"
+	case 't', 'f':
+		return "a boolean"
+	case 'n':
+		return "null"
+	default:
+		return "a number"
+	}
+}
+
 // EncodeJSON encodes v compactly, without HTML escaping (encoding/json turns
 // <, > and & into \u003c, \u003e and \u0026 by default; RFC 8259 §7 needs
 // none of them escaped) and with UTF-8 kept as is (RFC 8259 §8.1). Map keys

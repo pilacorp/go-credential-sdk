@@ -41,9 +41,10 @@ One package per standard:
   for caller mistakes. `VerifyKBJWT` accepts only the alg of the holder key (ES256 or ES256K, never none), and only
   one in `KBWant.AllowedAlgs` (§7.3 step 5b; nil means both). An `aud`, `nonce` or `sd_hash` that is missing or not a
   string is `ErrKBInvalid`; the other three mean a well-formed value that differs.
-- `jose`: `EncodeSegment` / `DecodeSegment` and `EncodeJSON` / `DecodeJSON` (the strict encodings every part of a
-  token is read with), and `ErrMalformed` / `ErrInvalidArgument`, which `jose/jws` returns too. Each other package
-  has its own errors.
+- `jose`: `EncodeSegment` / `DecodeSegment` and `EncodeJSON` / `DecodeJSON` (the strict encodings every part of a token
+  is read with), `DecodeJSONStringMember` (one top-level string member, such as `iss` before the signature is checked,
+  without building any other value), and `ErrMalformed` / `ErrInvalidArgument`, which `jose/jws` returns too. Each other
+  package has its own errors.
 
 ```go
 token, err := jws.Sign(signer, issuerPub, jws.Header{"typ": "dc+sd-jwt", "kid": kid}, payloadJSON)

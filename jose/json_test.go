@@ -21,6 +21,32 @@ func TestDecodeJSONRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
+// RFC 7519 §4: claim names are unique, compared after unescaping as
+// DecodeJSON compares them, so the member read is the one DecodeJSON reads.
+func TestDecodeJSONStringMemberRejectsDuplicates(t *testing.T) {
+	for name, in := range map[string]string{
+		"same spelling":    `{"iss":"a","x":1,"iss":"b"}`,
+		"escaped spelling": `{"iss":"a","\u0069ss":"b"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := DecodeJSONStringMember([]byte(in), "iss")
+			wantErr(t, err, ErrMalformed)
+		})
+	}
+}
+
+// A member of another type is refused without being built: a megabyte of
+// [0,0,...] decodes into millions of values, and a scan makes a few dozen.
+func TestDecodeJSONStringMemberRefusesOtherTypesUnread(t *testing.T) {
+	data := []byte(`{"iss":[` + strings.Repeat("0,", 1<<19) + `0]}`)
+	var err error
+	allocs := testing.AllocsPerRun(1, func() { _, _, err = DecodeJSONStringMember(data, "iss") })
+	wantErr(t, err, ErrMalformed)
+	if allocs > 1000 {
+		t.Fatalf("%v allocations for a non-string member", allocs)
+	}
+}
+
 func TestDecodeJSONRejectsTrailingData(t *testing.T) {
 	for _, in := range []string{`{"a":1}xyz`, `{"a":1}{"b":2}`, `{"a":1} 1`} {
 		_, err := DecodeJSON([]byte(in))
