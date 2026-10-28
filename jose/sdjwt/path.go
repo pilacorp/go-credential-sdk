@@ -34,7 +34,10 @@ func (p Path) validate() error {
 }
 
 // String writes the path as a JSON-like array, e.g. ["nationalities",0].
-func (p Path) String() string {
+func (p Path) String() string { return p.format(strconv.Quote) }
+
+// format writes the path as String does, each name written by quote.
+func (p Path) format(quote func(string) string) string {
 	var b strings.Builder
 	b.WriteByte('[')
 	for i, el := range p {
@@ -43,7 +46,7 @@ func (p Path) String() string {
 		}
 		switch v := el.(type) {
 		case string:
-			b.WriteString(strconv.Quote(v))
+			b.WriteString(quote(v))
 		case int:
 			b.WriteString(strconv.Itoa(v))
 		default:

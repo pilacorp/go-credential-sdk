@@ -21,6 +21,72 @@ func TestDecodeJSONRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
+// RFC 7519 §4: claim names are unique, compared after unescaping as
+// DecodeJSON compares them, so the member read is the one DecodeJSON reads.
+func TestDecodeJSONStringMemberRejectsDuplicates(t *testing.T) {
+	for name, in := range map[string]string{
+		"same spelling":    `{"iss":"a","x":1,"iss":"b"}`,
+		"escaped spelling": `{"iss":"a","\u0069ss":"b"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := DecodeJSONStringMember([]byte(in), "iss")
+			wantErr(t, err, ErrMalformed)
+		})
+	}
+}
+
+// The member read before the signature is the one DecodeJSON reads after
+// it: only a top-level key counts, never one inside a string or a nested
+// value, and what is not JSON is refused rather than walked.
+func TestDecodeJSONStringMemberReadsTopLevelJSONOnly(t *testing.T) {
+	for _, in := range []string{
+		`{"a":"\"},\"iss\":\"b","iss":"a"}`,
+		`{"a":{"iss":"b"},"iss":"a"}`,
+		`{"a":["]}",{"iss":"b"}],"iss":"a"}`,
+		` { "i\u0073s" : "a" } `,
+	} {
+		got, found, err := DecodeJSONStringMember([]byte(in), "iss")
+		if err != nil || !found || got != "a" {
+			t.Errorf("%s: got %q, %v, %v; want \"a\"", in, got, found, err)
+		}
+	}
+	for _, in := range []string{`{"iss":"a"`, `{"iss":"a",}`, `{"iss":"a"} x`, `["iss","a"]`} {
+		_, _, err := DecodeJSONStringMember([]byte(in), "iss")
+		wantErr(t, err, ErrMalformed)
+	}
+}
+
+// Only the member asked for is built, and only when it is a string. A 1 MiB
+// payload holds a million small values, or a hundred thousand members, and
+// building either costs millions of allocations before any signature is
+// checked; the walk makes a few.
+func TestDecodeJSONStringMemberBuildsNothingElse(t *testing.T) {
+	for _, tc := range []struct {
+		name, data string
+		err        error
+	}{
+		{"iss an array of 2^19 zeros", `{"iss":[` + strings.Repeat("0,", 1<<19) + `0]}`, ErrMalformed},
+		{"2^17 other members", `{"iss":"x"` + strings.Repeat(`,"":0`, 1<<17) + `}`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(tc.data)
+			var (
+				iss string
+				err error
+			)
+			allocs := testing.AllocsPerRun(1, func() { iss, _, err = DecodeJSONStringMember(data, "iss") })
+			if tc.err != nil {
+				wantErr(t, err, tc.err)
+			} else if err != nil || iss != "x" {
+				t.Fatalf("got %q, %v; want \"x\"", iss, err)
+			}
+			if allocs > 1000 {
+				t.Fatalf("%v allocations", allocs)
+			}
+		})
+	}
+}
+
 func TestDecodeJSONRejectsTrailingData(t *testing.T) {
 	for _, in := range []string{`{"a":1}xyz`, `{"a":1}{"b":2}`, `{"a":1} 1`} {
 		_, err := DecodeJSON([]byte(in))

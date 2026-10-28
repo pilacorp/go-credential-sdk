@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/pilacorp/go-credential-sdk/jose/internal/errtext"
 )
 
 // MaxJSONDepth is the deepest nesting of objects and arrays DecodeJSON
@@ -64,6 +67,218 @@ func DecodeJSONObject(data []byte) (map[string]any, error) {
 	return obj, nil
 }
 
+// DecodeJSONStringMember returns the top-level member name of the JSON object
+// in data, which must be a string, and whether it is present, building no
+// other value. It lets a caller read one string claim of a payload it has not
+// verified yet, such as iss to find the key. It reads data three times:
+// utf8.Valid, json.Valid, then a walk over the top-level members that
+// compares each key to name in place, so it makes a few allocations however
+// many members data holds. Only the member name is decoded, and only when it
+// is a string; one of another type is refused unread.
+//
+// It follows DecodeJSON on what it reads: valid UTF-8, one object and nothing
+// after it but whitespace, and keys compared after unescaping, so a name
+// present twice, spelled the same way or not, is ErrMalformed. A member name
+// that is not a string is ErrMalformed too. json.Valid applies
+// encoding/json's limit of 10000 nesting levels counted from the top-level
+// object, so a member nested 10000 levels deep is ErrMalformed here.
+// Duplicate keys inside the other members and MaxJSONDepth are left to
+// DecodeJSON, which may still refuse data this accepts.
+func DecodeJSONStringMember(data []byte, name string) (string, bool, error) {
+	if !utf8.Valid(data) {
+		return "", false, fmt.Errorf("%w: JSON is not valid UTF-8", ErrMalformed)
+	}
+	if !json.Valid(data) {
+		// Unmarshal runs the same syntax check first and returns its error
+		// before decoding anything.
+		var v any
+		err := json.Unmarshal(data, &v)
+		return "", false, fmt.Errorf("%w: JSON: %v", ErrMalformed, err)
+	}
+	// data is now one valid JSON value, so the walk needs no checks of its
+	// own: strings close, brackets match, and a ':' follows every key.
+	i := skipJSONSpace(data, 0)
+	if data[i] != '{' {
+		return "", false, fmt.Errorf("%w: JSON value is not an object", ErrMalformed)
+	}
+	var member []byte
+	found := false
+	for i = skipJSONSpace(data, i+1); data[i] != '}'; {
+		keyEnd := endJSONString(data, i)
+		isName := jsonStringIs(data[i+1:keyEnd-1], name)
+		i = skipJSONSpace(data, skipJSONSpace(data, keyEnd)+1)
+		end := endJSONValue(data, i)
+		if isName {
+			if found {
+				return "", false, fmt.Errorf("%w: JSON: duplicate key %s", ErrMalformed, errtext.Quote(name))
+			}
+			member, found = data[i:end], true
+		}
+		if i = skipJSONSpace(data, end); data[i] == ',' {
+			i = skipJSONSpace(data, i+1)
+		}
+	}
+	if !found {
+		return "", false, nil
+	}
+	// Only a string is decoded: anything else could be a megabyte of small
+	// values, built for nothing.
+	if member[0] != '"' {
+		return "", false, fmt.Errorf("%w: JSON: member %s is %s, not a string", ErrMalformed, errtext.Quote(name), jsonKind(member[0]))
+	}
+	v, err := DecodeJSON(member)
+	if err != nil {
+		return "", false, err
+	}
+	s, _ := v.(string) // a value starting with '"' decodes to a string
+	return s, true, nil
+}
+
+// The helpers below walk JSON that json.Valid accepted; on other input they
+// may panic.
+
+// skipJSONSpace returns the index of the first byte at or after i that is
+// not JSON whitespace (RFC 8259 §2).
+func skipJSONSpace(data []byte, i int) int {
+	for i < len(data) && isJSONSpace(data[i]) {
+		i++
+	}
+	return i
+}
+
+func isJSONSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+
+// endJSONString returns the index just after the string starting at data[i].
+func endJSONString(data []byte, i int) int {
+	for j := i + 1; ; j++ {
+		switch data[j] {
+		case '\\':
+			j++ // the escaped byte never closes the string
+		case '"':
+			return j + 1
+		}
+	}
+}
+
+// endJSONValue returns the index just after the value starting at data[i].
+func endJSONValue(data []byte, i int) int {
+	switch data[i] {
+	case '"':
+		return endJSONString(data, i)
+	case '{', '[':
+		depth := 0
+		for j := i; ; j++ {
+			switch data[j] {
+			case '"':
+				j = endJSONString(data, j) - 1
+			case '{', '[':
+				depth++
+			case '}', ']':
+				if depth--; depth == 0 {
+					return j + 1
+				}
+			}
+		}
+	default: // a number, true, false or null, which ends at a delimiter
+		j := i
+		for j < len(data) && data[j] != ',' && data[j] != '}' && data[j] != ']' && !isJSONSpace(data[j]) {
+			j++
+		}
+		return j
+	}
+}
+
+// jsonStringIs reports whether the body of a JSON string, s without its
+// quotes, unescapes to name under encoding/json's rules, where an escaped
+// surrogate that is not half of a pair reads as U+FFFD. It builds nothing.
+func jsonStringIs(s []byte, name string) bool {
+	if bytes.IndexByte(s, '\\') < 0 {
+		return string(s) == name
+	}
+	var buf [utf8.UTFMax]byte
+	for len(s) > 0 {
+		var out []byte
+		switch {
+		case s[0] != '\\':
+			out, s = s[:1], s[1:]
+		case s[1] != 'u':
+			buf[0] = jsonUnescape(s[1])
+			out, s = buf[:1], s[2:]
+		default:
+			r := hex4(s[2:6])
+			s = s[6:]
+			if utf16.IsSurrogate(r) {
+				next := rune(-1)
+				if len(s) >= 6 && s[0] == '\\' && s[1] == 'u' {
+					next = hex4(s[2:6])
+				}
+				if pair := utf16.DecodeRune(r, next); pair != utf8.RuneError {
+					r, s = pair, s[6:]
+				} else {
+					r = utf8.RuneError
+				}
+			}
+			out = buf[:utf8.EncodeRune(buf[:], r)]
+		}
+		if len(out) > len(name) || string(out) != name[:len(out)] {
+			return false
+		}
+		name = name[len(out):]
+	}
+	return name == ""
+}
+
+// jsonUnescape returns the byte the one-letter escape \c stands for.
+func jsonUnescape(c byte) byte {
+	switch c {
+	case 'b':
+		return '\b'
+	case 'f':
+		return '\f'
+	case 'n':
+		return '\n'
+	case 'r':
+		return '\r'
+	case 't':
+		return '\t'
+	default: // '"', '\\' and '/'
+		return c
+	}
+}
+
+// hex4 reads the four hex digits of a \u escape.
+func hex4(h []byte) rune {
+	var r rune
+	for _, c := range h[:4] {
+		switch {
+		case c <= '9':
+			c -= '0'
+		case c >= 'a':
+			c -= 'a' - 10
+		default:
+			c -= 'A' - 10
+		}
+		r = r<<4 | rune(c)
+	}
+	return r
+}
+
+// jsonKind names the type of the JSON value that starts with c.
+func jsonKind(c byte) string {
+	switch c {
+	case '{':
+		return "an object"
+	case '[':
+		return "an array"
+	case 't', 'f':
+		return "a boolean"
+	case 'n':
+		return "null"
+	default:
+		return "a number"
+	}
+}
+
 // EncodeJSON encodes v compactly, without HTML escaping (encoding/json turns
 // <, > and & into \u003c, \u003e and \u0026 by default; RFC 8259 §7 needs
 // none of them escaped) and with UTF-8 kept as is (RFC 8259 §8.1). Map keys
@@ -112,7 +327,7 @@ func readJSONValue(dec *json.Decoder, depth int) (any, error) {
 			// compared after unescaping (RFC 8259 §8.3, RFC 7515 §10.13), so
 			// "alg" and "\u0061lg" are duplicates.
 			if _, dup := obj[key]; dup {
-				return nil, fmt.Errorf("duplicate key %q", key)
+				return nil, fmt.Errorf("duplicate key %s", errtext.Quote(key))
 			}
 			val, err := readJSONValue(dec, depth+1)
 			if err != nil {

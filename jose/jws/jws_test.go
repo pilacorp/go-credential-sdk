@@ -168,6 +168,7 @@ func TestSignRejectsHeaderVerifyWouldRefuse(t *testing.T) {
 	for name, h := range map[string]Header{
 		"nesting deeper than MaxJSONDepth": {"x": deep},
 		"duplicate key in a raw value":     {"x": json.RawMessage(`{"a":1,"a":2}`)},
+		"over the 64 KiB Verify reads":     {"x": strings.Repeat("a", 64<<10)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := &countingSigner{Signer: p256}
@@ -329,6 +330,8 @@ func TestVerifyMalformed(t *testing.T) {
 		"duplicate alg":     craft(t, s, `{"alg":"ES256","alg":"ES256K"}`, `{}`),
 		"header trailing":   craft(t, s, `{"alg":"ES256"}x`, `{}`),
 		"header not base64": "@@@." + p[1] + "." + p[2],
+		// Own bound: the header is parsed before the signature is checked.
+		"header over 64 KiB": craft(t, s, `{"alg":"ES256","x":"`+strings.Repeat("a", 64<<10)+`"}`, `{}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, _, err := Verify(tok, pub, nil)
@@ -355,8 +358,15 @@ func TestVerifyAlgRules(t *testing.T) {
 
 	for _, alg := range []string{"none", "HS256", "RS256", "PS256", "EdDSA"} {
 		tok := craft(t, p256, `{"alg":"`+alg+`"}`, `{}`)
-		_, _, err := Verify(tok, p256Pub, []string{alg, AlgES256})
+		_, _, err := Verify(tok, p256Pub, nil)
 		wantErr(t, err, ErrAlgNotAllowed)
+		// RFC 8725 §3.1: the caller names the algorithms; one this package
+		// cannot verify is the caller's mistake, not the token's.
+		_, _, err = Verify(tok, p256Pub, []string{alg, AlgES256})
+		wantErr(t, err, jose.ErrInvalidArgument)
+		if errors.Is(err, ErrAlgNotAllowed) {
+			t.Fatalf("allowed %q: %v also matches ErrAlgNotAllowed", alg, err)
+		}
 	}
 
 	es256k := mustSign(t, k1, k1Pub, nil, `{}`)

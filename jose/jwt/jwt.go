@@ -1,16 +1,36 @@
 // Package jwt reads JSON Web Token claim values under the rules of RFC 7519:
 // NumericDate (§2), the type of exp, nbf and iat (§4.1.4 to §4.1.6), and
-// checks exp and nbf against a time (§4.1.4, §4.1.5).
+// checks exp and nbf against a time (§4.1.4, §4.1.5) and aud against an
+// audience (§4.1.3).
+//
+// The functions that take claims read them as jose.DecodeJSONObject yields
+// them from a received token: string, json.Number, bool, nil, []any and
+// map[string]any (RFC 7519 §4.1 defines claims as JSON values). Other Go types
+// are not converted (NumericDate also takes float64, int and int64), so a map
+// built in Go may hold values these functions refuse as malformed.
 package jwt
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/jose"
+)
+
+// CheckExpNbf and CheckAud wrap one of these when a claim fails, so a caller
+// maps the failure with errors.Is. No standard defines them.
+var (
+	// ErrExpired: now is on or after exp plus the skew (RFC 7519 §4.1.4).
+	ErrExpired = errors.New("jwt: expired")
+	// ErrNotYetValid: now is before nbf minus the skew (RFC 7519 §4.1.5).
+	ErrNotYetValid = errors.New("jwt: not yet valid")
+	// ErrAudience: aud is present and does not list the audience, or the
+	// caller named none (RFC 7519 §4.1.3).
+	ErrAudience = errors.New("jwt: aud does not list this audience")
 )
 
 // maxUnix is the last second time.Time holds: time.Unix adds the seconds from
@@ -29,6 +49,12 @@ func NumericDate(v any) (time.Time, error) {
 	case json.Number:
 		f, err := strconv.ParseFloat(string(n), 64)
 		if err != nil {
+			// The cause only: a *strconv.NumError quotes the whole literal,
+			// which a received token makes as long as it likes.
+			var ne *strconv.NumError
+			if errors.As(err, &ne) {
+				err = ne.Err
+			}
 			return time.Time{}, fmt.Errorf("%w: NumericDate: %v", jose.ErrMalformed, err)
 		}
 		return fromFloat(f)
@@ -61,8 +87,8 @@ func DateClaim(claims map[string]any, name string) (t time.Time, ok bool, err er
 // a leeway of skew. exp refuses when now ≥ exp + skew (RFC 7519 §4.1.4: "on
 // or after"), nbf when now < nbf − skew (§4.1.5: "after or equal"). A
 // negative skew is jose.ErrInvalidArgument, a malformed value
-// jose.ErrMalformed; a failing one is an error with no sentinel, which
-// callers wrap in their own.
+// jose.ErrMalformed, an expired token ErrExpired and one not yet valid
+// ErrNotYetValid. exp is checked before nbf is read.
 func CheckExpNbf(claims map[string]any, now time.Time, skew time.Duration) error {
 	// Negating math.MinInt64 overflows to itself, which would move the exp
 	// edge into the distant past and accept an expired token.
@@ -75,16 +101,55 @@ func CheckExpNbf(claims map[string]any, now time.Time, skew time.Duration) error
 		return err
 	}
 	if ok && !now.Add(-skew).Before(exp) {
-		return fmt.Errorf("jwt: expired at %s", exp)
+		return fmt.Errorf("%w at %s", ErrExpired, exp)
 	}
 	nbf, ok, err := DateClaim(claims, "nbf")
 	if err != nil {
 		return err
 	}
 	if ok && now.Add(skew).Before(nbf) {
-		return fmt.Errorf("jwt: not valid before %s", nbf)
+		return fmt.Errorf("%w: valid from %s", ErrNotYetValid, nbf)
 	}
 	return nil
+}
+
+// CheckAud checks the aud claim, when present, as RFC 7519 §4.1.3 says: a
+// recipient that does not identify itself with a value in aud MUST reject
+// the JWT. aud is a string or an array of strings, compared with audience
+// byte for byte (§2, StringOrURI); every element's type is checked before any
+// is compared. Absent aud is nil. Present aud is ErrAudience when audience is
+// "" or not listed, an empty array included, and jose.ErrMalformed when it is
+// neither a string nor an array of strings. An array is []any, as decoded:
+// a Go []string, or a named string type, is jose.ErrMalformed. No aud value
+// is echoed.
+func CheckAud(claims map[string]any, audience string) error {
+	v, ok := claims["aud"]
+	if !ok {
+		return nil
+	}
+	var list []any
+	switch a := v.(type) {
+	case string:
+		list = []any{a}
+	case []any:
+		list = a
+	default:
+		return fmt.Errorf("%w: aud is %T, not a string or an array of strings", jose.ErrMalformed, v)
+	}
+	for _, el := range list {
+		if _, ok := el.(string); !ok {
+			return fmt.Errorf("%w: aud holds a %T, not a string", jose.ErrMalformed, el)
+		}
+	}
+	if audience == "" {
+		return fmt.Errorf("%w: aud is present and no audience was given to compare it with", ErrAudience)
+	}
+	for _, el := range list {
+		if el == audience {
+			return nil
+		}
+	}
+	return ErrAudience
 }
 
 func fromFloat(f float64) (time.Time, error) {

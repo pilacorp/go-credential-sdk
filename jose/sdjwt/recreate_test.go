@@ -94,34 +94,38 @@ func TestRecreateRejects(t *testing.T) {
 		name        string
 		payload     string
 		disclosures []Disclosure
+		text        string // "": any ErrMalformed text
 	}{
 		// §7.1 step 4: a digest value encountered more than once.
-		{"digest twice", fmt.Sprintf(`{"_sd":[%q],"x":{"_sd":[%q]}}`, givenDigest, givenDigest), []Disclosure{{Encoded: given}}},
+		{"digest twice", fmt.Sprintf(`{"_sd":[%q],"x":{"_sd":[%q]}}`, givenDigest, givenDigest), []Disclosure{{Encoded: given}}, ""},
 		// §7.1 step 5.
-		{"unreferenced disclosure", `{"iss":"x"}`, []Disclosure{{Encoded: given}}},
+		{"unreferenced disclosure", `{"iss":"x"}`, []Disclosure{{Encoded: given}}, ""},
+		// §7.1 step 5 whatever the disclosure holds: it is only hashed.
+		{"unreferenced disclosure, not base64url", `{"iss":"x"}`, []Disclosure{{Encoded: "!!!"}}, "no digest references"},
 		// §4.2.4.2: {"...": d} stands only for an array element.
-		{"... outside an array", fmt.Sprintf(`{"a":{"...":%q}}`, elemDigest), nil},
+		{"... outside an array", fmt.Sprintf(`{"a":{"...":%q}}`, elemDigest), nil, ""},
 		// §4.2.1, §7.1 step 3c.ii.2: ... is never a claim name.
-		{"disclosure named ...", fmt.Sprintf(`{"_sd":[%q]}`, dotsDigest), []Disclosure{{Encoded: dots}}},
+		{"disclosure named ...", fmt.Sprintf(`{"_sd":[%q]}`, dotsDigest), []Disclosure{{Encoded: dots}}, ""},
 		// §4.1.1, §7.1 step 2d: only sha-256 is supported.
-		{"_sd_alg sha-512", `{"_sd_alg":"sha-512"}`, nil},
+		{"_sd_alg sha-512", `{"_sd_alg":"sha-512"}`, nil, ""},
 		// §7.1 step 3c.ii.1: a digest in _sd needs a [salt, name, value] disclosure.
-		{"_sd references [salt, value]", fmt.Sprintf(`{"_sd":[%q]}`, elemDigest), []Disclosure{{Encoded: elem}}},
+		{"_sd references [salt, value]", fmt.Sprintf(`{"_sd":[%q]}`, elemDigest), []Disclosure{{Encoded: elem}}, ""},
 		// §7.1 step 3c.iii.1: an array element needs a [salt, value] disclosure.
-		{"array element references [salt, name, value]", fmt.Sprintf(`{"a":[{"...":%q}]}`, givenDigest), []Disclosure{{Encoded: given}}},
+		{"array element references [salt, name, value]", fmt.Sprintf(`{"a":[{"...":%q}]}`, givenDigest), []Disclosure{{Encoded: given}}, ""},
 		// §7.1 step 3c.ii.3.
-		{"claim name exists", fmt.Sprintf(`{"given_name":"X","_sd":[%q]}`, givenDigest), []Disclosure{{Encoded: given}}},
-		{"1001 disclosures", `{"_sd":[` + strings.Join(manyDigests, ",") + `]}`, many},
+		{"claim name exists", fmt.Sprintf(`{"given_name":"X","_sd":[%q]}`, givenDigest), []Disclosure{{Encoded: given}}, ""},
+		{"1001 disclosures", `{"_sd":[` + strings.Join(manyDigests, ",") + `]}`, many, ""},
 		// The payload object is level 1: 33 levels in all.
-		{"depth 33", `{"a":` + strings.Repeat("[", 32) + strings.Repeat("]", 32) + `}`, nil},
+		{"depth 33", `{"a":` + strings.Repeat("[", 32) + strings.Repeat("]", 32) + `}`, nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload, err := jose.DecodeJSONObject([]byte(tc.payload))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Recreate(payload, tc.disclosures); !errors.Is(err, jose.ErrMalformed) {
-				t.Fatalf("got %v, want jose.ErrMalformed", err)
+			_, err = Recreate(payload, tc.disclosures)
+			if !errors.Is(err, jose.ErrMalformed) || !strings.Contains(err.Error(), tc.text) {
+				t.Fatalf("got %v, want jose.ErrMalformed %q", err, tc.text)
 			}
 		})
 	}
@@ -166,6 +170,33 @@ func TestDisclosuresSelectOnlyThePath(t *testing.T) {
 		}
 		if s := fmt.Sprint(names); ok != tc.ok || (ok && s != tc.want) {
 			t.Errorf("%v: got %s %v, want %s %v", tc.path, s, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// A claim is disclosed when it, an ancestor or a descendant came from a
+// disclosure: draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids some claims
+// "including any of their sub-claims" in disclosures.
+func TestDisclosed(t *testing.T) {
+	claims := map[string]any{"a": map[string]any{"b": "1"}, "c": map[string]any{"d": "2"}, "e": "3"}
+	payload, ds, err := Conceal(claims, []Path{{"a"}, {"c", "d"}}, ConcealOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := Recreate(payload, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path Path
+		want bool
+	}{
+		{Path{"a", "b"}, true}, // inside a concealed object
+		{Path{"c"}, true},      // holds a concealed claim
+		{Path{"e"}, false},
+	} {
+		if got := r.Disclosed(tc.path); got != tc.want {
+			t.Errorf("Disclosed(%v) = %v, want %v", tc.path, got, tc.want)
 		}
 	}
 }

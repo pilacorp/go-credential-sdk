@@ -4,14 +4,14 @@
 // (§5.1), and reading the status of a Referenced Token from a fetched token
 // (Checker, §8).
 //
-// Errors carry no sentinel of this package. Malformed input to Decode wraps
-// jose.ErrMalformed; a caller mistake (an index or value out of range, a list
-// not made by this package, missing claims) wraps jose.ErrInvalidArgument;
-// SignToken wraps the jose/jws errors unchanged, so a nil key gives
-// jose.ErrInvalidArgument or jws.ErrBadKey and a signer holding another key
-// gives jws.ErrSelfCheck. Every error of Checker.Status means no statement
-// about the status can be made (§8.3); there an index outside a fetched list
-// wraps no sentinel: the Referenced Token MUST be rejected
+// Malformed input to Decode wraps jose.ErrMalformed; a caller mistake (an
+// index or value out of range, a list not made by this package, missing
+// claims) wraps jose.ErrInvalidArgument; SignToken wraps the jose/jws errors
+// unchanged, so a nil key gives jose.ErrInvalidArgument or jws.ErrBadKey and
+// a signer holding another key gives jws.ErrSelfCheck. Every error of
+// Checker.Status means no statement about the status can be made (§8.3);
+// there an index outside a fetched list wraps ErrIndexOutOfBounds, the one
+// sentinel of this package: the Referenced Token MUST be rejected
 // (draft-ietf-oauth-status-list-21 §8.3 step 6), and the caller made no
 // mistake.
 //
@@ -19,10 +19,19 @@
 package statuslist
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/jose"
 )
+
+// ErrIndexOutOfBounds: Checker.Status wraps it when the index of the
+// Referenced Token is outside the fetched Status List:
+// draft-ietf-oauth-status-list-21 §8.3 step 6 says that token MUST be
+// rejected, while other failures of Status SHOULD be (§8.3). It is not
+// jose.ErrInvalidArgument: the index comes from the token. The same cached
+// list gives the same answer.
+var ErrIndexOutOfBounds = errors.New("statuslist: index out of bounds")
 
 // maxListBytes caps the byte array of a list. New and FromBytes refuse a
 // larger one, which bounds what they allocate and what Encode and SignToken

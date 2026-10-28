@@ -28,10 +28,11 @@ import (
 // can write a token, so its leaf means nothing until the token is verified:
 // the leaf identifies a credential only for a token Issue returned, or one
 // verified as an SD-JWT VC (its Issuer's signature,
-// draft-ietf-oauth-sd-jwt-vc-19 §2.4, and typ dc+sd-jwt, §2.2.1). It names
-// the signed credential, not who presents it: a presented token whose leaf is
-// anchored proves no possession of the credential, which only Key Binding
-// shows.
+// draft-ietf-oauth-sd-jwt-vc-19 §2.4, and typ dc+sd-jwt, §2.2.1), as
+// [github.com/pilacorp/go-credential-sdk/digitalcredential.Verify] does. It
+// names the signed credential, not who presents it: a presented token whose
+// leaf is anchored proves no possession of the credential, which only Key
+// Binding shows.
 func Leaf(token string) [32]byte {
 	// RFC 9901 §4: the Issuer-signed JWT is the part before the first "~",
 	// a character the base64url alphabet does not have.

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/jose"
@@ -179,8 +180,8 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 // not fetch (not https, unless WithInsecureHTTP), a failed fetch, a token
 // that is malformed, not signed by a key of iss (issuerkey.Select), carrying
 // an iss claim other than iss (RFC 8725 §3.8), or failing a check of §5.1 or
-// §8.3, an lst Decode refuses, or an index outside the list, which wraps no
-// sentinel: the Referenced Token MUST be rejected
+// §8.3, an lst Decode refuses, or an index outside the list, which wraps
+// ErrIndexOutOfBounds: the Referenced Token MUST be rejected
 // (draft-ietf-oauth-status-list-21 §8.3 step 6), and the caller made no
 // mistake. Errors of the resolver, jose/jws and jose/jwt are
 // wrapped unchanged. No error of the fetch holds the status list uri or
@@ -219,7 +220,7 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 	// Not jose.ErrInvalidArgument, which Get would wrap: the index comes from
 	// the Referenced Token, not from a caller mistake.
 	if n := l.entries(); ref.Index >= n {
-		return 0, fmt.Errorf("statuslist: index %d is outside the list of %d entries (draft-ietf-oauth-status-list-21 §8.3 step 6)", ref.Index, n)
+		return 0, fmt.Errorf("%w: index %d is outside the list of %d entries (draft-ietf-oauth-status-list-21 §8.3 step 6)", ErrIndexOutOfBounds, ref.Index, n)
 	}
 	return l.Get(ref.Index)
 }
@@ -356,9 +357,9 @@ func checkClaims(claims map[string]any, iss, uri string, now time.Time) (listCla
 	}
 	// RFC 7519 §4.1.3: a JWT with aud MUST be rejected by a principal that
 	// does not identify itself with a value in it, and the Checker has no
-	// identity to match.
-	if _, ok := claims["aud"]; ok {
-		return tc, errors.New("statuslist: token has aud")
+	// identity to match, so any aud fails.
+	if err := jwt.CheckAud(claims, ""); err != nil {
+		return tc, fmt.Errorf("statuslist: token: %w", err)
 	}
 	// §5.1: ttl, when present, is a positive number of seconds, a fraction
 	// allowed; values over 24 hours, the SDK's bound (§11.5 gives no
@@ -374,15 +375,16 @@ func checkClaims(claims map[string]any, iss, uri string, now time.Time) (listCla
 			tc.ttl = time.Duration(f * float64(time.Second))
 		}
 	}
-	// §5.1 and §4.2: status_list holds bits, a JSON integer (Decode checks
-	// its value), and lst, a string.
+	// §5.1 and §4.2: status_list holds bits, a JSON integer read by its
+	// value, so 1.0 is 1 (Decode checks it is 1, 2, 4 or 8), and lst, a
+	// string.
 	sl, ok := claims["status_list"].(map[string]any)
 	if !ok {
 		return tc, fmt.Errorf("%w: statuslist: token status_list is not an object", jose.ErrMalformed)
 	}
 	n, _ := sl["bits"].(json.Number)
-	if tc.bits, err = strconv.Atoi(string(n)); err != nil {
-		return tc, fmt.Errorf("%w: statuslist: token status_list bits is not an integer", jose.ErrMalformed)
+	if tc.bits, err = jsonint.NonNegative(string(n)); err != nil {
+		return tc, fmt.Errorf("%w: statuslist: token status_list bits is not 1, 2, 4 or 8", jose.ErrMalformed)
 	}
 	if tc.lst, ok = sl["lst"].(string); !ok {
 		return tc, fmt.Errorf("%w: statuslist: token status_list lst is not a string", jose.ErrMalformed)

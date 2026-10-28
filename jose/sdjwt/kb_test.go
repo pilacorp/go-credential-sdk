@@ -115,18 +115,24 @@ func TestKBJWTRejects(t *testing.T) {
 		edit   func(h jws.Header, c map[string]any)
 		caller func(w *KBWant)
 		err    error
+		not    error // must not match either
 	}{
 		{name: "signed by another key", other: true, err: ErrKBInvalid},
 		{name: "typ jwt", edit: func(h jws.Header, _ map[string]any) { h["typ"] = "jwt" }, err: ErrKBInvalid},
 		{name: "iat older than MaxAge plus skew", edit: func(_ jws.Header, c map[string]any) { c["iat"] = now.Add(-6*time.Minute - time.Second).Unix() }, err: ErrKBInvalid},
 		{name: "iat later than skew", edit: func(_ jws.Header, c map[string]any) { c["iat"] = now.Add(time.Minute + time.Second).Unix() }, err: ErrKBInvalid},
 		{name: "aud differs", edit: func(_ jws.Header, c map[string]any) { c["aud"] = "https://other.example" }, err: ErrKBAudience},
-		{name: "aud array holding the verifier", edit: func(_ jws.Header, c map[string]any) { c["aud"] = []any{want.Audience} }, err: ErrKBAudience},
+		// RFC 9901 §4.3: aud is a single string; an array is malformed, not
+		// a KB-JWT made for another verifier.
+		{name: "aud array holding the verifier", edit: func(_ jws.Header, c map[string]any) { c["aud"] = []any{want.Audience} }, err: ErrKBInvalid, not: ErrKBAudience},
 		{name: "nonce differs", edit: func(_ jws.Header, c map[string]any) { c["nonce"] = "replayed" }, err: ErrKBNonce},
 		{name: "sd_hash differs", edit: func(_ jws.Header, c map[string]any) { c["sd_hash"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }, err: ErrKBSDHash},
 		// RFC 7519 §4.1.4: refused on or after exp, here exactly exp + skew.
 		{name: "exp passed", edit: func(_ jws.Header, c map[string]any) { c["exp"] = now.Add(-time.Minute).Unix() }, err: ErrKBInvalid},
 		{name: "nbf later than skew", edit: func(_ jws.Header, c map[string]any) { c["nbf"] = now.Add(time.Minute + time.Second).Unix() }, err: ErrKBInvalid},
+		// RFC 9901 §7.3 step 5b: the application names the algorithms.
+		{name: "alg not in AllowedAlgs", caller: func(w *KBWant) { w.AllowedAlgs = []string{jws.AlgES256K} }, err: jws.ErrAlgNotAllowed},
+		{name: "caller: AllowedAlgs lists none", caller: func(w *KBWant) { w.AllowedAlgs = []string{"none"} }, err: jose.ErrInvalidArgument, not: ErrKBInvalid},
 		// An empty expected nonce must not match a KB-JWT whose nonce is empty.
 		{name: "caller: empty Nonce", edit: func(_ jws.Header, c map[string]any) { c["nonce"] = "" }, caller: func(w *KBWant) { w.Nonce = "" }, err: jose.ErrInvalidArgument},
 	} {
@@ -152,8 +158,9 @@ func TestKBJWTRejects(t *testing.T) {
 			if tc.caller != nil {
 				tc.caller(&w)
 			}
-			if err := VerifyKBJWT(kb, holder, w); !errors.Is(err, tc.err) {
-				t.Fatalf("got %v, want %v", err, tc.err)
+			err = VerifyKBJWT(kb, holder, w)
+			if !errors.Is(err, tc.err) || tc.not != nil && errors.Is(err, tc.not) {
+				t.Fatalf("got %v, want %v and not %v", err, tc.err, tc.not)
 			}
 		})
 	}
