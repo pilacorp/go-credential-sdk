@@ -20,10 +20,11 @@ import (
 // nil, on another curve, or not on its curve. No standard defines it.
 var ErrBadKey = errors.New("jwk: bad key")
 
-// ErrUnsupportedKey: ToPublicKey got a JWK whose kty, or crv of an EC key, is
-// a string it does not convert. Other key types and curves can be registered
-// (RFC 7517 §4.1, RFC 7518 §6.2.1.1), so the JWK may be valid: it does not
-// wrap ErrBadKey, and FromPublicKey never returns it. No standard defines it.
+// ErrUnsupportedKey: ToPublicKey got a JWK that carries no d and whose kty, or
+// crv of an EC key, is a string it does not convert. Other key types and
+// curves can be registered (RFC 7517 §4.1, RFC 7518 §6.2.1.1), so the JWK may
+// be valid: it does not wrap ErrBadKey, and FromPublicKey never returns it. No
+// standard defines it.
 var ErrUnsupportedKey = errors.New("jwk: unsupported key type")
 
 const (
@@ -45,9 +46,9 @@ const (
 // array is []any: on crv secp256k1 a key_ops built in Go as []string is not
 // that []any, so the key is refused; P-256 does not read key_ops.
 //
-// A kty other than "EC", or a crv other than those two, the empty string
-// included, is ErrUnsupportedKey; a missing or non-string kty or crv is
-// ErrBadKey.
+// A JWK carrying d is ErrBadKey whatever its kty. Otherwise a kty other than
+// "EC", or a crv other than those two, the empty string included, is
+// ErrUnsupportedKey; a missing or non-string kty or crv is ErrBadKey.
 //
 // A secp256k1 key comes back as *ecdsa.PublicKey with Curve secp256k1.S256().
 func ToPublicKey(m map[string]any) (*ecdsa.PublicKey, error) {
