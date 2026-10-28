@@ -12,10 +12,10 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
 	"github.com/pilacorp/go-credential-sdk/jose"
@@ -303,8 +303,8 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 //  6. exp, nbf (RFC 7519 §4.1.4, §4.1.5) and aud (§4.1.3): EXPIRED,
 //     NOT_YET_VALID, AUDIENCE_MISMATCH;
 //  7. vct (§2.2.2.3) and the shape of status (draft-ietf-oauth-status-list-21
-//     §6.2): MALFORMED. idx must be JSON digits only, so 1.0, 1e3 and -0 are
-//     refused, which is stricter than RFC 8259;
+//     §6.2): MALFORMED. idx is read by its value (RFC 8259 §6), so 1.0, 1e3
+//     and -0 are the indexes 1, 1000 and 0;
 //  8. Key Binding, per p.KeyBinding (RFC 9901 §7.3): the KB_ codes;
 //  9. status last (draft-ietf-oauth-status-list-21 §8.3), unless SkipStatus:
 //     the status codes, MALFORMED for an idx outside the list.
@@ -580,7 +580,7 @@ type statusClaim struct {
 	present bool // the credential has status
 	list    bool // status has status_list; ref is set
 	ref     statuslist.Ref
-	pastInt bool // idx is digits too large for an int; ref.Index is 0
+	pastInt bool // idx is an integer too large for an int; ref.Index is 0
 }
 
 // readStatus reads the status claim (draft-ietf-oauth-status-list-21 §6.2).
@@ -604,16 +604,16 @@ func readStatus(claims map[string]any) (statusClaim, error) {
 	if !ok {
 		return statusClaim{}, errors.New("status.status_list is not a JSON object with a string uri (draft-ietf-oauth-status-list-21 §6.2)")
 	}
-	// §6.2: idx is a non-negative Integer. Digits only is this SDK's reading:
-	// RFC 8259 also writes 1.0, 1e3 and -0.
-	n, ok := list["idx"].(json.Number)
-	if !ok || !allDigits(string(n)) {
-		return statusClaim{}, errors.New("status.status_list.idx is absent or not a non-negative integer in digits only (draft-ietf-oauth-status-list-21 §6.2)")
-	}
+	// §6.2: idx is a non-negative Integer, a value, so every RFC 8259 §6
+	// form of it counts: 1.0, 1e3 and -0 too. jsonint reads it exactly.
+	n, _ := list["idx"].(json.Number) // any other type reads as "" and fails
 	st := statusClaim{present: true, list: true}
-	idx, err := strconv.Atoi(string(n))
-	if err != nil { // digits only, so out of range
+	idx, err := jsonint.NonNegative(string(n))
+	switch {
+	case errors.Is(err, jsonint.ErrTooLarge):
 		st.pastInt, idx = true, 0
+	case err != nil:
+		return statusClaim{}, errors.New("status.status_list.idx is absent or not a non-negative integer (draft-ietf-oauth-status-list-21 §6.2)")
 	}
 	st.ref = statuslist.Ref{URI: uri, Index: idx}
 	// %v: the cause is the token's, so it must not match
@@ -622,15 +622,6 @@ func readStatus(claims map[string]any) (statusClaim, error) {
 		return statusClaim{}, fmt.Errorf("status.status_list: %v", err)
 	}
 	return st, nil
-}
-
-func allDigits(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return s != ""
 }
 
 // checkStatus asks p.Status for the status st refers to. Its errors are

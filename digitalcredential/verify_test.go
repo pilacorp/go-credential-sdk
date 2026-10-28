@@ -5,8 +5,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -271,6 +273,111 @@ func TestVerifyRejects(t *testing.T) {
 }
 
 // splitJWS returns the three segments of a compact JWS.
+// recordingStatus is a StatusChecker that answers 0, VALID, and records
+// each reference it is asked for.
+type recordingStatus struct{ refs []statuslist.Ref }
+
+func (c *recordingStatus) Status(_ context.Context, ref statuslist.Ref, _ string) (uint8, error) {
+	c.refs = append(c.refs, ref)
+	return 0, nil
+}
+
+// draft-ietf-oauth-status-list-21 §6.2: idx is a non-negative Integer, a
+// value, which RFC 8259 §6 writes in many forms. Each form below is read
+// as its exact value, refused, or, past an int, past every list (§8.3 step
+// 6), in both status modes, and the checker is asked only for a valid idx.
+func TestVerifyStatusIdx(t *testing.T) {
+	const uri = "http://status.example/lists/1"
+	_, own := ownCredentials(t)
+	type class int
+	const (
+		accepted class = iota
+		refused        // MALFORMED in both modes
+		pastInt        // ErrIndexOutOfBounds, or skipped
+	)
+	tests := []struct {
+		idx   any // nil: absent
+		class class
+		want  int64 // the index, for accepted rows
+	}{
+		{json.Number("1.0"), accepted, 1},
+		{json.Number("1e3"), accepted, 1000},
+		{json.Number("1E+3"), accepted, 1000},
+		{json.Number("10e-1"), accepted, 1},
+		{json.Number("1.5e1"), accepted, 15},
+		{json.Number("-0"), accepted, 0},
+		{json.Number("-0.0"), accepted, 0},
+		{json.Number("0e5"), accepted, 0},
+		// 2^53+1: a float64 reads it as 2^53.
+		{json.Number("9007199254740993.0"), accepted, 9007199254740993},
+		{json.Number("9007199254740993e0"), accepted, 9007199254740993},
+		{json.Number("0e-99999999999999999999"), accepted, 0},
+		{json.Number("9223372036854775807"), accepted, 9223372036854775807},
+		{json.Number("1.5"), refused, 0},
+		{json.Number("-1"), refused, 0},
+		{json.Number("1e-1"), refused, 0},
+		{json.Number("-10e-1"), refused, 0},
+		{json.Number("1.00000000000000000001"), refused, 0},
+		{json.Number("1e-99999999999999999999"), refused, 0},
+		{"1", refused, 0},
+		{nil, refused, 0},
+		{json.Number("1e400"), pastInt, 0},
+		{json.Number("1e99999999999999999999"), pastInt, 0},
+		{json.Number("99999999999999999999"), pastInt, 0},
+		{json.Number("9223372036854775808"), pastInt, 0}, // one past the largest 64-bit int
+	}
+	for _, tc := range tests {
+		list := map[string]any{"uri": uri}
+		if tc.idx != nil {
+			list["idx"] = tc.idx
+		}
+		compact := own.issue(map[string]any{"iss": "https://issuer.example", "vct": "urn:example:pid", "status": map[string]any{"status_list": list}}, nil)
+		for _, skip := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%#v skip=%v", tc.idx, skip), func(t *testing.T) {
+				if tc.want != int64(int(tc.want)) {
+					t.Skip("the index needs a 64-bit int")
+				}
+				rec := &recordingStatus{}
+				p := draft19Policy(t)
+				own.policy(&p)
+				p.Status, p.SkipStatus = rec, skip
+				res, err := Verify(context.Background(), compact, p)
+				var e *Error
+				switch {
+				case tc.class == refused || (tc.class == pastInt && !skip):
+					oob := tc.class == pastInt
+					if res != nil || !errors.As(err, &e) || e.Code != CodeMalformed || errors.Is(err, statuslist.ErrIndexOutOfBounds) != oob {
+						t.Fatalf("got %v, %v; want MALFORMED, ErrIndexOutOfBounds %v", res, err, oob)
+					}
+					if n, ok := tc.idx.(json.Number); ok && len(n) > 4 && strings.Contains(err.Error(), string(n)) {
+						t.Errorf("the error quotes idx: %v", err)
+					}
+				case err != nil:
+					t.Fatalf("got %v; want it accepted", err)
+				case skip:
+					if !res.StatusSkipped || res.Status != nil {
+						t.Errorf("StatusSkipped %v, Status %v; want true, nil", res.StatusSkipped, res.Status)
+					}
+				default:
+					want := []statuslist.Ref{{URI: uri, Index: int(tc.want)}}
+					if res.Status == nil || *res.Status != 0 || !slices.Equal(rec.refs, want) {
+						t.Errorf("Status %v, checker asked %v; want 0, %v", res.Status, rec.refs, want)
+					}
+				}
+				if len(rec.refs) != 0 && (skip || tc.class != accepted) {
+					t.Errorf("checker asked %v; want no call", rec.refs)
+				}
+				if res != nil {
+					got := res.Claims["status"].(map[string]any)["status_list"].(map[string]any)["idx"]
+					if got != tc.idx {
+						t.Errorf("Claims idx = %#v; want %#v as signed", got, tc.idx)
+					}
+				}
+			})
+		}
+	}
+}
+
 func splitJWS(t *testing.T, compact string) (header, payload, sig string) {
 	t.Helper()
 	parts := strings.Split(compact, ".")
