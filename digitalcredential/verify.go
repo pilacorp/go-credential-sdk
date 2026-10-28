@@ -58,9 +58,12 @@ const (
 	// CodeIssuerKeyNotFound: no single key verifies the token
 	// (issuerkey.Select). Err keeps Select's text, which tells the cases
 	// apart: the issuer publishes no key or none with the header kid (rotated
-	// or revoked, or never this issuer's); two keys share the kid, or there
-	// is no kid and several keys (the issuer's metadata or header is at
-	// fault); the resolver returned a nil Key (the caller's resolver).
+	// or revoked, never this issuer's, or skipped by the resolver as a key it
+	// cannot use); two keys share the kid, or there is no kid and several
+	// keys (the issuer's metadata or header is at fault); the resolver
+	// returned a nil Key (the caller's resolver). It is also Policy.Issuers
+	// answering issuerkey.ErrNoUsableKey: the issuer's document gives no
+	// usable key, and Err says why.
 	CodeIssuerKeyNotFound Code = "ISSUER_KEY_NOT_FOUND"
 	// CodeIssuerKeyUnavailable: Policy.Issuers could not find out the
 	// issuer's keys, and draft-ietf-oauth-sd-jwt-vc-19 §2.5 says to reject
@@ -158,8 +161,9 @@ func (e *Error) Unwrap() error { return e.Err }
 // network calls: an AllowedAlgs entry this SDK does not support or a resolver
 // key on another curve (after Policy.Issuers), no Audience or Nonce when a
 // Key Binding JWT must be checked, no Status for a credential with
-// status_list, or a checker error wrapping jose.ErrInvalidArgument. So do not
-// treat it as a startup-only error. It wraps no cause.
+// status_list, or a resolver or checker error wrapping
+// jose.ErrInvalidArgument. So do not treat it as a startup-only error. It
+// wraps no cause.
 var ErrPolicy = errors.New("digitalcredential: invalid verify policy")
 
 // StatusChecker returns the raw status of the Referenced Token ref points to
@@ -205,7 +209,8 @@ const defaultClockSkew = time.Minute
 type Policy struct {
 	// Issuers returns the keys of the issuers this verifier accepts
 	// (draft-ietf-oauth-sd-jwt-vc-19 §2.5); required, and it must not be a
-	// typed nil, which Verify cannot detect.
+	// typed nil, which Verify cannot detect. issuermeta.NewResolver returns
+	// one that reads JWT VC Issuer Metadata (§4).
 	Issuers issuerkey.Resolver
 	// AllowedAlgs are the algorithms accepted for the Issuer-signed JWT and
 	// the Key Binding JWT (RFC 8725 §3.1; RFC 9901 §7.1 step 2a, §7.3 step
@@ -318,9 +323,12 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 //   - *Error (errors.As): the token is refused, and Code says why;
 //   - ErrPolicy (errors.Is): the caller's Policy is at fault;
 //   - anything else: ctx ended while Policy.Issuers or Policy.Status ran, and
-//     the error wraps ctx.Err(); nothing is known about the token. A
-//     resolver's ErrIssuerNotSupported and a checker's
-//     statuslist.ErrIndexOutOfBounds are definite answers and win over ctx.
+//     the error wraps ctx.Err(); nothing is known about the token.
+//     ErrIssuerNotSupported or ErrNoUsableKey from Policy.Issuers, and
+//     statuslist.ErrIndexOutOfBounds from Policy.Status, are definite answers
+//     and win over ctx; a resolver's answer reached through Policy.Status,
+//     such as a Checker's, does not, and with ctx live it is
+//     STATUS_UNAVAILABLE.
 //
 // Work is linear in len(compact), which sdjwt.Split caps at 1 MiB. Before
 // the issuer's signature is checked, Verify parses the header, at most 64
@@ -331,9 +339,10 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 // request size and concurrency.
 //
 // This package's own texts quote no token content except bounded values
-// from jose. ISSUER_KEY_UNAVAILABLE, STATUS_UNAVAILABLE and the errors that
-// wrap ctx.Err() carry the error of Policy.Issuers or Policy.Status as it
-// was returned. Texts are for logs, not for the holder.
+// from jose. ISSUER_NOT_SUPPORTED, ISSUER_KEY_NOT_FOUND from
+// issuerkey.ErrNoUsableKey, ISSUER_KEY_UNAVAILABLE, STATUS_UNAVAILABLE and
+// the errors that wrap ctx.Err() carry the error of Policy.Issuers or
+// Policy.Status as it was returned. Texts are for logs, not for the holder.
 func Verify(ctx context.Context, compact string, p Policy) (*Result, error) {
 	if ctx == nil {
 		return nil, policyErr("Verify needs a non-nil context")
@@ -397,8 +406,14 @@ func Verify(ctx context.Context, compact string, p Policy) (*Result, error) {
 	switch {
 	case errors.Is(err, issuerkey.ErrIssuerNotSupported):
 		return reject(CodeIssuerNotSupported, err)
+	// A definite answer, like ErrIssuerNotSupported, whatever ctx says.
+	case errors.Is(err, issuerkey.ErrNoUsableKey):
+		return reject(CodeIssuerKeyNotFound, err)
 	case err != nil && ctx.Err() != nil:
 		return nil, fmt.Errorf("digitalcredential: resolving the issuer keys: %w (Policy.Issuers: %v)", ctx.Err(), err)
+	// The resolver's wiring, such as a Resolver not made by its constructor.
+	case errors.Is(err, jose.ErrInvalidArgument):
+		return nil, policyErr("Policy.Issuers: %v", err)
 	case err != nil:
 		return reject(CodeIssuerKeyUnavailable, fmt.Errorf("Policy.Issuers could not return the issuer keys: %w", err))
 	}

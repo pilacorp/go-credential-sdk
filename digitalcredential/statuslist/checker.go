@@ -231,7 +231,7 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 func (c *Checker) load(ctx context.Context, key cacheKey) (*List, error) {
 	fetched := c.now()
 	// §8.1, §8.2; redirects bounded (§11.4) to maxRedirects.
-	body, _, err := safehttp.Get(ctx, c.client, key.uri, mediaTypeJWT,
+	body, _, err := safehttp.Get(ctx, c.client, key.uri, []string{mediaTypeJWT},
 		safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, MaxBytes: maxTokenBytes, AllowHTTP: c.insecureHTTP})
 	if err != nil {
 		return nil, fmt.Errorf("statuslist: %w", err)
