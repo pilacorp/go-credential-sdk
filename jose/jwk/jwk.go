@@ -41,6 +41,10 @@ const (
 // includes "verify", the operation the returned key is for. RFC 7517 and RFC
 // 7518 set no such values for P-256, so those members, and kid, are not read.
 //
+// m is read as jose.DecodeJSONObject yields a JSON object, where a JSON
+// array is []any: on crv secp256k1 a key_ops built in Go as []string is not
+// that []any, so the key is refused; P-256 does not read key_ops.
+//
 // A kty other than "EC", or a crv other than those two, the empty string
 // included, is ErrUnsupportedKey; a missing or non-string kty or crv is
 // ErrBadKey.
@@ -146,21 +150,15 @@ func checkES256KMembers(m map[string]any) error {
 		}
 	}
 	if v, ok := m["key_ops"]; ok && !includesVerify(v) {
-		return fmt.Errorf("%w: key_ops of a secp256k1 key must include verify (RFC 8812 §3.2)", ErrBadKey)
+		return fmt.Errorf("%w: key_ops of a secp256k1 key must be a JSON array including verify (RFC 7517 §4.3, RFC 8812 §3.2)", ErrBadKey)
 	}
 	return nil
 }
 
-// includesVerify reports whether key_ops is an array holding "verify". JSON
-// decodes to []any; []string is what a caller building the map in Go writes.
+// includesVerify reports whether key_ops is a JSON array holding "verify".
 func includesVerify(keyOps any) bool {
-	switch ops := keyOps.(type) {
-	case []any:
-		return slices.Contains(ops, any("verify"))
-	case []string:
-		return slices.Contains(ops, "verify")
-	}
-	return false
+	ops, _ := keyOps.([]any)
+	return slices.Contains(ops, any("verify"))
 }
 
 // crvOf panics on an invalid kind, like ec.Kind.Name.
