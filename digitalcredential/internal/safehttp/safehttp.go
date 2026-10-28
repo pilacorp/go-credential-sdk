@@ -147,8 +147,10 @@ func fetchError(step string, err error) error {
 	case errors.As(cause, &op):
 		// Op, network, ip:port and the cause, such as ErrBlockedAddress or a
 		// DNS error naming the host; through a proxy the caller configured,
-		// it can be TLS text quoting certificate names the proxy chose.
-		text = op.Error()
+		// it can be TLS text quoting certificate names the proxy chose. The
+		// host can come from untrusted input of any length and script, so the
+		// text is cut and quoted.
+		text = fmt.Sprintf("%.200q", op.Error())
 	default:
 		if step == "" {
 			return &fetchErr{text: "request failed", cause: cause}
@@ -194,11 +196,11 @@ func (l Limits) schemes() string {
 // redirect target. Its own checks (arguments, URL, status, content type,
 // body size) write text of this package. An error of net/http, requesting or
 // reading the body, goes through an allowlist: its text is a redirect Get
-// refused, a context error, a *net.OpError, or else a fixed text naming the
-// step that failed. The text of a *net.OpError includes its cause, which
-// through a proxy configured in c can quote certificate names; NewClient
-// sets no proxy. errors.Is and
-// errors.As still reach the cause (context.Canceled,
+// refused, a context error, a *net.OpError cut to 200 characters and quoted,
+// or else a fixed text naming the step that failed. The text of a
+// *net.OpError includes its cause, which through a proxy configured in c can
+// quote certificate names; NewClient sets no proxy. errors.Is and errors.As
+// still reach the cause (context.Canceled,
 // context.DeadlineExceeded, ErrBlockedAddress, an error of c), but not the
 // *url.Error that carried it; printing the cause itself prints net/http's
 // text, which may hold the URL.

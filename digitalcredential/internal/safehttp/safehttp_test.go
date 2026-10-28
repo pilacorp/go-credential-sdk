@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -129,6 +130,26 @@ func TestGetErrorOmitsURL(t *testing.T) {
 	_, _, err = Get(context.Background(), NewClient(), s.URL+"/?token=SYNTHETIC_Q", []string{"application/json"}, limits)
 	if !errors.Is(err, ErrBlockedAddress) || strings.Contains(err.Error(), "SYNTHETIC") {
 		t.Errorf("blocked address: err = %v; want ErrBlockedAddress without the URL", err)
+	}
+}
+
+// A DNS error names the host, which can come from an unsigned token: any
+// length, any script. Its text is cut and quoted, so a 1000-byte host or a
+// right-to-left override cannot reach the caller's log as written.
+func TestFetchErrorBoundsNetworkText(t *testing.T) {
+	for name, host := range map[string]string{
+		"long":     strings.Repeat("a", 1000) + ".example",
+		"override": "issuer.example\u202egnp.exe",
+	} {
+		dnsErr := &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+		err := fetchError("", &url.Error{Op: "Get", URL: "https://" + host + "/", Err: &net.OpError{Op: "dial", Net: "tcp", Err: dnsErr}})
+		text := err.Error()
+		if !strings.HasPrefix(text, `safehttp: Get: "dial tcp: lookup `) || len(text) > 300 || strings.ContainsRune(text, '\u202e') {
+			t.Errorf("%s: text = %q (%d bytes)", name, text, len(text))
+		}
+		if !errors.Is(err, dnsErr) {
+			t.Errorf("%s: errors.Is lost the DNS error", name)
+		}
 	}
 }
 
