@@ -100,6 +100,29 @@ func draft19Policy(t *testing.T) Policy {
 	}
 }
 
+// failingResolver answers every iss with err.
+type failingResolver struct{ err error }
+
+func (r failingResolver) Keys(context.Context, string) ([]issuerkey.Key, error) { return nil, r.err }
+
+// A resolver's ErrNoUsableKey is a definite answer, so it is
+// ISSUER_KEY_NOT_FOUND even when ctx has ended; jose.ErrInvalidArgument is
+// the resolver's wiring, so ErrPolicy.
+func TestVerifyResolverAnswers(t *testing.T) {
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := draft19Policy(t)
+	p.Issuers = failingResolver{fmt.Errorf("resolver: %w", issuerkey.ErrNoUsableKey)}
+	var vErr *Error
+	if _, err := Verify(ended, draft19Fig8, p); !errors.As(err, &vErr) || vErr.Code != CodeIssuerKeyNotFound {
+		t.Errorf("ErrNoUsableKey, ctx ended: err = %v, want ISSUER_KEY_NOT_FOUND", err)
+	}
+	p.Issuers = failingResolver{fmt.Errorf("resolver: %w", jose.ErrInvalidArgument)}
+	if _, err := Verify(context.Background(), draft19Fig8, p); !errors.Is(err, ErrPolicy) {
+		t.Errorf("jose.ErrInvalidArgument: err = %v, want ErrPolicy", err)
+	}
+}
+
 // draft-ietf-oauth-sd-jwt-vc-19 §2.3.2: Figure 8 verifies, and the
 // processed payload is Figure 9.
 func TestVerifyDraft19Example(t *testing.T) {

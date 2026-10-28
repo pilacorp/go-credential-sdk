@@ -27,9 +27,17 @@ type Key struct {
 
 // ErrIssuerNotSupported is what a Resolver wraps when this verifier does not
 // accept iss at all: an issuer outside its trust list, or an identifier
-// scheme it does not resolve. It is a definite answer, unlike any other
-// error, which means the keys could not be found out.
+// scheme it does not resolve. It is a definite answer, as ErrNoUsableKey is;
+// any other error, except a wiring mistake (see Resolver), means the keys
+// could not be found out.
 var ErrIssuerNotSupported = errors.New("issuerkey: issuer not supported")
+
+// ErrNoUsableKey is what a Resolver wraps when the issuer's key source
+// answered and its answer gives no usable key, for a reason the error states:
+// a document that is not valid for its standard, or one naming another
+// issuer. Like an empty set it is a definite answer, not a failure to find
+// out: a later call gives the same until the issuer changes its document.
+var ErrNoUsableKey = errors.New("issuerkey: no usable key")
 
 // Resolver returns the keys an issuer publishes for signing. Keys may be
 // called from several goroutines at once and should return when ctx is done:
@@ -40,12 +48,28 @@ var ErrIssuerNotSupported = errors.New("issuerkey: issuer not supported")
 type Resolver interface {
 	// Keys returns the keys iss currently publishes for signing, and only
 	// those that may still verify: revocation is the resolver's policy. It
-	// has three outcomes, which callers map apart:
+	// has four outcomes: a set, or an error a caller tells apart with
+	// errors.Is:
 	//   - a set, empty when the issuer has no usable key (unknown, rotated
 	//     out or deactivated): no key verifies the token;
 	//   - an error wrapping ErrIssuerNotSupported: iss is not accepted;
-	//   - any other error: the keys could not be found out (a network or
-	//     store failure), and a later call may succeed.
+	//   - an error wrapping ErrNoUsableKey: like an empty set, with the
+	//     reason;
+	//   - any other error, except a wiring mistake (see below): the keys
+	//     could not be found out (a network or store failure), and a later
+	//     call may succeed.
+	//
+	// A caller that tells them apart matches in that order: an error wrapping
+	// both sentinels is ErrIssuerNotSupported. Branch on the sentinels, not on
+	// a jose error they may also wrap, such as jose.ErrMalformed for a
+	// malformed document.
+	//
+	// An error wrapping jose.ErrInvalidArgument is none of these outcomes but
+	// a wiring mistake of the code that built or calls the resolver, such as a
+	// zero-value resolver or a nil ctx: digitalcredential.Verify reports it as
+	// ErrPolicy (unless ctx has already ended), also through a
+	// statuslist.Checker, and a later call gives the same. Wrap it only for
+	// such a mistake, never for anything iss or the issuer's answer controls.
 	//
 	// iss comes from a token whose signature is not verified yet, so anyone
 	// can write it. It may be "" (iss is OPTIONAL in draft 19 §2.2.2.3) and
@@ -62,6 +86,9 @@ type Resolver interface {
 // 19 §4.2 (kid RECOMMENDED), so the key is deterministic and a token cannot
 // make the verifier try many keys. h is untrusted; Select only reads kid.
 func Select(keys []Key, h jws.Header) (*ecdsa.PublicKey, error) {
+	if len(keys) == 0 {
+		return nil, errors.New("issuerkey: the resolver returned no key for this issuer: it publishes none, none is still valid, or none is a P-256 or secp256k1 signing key")
+	}
 	var key *ecdsa.PublicKey
 	// Read raw: Header.Kid gives "" for an absent, empty or non-string kid,
 	// and only the absent one may fall back to a single key. A kid that is
@@ -79,7 +106,7 @@ func Select(keys []Key, h jws.Header) (*ecdsa.PublicKey, error) {
 			}
 		}
 		if n != 1 {
-			return nil, fmt.Errorf("issuerkey: %d keys have the header kid, want 1", n)
+			return nil, fmt.Errorf("issuerkey: %d of the keys the resolver returned have the header kid, want 1", n)
 		}
 	} else {
 		if len(keys) != 1 {
