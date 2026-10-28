@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -105,6 +106,29 @@ func TestCheckerDraft21Section42Example(t *testing.T) {
 		got, err := c.Status(context.Background(), Ref{URI: uri, Index: i}, "https://example.com")
 		if err != nil || got != want {
 			t.Errorf("Status(%d) = %d, %v; want %d", i, got, err, want)
+		}
+	}
+}
+
+// Draft 21 §4.2: bits is a JSON integer, a value, so the RFC 8259 §6
+// forms 1.0 and 10e-1 are the bits 1 and read like 1.
+func TestCheckerReadsBitsByValue(t *testing.T) {
+	signer, pub := newP256Signer(t)
+	header := jws.Header{"typ": "statuslist+jwt", "kid": "k"}
+	forms := []json.Number{"1", "1.0", "10e-1"}
+	tokens := map[string]string{}
+	for i, bits := range forms {
+		tokens["/statuslists/"+strconv.Itoa(i)] = signClaims(t, signer, pub, header, map[string]any{
+			"sub":         "https://example.com/statuslists/" + strconv.Itoa(i),
+			"iat":         draft21Now.Add(-time.Hour).Unix(),
+			"status_list": map[string]any{"bits": bits, "lst": "eNrbuRgAAhcBXQ"}, // §4.2: entry 0 is 1
+		})
+	}
+	c := newListServer(t, tokens).checker(t, keySet{"https://example.com": {{KID: "k", Key: pub}}})
+	for i, bits := range forms {
+		ref := Ref{URI: "https://example.com/statuslists/" + strconv.Itoa(i), Index: 0}
+		if got, err := c.Status(context.Background(), ref, "https://example.com"); err != nil || got != 1 {
+			t.Errorf("bits %s: Status(0) = %d, %v; want 1", bits, got, err)
 		}
 	}
 }

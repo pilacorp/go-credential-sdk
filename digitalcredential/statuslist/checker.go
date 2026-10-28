@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/jose"
@@ -374,15 +375,16 @@ func checkClaims(claims map[string]any, iss, uri string, now time.Time) (listCla
 			tc.ttl = time.Duration(f * float64(time.Second))
 		}
 	}
-	// §5.1 and §4.2: status_list holds bits, a JSON integer (Decode checks
-	// its value), and lst, a string.
+	// §5.1 and §4.2: status_list holds bits, a JSON integer read by its
+	// value, so 1.0 is 1 (Decode checks it is 1, 2, 4 or 8), and lst, a
+	// string.
 	sl, ok := claims["status_list"].(map[string]any)
 	if !ok {
 		return tc, fmt.Errorf("%w: statuslist: token status_list is not an object", jose.ErrMalformed)
 	}
 	n, _ := sl["bits"].(json.Number)
-	if tc.bits, err = strconv.Atoi(string(n)); err != nil {
-		return tc, fmt.Errorf("%w: statuslist: token status_list bits is not an integer", jose.ErrMalformed)
+	if tc.bits, err = jsonint.NonNegative(string(n)); err != nil {
+		return tc, fmt.Errorf("%w: statuslist: token status_list bits is not 1, 2, 4 or 8", jose.ErrMalformed)
 	}
 	if tc.lst, ok = sl["lst"].(string); !ok {
 		return tc, fmt.Errorf("%w: statuslist: token status_list lst is not a string", jose.ErrMalformed)
