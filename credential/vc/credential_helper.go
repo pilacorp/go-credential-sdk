@@ -65,6 +65,15 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 		vcJSON["@context"] = validatedContext
 	}
 
+	if len(vcc.RenderMethods) > 0 {
+		for i, method := range vcc.RenderMethods {
+			if err := method.validate(); err != nil {
+				return nil, fmt.Errorf("invalid renderMethod[%d]: %w", i, err)
+			}
+		}
+		vcJSON["renderMethod"] = serializeRenderMethods(vcc.RenderMethods)
+	}
+
 	if vcc.ID != "" {
 		vcJSON["id"] = vcc.ID
 	}
@@ -118,6 +127,17 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 	}
 
 	return vcJSON, nil
+}
+
+func serializeRenderMethods(methods []RenderMethod) interface{} {
+	values := make([]interface{}, len(methods))
+	for i, method := range methods {
+		values[i] = method
+	}
+	if len(values) == 1 {
+		return values[0]
+	}
+	return values
 }
 
 // normalizeCredentialData converts a CredentialData (which is a named type around

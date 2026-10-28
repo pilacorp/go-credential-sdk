@@ -146,3 +146,5 @@ testdata/*.key
 testdata/*.pem
 testdata/*.env
 .serena/
+.nda-harness/tasks/
+.nda-harness/profile.json

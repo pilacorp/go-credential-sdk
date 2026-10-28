@@ -65,16 +65,17 @@ type CredentialData jsonmap.JSONMap
 
 // CredentialContents represents the structured contents of a Credential.
 type CredentialContents struct {
-	Context          []interface{} `json:"context,omitempty"`          // JSON-LD contexts
-	ID               string        `json:"id,omitempty"`               // Credential identifier
-	Types            []string      `json:"type,omitempty"`             // Credential types
-	Issuer           string        `json:"issuer,omitempty"`           // Issuer identifier
-	ValidFrom        time.Time     `json:"validFrom,omitempty"`        // Issuance date
-	ValidUntil       time.Time     `json:"validUntil,omitempty"`       // Expiration date
-	CredentialStatus []Status      `json:"credentialStatus,omitempty"` // Credential status entries
-	Subject          []Subject     `json:"subject,omitempty"`          // Credential subjects
-	Schemas          []Schema      `json:"schemas,omitempty"`          // Credential schemas
-	TermsOfUse       []TermsOfUse  `json:"termsOfUse,omitempty"`       // Terms of use policies
+	Context          []interface{}  `json:"context,omitempty"`          // JSON-LD contexts
+	ID               string         `json:"id,omitempty"`               // Credential identifier
+	Types            []string       `json:"type,omitempty"`             // Credential types
+	Issuer           string         `json:"issuer,omitempty"`           // Issuer identifier
+	ValidFrom        time.Time      `json:"validFrom,omitempty"`        // Issuance date
+	ValidUntil       time.Time      `json:"validUntil,omitempty"`       // Expiration date
+	CredentialStatus []Status       `json:"credentialStatus,omitempty"` // Credential status entries
+	Subject          []Subject      `json:"subject,omitempty"`          // Credential subjects
+	Schemas          []Schema       `json:"schemas,omitempty"`          // Credential schemas
+	TermsOfUse       []TermsOfUse   `json:"termsOfUse,omitempty"`       // Terms of use policies
+	RenderMethods    []RenderMethod `json:"renderMethod,omitempty"`     // W3C render methods
 }
 
 // Status represents the credentialStatus field as per W3C Verifiable Credentials.
