@@ -89,6 +89,11 @@ cached. A key the issuer removes can still verify while its answer is cached, an
 Share one `Resolver`; a `statuslist.Checker` can take the same one. `WithHTTPClient` passes your own client, trusted
 code as for the `Checker`.
 
+This module does not meet HAIP 1.0 yet: §6.1.1 requires every entity to support issuer key resolution through an
+`x5c` certificate chain and every SD-JWT VC to carry that chain, and §6.1 requires `x5c` on Status List Tokens.
+`Verify` and the `Checker` take keys only from an `issuerkey.Resolver` by `iss` and `kid`, and neither `Issue` nor
+`SignToken` writes `x5c`.
+
 `anchor` holds NDA DID's anchoring conventions for these credentials. `anchor.Leaf(token)` returns the leaf of a
 credential for NDA DID's Merkle tree, whose root is anchored: SHA-256 of the bytes of its Issuer-signed JWT exactly as
 given, the part before the first `~`, so a credential and each presentation of it have one leaf. Any other serialization,
