@@ -8,12 +8,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuermeta"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jwk"
@@ -120,6 +124,40 @@ func TestVerifyResolverAnswers(t *testing.T) {
 	p.Issuers = failingResolver{fmt.Errorf("resolver: %w", jose.ErrInvalidArgument)}
 	if _, err := Verify(context.Background(), draft19Fig8, p); !errors.Is(err, ErrPolicy) {
 		t.Errorf("jose.ErrInvalidArgument: err = %v, want ErrPolicy", err)
+	}
+}
+
+// draft-ietf-oauth-sd-jwt-vc-19 §2.5 and §4: Figure 8 verifies with
+// Policy.Issuers an issuermeta.Resolver, its key found in the jwks of Figure
+// 14 published for the Figure 8 iss at the location of §4.1.
+func TestVerifyDraft19IssuerMetadata(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/jwt-vc-issuer/issuer" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"issuer":"https://example.com/issuer","jwks":{"keys":[
+			{"kid":"doc-signer-05-25-2022","kty":"EC","crv":"P-256","x":"b28d4MwZMjw8-00CG4xfnn9SLMVMM19SlqZpVb_uNtQ","y":"Xv5zWwuoaTgdS6hV43yI6gBwTnjukmFQQnJ_kCxzqk8"},
+			{"kid":"doc-signer-06-05-2025","kty":"EC","crv":"P-256","x":"DfjUx4WHBds61vGbqUQhsy3FGX13fAS13QWh2EHIkX8","y":"NfqJt9Kp0EA93xq9ysO80DRZ_hCGlISz-pYLgv4RFvg"}
+		]}}`))
+	}))
+	defer srv.Close()
+	// The client reaches the server for example.com, a name the httptest
+	// certificate holds.
+	client := srv.Client()
+	addr := srv.Listener.Addr().String()
+	client.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	r, err := issuermeta.NewResolver([]string{"https://example.com/"}, issuermeta.WithHTTPClient(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := draft19Policy(t)
+	p.Issuers = r
+	if _, err := Verify(context.Background(), draft19Fig8, p); err != nil {
+		t.Fatal(err)
 	}
 }
 

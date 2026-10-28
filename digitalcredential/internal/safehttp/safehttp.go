@@ -227,6 +227,9 @@ func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string
 	if err != nil {
 		return nil, nil, fetchError("", err)
 	}
+	// Callers may rely on Accept and Accept-Encoding being the same on every
+	// request of a Get, redirects included, unless the client's CheckRedirect
+	// or Transport changes them: a cache matching Vary does (RFC 9111 §4.1).
 	req.Header.Set("Accept", strings.Join(mediaTypes, ", "))
 	req.Header.Set("Accept-Encoding", "identity")
 

@@ -4,7 +4,7 @@
 // draft-ietf-oauth-status-list-21 alike: draft 21 §11.3 lets a Status List
 // Token use the key resolution of the credential.
 //
-// The keys of an issuer come from a Resolver the caller writes. The token
+// The keys of an issuer come from a Resolver the caller provides. The token
 // header never reaches it, so a token cannot influence how it is verified
 // (draft 19 §7.3); Select then picks one key by kid, never trying keys in
 // turn.

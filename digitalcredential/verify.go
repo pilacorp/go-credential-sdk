@@ -209,7 +209,8 @@ const defaultClockSkew = time.Minute
 type Policy struct {
 	// Issuers returns the keys of the issuers this verifier accepts
 	// (draft-ietf-oauth-sd-jwt-vc-19 §2.5); required, and it must not be a
-	// typed nil, which Verify cannot detect.
+	// typed nil, which Verify cannot detect. issuermeta.NewResolver returns
+	// one that reads JWT VC Issuer Metadata (§4).
 	Issuers issuerkey.Resolver
 	// AllowedAlgs are the algorithms accepted for the Issuer-signed JWT and
 	// the Key Binding JWT (RFC 8725 §3.1; RFC 9901 §7.1 step 2a, §7.3 step

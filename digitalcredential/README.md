@@ -71,6 +71,24 @@ is trusted code, and the address check below exists only in the default one.
 `issuerkey.Select` picks the key a JWS header names: a `kid` must match exactly one published key, and a token
 without `kid` needs an issuer that publishes exactly one key; keys are never tried in turn.
 
+`issuermeta.NewResolver(allowed)` returns an `issuerkey.Resolver` that reads the keys of an https issuer from its JWT VC
+Issuer Metadata (draft-ietf-oauth-sd-jwt-vc-19 §4): the metadata at `MetadataURL(iss)`, its `issuer` identical to `iss`,
+and the JWK Set in `jwks` or at `jwks_uri`. `allowed` is your trust list (§2.5): an entry ending in `/` covers every
+`iss` that starts with it, except one with a `.` or `..` path segment, any other entry only the `iss` equal to it, and
+`"https://"` covers every `iss` that starts with `https://` in lower case; matching is byte for byte, so case-sensitive.
+An empty list, or an entry that does not start with `https://` (the scheme in any case), is `jose.ErrInvalidArgument`
+from `NewResolver`: such an entry would match no `iss` or, like `"https:/"`, every one. An `iss` outside the list is
+`issuerkey.ErrIssuerNotSupported` with no request made; metadata or a JWK Set that must not be used is
+`issuerkey.ErrNoUsableKey` (`ISSUER_KEY_NOT_FOUND` from `Verify`); a failed retrieval is any other error
+(`ISSUER_KEY_UNAVAILABLE` from `Verify`, or an error wrapping `ctx.Err()` once `ctx` has ended). Only P-256 and
+secp256k1 keys whose `use`, `alg` and `key_ops`, if present, allow verifying are returned. Answers are cached for the
+least `max-age` less `Age` over the responses read (the metadata, the JWK Set and each redirect), at most 24 hours,
+within an estimated 4 MiB; if any of them has no valid `max-age`, says `no-store` or `no-cache`, has a `Vary` with a
+member other than `Accept` or `Accept-Encoding` (`*` included), or quotes a directive argument, the answer is not
+cached. A key the issuer removes can still verify while its answer is cached, and `WithoutCache` fetches every time.
+Share one `Resolver`; a `statuslist.Checker` can take the same one. `WithHTTPClient` passes your own client, trusted
+code as for the `Checker`.
+
 `anchor` holds NDA DID's anchoring conventions for these credentials. `anchor.Leaf(token)` returns the leaf of a
 credential for NDA DID's Merkle tree, whose root is anchored: SHA-256 of the bytes of its Issuer-signed JWT exactly as
 given, the part before the first `~`, so a credential and each presentation of it have one leaf. Any other serialization,
