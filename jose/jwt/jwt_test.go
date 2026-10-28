@@ -99,6 +99,8 @@ func TestCheckAud(t *testing.T) {
 		{name: "no audience given", aud: "", audience: "", err: ErrAudience},
 		{name: "array holding a number", aud: []any{me, json.Number("1")}, audience: me, err: jose.ErrMalformed},
 		{name: "object", aud: map[string]any{}, audience: me, err: jose.ErrMalformed},
+		// Claims are read as decoded; a map built in Go is not converted.
+		{name: "Go []string", aud: []string{me}, audience: me, err: jose.ErrMalformed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			claims := map[string]any{}

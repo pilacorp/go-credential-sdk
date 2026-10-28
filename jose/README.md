@@ -24,7 +24,8 @@ One package per standard:
   (RFC 7519 §4.1.4, §4.1.5) and wraps `jwt.ErrExpired` or `jwt.ErrNotYetValid`; `VerifyKBJWT` takes the rule from it,
   and the skew is the caller's policy. `jwt.CheckAud(claims, audience)` checks `aud` when present (RFC 7519 §4.1.3):
   a string or an array of strings that lists `audience`, else `jwt.ErrAudience` (`jose.ErrMalformed` for another
-  type).
+  type). `CheckExpNbf`, `DateClaim` and `CheckAud` read claims as `jose.DecodeJSONObject` yields them from a
+  received token; a Go `[]string` for `aud` is `jose.ErrMalformed`.
 - `jose/jwk`: `jwk.ToPublicKey` / `jwk.FromPublicKey` convert EC public keys (`kty: EC`, `crv: P-256 | secp256k1`,
   RFC 7517, RFC 7518, RFC 8812). A secp256k1 JWK that carries `alg`, `use` or `key_ops` must have `ES256K`, `sig`, or
   a list including `verify` (RFC 8812 §3.2). `ToPublicKey` refuses a public JWK whose `kty`, or `crv` of an EC key,

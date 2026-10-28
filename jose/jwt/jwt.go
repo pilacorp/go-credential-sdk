@@ -2,6 +2,12 @@
 // NumericDate (§2), the type of exp, nbf and iat (§4.1.4 to §4.1.6), and
 // checks exp and nbf against a time (§4.1.4, §4.1.5) and aud against an
 // audience (§4.1.3).
+//
+// The functions that take claims read them as jose.DecodeJSONObject yields
+// them from a received token: string, json.Number, bool, nil, []any and
+// map[string]any (RFC 7519 §4.1 defines claims as JSON values). Other Go types
+// are not converted (NumericDate also takes float64, int and int64), so a map
+// built in Go may hold values these functions refuse as malformed.
 package jwt
 
 import (
@@ -113,7 +119,9 @@ func CheckExpNbf(claims map[string]any, now time.Time, skew time.Duration) error
 // byte for byte (§2, StringOrURI); every element's type is checked before any
 // is compared. Absent aud is nil. Present aud is ErrAudience when audience is
 // "" or not listed, an empty array included, and jose.ErrMalformed when it is
-// neither a string nor an array of strings. No aud value is echoed.
+// neither a string nor an array of strings. An array is []any, as decoded:
+// a Go []string, or a named string type, is jose.ErrMalformed. No aud value
+// is echoed.
 func CheckAud(claims map[string]any, audience string) error {
 	v, ok := claims["aud"]
 	if !ok {
