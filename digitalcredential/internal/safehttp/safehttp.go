@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -173,9 +174,10 @@ func (l Limits) schemes() string {
 // URL with a host and no userinfo), and at most l.MaxRedirects
 // redirects are followed, both checked before the next request is sent. The
 // whole fetch ends within l.Timeout. The status must be 2xx, and the media
-// type of Content-Type must be mediaType (ASCII case ignored, parameters
-// allowed); mediaType is also sent as Accept. A body over l.MaxBytes is an
-// error, never truncated. Accept-Encoding is identity, so l.MaxBytes counts
+// type of Content-Type must be one of mediaTypes (ASCII case ignored,
+// parameters allowed); the list, joined by ", ", is also sent as Accept (RFC
+// 9110 §12.5.1). An empty list matches no response. A body over l.MaxBytes is
+// an error, never truncated. Accept-Encoding is identity, so l.MaxBytes counts
 // the bytes the server sends: with transparent decompression a stream of
 // empty deflate blocks adds nothing to the body and only l.Timeout would end
 // it. A body sent compressed anyway is returned as is and fails the caller's
@@ -200,7 +202,7 @@ func (l Limits) schemes() string {
 // context.DeadlineExceeded, ErrBlockedAddress, an error of c), but not the
 // *url.Error that carried it; printing the cause itself prints net/http's
 // text, which may hold the URL.
-func Get(ctx context.Context, c *http.Client, rawURL, mediaType string, l Limits) ([]byte, http.Header, error) {
+func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string, l Limits) ([]byte, http.Header, error) {
 	if c == nil {
 		return nil, nil, errors.New("safehttp: nil client")
 	}
@@ -223,7 +225,7 @@ func Get(ctx context.Context, c *http.Client, rawURL, mediaType string, l Limits
 	if err != nil {
 		return nil, nil, fetchError("", err)
 	}
-	req.Header.Set("Accept", mediaType)
+	req.Header.Set("Accept", strings.Join(mediaTypes, ", "))
 	req.Header.Set("Accept-Encoding", "identity")
 
 	client := *c
@@ -253,8 +255,9 @@ func Get(ctx context.Context, c *http.Client, rawURL, mediaType string, l Limits
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, nil, fmt.Errorf("safehttp: status %d", resp.StatusCode)
 	}
-	if mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err != nil || !strings.EqualFold(mt, mediaType) {
-		return nil, nil, fmt.Errorf("safehttp: content type is not %s", mediaType)
+	mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || !slices.ContainsFunc(mediaTypes, func(want string) bool { return strings.EqualFold(mt, want) }) {
+		return nil, nil, fmt.Errorf("safehttp: content type is not %s", strings.Join(mediaTypes, " or "))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, l.MaxBytes+1))
 	if err != nil {
