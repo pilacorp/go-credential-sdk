@@ -274,6 +274,84 @@ func TestCheckerCacheLifetime(t *testing.T) {
 	}
 }
 
+// An issuer may grow a list (draft 21 §13.4). An index past a cached copy
+// is checked against the token fetched again, and only an index past that
+// one is ErrIndexOutOfBounds.
+func TestCheckerRefetchesGrownList(t *testing.T) {
+	signer, pub := newP256Signer(t)
+	const uri, iss = "https://example.com/statuslists/g", "https://a.example"
+	sign := func(entries int, iat time.Time) string {
+		l, err := New(entries, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entries > 12 {
+			if err := l.Set(12, 1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		token, err := SignToken(l, TokenClaims{Sub: uri, IssuedAt: iat, TTL: time.Hour}, SigningKey{Signer: signer, Public: pub, KID: "k"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	s := newListServer(t, map[string]string{"/statuslists/g": sign(8, draft21Now.Add(-time.Hour))})
+	c := s.checker(t, keySet{iss: {{KID: "k", Key: pub}}})
+	ctx := context.Background()
+	if _, err := c.Status(ctx, Ref{URI: uri, Index: 3}, iss); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Status(ctx, Ref{URI: uri, Index: 12}, iss); !errors.Is(err, ErrIndexOutOfBounds) {
+		t.Fatalf("idx 12 of 8 entries, fetched again: err = %v, want ErrIndexOutOfBounds", err)
+	}
+	if n := s.hits.Load(); n != 2 {
+		t.Fatalf("server got %d requests, want 2 (the index past the cached list fetches again)", n)
+	}
+	s.tokens["/statuslists/g"] = sign(16, draft21Now.Add(-time.Minute))
+	if v, err := c.Status(ctx, Ref{URI: uri, Index: 12}, iss); err != nil || v != 1 {
+		t.Fatalf("idx 12 after the list grew to 16: Status = %d, %v; want 1", v, err)
+	}
+	// The grown list replaced the cached one.
+	if v, err := c.Status(ctx, Ref{URI: uri, Index: 12}, iss); err != nil || v != 1 || s.hits.Load() != 3 {
+		t.Fatalf("idx 12 again: Status = %d, %v after %d requests; want 1 from the cache after 3", v, err, s.hits.Load())
+	}
+}
+
+// The cache holds at most maxCacheBytes of lists. Once full it caches no new
+// list while every entry is live, and drops expired entries to make room.
+func TestCheckerCacheBudget(t *testing.T) {
+	c, err := NewChecker(keySet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := draft21Now
+	c.now = func() time.Time { return now }
+	const iss = "https://a.example"
+	store := func(n int, expires time.Time) bool {
+		l, err := New(1<<23, 1) // 1 MiB
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := cacheKey{iss: iss, uri: "https://a.example/l/" + strconv.Itoa(n)}
+		c.store(key, l, now, expires)
+		return c.cached(key) != nil
+	}
+	// 32 lists of 1 MiB and their keys exceed 32 MiB: the 32nd is refused.
+	for n := range 31 {
+		if !store(n, draft21Now.Add(time.Hour)) {
+			t.Fatalf("list %d of 1 MiB not cached", n)
+		}
+	}
+	if store(31, draft21Now.Add(2*time.Hour)) {
+		t.Fatal("cached a 32nd list of 1 MiB, past the 32 MiB budget")
+	}
+	now = draft21Now.Add(time.Hour)
+	if !store(32, draft21Now.Add(2*time.Hour)) {
+		t.Fatal("the cached lists expired, but a new list was not cached")
+	}
+}
+
 // Two fetches of one list can finish out of order. A cached list must not
 // be replaced by one from an older token (draft 21 §5.1: iat is when the
 // token was issued), or a revocation already seen would be undone.

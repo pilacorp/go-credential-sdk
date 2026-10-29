@@ -298,6 +298,10 @@ func TestVerifyRejects(t *testing.T) {
 		{"status unavailable", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: errors.New("list unreachable")}), CodeStatusUnavailable, nil},
 		// draft-ietf-oauth-status-list-21 §8.3 step 6: MUST be rejected.
 		{"idx out of bounds", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("list: %w", statuslist.ErrIndexOutOfBounds)}), CodeMalformed, statuslist.ErrIndexOutOfBounds},
+		// The checker's resolver returned a key no ES alg verifies with, as a
+		// statuslist.Checker reports it: the caller's wiring, as on the
+		// credential path.
+		{"status key on another curve", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("statuslist: token: %w: P-384", jws.ErrBadKey)}), "", nil},
 		// draft 19 §2.4: status SHOULD be checked, so not checking is opted into.
 		{"status and no Policy.Status", issued, own.policy, "", nil},
 	}

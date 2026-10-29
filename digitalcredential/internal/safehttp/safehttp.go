@@ -61,12 +61,14 @@ const maxHeaderBytes = 64 << 10
 func NewClient() *http.Client {
 	// net/http keeps dialing after the request is canceled, to reuse the
 	// connection, so Limits.Timeout does not end a stalled connect or TLS
-	// handshake; these bounds do (the values of http.DefaultTransport).
-	dialer := &net.Dialer{Timeout: 30 * time.Second, Control: control}
+	// handshake; these bounds do. Every caller's fetch ends within 5 seconds,
+	// so a dial or handshake past that serves only a fetch that has failed,
+	// and holds a socket to a host the token may have chosen.
+	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: control}
 	return &http.Client{Transport: &http.Transport{
 		Proxy:                  nil,
 		DialContext:            dialer.DialContext,
-		TLSHandshakeTimeout:    10 * time.Second,
+		TLSHandshakeTimeout:    5 * time.Second,
 		ForceAttemptHTTP2:      true,
 		MaxIdleConns:           100,
 		IdleConnTimeout:        90 * time.Second,

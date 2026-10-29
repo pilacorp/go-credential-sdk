@@ -33,7 +33,7 @@ const (
 	maxRedirects     = 3                              // sd-jwt-vc-19 §3: MUST limit redirects
 	clockSkew        = time.Minute                    // RFC 7519 §4.1.4, §4.1.5: small leeway
 	maxCacheLifetime = 24 * time.Hour                 // upper bound on ttl (§11.5)
-	maxCacheBytes    = 32 << 20                       // list capacity plus key lengths
+	maxCacheBytes    = 32 << 20                       // estimated heap of the cached entries
 	// maxTokenBytes caps the token read, in compact form (draft 21 sets no
 	// limit, §13.4). With lst base64url-encoded inside the base64url
 	// payload, it holds only about 576 KiB of list bytes that do not
@@ -81,9 +81,12 @@ func (r Ref) Validate() error {
 // at most 3 redirects and reads at most 1 MiB; a list inflates to at most 16
 // MiB; the clock skew is 1 minute. It caches verified lists for the token's
 // ttl, at most 24 hours and never past exp; a token without ttl is not
-// cached. The cache counts 32 MiB of list bytes (their capacity) plus key
-// lengths, not total heap. When live entries fill it, a new list is not
-// cached until one expires; no live entry is evicted.
+// cached. The cache counts 32 MiB, estimated from the lists and keys it
+// holds, not total heap. When live entries fill it, a new list is not
+// cached until one expires; no live entry is evicted. Any issuer the
+// resolver accepts can fill it with lists of its own, one per uri, which
+// costs other issuers a fetch on every call until entries expire, never a
+// wrong status.
 //
 // At most 4 lists are decoded at once, in arrival order. Each cache miss holds
 // up to about 1 MiB of token data until its decode runs, and the issuer's
@@ -98,6 +101,11 @@ func (r Ref) Validate() error {
 //
 // It fetches only https URLs with a host and no userinfo, on every redirect
 // too, unless WithInsecureHTTP allows http.
+//
+// The Status List Token is verified with ES256 or ES256K as the key's curve
+// decides; digitalcredential's Policy.AllowedAlgs does not reach it. To
+// restrict it, give NewChecker a resolver that returns only keys on the
+// allowed curves.
 type Checker struct {
 	issuers      issuerkey.Resolver
 	client       *http.Client
@@ -107,7 +115,10 @@ type Checker struct {
 
 	mu    sync.Mutex
 	cache map[cacheKey]cacheEntry
-	used  int // bytes of the cached entries
+	used  int // bytes of the cached entries, as estimated by store
+	// purgeAt is no later than the earliest expiry in cache, zero when
+	// unknown: before it, a full cache holds no expired entry to drop.
+	purgeAt time.Time
 }
 
 // Option configures a Checker.
@@ -141,9 +152,10 @@ func WithInsecureHTTP() Option {
 
 // NewChecker returns a Checker that verifies Status List Tokens with the keys
 // issuers returns. issuers must be the resolver the Referenced Token itself is
-// verified with, which the Checker cannot check: the SDK accepts a list only
-// under a key of the credential's issuer, the same-key or same-resolution
-// options of draft 21 §11.3. A separate Status Issuer linked by X.509 PKI
+// verified with, or a wrapper that returns a subset of its keys, which the
+// Checker cannot check: the SDK accepts a list only under a key of the
+// credential's issuer, the same-key or same-resolution options of draft 21
+// §11.3. A separate Status Issuer linked by X.509 PKI
 // (§11.3, §13.5) is not supported. A nil issuers is jose.ErrInvalidArgument;
 // nil options are skipped.
 func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
@@ -183,9 +195,13 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 // §8.3, an lst Decode refuses, or an index outside the list, which wraps
 // ErrIndexOutOfBounds: the Referenced Token MUST be rejected
 // (draft-ietf-oauth-status-list-21 §8.3 step 6), and the caller made no
-// mistake. Errors of the resolver, jose/jws and jose/jwt are
-// wrapped unchanged. No error of the fetch holds the status list uri or
-// a redirect target, which may carry a secret: safehttp writes its own text
+// mistake. That error comes only from the token fetched during the call:
+// an issuer may grow a list (§13.4), so an index outside a cached list,
+// one another call cached meanwhile included, is read from a fresh fetch,
+// and a cache hit then costs a fetch. When that fetch fails, Status returns
+// its error, not ErrIndexOutOfBounds. Errors of the resolver, jose/jws and
+// jose/jwt are wrapped unchanged. No error of the fetch holds the status
+// list uri or a redirect target, which may carry a secret: safehttp writes its own text
 // for its checks and passes every net/http error through an allowlist. A
 // network error through a proxy of the WithHTTPClient client can still quote
 // certificate names. errors.Is still reaches the cause, such as
@@ -211,9 +227,19 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 	// key would answer for another issuer's token pointing to the same uri.
 	key := cacheKey{iss: iss, uri: ref.URI}
 	l := c.cached(key)
+	fromCache := l != nil
 	if l == nil {
 		var err error
-		if l, err = c.load(ctx, key); err != nil {
+		if l, err = c.load(ctx, key, ref.Index); err != nil {
+			return 0, err
+		}
+	}
+	// §13.4 lets an issuer grow a list, so a cached copy may predate the
+	// entry. The SDK reads an index outside it from a fresh fetch; §8.3 step
+	// 4d and §13.7 would let it answer from the copy until ttl.
+	if ref.Index >= l.entries() && fromCache {
+		var err error
+		if l, err = c.load(ctx, key, ref.Index); err != nil {
 			return 0, err
 		}
 	}
@@ -226,9 +252,11 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 }
 
 // load fetches, verifies and decodes the Status List Token of key and caches
-// the list before any index is read, so an index outside it is answered from
-// the cache too.
-func (c *Checker) load(ctx context.Context, key cacheKey) (*List, error) {
+// the list before any index is read. A list another call cached while this
+// one waited for a decode slot is returned instead only when it holds entry
+// idx; otherwise this call decodes the token it fetched, so an index outside
+// the list returned is outside the list this call fetched.
+func (c *Checker) load(ctx context.Context, key cacheKey, idx int) (*List, error) {
 	fetched := c.now()
 	// §8.1, §8.2; redirects bounded (§11.4) to maxRedirects.
 	body, _, err := safehttp.Get(ctx, c.client, key.uri, []string{mediaTypeJWT},
@@ -278,7 +306,7 @@ func (c *Checker) load(ctx context.Context, key cacheKey) (*List, error) {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("statuslist: %w", ctx.Err())
 	}
-	if l := c.cached(key); l != nil {
+	if l := c.cached(key); l != nil && idx < l.entries() {
 		<-c.slots
 		return l, nil
 	}

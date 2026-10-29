@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+// entryCost estimates the heap bytes of an entry besides its list's byte
+// array and its key's strings: the List, its share of the map, two times.
+// About 200 measured on go1.24.3 and go1.26.0 (arm64) with lists from
+// Decode, rounded up.
+const entryCost = 256
+
 type cacheKey struct{ iss, uri string }
 
 type cacheEntry struct {
@@ -33,15 +39,16 @@ func (c *Checker) cached(key cacheKey) *List {
 // replaces an entry of the same key, unless that entry is live and comes
 // from a newer token: fetches can finish out of order, and iat is the only
 // signed order between two tokens of one list (draft 21 §5.1, §13.7). An
-// entry counts the memory it holds, the capacity of the byte array and the
-// key. When the cache is full, expired entries are dropped; if there is still
-// no room, l is not cached, which costs a fetch, never a wrong answer.
+// entry counts the memory it holds: entryCost, the capacity of the byte array
+// and the key. When the cache is full, expired entries are dropped; if there
+// is still no room, l is not cached, which costs a fetch, never a wrong
+// answer.
 func (c *Checker) store(key cacheKey, l *List, iat, expires time.Time) {
 	now := c.now()
 	if !now.Before(expires) {
 		return
 	}
-	size := cap(l.b) + len(key.iss) + len(key.uri)
+	size := entryCost + cap(l.b) + len(key.iss) + len(key.uri)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if old, ok := c.cache[key]; ok {
@@ -51,20 +58,28 @@ func (c *Checker) store(key cacheKey, l *List, iat, expires time.Time) {
 		c.used -= old.size
 		delete(c.cache, key)
 	}
-	if c.used+size > maxCacheBytes {
+	// Scanned only once an entry may have expired: while all are live, a scan
+	// frees nothing and holds mu over the whole map on every refused store.
+	if c.used+size > maxCacheBytes && !now.Before(c.purgeAt) {
+		c.purgeAt = time.Time{}
 		for k, e := range c.cache {
 			if !now.Before(e.expires) {
 				c.used -= e.size
 				delete(c.cache, k)
+			} else if c.purgeAt.IsZero() || e.expires.Before(c.purgeAt) {
+				c.purgeAt = e.expires
 			}
 		}
-		if c.used+size > maxCacheBytes {
-			return
-		}
+	}
+	if c.used+size > maxCacheBytes {
+		return
 	}
 	// Cloned so the budget counts what the entry holds, even when the caller
 	// passed substrings of a larger buffer.
 	key = cacheKey{iss: strings.Clone(key.iss), uri: strings.Clone(key.uri)}
 	c.cache[key] = cacheEntry{list: l, iat: iat, expires: expires, size: size}
 	c.used += size
+	if c.purgeAt.IsZero() || expires.Before(c.purgeAt) {
+		c.purgeAt = expires
+	}
 }
