@@ -318,6 +318,40 @@ func TestCheckerRefetchesGrownList(t *testing.T) {
 	}
 }
 
+// The cache holds at most maxCacheBytes of lists. Once full it caches no new
+// list while every entry is live, and drops expired entries to make room.
+func TestCheckerCacheBudget(t *testing.T) {
+	c, err := NewChecker(keySet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := draft21Now
+	c.now = func() time.Time { return now }
+	const iss = "https://a.example"
+	store := func(n int, expires time.Time) bool {
+		l, err := New(1<<23, 1) // 1 MiB
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := cacheKey{iss: iss, uri: "https://a.example/l/" + strconv.Itoa(n)}
+		c.store(key, l, now, expires)
+		return c.cached(key) != nil
+	}
+	// 32 lists of 1 MiB and their keys exceed 32 MiB: the 32nd is refused.
+	for n := range 31 {
+		if !store(n, draft21Now.Add(time.Hour)) {
+			t.Fatalf("list %d of 1 MiB not cached", n)
+		}
+	}
+	if store(31, draft21Now.Add(2*time.Hour)) {
+		t.Fatal("cached a 32nd list of 1 MiB, past the 32 MiB budget")
+	}
+	now = draft21Now.Add(time.Hour)
+	if !store(32, draft21Now.Add(2*time.Hour)) {
+		t.Fatal("the cached lists expired, but a new list was not cached")
+	}
+}
+
 // Two fetches of one list can finish out of order. A cached list must not
 // be replaced by one from an older token (draft 21 §5.1: iat is when the
 // token was issued), or a revocation already seen would be undone.

@@ -33,7 +33,7 @@ const (
 	maxRedirects     = 3                              // sd-jwt-vc-19 §3: MUST limit redirects
 	clockSkew        = time.Minute                    // RFC 7519 §4.1.4, §4.1.5: small leeway
 	maxCacheLifetime = 24 * time.Hour                 // upper bound on ttl (§11.5)
-	maxCacheBytes    = 32 << 20                       // list capacity plus key lengths
+	maxCacheBytes    = 32 << 20                       // estimated heap of the cached entries
 	// maxTokenBytes caps the token read, in compact form (draft 21 sets no
 	// limit, §13.4). With lst base64url-encoded inside the base64url
 	// payload, it holds only about 576 KiB of list bytes that do not
@@ -81,8 +81,8 @@ func (r Ref) Validate() error {
 // at most 3 redirects and reads at most 1 MiB; a list inflates to at most 16
 // MiB; the clock skew is 1 minute. It caches verified lists for the token's
 // ttl, at most 24 hours and never past exp; a token without ttl is not
-// cached. The cache counts 32 MiB of list bytes (their capacity) plus key
-// lengths, not total heap. When live entries fill it, a new list is not
+// cached. The cache counts 32 MiB, estimated from the lists and keys it
+// holds, not total heap. When live entries fill it, a new list is not
 // cached until one expires; no live entry is evicted. Any issuer the
 // resolver accepts can fill it with lists of its own, one per uri, which
 // costs other issuers a fetch on every call until entries expire, never a
@@ -115,7 +115,10 @@ type Checker struct {
 
 	mu    sync.Mutex
 	cache map[cacheKey]cacheEntry
-	used  int // bytes of the cached entries
+	used  int // bytes of the cached entries, as estimated by store
+	// purgeAt is no later than the earliest expiry in cache, zero when
+	// unknown: before it, a full cache holds no expired entry to drop.
+	purgeAt time.Time
 }
 
 // Option configures a Checker.
