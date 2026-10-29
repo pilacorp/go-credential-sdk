@@ -7,14 +7,15 @@ neither go-ethereum nor the root module of go-credential-sdk; it imports module 
 
 `Issue(req, key)` signs an SD-JWT VC and returns it in compact form, `<JWT>~<D1>~…~<Dn>~`. `IssueRequest` sets `vct`
 (required by draft 19), `iss`, `iat`, `nbf` and `exp` (each optional, the times in whole seconds), `cnf.jwk` from the
-holder key (a `cnf` without `iss` or `sub` is allowed: draft-ietf-oauth-sd-jwt-vc-20 §2.2.2.3 overrides RFC 7800 §3) and
-`status.status_list` from a `statuslist.Ref`; `Claims` holds every other claim and `Disclose` the paths to conceal. A
-claim whose field is unset may come in `Claims` instead, in any form the standards allow and unchecked: `iat`, `nbf` or
-`exp` as a NumericDate with a fraction (RFC 7519 §2), `cnf` in any RFC 7800 form, `status` with any mechanism; `iss` and
-`vct` never. The claims draft 19 §2.2.2.3 forbids disclosing, those given in `Claims` included, are added after the
-concealed claims, so they carry neither a disclosure nor a decoy, and a `Disclose` path starting at one is refused.
-`aka_vcts` must be a non-empty array of strings without the value of `vct` (§2.2.2.2). Decoys need at least one
-`Disclose` path (§2.2.2.5). The key is a `statuslist.SigningKey`, as for `SignToken`: `alg` follows the curve of its
+holder key (a `cnf` without `iss` or `sub` is allowed, ahead of draft 19, which this package pins: RFC 7800 §3 requires
+one of them, and draft-ietf-oauth-sd-jwt-vc-20 §2.2.2.3, unchanged in -22, overrides that requirement for key-bound
+SD-JWT VCs) and `status.status_list` from a `statuslist.Ref`; `Claims` holds every other claim and `Disclose` the paths
+to conceal. A claim whose field is unset may come in `Claims` instead, in any form the standards allow and unchecked:
+`iat`, `nbf` or `exp` as a NumericDate with a fraction (RFC 7519 §2), `cnf` in any RFC 7800 form, `status` with any
+mechanism; `iss` and `vct` never. The claims draft 19 §2.2.2.3 forbids disclosing, those given in `Claims` included, are
+added after the concealed claims, so they carry neither a disclosure nor a decoy, and a `Disclose` path starting at one
+is refused. `aka_vcts` must be a non-empty array of strings without the value of `vct` (§2.2.2.2). Decoys need at least
+one `Disclose` path (§2.2.2.5). The key is a `statuslist.SigningKey`, as for `SignToken`: `alg` follows the curve of its
 `Public` and `typ` is `dc+sd-jwt`. Its `Signer` must return the 64-byte `r‖s` of the 32-byte digest it gets
 (`jws.Signer`). The root module's `signer.P256Provider` does; `signer.DefaultProvider` returns go-ethereum's 65-byte
 `r‖s‖v`, so `Issue` with it fails with `jws.ErrSelfCheck`, and it needs a wrapper that returns the first 64 bytes.
