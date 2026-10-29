@@ -40,9 +40,9 @@ const (
 	// status_list idx is outside the issuer's Status List, where
 	// draft-ietf-oauth-status-list-21 §8.3 step 6 says the token MUST be
 	// rejected; Err then wraps statuslist.ErrIndexOutOfBounds. The idx is
-	// compared with a list only when status is checked. A list cached before
-	// the issuer published a longer one gives this until the cached list
-	// expires.
+	// compared with a list only when status is checked. A statuslist.Checker
+	// gives this only for a list it fetched during the call, never for an
+	// older cached copy, since an issuer may grow a list (§13.4).
 	CodeMalformed Code = "MALFORMED"
 	// CodeTypInvalid: the Issuer-signed JWT typ is not dc+sd-jwt. The Issuer
 	// MUST write it (draft-ietf-oauth-sd-jwt-vc-19 §2.2.1), so a token without
@@ -159,11 +159,11 @@ func (e *Error) Unwrap() error { return e.Err }
 // cannot verify: the caller's code or configuration is at fault, not the
 // token. Some cases show only for some tokens and only after the caller's own
 // network calls: an AllowedAlgs entry this SDK does not support, a resolver
-// key on another curve (after Policy.Issuers, or inside Policy.Status), no
-// Audience or Nonce when a Key Binding JWT must be checked, no Status for a
-// credential with status_list, or a resolver or checker error wrapping
-// jose.ErrInvalidArgument. So do not treat it as a startup-only error. It
-// wraps no cause.
+// key on another curve (from Policy.Issuers, or from the resolver of a
+// statuslist.Checker), no Audience or Nonce when a Key Binding JWT must be
+// checked, no Status for a credential with status_list, or a resolver or
+// checker error wrapping jose.ErrInvalidArgument. So do not treat it as a
+// startup-only error. It wraps no cause.
 var ErrPolicy = errors.New("digitalcredential: invalid verify policy")
 
 // StatusChecker returns the raw status of the Referenced Token ref points to
@@ -172,7 +172,8 @@ var ErrPolicy = errors.New("digitalcredential: invalid verify policy")
 //   - one wrapping statuslist.ErrIndexOutOfBounds is MALFORMED (§8.3 step 6:
 //     MUST be rejected), whatever ctx says;
 //   - when ctx is done, Verify returns an error wrapping ctx.Err();
-//   - one wrapping jose.ErrInvalidArgument or jws.ErrBadKey is ErrPolicy;
+//   - one wrapping jose.ErrInvalidArgument is ErrPolicy; a statuslist.Checker
+//     wraps it also when its resolver returned a key not on P-256 or secp256k1;
 //   - any other is STATUS_UNAVAILABLE.
 //
 // List.Get reports an index outside the list as jose.ErrInvalidArgument; a
@@ -673,9 +674,11 @@ func checkStatus(ctx context.Context, st statusClaim, iss string, p Policy) (uin
 	case ctx.Err() != nil:
 		return 0, fmt.Errorf("digitalcredential: checking the status: %w (Policy.Status: %v)", ctx.Err(), err)
 	// Verify validated the Ref, so this is the checker's wiring, such as a
-	// statuslist.Checker not made by NewChecker, or its resolver returning a
-	// key not on P-256 or secp256k1, as the credential path reports it.
-	case errors.Is(err, jose.ErrInvalidArgument), errors.Is(err, jws.ErrBadKey):
+	// statuslist.Checker not made by NewChecker, or one whose resolver returned
+	// a key not on P-256 or secp256k1, which the Checker reports with
+	// jose.ErrInvalidArgument, as the credential path does. Not jws.ErrBadKey
+	// alone: a resolver may wrap one from its own work.
+	case errors.Is(err, jose.ErrInvalidArgument):
 		return 0, policyErr("Policy.Status: %v", err)
 	// Never by jose.ErrMalformed: a fetch can fail with it too.
 	default:

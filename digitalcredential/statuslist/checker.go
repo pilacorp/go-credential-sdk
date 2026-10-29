@@ -91,8 +91,10 @@ func (r Ref) Validate() error {
 // At most 4 lists are decoded at once, in arrival order. Each cache miss holds
 // up to about 1 MiB of token data until its decode runs, and the issuer's
 // token sets how long each decode takes, so one issuer's lists can delay
-// other issuers' cache misses; cache hits are not delayed. Bound waiting with
-// ctx deadlines, and bound your own concurrency.
+// other issuers' cache misses; cache hits are not delayed. There is no
+// single-flight: concurrent misses on one iss and uri each fetch the token and
+// call the resolver. Bound waiting with ctx deadlines, and bound your own
+// concurrency.
 //
 // The default client refuses addresses that are not globally reachable, but
 // hosts reachable only inside the deployment's own network are known to no
@@ -186,8 +188,10 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 // validates the Referenced Token first (§8.3: its processing rules precede
 // any status evaluation).
 //
-// A Checker not made by NewChecker, a nil ctx, or a ref breaking the rules of
-// Ref are jose.ErrInvalidArgument. Any error means no statement about the
+// A Checker not made by NewChecker, a nil ctx, a ref breaking the rules of
+// Ref, or a key from the resolver that is not P-256 or secp256k1
+// (issuerkey.Key; that error also wraps jws.ErrBadKey) are
+// jose.ErrInvalidArgument. Any error means no statement about the
 // status can be made (§8.3), and is never a status: a uri the Checker does
 // not fetch (not https, unless WithInsecureHTTP), a failed fetch, a token
 // that is malformed, not signed by a key of iss (issuerkey.Select), carrying
@@ -288,6 +292,11 @@ func (c *Checker) load(ctx context.Context, key cacheKey, idx int) (*List, error
 	// claim is read.
 	_, payload, err := jws.Verify(token, pub, nil)
 	if err != nil {
+		// pub came from c.issuers, which issuerkey.Key limits to P-256 and
+		// secp256k1: the verifier's wiring, as on the credential path.
+		if errors.Is(err, jws.ErrBadKey) {
+			return nil, fmt.Errorf("%w: statuslist: the issuer key resolver returned a key that is not P-256 or secp256k1 (issuerkey.Key): %w", jose.ErrInvalidArgument, err)
+		}
 		return nil, fmt.Errorf("statuslist: token: %w", err)
 	}
 	claims, err := jose.DecodeJSONObject(payload)

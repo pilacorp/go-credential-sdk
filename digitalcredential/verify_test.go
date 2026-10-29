@@ -301,7 +301,7 @@ func TestVerifyRejects(t *testing.T) {
 		// The checker's resolver returned a key no ES alg verifies with, as a
 		// statuslist.Checker reports it: the caller's wiring, as on the
 		// credential path.
-		{"status key on another curve", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("statuslist: token: %w: P-384", jws.ErrBadKey)}), "", nil},
+		{"status key on another curve", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("%w: statuslist: the issuer key resolver returned a key that is not P-256 or secp256k1 (issuerkey.Key): %w: P-384", jose.ErrInvalidArgument, jws.ErrBadKey)}), "", nil},
 		// draft 19 §2.4: status SHOULD be checked, so not checking is opted into.
 		{"status and no Policy.Status", issued, own.policy, "", nil},
 	}

@@ -51,8 +51,16 @@ One package per standard:
   package has its own errors.
 
 ```go
+// signer is your jws.Signer and issuerPub its public key; payloadJSON is the claims object as JSON.
 token, err := jws.Sign(signer, issuerPub, jws.Header{"typ": "dc+sd-jwt", "kid": kid}, payloadJSON)
-header, payload, err := jws.Verify(token, issuerKey, []string{jws.AlgES256, jws.AlgES256K})
+if err != nil {
+	return err
+}
+// A verifier takes the key from its own trusted source, never from the token.
+header, payload, err := jws.Verify(token, issuerPub, []string{jws.AlgES256, jws.AlgES256K})
+if err != nil {
+	return err
+}
 ```
 
 ## Signers
