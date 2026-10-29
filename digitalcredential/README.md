@@ -47,6 +47,15 @@ credential without checking its status, and `Result.StatusSkipped` says so. A re
 the caller branches on; `ErrPolicy` is the caller's own mistake, and can show for some tokens only; any other error is
 the caller's `ctx` ending. A claim concealed and not disclosed leaves no trace, so a withheld `cnf` reads as no `cnf`.
 
+For OpenID4VP 1.0 transaction data (§8.4), the holder puts the claim its transaction data type defines in
+`KeyBinding.Claims`, such as `transaction_data_hashes` (Appendix B.3.3.1: the base64url hash of each `transaction_data`
+string as received, by sha-256, or when the request lists `transaction_data_hashes_alg` by one of those, named in a
+`transaction_data_hashes_alg` claim), and the verifier compares `Result.KeyBindingClaims` with its request. `Verify`
+checks only the claims of RFC 9901 §7.3 step 5 and returns those of a Key Binding JWT only when it checked one;
+`KeyBinding.Claims` cannot replace `iat`, `aud`, `nonce` or `sd_hash`. `aud` is the Client Identifier with its prefix
+(Appendix B.3.6, §14.8), such as `decentralized_identifier:did:example:123`; over the Digital Credentials API it is
+`origin:` followed by the Origin (Appendix A.4).
+
 `statuslist` builds Token Status Lists (draft-ietf-oauth-status-list-21): `New(size, bits)` or `FromBytes(b, bits)`
 makes a list of 1-, 2-, 4- or 8-bit entries (§4.1), `Set` and `Get` write and read entry `i`, `Encode` and
 `Decode(lst, bits)` convert the byte array to and from `lst` (ZLIB, then base64url, §4.2), and `SignToken` signs a

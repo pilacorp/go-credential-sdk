@@ -29,13 +29,19 @@ import (
 var ErrKeyBindingUnsupported = errors.New("digitalcredential: this SDK cannot use this credential's cnf for Key Binding")
 
 // KeyBinding asks Present for a Key Binding JWT (RFC 9901 §4.3). Every field
-// is required. Signer must hold the private key of the credential's cnf.jwk
-// (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3); that key decides the alg.
+// but Claims is required. Signer must hold the private key of the
+// credential's cnf.jwk (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3); that key
+// decides the alg.
 type KeyBinding struct {
 	Signer   jws.Signer
 	Audience string    // aud: the Verifier the presentation is for
 	Nonce    string    // nonce: from the Verifier, for this transaction
 	IssuedAt time.Time // iat: when the Key Binding JWT is issued (RFC 9901 §4.3), in whole seconds
+	// Claims are other claims of the Key Binding JWT, those a protocol
+	// defines, such as transaction_data_hashes for OpenID4VP 1.0 transaction
+	// data (§8.4, Appendix B.3.3.1); nil writes none. It must not hold iat,
+	// aud, nonce or sd_hash (sdjwt.KBClaims.Extra).
+	Claims map[string]any
 }
 
 // Present builds what a Holder sends to a Verifier (RFC 9901 §7.2) from
@@ -90,8 +96,9 @@ type KeyBinding struct {
 //     allows one only in an encrypted JWT), or a key jwk.ToPublicKey refuses
 //     as broken also matches jwk.ErrBadKey;
 //   - sdjwt.NewKBJWT errors unchanged: jose.ErrInvalidArgument for an empty
-//     KeyBinding field, jws.ErrSigner, and jws.ErrSelfCheck for a Signer that
-//     does not hold the cnf.jwk key.
+//     KeyBinding field or Claims holding iat, aud, nonce or sd_hash,
+//     jws.ErrSigner, and jws.ErrSelfCheck for a Signer that does not hold the
+//     cnf.jwk key.
 //
 // The three kb classes are disjoint: such an error matches exactly one of
 // jose.ErrInvalidArgument, ErrKeyBindingUnsupported and jose.ErrMalformed.
@@ -177,6 +184,7 @@ func Present(issued string, reveal []sdjwt.Path, kb *KeyBinding) (string, error)
 		Nonce:    kb.Nonce,
 		IssuedAt: kb.IssuedAt,
 		SDHash:   sdjwt.SDHash(sdJWT),
+		Extra:    kb.Claims,
 	})
 	if err != nil {
 		return "", fmt.Errorf("digitalcredential: %w", err)
