@@ -373,7 +373,9 @@ func checkClaims(claims map[string]any, iss, uri string, now time.Time) (listCla
 		}
 	}
 	// §5.1: iat is REQUIRED (§8.3 step 3b). One later than now + skew is
-	// refused, a freshness policy §8.3 step 4b leaves to the Relying Party.
+	// refused because the cache keeps the list with the later iat (cache.go),
+	// so a future iat would hold its list over newer ones until it expires.
+	// This is not the freshness policy of §8.3 step 4b, which the SDK leaves out.
 	iat, ok, err := jwt.DateClaim(claims, "iat")
 	if err != nil {
 		return tc, fmt.Errorf("statuslist: token: %w", err)
