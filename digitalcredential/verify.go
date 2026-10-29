@@ -158,22 +158,28 @@ func (e *Error) Unwrap() error { return e.Err }
 // ErrPolicy: Verify was called with a Policy, or a dependency in it, that
 // cannot verify: the caller's code or configuration is at fault, not the
 // token. Some cases show only for some tokens and only after the caller's own
-// network calls: an AllowedAlgs entry this SDK does not support or a resolver
-// key on another curve (after Policy.Issuers), no Audience or Nonce when a
-// Key Binding JWT must be checked, no Status for a credential with
-// status_list, or a resolver or checker error wrapping
+// network calls: an AllowedAlgs entry this SDK does not support, a resolver
+// key on another curve (after Policy.Issuers, or inside Policy.Status), no
+// Audience or Nonce when a Key Binding JWT must be checked, no Status for a
+// credential with status_list, or a resolver or checker error wrapping
 // jose.ErrInvalidArgument. So do not treat it as a startup-only error. It
 // wraps no cause.
 var ErrPolicy = errors.New("digitalcredential: invalid verify policy")
 
 // StatusChecker returns the raw status of the Referenced Token ref points to
 // (draft-ietf-oauth-status-list-21 §8), from the Status List Token of iss; a
-// *statuslist.Checker is one. An index outside the list returns an error
-// wrapping statuslist.ErrIndexOutOfBounds, which Verify reports as MALFORMED
-// (§8.3 step 6: MUST be rejected); any other error is STATUS_UNAVAILABLE. A
-// wrapper that accepts tokens whose status it cannot read passes
-// ErrIndexOutOfBounds through unchanged. Status should return when ctx is
-// done; Verify then returns an error wrapping ctx.Err().
+// *statuslist.Checker is one. Verify reads an error of Status in this order:
+//   - one wrapping statuslist.ErrIndexOutOfBounds is MALFORMED (§8.3 step 6:
+//     MUST be rejected), whatever ctx says;
+//   - when ctx is done, Verify returns an error wrapping ctx.Err();
+//   - one wrapping jose.ErrInvalidArgument or jws.ErrBadKey is ErrPolicy;
+//   - any other is STATUS_UNAVAILABLE.
+//
+// List.Get reports an index outside the list as jose.ErrInvalidArgument; a
+// checker built on it compares the index with the list size itself and
+// returns ErrIndexOutOfBounds. A wrapper that accepts tokens whose status it
+// cannot read passes ErrIndexOutOfBounds through unchanged. Status should
+// return when ctx is done.
 type StatusChecker interface {
 	Status(ctx context.Context, ref statuslist.Ref, iss string) (uint8, error)
 }
@@ -662,8 +668,9 @@ func checkStatus(ctx context.Context, st statusClaim, iss string, p Policy) (uin
 	case ctx.Err() != nil:
 		return 0, fmt.Errorf("digitalcredential: checking the status: %w (Policy.Status: %v)", ctx.Err(), err)
 	// Verify validated the Ref, so this is the checker's wiring, such as a
-	// statuslist.Checker not made by NewChecker.
-	case errors.Is(err, jose.ErrInvalidArgument):
+	// statuslist.Checker not made by NewChecker, or its resolver returning a
+	// key not on P-256 or secp256k1, as the credential path reports it.
+	case errors.Is(err, jose.ErrInvalidArgument), errors.Is(err, jws.ErrBadKey):
 		return 0, policyErr("Policy.Status: %v", err)
 	// Never by jose.ErrMalformed: a fetch can fail with it too.
 	default:
