@@ -59,7 +59,8 @@ func validBits(bits int) bool {
 // (VALID, draft 21 §7.1). Its byte array is ceil(size·bits/8) bytes (§4.1
 // step 2), and the list holds every entry those bytes carry, as Decode reads
 // it back; a size·bits divisible by 8 (§13.4: RECOMMENDED) gives exactly
-// size. size must be positive, bits 1, 2, 4 or 8, and the byte array at most
+// size. size may be 0, since §4.1 step 2 sets no minimum: the list then
+// holds no entries. bits must be 1, 2, 4 or 8, and the byte array at most
 // 16 MiB. A list over about 576 KiB fits the 1 MiB token a Checker reads
 // only while it compresses well; size or split lists for the highest status
 // change rate expected (draft 21 §13.4, Appendix B).
@@ -68,7 +69,7 @@ func New(size, bits int) (*List, error) {
 		return nil, fmt.Errorf("%w: statuslist: bits %d, want 1, 2, 4 or 8", jose.ErrInvalidArgument, bits)
 	}
 	// Compared before multiplying, so size·bits cannot overflow.
-	if size <= 0 || size > maxListBytes*8/bits {
+	if size < 0 || size > maxListBytes*8/bits {
 		return nil, fmt.Errorf("%w: statuslist: size %d out of range for %d-bit entries", jose.ErrInvalidArgument, size, bits)
 	}
 	return &List{bits: bits, b: make([]byte, (size*bits+7)/8)}, nil
@@ -76,15 +77,15 @@ func New(size, bits int) (*List, error) {
 
 // FromBytes returns a list over a copy of b, a byte array kept elsewhere (a
 // database, a ledger) with entries of bits bits each; it holds len(b)·8/bits
-// entries. b must hold 1 byte to 16 MiB.
+// entries. b holds at most 16 MiB; an empty b is a list with no entries.
 func FromBytes(b []byte, bits int) (*List, error) {
 	if !validBits(bits) {
 		return nil, fmt.Errorf("%w: statuslist: bits %d, want 1, 2, 4 or 8", jose.ErrInvalidArgument, bits)
 	}
-	if len(b) == 0 || len(b) > maxListBytes {
-		return nil, fmt.Errorf("%w: statuslist: %d bytes, want 1 to %d", jose.ErrInvalidArgument, len(b), maxListBytes)
+	if len(b) > maxListBytes {
+		return nil, fmt.Errorf("%w: statuslist: %d bytes, want at most %d", jose.ErrInvalidArgument, len(b), maxListBytes)
 	}
-	return &List{bits: bits, b: append([]byte(nil), b...)}, nil
+	return &List{bits: bits, b: append([]byte{}, b...)}, nil
 }
 
 func (l *List) valid() bool {
@@ -141,10 +142,11 @@ func (l *List) mask() uint8 {
 }
 
 // Bytes returns a copy of the uncompressed byte array (draft 21 §4.1 step 2),
-// the bytes Decode yields from the lst Encode writes; nil for the zero List.
+// the bytes Decode yields from the lst Encode writes; nil only for the zero
+// List, and empty for a list with no entries.
 func (l *List) Bytes() []byte {
 	if !l.valid() {
 		return nil
 	}
-	return append([]byte(nil), l.b...)
+	return append([]byte{}, l.b...)
 }
