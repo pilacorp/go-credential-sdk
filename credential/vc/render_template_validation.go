@@ -14,6 +14,11 @@ type TemplateFetcher interface {
 	Fetch(context.Context, TemplateReference) ([]byte, error)
 }
 
+// RenderMethodFetcher retrieves a remote render method document.
+type RenderMethodFetcher interface {
+	FetchRenderMethod(context.Context, string) ([]byte, error)
+}
+
 func (m RenderMethod) validateTemplateContent() error {
 	switch m.RenderSuite {
 	case "summary":
@@ -96,7 +101,7 @@ func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher Temp
 		return fmt.Errorf("fetch external template: %w", err)
 	}
 	if ref.DigestMultibase != "" {
-		if err := verifySHA256MultibaseDigest(data, ref.DigestMultibase); err != nil {
+		if err := VerifyDigestMultibase(data, ref.DigestMultibase); err != nil {
 			return fmt.Errorf("template digest verification failed: %w", err)
 		}
 	}
@@ -108,7 +113,37 @@ func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher Temp
 	return nil
 }
 
-func verifySHA256MultibaseDigest(data []byte, encoded string) error {
+// ValidateExternalRenderMethod fetches and verifies a remote render method
+// document identified by m.ID. The outer digest is required for this flow.
+func (m RenderMethod) ValidateExternalRenderMethod(ctx context.Context, fetcher RenderMethodFetcher) error {
+	if err := m.Validate(); err != nil {
+		return err
+	}
+	if m.ID == "" {
+		return fmt.Errorf("renderMethod.id is required for external render method validation")
+	}
+	if m.DigestMultibase == "" {
+		return fmt.Errorf("renderMethod.digestMultibase is required for external render method validation")
+	}
+	if fetcher == nil {
+		return fmt.Errorf("render method fetcher is required")
+	}
+	data, err := fetcher.FetchRenderMethod(ctx, m.ID)
+	if err != nil {
+		return fmt.Errorf("fetch external render method: %w", err)
+	}
+	if err := VerifyDigestMultibase(data, m.DigestMultibase); err != nil {
+		return fmt.Errorf("render method digest verification failed: %w", err)
+	}
+	var fetched RenderMethod
+	if err := json.Unmarshal(data, &fetched); err != nil {
+		return fmt.Errorf("decode external render method: %w", err)
+	}
+	return fetched.Validate()
+}
+
+// VerifyDigestMultibase verifies a base64url multibase SHA-256 multihash.
+func VerifyDigestMultibase(data []byte, encoded string) error {
 	if !strings.HasPrefix(encoded, "u") {
 		return fmt.Errorf("digest must use base64url-no-padding multibase")
 	}
