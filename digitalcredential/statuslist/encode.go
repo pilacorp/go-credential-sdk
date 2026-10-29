@@ -40,9 +40,10 @@ func (l *List) Encode() (string, error) {
 //   - a ZLIB stream with a bad header or Adler-32 checksum (RFC 1950 §2.3),
 //     or with a preset dictionary: §2.3 requires rejecting one when the
 //     enclosing format uses none, and draft 21 uses none;
-//   - an empty byte array, refused by this package since every index would
-//     be out of bounds (§8.3 step 6), or one over 16 MiB.
+//   - a byte array over 16 MiB.
 //
+// An empty byte array is a list with no entries: §4.1 step 2 sets no minimum
+// size, and every index is then out of bounds, which §8.3 step 6 rejects.
 // Data after the ZLIB stream is ignored, as RFC 1950 §2.2 leaves it outside
 // the stream. Decode refuses a list over 16 MiB while inflating; CPU time and
 // the memory for decoding lst grow with len(lst), so a caller reading lst from
@@ -71,9 +72,6 @@ func Decode(lst string, bits int) (*List, error) {
 	}
 	if len(b) > maxListBytes {
 		return nil, fmt.Errorf("%w: statuslist: lst inflates past %d bytes", jose.ErrMalformed, maxListBytes)
-	}
-	if len(b) == 0 {
-		return nil, fmt.Errorf("%w: statuslist: lst holds no entries", jose.ErrMalformed)
 	}
 	return &List{bits: bits, b: b}, nil
 }
