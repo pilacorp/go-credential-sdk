@@ -49,7 +49,7 @@ type RenderStyle struct {
 	Height string `json:"height,omitempty"`
 }
 
-func (m RenderMethod) validate() error {
+func (m RenderMethod) Validate() error {
 	if m.Type == "" {
 		return fmt.Errorf("renderMethod.type is required")
 	}
@@ -64,9 +64,17 @@ func (m RenderMethod) validate() error {
 			return err
 		}
 	}
+	for i, pointer := range m.RenderProperty {
+		if err := validateJSONPointer(pointer); err != nil {
+			return fmt.Errorf("renderMethod.renderProperty[%d]: %w", i, err)
+		}
+	}
 	if m.Template != nil {
 		if err := m.Template.validate(); err != nil {
 			return fmt.Errorf("renderMethod.template: %w", err)
+		}
+		if err := m.validateTemplateContent(); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -91,6 +99,25 @@ func validateURL(raw, field string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme == "" || ((parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host == "") {
 		return fmt.Errorf("%s must be a valid URL", field)
+	}
+	return nil
+}
+
+func validateJSONPointer(pointer string) error {
+	if pointer == "" {
+		return nil
+	}
+	if !strings.HasPrefix(pointer, "/") {
+		return fmt.Errorf("must be a valid RFC 6901 JSON Pointer")
+	}
+	for i := 0; i < len(pointer); i++ {
+		if pointer[i] != '~' {
+			continue
+		}
+		if i+1 >= len(pointer) || (pointer[i+1] != '0' && pointer[i+1] != '1') {
+			return fmt.Errorf("must be a valid RFC 6901 JSON Pointer")
+		}
+		i++
 	}
 	return nil
 }
