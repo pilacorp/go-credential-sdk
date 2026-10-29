@@ -83,7 +83,10 @@ func (r Ref) Validate() error {
 // ttl, at most 24 hours and never past exp; a token without ttl is not
 // cached. The cache counts 32 MiB of list bytes (their capacity) plus key
 // lengths, not total heap. When live entries fill it, a new list is not
-// cached until one expires; no live entry is evicted.
+// cached until one expires; no live entry is evicted. Any issuer the
+// resolver accepts can fill it with lists of its own, one per uri, which
+// costs other issuers a fetch on every call until entries expire, never a
+// wrong status.
 //
 // At most 4 lists are decoded at once, in arrival order. Each cache miss holds
 // up to about 1 MiB of token data until its decode runs, and the issuer's
@@ -98,6 +101,11 @@ func (r Ref) Validate() error {
 //
 // It fetches only https URLs with a host and no userinfo, on every redirect
 // too, unless WithInsecureHTTP allows http.
+//
+// The Status List Token is verified with ES256 or ES256K as the key's curve
+// decides; digitalcredential's Policy.AllowedAlgs does not reach it. To
+// restrict it, give NewChecker a resolver that returns only keys on the
+// allowed curves.
 type Checker struct {
 	issuers      issuerkey.Resolver
 	client       *http.Client
@@ -141,9 +149,10 @@ func WithInsecureHTTP() Option {
 
 // NewChecker returns a Checker that verifies Status List Tokens with the keys
 // issuers returns. issuers must be the resolver the Referenced Token itself is
-// verified with, which the Checker cannot check: the SDK accepts a list only
-// under a key of the credential's issuer, the same-key or same-resolution
-// options of draft 21 §11.3. A separate Status Issuer linked by X.509 PKI
+// verified with, or a wrapper that returns a subset of its keys, which the
+// Checker cannot check: the SDK accepts a list only under a key of the
+// credential's issuer, the same-key or same-resolution options of draft 21
+// §11.3. A separate Status Issuer linked by X.509 PKI
 // (§11.3, §13.5) is not supported. A nil issuers is jose.ErrInvalidArgument;
 // nil options are skipped.
 func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {

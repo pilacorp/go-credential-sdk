@@ -214,13 +214,18 @@ const defaultClockSkew = time.Minute
 // Policy is what Verify checks a token against.
 type Policy struct {
 	// Issuers returns the keys of the issuers this verifier accepts
-	// (draft-ietf-oauth-sd-jwt-vc-19 §2.5); required, and it must not be a
-	// typed nil, which Verify cannot detect. issuermeta.NewResolver returns
-	// one that reads JWT VC Issuer Metadata (§4).
+	// (draft-ietf-oauth-sd-jwt-vc-19 §2.5); required. A typed nil of your own
+	// type cannot be detected; a nil *issuermeta.Resolver is ErrPolicy.
+	// issuermeta.NewResolver returns one that reads JWT VC Issuer Metadata
+	// (§4).
 	Issuers issuerkey.Resolver
 	// AllowedAlgs are the algorithms accepted for the Issuer-signed JWT and
 	// the Key Binding JWT (RFC 8725 §3.1; RFC 9901 §7.1 step 2a, §7.3 step
 	// 5b); nil or empty means ES256 and ES256K. Another entry is ErrPolicy.
+	// It does not reach the Status List Token, which a statuslist.Checker
+	// verifies with ES256 or ES256K as the key's curve decides; to restrict
+	// it, give NewChecker a resolver that returns only keys on the allowed
+	// curves.
 	AllowedAlgs []string
 	// KeyBinding says when Key Binding is required; zero is KeyBindingIfCnf.
 	KeyBinding KeyBindingMode

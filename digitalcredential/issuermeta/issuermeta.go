@@ -66,7 +66,8 @@ var limits = safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, 
 // total heap. When live entries fill it, new answers are not cached until one
 // expires. With the entry "https://", anyone who can serve https metadata
 // can fill it, which costs legitimate issuers a retrieval on every call
-// until entries expire, never a wrong key.
+// until entries expire, never a wrong key. There is no single-flight:
+// concurrent misses on one iss each fetch.
 type Resolver struct {
 	allowed []string
 	client  *http.Client
@@ -163,8 +164,9 @@ var _ issuerkey.Resolver = (*Resolver)(nil)
 //     answered, and the metadata or the JWK Set is not valid (§4.2, §4.3,
 //     RFC 7517 §4, §5), so it must not be used;
 //   - any other error: a retrieval failed (§3), and a later call may
-//     succeed. It wraps the cause, such as context.Canceled or
-//     safehttp.ErrBlockedAddress.
+//     succeed. It wraps the cause, such as context.Canceled; an address the
+//     default client refuses (draft 19 §7.1) is such an error, and its text
+//     names a blocked address; it matches no exported sentinel.
 //
 // A hit in the cache makes no request and does not look at ctx. A key the
 // issuer removes may still verify for up to min(max-age − Age, 24 h) of the

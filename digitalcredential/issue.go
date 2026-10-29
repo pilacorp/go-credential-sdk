@@ -74,7 +74,9 @@ type IssueRequest struct {
 	// its field zero.
 	Expiry time.Time
 	// HolderKey is written as cnf.jwk (RFC 7800 §3.2), on P-256 or secp256k1;
-	// nil writes no cnf.
+	// nil writes no cnf. A cnf without iss or sub is allowed:
+	// draft-ietf-oauth-sd-jwt-vc-20 §2.2.2.3 overrides RFC 7800 §3, which
+	// asks for one of them.
 	HolderKey *ecdsa.PublicKey
 	// Status is written as status.status_list {idx, uri}
 	// (draft-ietf-oauth-status-list-21 §6.2); nil writes no status. Issue
