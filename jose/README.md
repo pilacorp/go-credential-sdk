@@ -51,15 +51,20 @@ One package per standard:
   package has its own errors.
 
 ```go
+import (
+	"crypto/ecdsa"
+
+	"github.com/pilacorp/go-credential-sdk/jose/jws"
+)
+
 // signer is your jws.Signer and issuerPub its public key; payloadJSON is the claims object as JSON.
-token, err := jws.Sign(signer, issuerPub, jws.Header{"typ": "dc+sd-jwt", "kid": kid}, payloadJSON)
-if err != nil {
-	return err
-}
-// A verifier takes the key from its own trusted source, never from the token.
-header, payload, err := jws.Verify(token, issuerPub, []string{jws.AlgES256, jws.AlgES256K})
-if err != nil {
-	return err
+func signAndVerify(signer jws.Signer, issuerPub *ecdsa.PublicKey, kid string, payloadJSON []byte) (jws.Header, []byte, error) {
+	token, err := jws.Sign(signer, issuerPub, jws.Header{"typ": "dc+sd-jwt", "kid": kid}, payloadJSON)
+	if err != nil {
+		return nil, nil, err
+	}
+	// A verifier takes the key from its own trusted source, never from the token.
+	return jws.Verify(token, issuerPub, []string{jws.AlgES256, jws.AlgES256K})
 }
 ```
 
