@@ -53,14 +53,14 @@ func newListServer(t *testing.T, tokens map[string]string) *listServer {
 	return s
 }
 
-func (s *listServer) checker(t *testing.T, issuers issuerkey.Resolver) *Checker {
+func (s *listServer) checker(t *testing.T, issuers issuerkey.Resolver, opts ...Option) *Checker {
 	t.Helper()
 	client := s.srv.Client()
 	addr := s.srv.Listener.Addr().String()
 	client.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, addr)
 	}
-	c, err := NewChecker(issuers, WithHTTPClient(client))
+	c, err := NewChecker(issuers, append([]Option{WithHTTPClient(client)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,6 +271,37 @@ func TestCheckerCacheLifetime(t *testing.T) {
 		if n := s.hits.Load(); n != 2 {
 			t.Errorf("%s: server got %d requests, want 2 (cached until +%v, fetched again after)", tt.name, n, tt.last)
 		}
+	}
+}
+
+// WithMaxAge is the Relying Party's freshness policy (draft 21 §8.3 step 4b):
+// a list cached for its ttl leaves the cache once older than the max age plus
+// the skew, and the token fetched again, still as old, is refused.
+func TestCheckerMaxAge(t *testing.T) {
+	signer, pub := newP256Signer(t)
+	const uri = "https://example.com/statuslists/1"
+	token := signClaims(t, signer, pub, jws.Header{"typ": "statuslist+jwt", "kid": "k"}, map[string]any{
+		"sub":         uri,
+		"iat":         draft21Now.Add(-time.Hour).Unix(),
+		"ttl":         3600,
+		"status_list": map[string]any{"bits": 1, "lst": "eNrbuRgAAhcBXQ"},
+	})
+	s := newListServer(t, map[string]string{"/statuslists/1": token})
+	c := s.checker(t, keySet{"https://a.example": {{KID: "k", Key: pub}}}, WithMaxAge(90*time.Minute))
+	now := draft21Now
+	c.now = func() time.Time { return now }
+	for _, at := range []time.Duration{0, 30 * time.Minute} { // aged 60 and 90 minutes
+		now = draft21Now.Add(at)
+		if _, err := c.Status(context.Background(), Ref{URI: uri}, "https://a.example"); err != nil {
+			t.Fatalf("Status at +%v: %v", at, err)
+		}
+	}
+	now = draft21Now.Add(32 * time.Minute) // aged 92 minutes, past 90 plus the 1-minute skew
+	if _, err := c.Status(context.Background(), Ref{URI: uri}, "https://a.example"); err == nil {
+		t.Fatal("Status of a list older than WithMaxAge: no error")
+	}
+	if n := s.hits.Load(); n != 2 {
+		t.Errorf("server got %d requests, want 2 (cached, then fetched again at the max age)", n)
 	}
 }
 

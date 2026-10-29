@@ -113,6 +113,7 @@ type Checker struct {
 	client       *http.Client
 	insecureHTTP bool
 	skew         time.Duration
+	maxAge       time.Duration // 0: no limit
 	now          func() time.Time
 	slots        chan struct{}
 
@@ -161,14 +162,24 @@ func WithClockSkew(d time.Duration) Option {
 	return func(ch *Checker) { ch.skew = d }
 }
 
+// WithMaxAge sets how old a Status List Token may be, by its iat, for the
+// Checker to use it: the local freshness policy of draft 21 §8.3 step 4b. A
+// token issued more than d plus the clock skew ago makes Status fail, and a
+// cached list leaves the cache at that age, so the next call fetches again.
+// Zero, the default, sets no limit, since step 4b applies only to a Relying
+// Party with such a policy; negative makes NewChecker fail.
+func WithMaxAge(d time.Duration) Option {
+	return func(ch *Checker) { ch.maxAge = d }
+}
+
 // NewChecker returns a Checker that verifies Status List Tokens with the keys
 // issuers returns. issuers must be the resolver the Referenced Token itself is
 // verified with, or a wrapper that returns a subset of its keys, which the
 // Checker cannot check: the SDK accepts a list only under a key of the
 // credential's issuer, the same-key or same-resolution options of draft 21
 // §11.3. A separate Status Issuer linked by X.509 PKI
-// (§11.3, §13.5) is not supported. A nil issuers or a negative WithClockSkew is
-// jose.ErrInvalidArgument; nil options are skipped.
+// (§11.3, §13.5) is not supported. A nil issuers, or a negative WithClockSkew
+// or WithMaxAge, is jose.ErrInvalidArgument; nil options are skipped.
 func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 	if issuers == nil {
 		return nil, fmt.Errorf("%w: statuslist: nil issuer key resolver", jose.ErrInvalidArgument)
@@ -186,6 +197,9 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 	}
 	if c.skew < 0 {
 		return nil, fmt.Errorf("%w: statuslist: negative clock skew %v", jose.ErrInvalidArgument, c.skew)
+	}
+	if c.maxAge < 0 {
+		return nil, fmt.Errorf("%w: statuslist: negative max age %v", jose.ErrInvalidArgument, c.maxAge)
 	}
 	if c.skew == 0 {
 		c.skew = defaultClockSkew
@@ -322,6 +336,9 @@ func (c *Checker) load(ctx context.Context, key cacheKey, idx int) (*List, error
 	if err != nil {
 		return nil, err
 	}
+	if err := c.checkAge(tc.iat, c.now()); err != nil {
+		return nil, err
+	}
 
 	// Decode is the costly step; the slot bounds how many run at once. A
 	// caller that waited may find the list cached by another meanwhile.
@@ -339,25 +356,42 @@ func (c *Checker) load(ctx context.Context, key cacheKey, idx int) (*List, error
 	if err != nil {
 		return nil, err
 	}
-	// The wait for a slot may have taken the token past exp: the same rule
-	// again, so an expired list is never answered.
-	if err := jwt.CheckExpNbf(claims, c.now(), c.skew); err != nil {
+	// The wait for a slot may have taken the token past exp or the max age:
+	// the same rules again, so an expired or stale list is never answered.
+	now := c.now()
+	if err := jwt.CheckExpNbf(claims, now, c.skew); err != nil {
 		return nil, fmt.Errorf("statuslist: token: %w", err)
+	}
+	if err := c.checkAge(tc.iat, now); err != nil {
+		return nil, err
 	}
 
 	// §8.3 step 4d and §13.7: cached for ttl from the fetch, at most 24
-	// hours (§11.5) and never past exp. No ttl, no cache: stricter than §13.7,
-	// which allows caching until exp, because without ttl the issuer states
-	// no refresh interval, and caching until exp or for 24 hours would hide
-	// revocations that long; checking more often is always allowed.
+	// hours (§11.5), never past exp nor past the max age. No ttl, no cache:
+	// stricter than §13.7, which allows caching until exp, because without
+	// ttl the issuer states no refresh interval, and caching until exp or for
+	// 24 hours would hide revocations that long; checking more often is
+	// always allowed.
 	if tc.ttl > 0 {
 		expires := fetched.Add(tc.ttl)
 		if tc.hasExp && tc.exp.Before(expires) {
 			expires = tc.exp
 		}
+		if aged := tc.iat.Add(c.maxAge).Add(c.skew); c.maxAge > 0 && aged.Before(expires) {
+			expires = aged
+		}
 		c.store(key, l, tc.iat, expires)
 	}
 	return l, nil
+}
+
+// checkAge applies WithMaxAge to a token issued at iat (§8.3 step 4b).
+func (c *Checker) checkAge(iat, now time.Time) error {
+	// Shifting now, not the claim, keeps a far-off date from overflowing.
+	if c.maxAge > 0 && iat.Before(now.Add(-c.maxAge).Add(-c.skew)) {
+		return fmt.Errorf("statuslist: token iat %s is older than the max age %v (WithMaxAge)", iat.UTC(), c.maxAge)
+	}
+	return nil
 }
 
 // listClaims are the claims of a verified Status List Token the Checker uses.
