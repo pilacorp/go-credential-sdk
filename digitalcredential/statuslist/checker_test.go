@@ -157,7 +157,7 @@ func TestCheckerRejects(t *testing.T) {
 		name  string
 		token string
 		index int
-		oob   bool // ErrIndexOutOfBounds, and only this row
+		oob   bool // ErrIndexOutOfBounds, and only these rows
 	}{
 		{"lst inflates past 16 MiB", signClaims(t, signerA, pubA, header, claims(base+"0", func(m map[string]any) {
 			lst := base64.RawURLEncoding.EncodeToString(deflate(t, make([]byte, 16<<20+1)))
@@ -181,6 +181,10 @@ func TestCheckerRejects(t *testing.T) {
 		{"aud present", signClaims(t, signerA, pubA, header, claims(base+"7", func(m map[string]any) {
 			m["aud"] = []any{"https://verifier.example"}
 		})), 0, false},
+		// §4.1 step 2 sets no minimum size: a list with no entries holds no index.
+		{"lst holds no entries", signClaims(t, signerA, pubA, header, claims(base+"8", func(m map[string]any) {
+			m["status_list"] = map[string]any{"bits": 1, "lst": base64.RawURLEncoding.EncodeToString(deflate(t, nil))}
+		})), 0, true},
 	}
 	tokens := map[string]string{}
 	for i, tt := range tests {

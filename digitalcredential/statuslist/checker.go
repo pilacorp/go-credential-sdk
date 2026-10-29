@@ -77,16 +77,16 @@ func (r Ref) Validate() error {
 // the decode bound, the cache and the default client's connections belong to
 // the instance. It is safe for concurrent use.
 //
-// Its limits are fixed: the fetch of a token ends within 5 seconds, follows
-// at most 3 redirects and reads at most 1 MiB; a list inflates to at most 16
-// MiB; the clock skew is 1 minute. It caches verified lists for the token's
-// ttl, at most 24 hours and never past exp; a token without ttl is not
-// cached. The cache counts 32 MiB, estimated from the lists and keys it
-// holds, not total heap. When live entries fill it, a new list is not
-// cached until one expires; no live entry is evicted. Any issuer the
-// resolver accepts can fill it with lists of its own, one per uri, which
-// costs other issuers a fetch on every call until entries expire, never a
-// wrong status.
+// Its limits are fixed: the fetch of a token ends within 5 seconds, follows at
+// most 3 redirects and reads at most 1 MiB; a list inflates to at most 16 MiB.
+// The clock skew is 1 minute unless WithClockSkew sets it. It caches verified
+// lists for the token's ttl, at most 24 hours and never past exp; a token
+// without ttl is not cached. The cache counts 32 MiB, estimated from the lists
+// and keys it holds, not total heap. When live entries fill it, a new list is
+// not cached until one expires; no live entry is evicted. Any issuer the
+// resolver accepts can fill it with lists of its own, one per uri, which costs
+// other issuers a fetch on every call until entries expire, never a wrong
+// status.
 //
 // At most 4 lists are decoded at once, in arrival order. Each cache miss holds
 // up to about 1 MiB of token data until its decode runs, and the issuer's
