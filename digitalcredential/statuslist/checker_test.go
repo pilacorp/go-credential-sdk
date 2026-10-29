@@ -387,7 +387,7 @@ func TestCheckerRefusesTokenExpiredWhileDecoding(t *testing.T) {
 	token := signClaims(t, signer, pub, jws.Header{"typ": "statuslist+jwt", "kid": "k"}, map[string]any{
 		"sub":         uri,
 		"iat":         draft21Now.Add(-time.Hour).Unix(),
-		"exp":         draft21Now.Add(-clockSkew + time.Second).Unix(),
+		"exp":         draft21Now.Add(-defaultClockSkew + time.Second).Unix(),
 		"status_list": map[string]any{"bits": 1, "lst": "eNrbuRgAAhcBXQ"},
 	})
 	s := newListServer(t, map[string]string{"/statuslists/1": token})

@@ -31,7 +31,7 @@ const (
 	mediaTypeJWT     = "application/" + typStatusList // §8.1, §8.2; RFC 7515 §4.1.9
 	fetchTimeout     = 5 * time.Second                // sd-jwt-vc-19 §3: time-bound
 	maxRedirects     = 3                              // sd-jwt-vc-19 §3: MUST limit redirects
-	clockSkew        = time.Minute                    // RFC 7519 §4.1.4, §4.1.5: small leeway
+	defaultClockSkew = time.Minute                    // RFC 7519 §4.1.4, §4.1.5: small leeway; WithClockSkew
 	maxCacheLifetime = 24 * time.Hour                 // upper bound on ttl (§11.5)
 	maxCacheBytes    = 32 << 20                       // estimated heap of the cached entries
 	// maxTokenBytes caps the token read, in compact form (draft 21 sets no
@@ -112,6 +112,7 @@ type Checker struct {
 	issuers      issuerkey.Resolver
 	client       *http.Client
 	insecureHTTP bool
+	skew         time.Duration
 	now          func() time.Time
 	slots        chan struct{}
 
@@ -152,14 +153,22 @@ func WithInsecureHTTP() Option {
 	return func(ch *Checker) { ch.insecureHTTP = true }
 }
 
+// WithClockSkew sets the leeway on the Status List Token's exp and nbf (RFC
+// 7519 §4.1.4, §4.1.5) and on an iat later than now; zero is 1 minute, as
+// Policy.ClockSkew of digitalcredential, and negative makes NewChecker fail.
+// Verify does not pass its Policy.ClockSkew on: set both to the same value.
+func WithClockSkew(d time.Duration) Option {
+	return func(ch *Checker) { ch.skew = d }
+}
+
 // NewChecker returns a Checker that verifies Status List Tokens with the keys
 // issuers returns. issuers must be the resolver the Referenced Token itself is
 // verified with, or a wrapper that returns a subset of its keys, which the
 // Checker cannot check: the SDK accepts a list only under a key of the
 // credential's issuer, the same-key or same-resolution options of draft 21
 // §11.3. A separate Status Issuer linked by X.509 PKI
-// (§11.3, §13.5) is not supported. A nil issuers is jose.ErrInvalidArgument;
-// nil options are skipped.
+// (§11.3, §13.5) is not supported. A nil issuers or a negative WithClockSkew is
+// jose.ErrInvalidArgument; nil options are skipped.
 func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 	if issuers == nil {
 		return nil, fmt.Errorf("%w: statuslist: nil issuer key resolver", jose.ErrInvalidArgument)
@@ -174,6 +183,12 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 		if opt != nil {
 			opt(c)
 		}
+	}
+	if c.skew < 0 {
+		return nil, fmt.Errorf("%w: statuslist: negative clock skew %v", jose.ErrInvalidArgument, c.skew)
+	}
+	if c.skew == 0 {
+		c.skew = defaultClockSkew
 	}
 	if c.client == nil {
 		c.client = safehttp.NewClient()
@@ -303,7 +318,7 @@ func (c *Checker) load(ctx context.Context, key cacheKey, idx int) (*List, error
 	if err != nil {
 		return nil, fmt.Errorf("statuslist: token claims: %w", err)
 	}
-	tc, err := checkClaims(claims, key.iss, key.uri, c.now())
+	tc, err := checkClaims(claims, key.iss, key.uri, c.now(), c.skew)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +341,7 @@ func (c *Checker) load(ctx context.Context, key cacheKey, idx int) (*List, error
 	}
 	// The wait for a slot may have taken the token past exp: the same rule
 	// again, so an expired list is never answered.
-	if err := jwt.CheckExpNbf(claims, c.now(), clockSkew); err != nil {
+	if err := jwt.CheckExpNbf(claims, c.now(), c.skew); err != nil {
 		return nil, fmt.Errorf("statuslist: token: %w", err)
 	}
 
@@ -357,7 +372,7 @@ type listClaims struct {
 
 // checkClaims applies §5.1 and §8.3 step 4 to the claims of a verified token
 // fetched from uri and verified with a key of iss.
-func checkClaims(claims map[string]any, iss, uri string, now time.Time) (listClaims, error) {
+func checkClaims(claims map[string]any, iss, uri string, now time.Time, skew time.Duration) (listClaims, error) {
 	var tc listClaims
 	// §5.1 and §8.3 step 4a: sub equals the uri of the Referenced Token,
 	// compared without transformation (RFC 7519 §7.3).
@@ -383,12 +398,12 @@ func checkClaims(claims map[string]any, iss, uri string, now time.Time) (listCla
 	if !ok {
 		return tc, errors.New("statuslist: token has no iat")
 	}
-	if iat.After(now.Add(clockSkew)) {
+	if iat.After(now.Add(skew)) {
 		return tc, errors.New("statuslist: token iat is in the future")
 	}
 	tc.iat = iat
 	// §5.1 rule 3 and §8.3 step 4c: exp, and nbf, per RFC 7519 §4.1.4, §4.1.5.
-	if err := jwt.CheckExpNbf(claims, now, clockSkew); err != nil {
+	if err := jwt.CheckExpNbf(claims, now, skew); err != nil {
 		return tc, fmt.Errorf("statuslist: token: %w", err)
 	}
 	if tc.exp, tc.hasExp, err = jwt.DateClaim(claims, "exp"); err != nil {
