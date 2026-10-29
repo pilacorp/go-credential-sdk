@@ -40,9 +40,9 @@ const (
 	// status_list idx is outside the issuer's Status List, where
 	// draft-ietf-oauth-status-list-21 §8.3 step 6 says the token MUST be
 	// rejected; Err then wraps statuslist.ErrIndexOutOfBounds. The idx is
-	// compared with a list only when status is checked. A list cached before
-	// the issuer published a longer one gives this until the cached list
-	// expires.
+	// compared with a list only when status is checked. A statuslist.Checker
+	// gives this only for a list it fetched during the call, never for an
+	// older cached copy, since an issuer may grow a list (§13.4).
 	CodeMalformed Code = "MALFORMED"
 	// CodeTypInvalid: the Issuer-signed JWT typ is not dc+sd-jwt. The Issuer
 	// MUST write it (draft-ietf-oauth-sd-jwt-vc-19 §2.2.1), so a token without

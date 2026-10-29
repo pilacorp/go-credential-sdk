@@ -91,8 +91,10 @@ func (r Ref) Validate() error {
 // At most 4 lists are decoded at once, in arrival order. Each cache miss holds
 // up to about 1 MiB of token data until its decode runs, and the issuer's
 // token sets how long each decode takes, so one issuer's lists can delay
-// other issuers' cache misses; cache hits are not delayed. Bound waiting with
-// ctx deadlines, and bound your own concurrency.
+// other issuers' cache misses; cache hits are not delayed. There is no
+// single-flight: concurrent misses on one iss and uri each fetch the token and
+// call the resolver. Bound waiting with ctx deadlines, and bound your own
+// concurrency.
 //
 // The default client refuses addresses that are not globally reachable, but
 // hosts reachable only inside the deployment's own network are known to no

@@ -15,8 +15,9 @@ import (
 // token's sub and the Referenced Token's uri both meet (draft 21 §5.1: the
 // two are equal): a URI conforming to RFC 3986 (§6.2; RFC 7519 §2: a
 // StringOrURI holding ":" MUST be one), and with an http or https scheme a
-// host, since RFC 9110 §4.2.1 and §4.2.2 forbid a sender to generate one with
-// an empty host. Any other scheme is accepted.
+// host: RFC 9110 §4.2.1 and §4.2.2 forbid a sender to generate one with an
+// empty host and require a recipient to reject it as invalid. Any other
+// scheme is accepted.
 func checkListURI(s string) error {
 	if !isURI(s) {
 		return errors.New("is not a URI (RFC 3986)")
