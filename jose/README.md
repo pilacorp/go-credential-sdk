@@ -51,6 +51,8 @@ One package per standard:
   package has its own errors.
 
 ```go
+package example
+
 import (
 	"crypto/ecdsa"
 

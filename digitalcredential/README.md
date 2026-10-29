@@ -73,9 +73,10 @@ meanwhile included, is read from a fresh fetch of the token, since an issuer may
 `ErrIndexOutOfBounds` comes only from the token fetched during that call, and when that fetch fails `Status` returns the
 fetch's error instead. The cache counts 32 MiB, estimated from the lists and keys it holds, and a new list is not cached
 while live entries fill it. Share one `Checker`: its cache and its bound of 4 concurrent decodes belong to the instance.
-A cache miss can wait behind other issuers' decodes, so give `ctx` a deadline. `WithHTTPClient` passes your own client
-(an egress proxy, an internal host, tests); that client is trusted code, and the address check below exists only in the
-default one.
+A cache miss can wait behind other issuers' decodes, so give `ctx` a deadline. `WithClockSkew` sets the leeway on the
+token's `exp`, `nbf` and a future `iat`; zero is 1 minute, as `Policy.ClockSkew`, which `Verify` does not pass on, so
+set both. `WithHTTPClient` passes your own client (an egress proxy, an internal host, tests); that client is trusted
+code, and the address check below exists only in the default one.
 
 `issuerkey.Select` picks the key a JWS header names: a `kid` must match exactly one published key, and a token
 without `kid` needs an issuer that publishes exactly one key; keys are never tried in turn.
