@@ -195,11 +195,13 @@ func NewChecker(issuers issuerkey.Resolver, opts ...Option) (*Checker, error) {
 // §8.3, an lst Decode refuses, or an index outside the list, which wraps
 // ErrIndexOutOfBounds: the Referenced Token MUST be rejected
 // (draft-ietf-oauth-status-list-21 §8.3 step 6), and the caller made no
-// mistake. That error comes only from a list fetched during the call: an
-// index outside a cached list fetches the token once more, since an issuer
-// may grow a list (§13.4), so each such call costs a fetch. Errors of the resolver, jose/jws and jose/jwt are
-// wrapped unchanged. No error of the fetch holds the status list uri or
-// a redirect target, which may carry a secret: safehttp writes its own text
+// mistake. That error comes only from the token fetched during the call:
+// an issuer may grow a list (§13.4), so an index outside a cached list,
+// one another call cached meanwhile included, is read from a fresh fetch,
+// and a cache hit then costs a fetch. When that fetch fails, Status returns
+// its error, not ErrIndexOutOfBounds. Errors of the resolver, jose/jws and
+// jose/jwt are wrapped unchanged. No error of the fetch holds the status
+// list uri or a redirect target, which may carry a secret: safehttp writes its own text
 // for its checks and passes every net/http error through an allowlist. A
 // network error through a proxy of the WithHTTPClient client can still quote
 // certificate names. errors.Is still reaches the cause, such as
@@ -228,15 +230,16 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 	fromCache := l != nil
 	if l == nil {
 		var err error
-		if l, err = c.load(ctx, key, true); err != nil {
+		if l, err = c.load(ctx, key, ref.Index); err != nil {
 			return 0, err
 		}
 	}
 	// §13.4 lets an issuer grow a list, so a cached copy may predate the
-	// entry: only a list fetched during this call shows the index is outside.
+	// entry. The SDK reads an index outside it from a fresh fetch; §8.3 step
+	// 4d and §13.7 would let it answer from the copy until ttl.
 	if ref.Index >= l.entries() && fromCache {
 		var err error
-		if l, err = c.load(ctx, key, false); err != nil {
+		if l, err = c.load(ctx, key, ref.Index); err != nil {
 			return 0, err
 		}
 	}
@@ -249,10 +252,11 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 }
 
 // load fetches, verifies and decodes the Status List Token of key and caches
-// the list before any index is read. With reuseCached, a list another call
-// cached while this one waited for a decode slot is returned instead; without
-// it, the list returned is always the one this call fetched.
-func (c *Checker) load(ctx context.Context, key cacheKey, reuseCached bool) (*List, error) {
+// the list before any index is read. A list another call cached while this
+// one waited for a decode slot is returned instead only when it holds entry
+// idx; otherwise this call decodes the token it fetched, so an index outside
+// the list returned is outside the list this call fetched.
+func (c *Checker) load(ctx context.Context, key cacheKey, idx int) (*List, error) {
 	fetched := c.now()
 	// §8.1, §8.2; redirects bounded (§11.4) to maxRedirects.
 	body, _, err := safehttp.Get(ctx, c.client, key.uri, []string{mediaTypeJWT},
@@ -302,11 +306,9 @@ func (c *Checker) load(ctx context.Context, key cacheKey, reuseCached bool) (*Li
 	case <-ctx.Done():
 		return nil, fmt.Errorf("statuslist: %w", ctx.Err())
 	}
-	if reuseCached {
-		if l := c.cached(key); l != nil {
-			<-c.slots
-			return l, nil
-		}
+	if l := c.cached(key); l != nil && idx < l.entries() {
+		<-c.slots
+		return l, nil
 	}
 	l, err := Decode(tc.lst, tc.bits) // §8.3 step 5
 	<-c.slots

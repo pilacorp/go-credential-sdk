@@ -67,12 +67,14 @@ credential; `Status` also requires an https `uri`, this SDK's verifier default, 
 to the Relying Party. `WithInsecureHTTP` lets `Status` fetch http too; over http an on-path attacker can serve an older
 signed list, so a revoked credential reads valid until that list's `exp`, and can see which lists are fetched: keep it
 to local development or a trusted network. Verified lists are cached per issuer and uri for the token's `ttl`, at most
-24 hours and never past `exp`; a token without `ttl` is not cached. An index past a cached list fetches the token again,
-since an issuer may grow a list (§13.4), so `ErrIndexOutOfBounds` comes only from a list fetched during that call. The
-cache counts 32 MiB, estimated from the lists and keys it holds, and a new list is not cached while live entries fill
-it. Share one `Checker`: its cache and its bound of 4 concurrent decodes belong to the instance. A cache miss can wait
-behind other issuers' decodes, so give `ctx` a deadline. `WithHTTPClient` passes your own client (an egress proxy, an
-internal host, tests); that client is trusted code, and the address check below exists only in the default one.
+24 hours and never past `exp`; a token without `ttl` is not cached. An index past a cached list, one another call cached
+meanwhile included, is read from a fresh fetch of the token, since an issuer may grow a list (§13.4):
+`ErrIndexOutOfBounds` comes only from the token fetched during that call, and when that fetch fails `Status` returns the
+fetch's error instead. The cache counts 32 MiB, estimated from the lists and keys it holds, and a new list is not cached
+while live entries fill it. Share one `Checker`: its cache and its bound of 4 concurrent decodes belong to the instance.
+A cache miss can wait behind other issuers' decodes, so give `ctx` a deadline. `WithHTTPClient` passes your own client
+(an egress proxy, an internal host, tests); that client is trusted code, and the address check below exists only in the
+default one.
 
 `issuerkey.Select` picks the key a JWS header names: a `kid` must match exactly one published key, and a token
 without `kid` needs an issuer that publishes exactly one key; keys are never tried in turn.
