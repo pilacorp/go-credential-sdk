@@ -84,9 +84,10 @@ fetch's error instead. The cache counts 32 MiB, estimated from the lists and key
 while live entries fill it. Share one `Checker`: its cache and its bound of 4 concurrent decodes belong to the instance.
 A cache miss can wait behind other issuers' decodes, so give `ctx` a deadline. `WithClockSkew` sets the leeway on the
 token's `exp`, `nbf` and a future `iat`; zero is 1 minute, as `Policy.ClockSkew`, which `Verify` does not pass on, so
-set both. `WithMaxAge` is your freshness policy (§8.3 step 4b): a token issued longer ago is refused, and a cached list
-is fetched again at that age; zero sets no limit. `WithHTTPClient` passes your own client (an egress proxy, an internal
-host, tests); that client is trusted code, and the address check below exists only in the default one.
+set both. `WithMaxAge` is your freshness policy (§8.3 step 4b): a token issued more than that plus the clock skew ago is
+refused, and a cached list is fetched again at that age; zero sets no limit. `WithHTTPClient` passes your own
+client (an egress proxy, an internal host, tests); that client is trusted code, and the address check below exists
+only in the default one.
 
 `issuerkey.Select` picks the key a JWS header names: a `kid` must match exactly one published key, and a token
 without `kid` needs an issuer that publishes exactly one key; keys are never tried in turn.

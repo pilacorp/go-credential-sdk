@@ -44,6 +44,7 @@ func (l *List) Encode() (string, error) {
 //
 // An empty byte array is a list with no entries: §4.1 step 2 sets no minimum
 // size, and every index is then out of bounds, which §8.3 step 6 rejects.
+//
 // Data after the ZLIB stream is ignored, as RFC 1950 §2.2 leaves it outside
 // the stream. Decode refuses a list over 16 MiB while inflating; CPU time and
 // the memory for decoding lst grow with len(lst), so a caller reading lst from
