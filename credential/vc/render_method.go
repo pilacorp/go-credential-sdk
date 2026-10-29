@@ -115,14 +115,24 @@ func (t *Template) UnmarshalJSON(data []byte) error {
 		}
 		if strings.HasPrefix(raw, "data:") {
 			parts := strings.SplitN(strings.TrimPrefix(raw, "data:"), ",", 2)
-			if len(parts) != 2 || !strings.HasSuffix(parts[0], ";base64") {
-				return fmt.Errorf("embedded template must use a base64 data URL")
+			if len(parts) != 2 || parts[0] == "" {
+				return fmt.Errorf("embedded template must use a valid data URL")
 			}
-			mediaType := strings.TrimSuffix(parts[0], ";base64")
+			metadata := parts[0]
 			payload := parts[1]
-			decoded, err := base64.StdEncoding.DecodeString(payload)
+			mediaType := metadata
+			var decoded []byte
+			var err error
+			if strings.HasSuffix(metadata, ";base64") {
+				mediaType = strings.TrimSuffix(metadata, ";base64")
+				decoded, err = base64.StdEncoding.DecodeString(payload)
+			} else {
+				decodedString, unescapeErr := url.PathUnescape(payload)
+				err = unescapeErr
+				decoded = []byte(decodedString)
+			}
 			if err != nil {
-				return fmt.Errorf("decode embedded template: %w", err)
+				return fmt.Errorf("decode embedded template data URL: %w", err)
 			}
 			t.Embedded = &EmbeddedTemplate{MediaType: mediaType, Bytes: decoded}
 			return nil

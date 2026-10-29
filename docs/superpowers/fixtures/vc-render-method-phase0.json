@@ -52,6 +52,11 @@
           "digestMultibase": "uEiD7Q2J9m9g9Y4sQ4KJ8n3Q5x2n5p8q7w6v4t3r2s1"
         },
         "deliveryMode": "nfc"
+      },
+      {
+        "type": "SuiteRenderMethod",
+        "renderSuite": "summary",
+        "template": "data:application/json;base64,eyJuYW1lIjoiYmFzZTY0IiwgImRlc2NyaXB0aW9uIjoiRXhhbXBsZSIsICJmaWVsZHMiOltdfQ=="
       }
     ]
   },
