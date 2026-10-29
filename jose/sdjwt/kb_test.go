@@ -55,13 +55,14 @@ func TestKBJWTRFCExample(t *testing.T) {
 		SDHash:   sdHash,
 		Now:      time.Unix(1748537244, 0),
 	}
-	if err := VerifyKBJWT(kb, holder, want); err != nil {
+	if _, err := VerifyKBJWT(kb, holder, want); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // NewKBJWT then VerifyKBJWT, on both curves. The payload holds the four
-// claims of RFC 9901 §4.3 and nothing else, with iat in whole seconds.
+// claims of RFC 9901 §4.3 and the Extra claim, with iat in whole seconds, and
+// VerifyKBJWT returns all of them.
 func TestKBJWTRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -78,6 +79,8 @@ func TestKBJWTRoundTrip(t *testing.T) {
 				Nonce:    "n-0S6_WzA2Mj",
 				IssuedAt: time.Unix(1748537244, 900_000_000),
 				SDHash:   "0_Af-2B-EhLWX5ydh_w2xzwmO6iM66B_2QCEanI4fUY",
+				// OpenID4VP 1.0 Appendix B.3.3.1, from its KB-JWT example.
+				Extra: map[string]any{"transaction_data_hashes": []any{"fOBUSQvo46yQO-wRwXBcGqvnbKIueISEL961_Sjd4do"}},
 			}
 			kb, err := NewKBJWT(s, holder, c)
 			if err != nil {
@@ -88,13 +91,18 @@ func TestKBJWTRoundTrip(t *testing.T) {
 				"aud":     "https://verifier.example",
 				"nonce":   "n-0S6_WzA2Mj",
 				"sd_hash": "0_Af-2B-EhLWX5ydh_w2xzwmO6iM66B_2QCEanI4fUY",
+
+				"transaction_data_hashes": []any{"fOBUSQvo46yQO-wRwXBcGqvnbKIueISEL961_Sjd4do"},
 			}
 			if got := decodePayload(t, kb); !reflect.DeepEqual(got, want) {
 				t.Fatalf("payload %v, want %v", got, want)
 			}
-			err = VerifyKBJWT(kb, holder, KBWant{Audience: c.Audience, Nonce: c.Nonce, SDHash: c.SDHash, Now: c.IssuedAt})
+			got, err := VerifyKBJWT(kb, holder, KBWant{Audience: c.Audience, Nonce: c.Nonce, SDHash: c.SDHash, Now: c.IssuedAt})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("VerifyKBJWT returned %v, want %v", got, want)
 			}
 		})
 	}
@@ -158,11 +166,33 @@ func TestKBJWTRejects(t *testing.T) {
 			if tc.caller != nil {
 				tc.caller(&w)
 			}
-			err = VerifyKBJWT(kb, holder, w)
+			claims, err := VerifyKBJWT(kb, holder, w)
+			if claims != nil {
+				t.Fatalf("claims %v returned with an error", claims)
+			}
 			if !errors.Is(err, tc.err) || tc.not != nil && errors.Is(err, tc.not) {
 				t.Fatalf("got %v, want %v and not %v", err, tc.err, tc.not)
 			}
 		})
+	}
+}
+
+// Extra cannot replace the claims that bind the KB-JWT: a value copied from
+// one Verifier's request must not make it valid for another Verifier or
+// transaction.
+func TestNewKBJWTKeepsItsClaims(t *testing.T) {
+	s := newMemSigner(t, elliptic.P256())
+	for _, name := range []string{"iat", "aud", "nonce", "sd_hash"} {
+		c := KBClaims{
+			Audience: "https://verifier.example",
+			Nonce:    "n-0S6_WzA2Mj",
+			IssuedAt: time.Unix(1748537244, 0),
+			SDHash:   "0_Af-2B-EhLWX5ydh_w2xzwmO6iM66B_2QCEanI4fUY",
+			Extra:    map[string]any{name: "https://other.example"},
+		}
+		if _, err := NewKBJWT(s, &s.PublicKey, c); !errors.Is(err, jose.ErrInvalidArgument) {
+			t.Errorf("Extra holding %s: err = %v, want jose.ErrInvalidArgument", name, err)
+		}
 	}
 }
 

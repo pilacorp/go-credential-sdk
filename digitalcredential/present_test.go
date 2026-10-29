@@ -120,7 +120,7 @@ func TestPresentKeyBinding(t *testing.T) {
 		t.Fatalf("Split: %v, KB-JWT %q", err, kbJWT)
 	}
 	want := sdjwt.KBWant{Audience: kb.Audience, Nonce: kb.Nonce, SDHash: sdjwt.SDHash(strings.TrimSuffix(presented, kbJWT)), Now: kb.IssuedAt}
-	if err := sdjwt.VerifyKBJWT(kbJWT, &holderPriv.PublicKey, want); err != nil {
+	if _, err := sdjwt.VerifyKBJWT(kbJWT, &holderPriv.PublicKey, want); err != nil {
 		t.Fatalf("VerifyKBJWT: %v", err)
 	}
 	_, body, err := jws.Verify(issuerJWT, key.Public, nil)

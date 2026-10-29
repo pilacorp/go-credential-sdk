@@ -161,8 +161,9 @@ func TestVerifyDraft19IssuerMetadata(t *testing.T) {
 	}
 }
 
-// draft-ietf-oauth-sd-jwt-vc-19 §2.3.2: Figure 8 verifies, and the
-// processed payload is Figure 9.
+// draft-ietf-oauth-sd-jwt-vc-19 §2.3.2: Figure 8 verifies, the processed
+// payload is Figure 9, and the claims of its Key Binding JWT come back only
+// when that KB-JWT is checked.
 func TestVerifyDraft19Example(t *testing.T) {
 	got, err := Verify(context.Background(), draft19Fig8, draft19Policy(t))
 	if err != nil {
@@ -186,6 +187,21 @@ func TestVerifyDraft19Example(t *testing.T) {
 	if encodeJSON(t, got.Claims) != encodeJSON(t, fig9) || !got.KeyBound || got.Status != nil || got.StatusSkipped {
 		t.Errorf("got %s, KeyBound %v, Status %v, StatusSkipped %v; want Figure 9, true, nil, false",
 			encodeJSON(t, got.Claims), got.KeyBound, got.Status, got.StatusSkipped)
+	}
+	if kb := got.KeyBindingClaims; kb["aud"] != "https://example.com/verifier" || kb["nonce"] != "1234567890" {
+		t.Errorf("KeyBindingClaims = %v, want the aud and nonce of the Figure 8 KB-JWT", kb)
+	}
+
+	// A Key Binding JWT that Verify ignores is not checked, so none of its
+	// claims may come back for the caller to trust.
+	p := draft19Policy(t)
+	p.KeyBinding, p.IgnoreUncheckedKBJWT = KeyBindingNotRequired, true
+	got, err = Verify(context.Background(), draft19Fig8, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.KeyBound || got.KeyBindingClaims != nil {
+		t.Errorf("ignored KB-JWT: KeyBound %v, KeyBindingClaims %v; want false, nil", got.KeyBound, got.KeyBindingClaims)
 	}
 }
 

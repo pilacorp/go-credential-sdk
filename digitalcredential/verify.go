@@ -286,6 +286,13 @@ type Result struct {
 	Claims map[string]any
 	// KeyBound: a Key Binding JWT was checked against the credential's cnf.
 	KeyBound bool
+	// KeyBindingClaims are the claims of that Key Binding JWT, every one,
+	// numbers as json.Number; nil when KeyBound is false. Verify checks iat,
+	// aud, nonce, sd_hash, exp and nbf (RFC 9901 §7.3 step 5) and no other:
+	// the claims a protocol adds, such as transaction_data_hashes for
+	// OpenID4VP 1.0 transaction data (§8.4, Appendix B.3.3.1), are the
+	// caller's to check against its request.
+	KeyBindingClaims map[string]any
 	// Status is the status value checked, nil when the credential has none
 	// or SkipStatus skipped it.
 	Status *uint8
@@ -498,12 +505,12 @@ func Verify(ctx context.Context, compact string, p Policy) (*Result, error) {
 		return reject(CodeMalformed, err)
 	}
 
-	keyBound, err := checkKeyBinding(compact, kbJWT, payload, p, now, skew)
+	kbClaims, err := checkKeyBinding(compact, kbJWT, payload, p, now, skew)
 	if err != nil {
 		return nil, err
 	}
 
-	res := &Result{Claims: claims, KeyBound: keyBound}
+	res := &Result{Claims: claims, KeyBound: kbClaims != nil, KeyBindingClaims: kbClaims}
 	if !st.present {
 		return res, nil
 	}
@@ -535,9 +542,9 @@ func Verify(ctx context.Context, compact string, p Policy) (*Result, error) {
 }
 
 // checkKeyBinding applies p.KeyBinding to the Key Binding JWT kbJWT, "" when
-// none came, and reports whether one was checked. Its errors are *Error or
-// ErrPolicy.
-func checkKeyBinding(compact, kbJWT string, payload map[string]any, p Policy, now time.Time, skew time.Duration) (bool, error) {
+// none came, and returns the claims of the one it checked, nil when it
+// checked none. Its errors are *Error or ErrPolicy.
+func checkKeyBinding(compact, kbJWT string, payload map[string]any, p Policy, now time.Time, skew time.Duration) (map[string]any, error) {
 	_, hasCnf := payload["cnf"]
 	required := hasCnf
 	switch p.KeyBinding {
@@ -548,35 +555,35 @@ func checkKeyBinding(compact, kbJWT string, payload map[string]any, p Policy, no
 	}
 	if !required {
 		if kbJWT == "" || p.IgnoreUncheckedKBJWT {
-			return false, nil
+			return nil, nil
 		}
 		if p.KeyBinding == KeyBindingNotRequired {
-			return false, &Error{Code: CodeKBUnexpected, Err: errors.New("a Key Binding JWT came and Policy.KeyBinding is KeyBindingNotRequired: a Holder (RFC 9901 §7.2) or a verifier expecting an SD-JWT (§4) MUST reject it; set Policy.IgnoreUncheckedKBJWT if this verifier only does not need it")}
+			return nil, &Error{Code: CodeKBUnexpected, Err: errors.New("a Key Binding JWT came and Policy.KeyBinding is KeyBindingNotRequired: a Holder (RFC 9901 §7.2) or a verifier expecting an SD-JWT (§4) MUST reject it; set Policy.IgnoreUncheckedKBJWT if this verifier only does not need it")}
 		}
-		return false, &Error{Code: CodeKBUnexpected, Err: errors.New("a Key Binding JWT came with a credential that has no cnf claim, so no key checks it (draft-ietf-oauth-sd-jwt-vc-19 §2.4); set Policy.IgnoreUncheckedKBJWT to ignore it")}
+		return nil, &Error{Code: CodeKBUnexpected, Err: errors.New("a Key Binding JWT came with a credential that has no cnf claim, so no key checks it (draft-ietf-oauth-sd-jwt-vc-19 §2.4); set Policy.IgnoreUncheckedKBJWT to ignore it")}
 	}
 	// The credential first: when its cnf gives no key, no presentation of it
 	// passes, so asking the holder for a Key Binding JWT would not help.
 	if !hasCnf {
-		return false, &Error{Code: CodeKBUnsupported, Err: errors.New("Policy.KeyBinding is KeyBindingRequired and the credential has no cnf claim, the key a Key Binding JWT is checked with (draft-ietf-oauth-sd-jwt-vc-19 §2.4)")}
+		return nil, &Error{Code: CodeKBUnsupported, Err: errors.New("Policy.KeyBinding is KeyBindingRequired and the credential has no cnf claim, the key a Key Binding JWT is checked with (draft-ietf-oauth-sd-jwt-vc-19 §2.4)")}
 	}
 	holder, err := holderKey(payload)
 	if errors.Is(err, ErrKeyBindingUnsupported) {
-		return false, &Error{Code: CodeKBUnsupported, Err: err}
+		return nil, &Error{Code: CodeKBUnsupported, Err: err}
 	}
 	if err != nil {
-		return false, &Error{Code: CodeMalformed, Err: err}
+		return nil, &Error{Code: CodeMalformed, Err: err}
 	}
 	if kbJWT == "" {
 		if p.KeyBinding == KeyBindingRequired {
-			return false, &Error{Code: CodeKBMissing, Err: errors.New("Policy.KeyBinding is KeyBindingRequired and no Key Binding JWT came: the holder must send an SD-JWT+KB (RFC 9901 §7.3 step 2)")}
+			return nil, &Error{Code: CodeKBMissing, Err: errors.New("Policy.KeyBinding is KeyBindingRequired and no Key Binding JWT came: the holder must send an SD-JWT+KB (RFC 9901 §7.3 step 2)")}
 		}
-		return false, &Error{Code: CodeKBMissing, Err: errors.New("the credential binds a holder key and no Key Binding JWT came: the holder must send an SD-JWT+KB, or set Policy.KeyBinding = KeyBindingNotRequired if this verifier does not require Key Binding (RFC 9901 §7.3 step 2, §9.5)")}
+		return nil, &Error{Code: CodeKBMissing, Err: errors.New("the credential binds a holder key and no Key Binding JWT came: the holder must send an SD-JWT+KB, or set Policy.KeyBinding = KeyBindingNotRequired if this verifier does not require Key Binding (RFC 9901 §7.3 step 2, §9.5)")}
 	}
 	if p.Audience == "" || p.Nonce == "" {
-		return false, policyErr("this presentation has a Key Binding JWT: set Policy.Audience and Policy.Nonce, or Policy.KeyBinding = KeyBindingNotRequired together with Policy.IgnoreUncheckedKBJWT if this verifier does not check Key Binding (RFC 9901 §7.3 step 5f)")
+		return nil, policyErr("this presentation has a Key Binding JWT: set Policy.Audience and Policy.Nonce, or Policy.KeyBinding = KeyBindingNotRequired together with Policy.IgnoreUncheckedKBJWT if this verifier does not check Key Binding (RFC 9901 §7.3 step 5f)")
 	}
-	err = sdjwt.VerifyKBJWT(kbJWT, holder, sdjwt.KBWant{
+	kbClaims, err := sdjwt.VerifyKBJWT(kbJWT, holder, sdjwt.KBWant{
 		Audience: p.Audience,
 		Nonce:    p.Nonce,
 		// RFC 9901 §4.3.1: over the SD-JWT as received, up to the last ~.
@@ -588,17 +595,17 @@ func checkKeyBinding(compact, kbJWT string, payload map[string]any, p Policy, no
 	})
 	switch {
 	case err == nil:
-		return true, nil
+		return kbClaims, nil
 	case errors.Is(err, jose.ErrInvalidArgument):
-		return false, policyErr("checking the Key Binding JWT: %v", err)
+		return nil, policyErr("checking the Key Binding JWT: %v", err)
 	case errors.Is(err, sdjwt.ErrKBAudience):
-		return false, &Error{Code: CodeKBAudienceMismatch, Err: err}
+		return nil, &Error{Code: CodeKBAudienceMismatch, Err: err}
 	case errors.Is(err, sdjwt.ErrKBNonce):
-		return false, &Error{Code: CodeKBNonceMismatch, Err: err}
+		return nil, &Error{Code: CodeKBNonceMismatch, Err: err}
 	case errors.Is(err, sdjwt.ErrKBSDHash):
-		return false, &Error{Code: CodeKBSDHashMismatch, Err: err}
+		return nil, &Error{Code: CodeKBSDHashMismatch, Err: err}
 	default:
-		return false, &Error{Code: CodeKBInvalid, Err: err}
+		return nil, &Error{Code: CodeKBInvalid, Err: err}
 	}
 }
 
