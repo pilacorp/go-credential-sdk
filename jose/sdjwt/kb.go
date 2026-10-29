@@ -51,25 +51,34 @@ func SDHash(sdJWT string) string {
 	return digestOf(sdJWT)
 }
 
-// KBClaims are the claims of a new Key Binding JWT (RFC 9901 §4.3). All are
-// required.
+// KBClaims are the claims of a new Key Binding JWT (RFC 9901 §4.3). All but
+// Extra are required.
 type KBClaims struct {
 	Audience string    // aud: the Verifier the KB-JWT is for
 	Nonce    string    // nonce: from the Verifier, binds the KB-JWT to one transaction
 	IssuedAt time.Time // iat: written in whole seconds, the fraction dropped
 	SDHash   string    // sd_hash: SDHash of the SD-JWT presented with it
+	// Extra holds other claims, for a protocol that defines them, such as
+	// transaction_data_hashes of OpenID4VP 1.0 Appendix B.3.3.1; nil writes
+	// none. §4.3 allows them and asks to avoid them without a compelling
+	// reason. It must not hold iat, aud, nonce or sd_hash, so a value copied
+	// from a request cannot bind the KB-JWT to another Verifier or
+	// transaction, and it is not modified.
+	Extra map[string]any
 }
 
 // NewKBJWT signs a Key Binding JWT (RFC 9901 §4.3) with s, which holds the
 // private key of holder, the key the SD-JWT binds (cnf, §4.1.2). The header
 // is {"alg", "typ": "kb+jwt"}, alg chosen by the curve of holder (jws.Sign);
-// the payload is iat, aud, nonce and sd_hash and nothing else (§4.3:
-// additional claims and header parameters SHOULD be avoided unless there is a
-// compelling reason).
+// the payload is iat, aud, nonce and sd_hash, and the claims of Extra (§4.3:
+// additional claims SHOULD be avoided unless there is a compelling reason).
 //
-// A nil s or holder, an empty Audience, Nonce or SDHash, or a zero IssuedAt is
-// jose.ErrInvalidArgument. jws.Sign errors are wrapped unchanged: a signer
-// that does not hold the private key of holder gives jws.ErrSelfCheck.
+// A nil s or holder, an empty Audience, Nonce or SDHash, a zero IssuedAt, an
+// Extra holding one of the four claims, or an Extra that jose.EncodeJSON
+// cannot encode or that encodes to JSON jose.DecodeJSON refuses (duplicate
+// names, nesting past jose.MaxJSONDepth) is jose.ErrInvalidArgument. jws.Sign errors are wrapped
+// unchanged: a signer that does not hold the private key of holder gives
+// jws.ErrSelfCheck.
 func NewKBJWT(s jws.Signer, holder *ecdsa.PublicKey, c KBClaims) (string, error) {
 	if s == nil || holder == nil {
 		return "", fmt.Errorf("%w: sdjwt: NewKBJWT needs a signer and the holder key", jose.ErrInvalidArgument)
@@ -77,12 +86,22 @@ func NewKBJWT(s jws.Signer, holder *ecdsa.PublicKey, c KBClaims) (string, error)
 	if c.Audience == "" || c.Nonce == "" || c.SDHash == "" || c.IssuedAt.IsZero() {
 		return "", fmt.Errorf("%w: sdjwt: KBClaims needs Audience, Nonce, IssuedAt and SDHash", jose.ErrInvalidArgument)
 	}
-	payload, err := jose.EncodeJSON(map[string]any{
-		"iat":     c.IssuedAt.Unix(),
-		"aud":     c.Audience,
-		"nonce":   c.Nonce,
-		"sd_hash": c.SDHash,
-	})
+	for _, name := range [...]string{"iat", "aud", "nonce", "sd_hash"} {
+		if _, ok := c.Extra[name]; ok {
+			return "", fmt.Errorf("%w: sdjwt: KBClaims.Extra holds %s, which NewKBJWT writes from its own field", jose.ErrInvalidArgument, name)
+		}
+	}
+	// A copy read back as VerifyKBJWT reads it, so a KB-JWT this signs is
+	// one it accepts.
+	claims, err := copyClaims(c.Extra)
+	if err != nil {
+		return "", fmt.Errorf("sdjwt: KBClaims.Extra: %w", err)
+	}
+	claims["iat"] = c.IssuedAt.Unix()
+	claims["aud"] = c.Audience
+	claims["nonce"] = c.Nonce
+	claims["sd_hash"] = c.SDHash
+	payload, err := jose.EncodeJSON(claims)
 	if err != nil {
 		return "", fmt.Errorf("sdjwt: key binding JWT: %w", err)
 	}
@@ -132,8 +151,12 @@ type KBWant struct {
 // which means a well-formed KB-JWT made for another verifier, transaction or
 // presentation.
 //
-// Other claims are ignored, and so are other header members except crit and
-// b64, which jws.Verify refuses. aud, nonce and sd_hash are compared byte for
+// On success it returns the claims of kb as jose.DecodeJSONObject decodes
+// them, numbers as json.Number, every one included: the claims a protocol
+// adds, such as transaction_data_hashes of OpenID4VP 1.0 Appendix B.3.3.1,
+// are not checked here and are the caller's to check. On an error the claims
+// are nil. Header members other than crit and b64, which jws.Verify refuses,
+// are ignored. aud, nonce and sd_hash are compared byte for
 // byte after JSON unescaping, without Unicode normalization (RFC 7519 §7.3,
 // RFC 8259 §8.3). A nil holder, an empty Audience, Nonce or SDHash, a
 // negative MaxAge or ClockSkew, or an AllowedAlgs entry jws cannot verify is
@@ -142,15 +165,15 @@ type KBWant struct {
 // It keeps no state: that Nonce was issued by this Verifier and is used once
 // is the caller's check. ECDSA signatures are malleable, so a replay cannot
 // be detected from the bytes of kb.
-func VerifyKBJWT(kb string, holder *ecdsa.PublicKey, want KBWant) error {
+func VerifyKBJWT(kb string, holder *ecdsa.PublicKey, want KBWant) (map[string]any, error) {
 	if holder == nil {
-		return fmt.Errorf("%w: sdjwt: VerifyKBJWT needs the holder key", jose.ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: sdjwt: VerifyKBJWT needs the holder key", jose.ErrInvalidArgument)
 	}
 	if want.Audience == "" || want.Nonce == "" || want.SDHash == "" {
-		return fmt.Errorf("%w: sdjwt: KBWant needs Audience, Nonce and SDHash", jose.ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: sdjwt: KBWant needs Audience, Nonce and SDHash", jose.ErrInvalidArgument)
 	}
 	if want.MaxAge < 0 || want.ClockSkew < 0 {
-		return fmt.Errorf("%w: sdjwt: KBWant MaxAge and ClockSkew must not be negative", jose.ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: sdjwt: KBWant MaxAge and ClockSkew must not be negative", jose.ErrInvalidArgument)
 	}
 	now, maxAge, skew := want.Now, want.MaxAge, want.ClockSkew
 	if now.IsZero() {
@@ -166,49 +189,49 @@ func VerifyKBJWT(kb string, holder *ecdsa.PublicKey, want KBWant) error {
 	header, raw, err := jws.Verify(kb, holder, want.AllowedAlgs)
 	if errors.Is(err, jose.ErrInvalidArgument) {
 		// jws refuses the list before it reads kb: a caller mistake.
-		return fmt.Errorf("sdjwt: KBWant.AllowedAlgs: %w", err)
+		return nil, fmt.Errorf("sdjwt: KBWant.AllowedAlgs: %w", err)
 	}
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrKBInvalid, err)
+		return nil, fmt.Errorf("%w: %w", ErrKBInvalid, err)
 	}
 	if !header.TypIs(typKB) {
-		return fmt.Errorf("%w: typ is not %s", ErrKBInvalid, typKB)
+		return nil, fmt.Errorf("%w: typ is not %s", ErrKBInvalid, typKB)
 	}
 	claims, err := jose.DecodeJSONObject(raw)
 	if err != nil {
-		return fmt.Errorf("%w: payload: %w", ErrKBInvalid, err)
+		return nil, fmt.Errorf("%w: payload: %w", ErrKBInvalid, err)
 	}
 
 	iat, ok, err := jwt.DateClaim(claims, "iat")
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrKBInvalid, err)
+		return nil, fmt.Errorf("%w: %w", ErrKBInvalid, err)
 	}
 	if !ok {
-		return fmt.Errorf("%w: iat is missing", ErrKBInvalid)
+		return nil, fmt.Errorf("%w: iat is missing", ErrKBInvalid)
 	}
 	// Shifting now, not the claim, keeps a far-off date from overflowing.
 	earliest, latest := now.Add(-maxAge).Add(-skew), now.Add(skew)
 	if iat.Before(earliest) || iat.After(latest) {
-		return fmt.Errorf("%w: iat %s is outside [%s, %s]", ErrKBInvalid, iat, earliest.UTC(), latest.UTC())
+		return nil, fmt.Errorf("%w: iat %s is outside [%s, %s]", ErrKBInvalid, iat, earliest.UTC(), latest.UTC())
 	}
 
 	// RFC 9901 §4.3: aud MUST be a single string, where RFC 7519 §4.1.3 also
 	// allows an array. An array is refused: one KB-JWT is bound to one
 	// Verifier, and an array would let each Verifier listed accept it.
 	if err := stringClaim(claims, "aud", want.Audience, ErrKBAudience); err != nil {
-		return err
+		return nil, err
 	}
 	if err := stringClaim(claims, "nonce", want.Nonce, ErrKBNonce); err != nil {
-		return err
+		return nil, err
 	}
 	if err := stringClaim(claims, "sd_hash", want.SDHash, ErrKBSDHash); err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := jwt.CheckExpNbf(claims, now, skew); err != nil {
-		return fmt.Errorf("%w: %w", ErrKBInvalid, err)
+		return nil, fmt.Errorf("%w: %w", ErrKBInvalid, err)
 	}
-	return nil
+	return claims, nil
 }
 
 // stringClaim checks that claim name is a string equal to want. A missing or
