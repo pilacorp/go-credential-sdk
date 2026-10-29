@@ -42,9 +42,14 @@ type Disclosure struct {
 //     or invalid UTF-8 (jose.DecodeSegment, jose.DecodeJSON);
 //   - anything but a JSON array of 2 or 3 items, or a salt or claim name that
 //     is not a string (§4.2.1, §4.2.2);
-//   - the claim name _sd or ... (§4.2.1, §7.1 step 3c.ii.2), or _sd_alg: the
-//     hash algorithm must be known before any disclosure is processed
-//     (§4.1.1, §7.1 step 3a), so it cannot come from a disclosure.
+//   - the claim name _sd or ... (§4.2.1, §7.1 step 3c.ii.2), or _sd_alg:
+//     §4.1.1 lets it appear only at the top level of the Issuer-signed
+//     payload, and the algorithm is needed before any disclosure is hashed
+//     (§7.1 step 3a). Stricter than §7.1, which rejects it for its name only
+//     where the level of the _sd key referencing it already holds _sd_alg
+//     (step 3c.ii.3), and otherwise inserts it there (step 3c.ii.4); step 3f
+//     removes "the claim _sd_alg", read as the top-level one of §4.1.1, so a
+//     nested one stays.
 //
 // Digest is computed over encoded itself, never over re-encoded JSON
 // (§4.2.3), since one value may be written several ways (§4.2.1).

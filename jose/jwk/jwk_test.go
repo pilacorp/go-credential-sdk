@@ -197,7 +197,7 @@ func TestToPublicKeySecp256k1MemberChecks(t *testing.T) {
 
 		"key_ops [verify]":         {with("key_ops", []any{"verify"}), true},
 		"key_ops [sign, verify]":   {with("key_ops", []any{"sign", "verify"}), true},
-		"key_ops []string{verify}": {with("key_ops", []string{"verify"}), true},
+		"key_ops []string{verify}": {with("key_ops", []string{"verify"}), false}, // not a decoded JSON array
 		"key_ops [sign]":           {with("key_ops", []any{"sign"}), false},
 		"key_ops []":               {with("key_ops", []any{}), false},
 		"key_ops [Verify]":         {with("key_ops", []any{"Verify"}), false}, // RFC 7517 §4.3: case-sensitive

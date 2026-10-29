@@ -12,7 +12,7 @@ import (
 
 // Split separates <Issuer-signed JWT>~<D.1>~…~<D.N>~<KB-JWT> (RFC 9901 §4).
 // Every error wraps jose.ErrMalformed:
-//   - input over 1 MB, before any parsing;
+//   - input over 1 MiB (1 << 20 bytes), before any parsing;
 //   - no ~ at all: a plain JWT is not an SD-JWT;
 //   - a first part that is not three non-empty dot-separated parts;
 //   - a last part that is neither empty (no KB-JWT) nor three non-empty

@@ -28,9 +28,12 @@ One package per standard:
   received token; a Go `[]string` for `aud` is `jose.ErrMalformed`.
 - `jose/jwk`: `jwk.ToPublicKey` / `jwk.FromPublicKey` convert EC public keys (`kty: EC`, `crv: P-256 | secp256k1`,
   RFC 7517, RFC 7518, RFC 8812). A secp256k1 JWK that carries `alg`, `use` or `key_ops` must have `ES256K`, `sig`, or
-  a list including `verify` (RFC 8812 §3.2). `ToPublicKey` refuses a public JWK whose `kty`, or `crv` of an EC key,
-  is a string it does not convert with `jwk.ErrUnsupportedKey`, without checking the rest of the key, which may be
-  valid or broken. Every other refusal, a JWK carrying `d` included, is `jwk.ErrBadKey`; no error matches both.
+  a list including `verify` (RFC 8812 §3.2). `ToPublicKey` reads the map as `jose.DecodeJSONObject` yields it, where a
+  JSON array is `[]any`: for a secp256k1 key a Go `[]string` for `key_ops` is not that `[]any`, so the key is refused;
+  P-256 does not read `key_ops`.
+  `ToPublicKey` refuses a public JWK whose `kty`, or `crv` of an EC key, is a string it does not convert with
+  `jwk.ErrUnsupportedKey`, without checking the rest of the key, which may be valid or broken. Every other refusal, a
+  JWK carrying `d` included, is `jwk.ErrBadKey`; no error matches both.
 - `jose/sdjwt`: the SD-JWT format of RFC 9901. `sdjwt.Conceal(claims, paths, opts)` makes the claims at `paths`
   selectively disclosable and returns the payload to sign and the disclosures, with decoy digests up to
   `opts.MinDigests` in every object and array; `sdjwt.Split` separates the compact form; `sdjwt.Recreate(payload,

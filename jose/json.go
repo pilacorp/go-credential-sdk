@@ -281,10 +281,13 @@ func jsonKind(c byte) string {
 
 // EncodeJSON encodes v compactly, without HTML escaping (encoding/json turns
 // <, > and & into \u003c, \u003e and \u0026 by default; RFC 8259 §7 needs
-// none of them escaped) and with UTF-8 kept as is (RFC 8259 §8.1). Map keys
-// come out sorted, so the same value always gives the same bytes. A value
-// encoding/json cannot encode (a channel, a function, NaN) is
-// ErrInvalidArgument.
+// none of them escaped) and with UTF-8 kept as is (RFC 8259 §8.1); invalid
+// UTF-8 in strings and keys becomes U+FFFD, as in encoding/json, so keys that
+// become equal once each invalid byte is replaced by U+FFFD (such as "a\xff"
+// and "a\xfe", or "\xff" and "\ufffd") come out as one key twice, which
+// DecodeJSON refuses as a duplicate. Map keys come out sorted, so the same
+// value always gives the same bytes. A value encoding/json cannot encode (a
+// channel, a function, NaN) is ErrInvalidArgument.
 func EncodeJSON(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
