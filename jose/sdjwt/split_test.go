@@ -9,9 +9,15 @@ import (
 	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
-// Split refuses oversized input before it allocates the parts.
+// Split refuses oversized input before it allocates the parts; an SD-JWT of
+// exactly 1 MiB is accepted.
 func TestSplitLimits(t *testing.T) {
 	const jwt = "eyJh.eyJw.c2ln"
+	// sized is an SD-JWT of n bytes: the JWT and one disclosure, no KB-JWT.
+	sized := func(n int) string { return jwt + "~" + strings.Repeat("A", n-len(jwt)-2) + "~" }
+	if _, _, _, err := Split(sized(1 << 20)); err != nil {
+		t.Fatalf("1 MiB: got %v, want nil", err)
+	}
 	var distinct strings.Builder // 1001 different disclosures
 	for i := range 1001 {
 		fmt.Fprintf(&distinct, "~d%d", i)
@@ -20,7 +26,7 @@ func TestSplitLimits(t *testing.T) {
 		name    string
 		compact string
 	}{
-		{"over 1 MB", jwt + "~" + strings.Repeat("A", 1<<20) + "~"},
+		{"1 MiB + 1 byte", sized(1<<20 + 1)},
 		{"1001 disclosures", jwt + distinct.String() + "~"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
