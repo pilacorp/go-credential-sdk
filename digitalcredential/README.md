@@ -14,10 +14,12 @@ mechanism; `iss` and `vct` never. The claims draft 19 §2.2.2.3 forbids disclosi
 added after the concealed claims, so they carry neither a disclosure nor a decoy, and a `Disclose` path starting at one
 is refused. `aka_vcts` must be a non-empty array of strings without the value of `vct` (§2.2.2.2). Decoys need at least
 one `Disclose` path (§2.2.2.5). The key is a `statuslist.SigningKey`, as for `SignToken`: `alg` follows the curve of its
-`Public` and `typ` is `dc+sd-jwt`. `Issue` sets no size or depth limit, but holders and verifiers built on this SDK
-refuse a credential over 1 MiB, with more than 1000 disclosures, or nested deeper than 32 levels (`sdjwt.Split`,
-`sdjwt.Recreate`). `Issue` writes at most 1000 disclosures, but it signs a credential over 1 MiB or nested 33 to 64
-levels deep, which those readers refuse.
+`Public` and `typ` is `dc+sd-jwt`. Its `Signer` must return the 64-byte `r‖s` of the 32-byte digest it gets
+(`jws.Signer`). The root module's `signer.P256Provider` does; `signer.DefaultProvider` returns go-ethereum's 65-byte
+`r‖s‖v`, so `Issue` with it fails with `jws.ErrSelfCheck`, and it needs a wrapper that returns the first 64 bytes.
+`Issue` sets no size or depth limit, but holders and verifiers built on this SDK refuse a credential over 1 MiB, with
+more than 1000 disclosures, or nested deeper than 32 levels (`sdjwt.Split`, `sdjwt.Recreate`). `Issue` writes at most
+1000 disclosures, but it signs a credential over 1 MiB or nested 33 to 64 levels deep, which those readers refuse.
 
 `Present(issued, reveal, kb)` builds what the holder sends to a verifier (RFC 9901 §7.2): the issuer-signed JWT with only the
 disclosures of the claims in `reveal` and of their concealed ancestors, each once and in the issued order, and, with a
