@@ -1,3 +1,7 @@
+// Claim paths. No standard defines them: a string element selects an object
+// property, disclosed as RFC 9901 §4.2.1 describes, and an int element an
+// array element (§4.2.2).
+
 package sdjwt
 
 import (

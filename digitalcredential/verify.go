@@ -139,16 +139,20 @@ const (
 )
 
 // Error is a token Verify refused. Branch on Code; Err is the cause, for
-// logs only, and is never nil. errors.Is and errors.As reach through Err, so
-// a resolver's or checker's own error stays matchable, and so do
-// context.DeadlineExceeded from a checker's own fetch bound and jwt.ErrExpired
-// from an expired Status List Token.
+// logs only, and never nil in an Error Verify returns. errors.Is and
+// errors.As reach through Err, so a resolver's or checker's own error stays
+// matchable, and so do context.DeadlineExceeded from a checker's own fetch
+// bound and jwt.ErrExpired from an expired Status List Token.
 type Error struct {
 	Code Code
 	Err  error
 }
 
 func (e *Error) Error() string {
+	// An Error a caller builds may leave Err nil.
+	if e.Err == nil {
+		return "digitalcredential: " + string(e.Code)
+	}
 	// Texts of this package's helpers already start with the prefix.
 	return "digitalcredential: " + string(e.Code) + ": " + strings.TrimPrefix(e.Err.Error(), "digitalcredential: ")
 }

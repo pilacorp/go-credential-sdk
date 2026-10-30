@@ -2,7 +2,9 @@ go-credential-sdk / digitalcredential
 Copyright (c) 2026 Pila Corp
 Licensed under the MIT License (see LICENSE at the repository root).
 
-Packages digitalcredential, digitalcredential/internal/safehttp and
+Packages digitalcredential, digitalcredential/anchor,
+digitalcredential/issuerkey, digitalcredential/issuermeta,
+digitalcredential/internal/jsonint, digitalcredential/internal/safehttp and
 digitalcredential/statuslist are written from scratch.
 
 Test vectors in the statuslist tests and testdata are copied from

@@ -1,5 +1,5 @@
-// Ported from sd-jwt-python (Apache-2.0), src/sd_jwt/common.py (_split,
-// _parse_sd_jwt). See jose/NOTICE.
+// Ported from sd-jwt-python (Apache-2.0) at commit c5fda017,
+// src/sd_jwt/common.py (_split, _parse_sd_jwt). See jose/NOTICE.
 
 package sdjwt
 
