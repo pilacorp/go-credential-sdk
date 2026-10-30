@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"net/url"
 	"strings"
 )
@@ -82,6 +83,11 @@ func (t *Template) validate() error {
 		}
 		if err := validateURL(t.Reference.ID, "template reference id"); err != nil {
 			return err
+		}
+	}
+	if t.Embedded != nil && t.Embedded.MediaType != "" {
+		if _, _, err := mime.ParseMediaType(t.Embedded.MediaType); err != nil || strings.Contains(t.Embedded.MediaType, ",") {
+			return fmt.Errorf("embedded template mediaType %q is not a valid media type", t.Embedded.MediaType)
 		}
 	}
 	return nil
