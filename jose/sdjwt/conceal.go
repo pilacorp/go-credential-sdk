@@ -1,3 +1,4 @@
+// Concealing claims, on the issuer side: RFC 9901 §4.2.4 to §4.2.6.
 // Ported from sd-jwt-python (Apache-2.0) at commit c5fda017,
 // src/sd_jwt/issuer.py (_create_sd_claims, _create_sd_claims_object,
 // _create_sd_claims_list), and eudi-lib-jvm-sdjwt-kt (Apache-2.0) at commit

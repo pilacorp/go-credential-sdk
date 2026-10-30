@@ -1,3 +1,4 @@
+// Recreating the payload from the disclosures: RFC 9901 §7.1 steps 3 to 5.
 // Ported from sd-jwt-python (Apache-2.0) at commit c5fda017,
 // src/sd_jwt/verifier.py (_extract_sd_claims, _unpack_disclosed_claims), and
 // eudi-lib-jvm-sdjwt-kt (Apache-2.0) at commit 19f408b9,
