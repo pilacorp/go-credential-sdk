@@ -70,10 +70,11 @@ type KeyBinding struct {
 // with an EC key on P-256 or secp256k1, is this SDK's restriction. sd_hash
 // covers exactly the returned SD-JWT before the Key Binding JWT (§4.3.1).
 //
-// Present sets no size limit, but readers built on this SDK refuse an SD-JWT
-// over 1 MiB, with more than 1000 disclosures, or nested deeper than 32
-// (sdjwt.Split, sdjwt.Recreate), so a credential near 1 MiB plus a Key Binding
-// JWT is refused.
+// Present reads issued with sdjwt.Split and sdjwt.Recreate, so it refuses an
+// SD-JWT over 1 MiB, with more than 1000 disclosures, or nested deeper than
+// 32, as every reader built on this SDK does. The Key Binding JWT it adds is
+// not counted, so a credential near 1 MiB gives a presentation those readers
+// refuse.
 //
 // Errors, with "" for the result:
 //   - issued is not an SD-JWT (sdjwt.Split, jws.UnverifiedPayload, the
