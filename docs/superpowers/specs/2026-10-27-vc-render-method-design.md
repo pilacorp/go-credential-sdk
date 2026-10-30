@@ -256,7 +256,7 @@ The SDK must support creating render methods before the credential is signed. A 
 Render methods are declarative data objects that map directly to the W3C object model. The primary authoring API MUST use a single `RenderMethod` struct literal; `renderSuite` selects suite-specific validation. Functional options are not required.
 
 ```go
-summaryMethod := render.RenderMethod{
+summaryMethod := vc.RenderMethod{
 	Type:        "SuiteRenderMethod",
 	RenderSuite: "summary",
 	Name:        "Degree summary",
@@ -264,7 +264,7 @@ summaryMethod := render.RenderMethod{
 	Template:    template,
 }
 
-htmlMethod := render.RenderMethod{
+htmlMethod := vc.RenderMethod{
 	Type:          "SuiteRenderMethod",
 	RenderSuite:   "html",
 	RenderProperty: []string{
@@ -274,7 +274,7 @@ htmlMethod := render.RenderMethod{
 	Template: template,
 }
 
-staticMethod := render.RenderMethod{
+staticMethod := vc.RenderMethod{
 	Type:         "SuiteRenderMethod",
 	RenderSuite:  "static",
 	Template:     payload,
@@ -300,10 +300,10 @@ For common embedded and referenced-template cases, convenience helpers MAY be pr
 ```go
 embedded, err := render.NewEmbeddedTemplate(template)
 
-referenced := render.RenderMethod{
+referenced := vc.RenderMethod{
 	Type:        "SuiteRenderMethod",
 	RenderSuite: "summary",
-	Template: render.TemplateReference{
+	Template: vc.TemplateReference{
 		ID:              "https://example.com/templates/degree.json",
 		MediaType:       "application/json",
 		DigestMultibase: digest,
@@ -348,10 +348,10 @@ err = credential.AddProofByProvider(signer)
 Creating a render method with an external template reference must not require network access by default. The issuer may opt into validation through an explicit validation call:
 
 ```go
-method := render.RenderMethod{
+method := vc.RenderMethod{
 	Type:        "SuiteRenderMethod",
 	RenderSuite: "summary",
-	Template: render.TemplateReference{
+	Template: vc.TemplateReference{
 		ID:              url,
 		MediaType:       "application/json",
 		DigestMultibase: digest,
@@ -365,7 +365,10 @@ If validation is requested, fetching, media-type validation, template validation
 
 ## 8. Consumer-side rendering API
 
-Create a new package under `credential/vc/render`.
+Expose the render-method models, validators, fetchers, and consumer APIs
+directly from the existing `credential/vc` package. A separate
+`credential/vc/render` package is not required; render methods are part of the
+VC data model and follow the SDK's existing package organization.
 
 ```go
 type TemplateFetcher interface {
@@ -478,7 +481,8 @@ This specification covers only JSON-LD Verifiable Credentials secured with Data 
 - if a render-method term cannot be resolved, signing must fail rather than silently signing a partial object;
 - an unrecognized render suite must not cause otherwise valid credential verification to fail.
 
-VC-JWT, VC-JOSE, and SD-JWT are not processed by the render package, but their credential payload paths MUST preserve `renderMethod` unchanged.
+VC-JWT, VC-JOSE, and SD-JWT are not processed by the render-method consumer
+APIs, but their credential payload paths MUST preserve `renderMethod` unchanged.
 
 ## 12. Security and privacy requirements
 

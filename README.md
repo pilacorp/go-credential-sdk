@@ -1,5 +1,36 @@
 # Go Credential SDK
 
+## Render methods
+
+Render methods are signed JSON-LD VC metadata. The SDK does not add a JSON-LD
+context automatically; provide a context that defines the render-method terms.
+Create methods with the common `vc.RenderMethod` model and attach them before
+signing:
+
+```go
+summary := vc.RenderMethod{
+	Type: "SuiteRenderMethod", RenderSuite: "summary",
+	Template: &vc.Template{Embedded: &vc.EmbeddedTemplate{
+		MediaType: "application/json",
+		Bytes: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`),
+	}},
+}
+cred, err := vc.NewJSONCredential(vc.CredentialContents{
+	Context: []interface{}{"https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"},
+	Types: []string{"VerifiableCredential"}, Issuer: "did:example:issuer",
+	Subject: []vc.Subject{{CustomFields: map[string]interface{}{"name": "Alice"}}},
+	RenderMethods: []vc.RenderMethod{summary},
+})
+```
+
+For consumers, use `credential/vc/render`. `RenderSummary` resolves JSON
+Pointers and validates the result. `RenderHTML` returns an isolated `SrcDoc`
+without executing JavaScript. `ResolveStatic` returns verified bytes and
+delivery metadata. External templates require an injected `TemplateFetcher`;
+when `digestMultibase` is present, SHA-256 multihash verification is performed
+before the template is parsed. Unsupported suites are preserved in the VC and
+ignored by these renderers.
+
 [![Go Reference](https://pkg.go.dev/badge/github.com/pilacorp/go-credential-sdk.svg)](https://pkg.go.dev/github.com/pilacorp/go-credential-sdk)
 [![Go Report Card](https://goreportcard.com/badge/github.com/pilacorp/go-credential-sdk?style=flat-square)](https://goreportcard.com/report/github.com/pilacorp/go-credential-sdk)
 [![Release](https://img.shields.io/github/v/release/pilacorp/go-credential-sdk?include_prereleases&style=flat-square)](https://github.com/pilacorp/go-credential-sdk/releases)
