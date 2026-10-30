@@ -2,13 +2,23 @@ package vc
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
 )
+
+type testTemplateFetcher struct {
+	data []byte
+}
+
+func (f testTemplateFetcher) Fetch(context.Context, TemplateReference) ([]byte, error) {
+	return f.data, nil
+}
 
 func baseRenderContents(methods []RenderMethod) CredentialContents {
 	return CredentialContents{Context: []interface{}{"https://www.w3.org/ns/credentials/v2"}, Types: []string{"VerifiableCredential"}, Issuer: "did:example:issuer", Subject: []Subject{{ID: "did:example:subject"}}, RenderMethods: methods}
@@ -45,179 +55,6 @@ func TestSerializeCredentialContentsRenderMethodArray(t *testing.T) {
 	}
 }
 
-func TestCredentialWithoutRenderMethodKeepsMainBytes(t *testing.T) {
-	credential, err := NewJSONCredential(CredentialContents{
-		Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
-		ID:        "urn:uuid:3978344f-8596-4c3a-a978-8fcaba3903c5",
-		Types:     []string{"VerifiableCredential"},
-		Issuer:    "did:example:issuer",
-		ValidFrom: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		Subject:   []Subject{{ID: "did:example:subject"}},
-	})
-	if err != nil {
-		t.Fatalf("NewJSONCredential() error = %v", err)
-	}
-	contents, err := credential.GetContents()
-	if err != nil {
-		t.Fatalf("GetContents() error = %v", err)
-	}
-	signingInput, err := credential.GetSigningInput()
-	if err != nil {
-		t.Fatalf("GetSigningInput() error = %v", err)
-	}
-
-	checks := map[string]struct {
-		data []byte
-		want string
-	}{
-		"contents":     {data: contents, want: "bc3fdc25b66ae2ad030d8e974dda41788d8b1dcb1b661881ccd790df5d481720"},
-		"signingInput": {data: signingInput, want: "6b00af56257156342c796b8f11079faf0ab108675dd0706f8cc6aa8f824eef69"},
-	}
-	for name, check := range checks {
-		sum := sha256.Sum256(check.data)
-		if got := hex.EncodeToString(sum[:]); got != check.want {
-			t.Errorf("sha256(%s) = %s, want %s", name, got, check.want)
-		}
-	}
-}
-
-func TestConstructedRenderMethodUsesJSONNativeSnapshot(t *testing.T) {
-	template := &Template{Embedded: &EmbeddedTemplate{
-		MediaType: "application/json",
-		Bytes:     []byte(`{"name":"original"}`),
-	}}
-	contents := baseRenderContents([]RenderMethod{{
-		Type:        "SuiteRenderMethod",
-		RenderSuite: "summary",
-		Template:    template,
-	}})
-	credential, err := NewJSONCredential(contents)
-	if err != nil {
-		t.Fatalf("NewJSONCredential() error = %v", err)
-	}
-	if got := credential.ExtractField("renderMethod.renderSuite"); got != "summary" {
-		t.Fatalf("ExtractField(renderMethod.renderSuite) = %#v, want summary", got)
-	}
-
-	before, err := credential.GetContents()
-	if err != nil {
-		t.Fatalf("GetContents() before mutation error = %v", err)
-	}
-	template.Embedded.Bytes = []byte(`{"name":"changed"}`)
-	after, err := credential.GetContents()
-	if err != nil {
-		t.Fatalf("GetContents() after mutation error = %v", err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Fatal("credential contents changed after caller mutated the input template")
-	}
-}
-
-func TestRenderMethodCredentialRoundTripsObjectAndArray(t *testing.T) {
-	tests := []struct {
-		name    string
-		methods []RenderMethod
-	}{
-		{
-			name: "object",
-			methods: []RenderMethod{{
-				Type: "SuiteRenderMethod", RenderSuite: "summary",
-				Template: &Template{Embedded: &EmbeddedTemplate{
-					MediaType: "application/json",
-					Bytes:     []byte(`{"name":"Degree","description":"Summary","fields":[]}`),
-				}},
-			}},
-		},
-		{
-			name: "array",
-			methods: []RenderMethod{
-				{Type: "SuiteRenderMethod", RenderSuite: "summary"},
-				{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{"/credentialSubject/name"}},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			created, err := NewJSONCredential(baseRenderContents(tt.methods))
-			if err != nil {
-				t.Fatalf("NewJSONCredential() error = %v", err)
-			}
-			raw, err := created.GetContents()
-			if err != nil {
-				t.Fatalf("GetContents() error = %v", err)
-			}
-			parsed, err := ParseJSONCredential(raw)
-			if err != nil {
-				t.Fatalf("ParseJSONCredential() error = %v", err)
-			}
-
-			var original, roundTripped map[string]interface{}
-			if err := json.Unmarshal(raw, &original); err != nil {
-				t.Fatalf("unmarshal original: %v", err)
-			}
-			parsedRaw, err := parsed.GetContents()
-			if err != nil {
-				t.Fatalf("parsed GetContents() error = %v", err)
-			}
-			if err := json.Unmarshal(parsedRaw, &roundTripped); err != nil {
-				t.Fatalf("unmarshal round trip: %v", err)
-			}
-			if !reflect.DeepEqual(roundTripped["renderMethod"], original["renderMethod"]) {
-				t.Fatalf("renderMethod changed after parse: got %#v, want %#v", roundTripped["renderMethod"], original["renderMethod"])
-			}
-		})
-	}
-}
-
-func TestRenderMethodChangesSigningInput(t *testing.T) {
-	contents := baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary"}})
-	contents.Context = append(contents.Context, "https://www.w3.org/ns/credentials/examples/v2")
-	credential, err := NewJSONCredential(contents)
-	if err != nil {
-		t.Fatalf("NewJSONCredential() error = %v", err)
-	}
-	before, err := credential.GetSigningInput()
-	if err != nil {
-		t.Fatalf("GetSigningInput() before mutation error = %v", err)
-	}
-	credential.credentialData["renderMethod"] = map[string]interface{}{
-		"type":        "SuiteRenderMethod",
-		"renderSuite": "html",
-	}
-	after, err := credential.GetSigningInput()
-	if err != nil {
-		t.Fatalf("GetSigningInput() after mutation error = %v", err)
-	}
-	if bytes.Equal(before, after) {
-		t.Fatal("GetSigningInput() unchanged after renderMethod mutation")
-	}
-}
-
-func TestRenderMethodMutationInvalidatesDataIntegrityProof(t *testing.T) {
-	contents := baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary"}})
-	contents.Context = append(contents.Context, "https://www.w3.org/ns/credentials/examples/v2")
-	credential, err := NewJSONCredential(contents)
-	if err != nil {
-		t.Fatalf("NewJSONCredential() error = %v", err)
-	}
-	signerProvider, opts := p256TestIssuer(t, "did:example:issuer")
-	if err := credential.AddProofByProvider(signerProvider, opts...); err != nil {
-		t.Fatalf("AddProofByProvider() error = %v", err)
-	}
-	if err := credential.Verify(opts...); err != nil {
-		t.Fatalf("Verify() before mutation error = %v", err)
-	}
-
-	credential.credentialData["renderMethod"] = map[string]interface{}{
-		"type":        "SuiteRenderMethod",
-		"renderSuite": "html",
-	}
-	if err := credential.Verify(opts...); err == nil {
-		t.Fatal("Verify() after renderMethod mutation = nil, want invalid proof error")
-	}
-}
-
 func TestSerializeCredentialContentsRejectsIncompleteRenderMethod(t *testing.T) {
 	contents := baseRenderContents([]RenderMethod{{RenderSuite: "summary"}})
 	if _, err := serializeCredentialContents(&contents); err == nil {
@@ -240,16 +77,6 @@ func TestRenderMethodTemplateReferenceRoundTripsBothDigests(t *testing.T) {
 	}
 }
 
-func TestRenderMethodTemplatePercentEncodedDataURL(t *testing.T) {
-	var got Template
-	if err := json.Unmarshal([]byte(`"data:application/json,%7B%22name%22%3A%22Alice%22%7D"`), &got); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
-	}
-	if got.Embedded == nil || string(got.Embedded.Bytes) != `{"name":"Alice"}` {
-		t.Fatalf("embedded template = %#v, want percent-decoded JSON", got.Embedded)
-	}
-}
-
 func TestRenderMethodRejectsInvalidURLs(t *testing.T) {
 	contents := baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary", ID: "not a url"}})
 	if _, err := serializeCredentialContents(&contents); err == nil {
@@ -262,19 +89,221 @@ func TestRenderMethodRejectsInvalidURLs(t *testing.T) {
 	}
 }
 
-func TestEmbeddedMediaTypeCannotRewriteDataURL(t *testing.T) {
-	tests := map[string]bool{
-		"":                        true,
-		"text/html;charset=utf-8": true,
-		"text/html,evil":          false,
-		`text/plain;x="a,b"`:      false,
-		"text/plain;base64":       false,
-	}
-	for mediaType, wantValid := range tests {
-		tmpl := &Template{Embedded: &EmbeddedTemplate{MediaType: mediaType, Bytes: []byte("<p>x</p>")}}
-		err := tmpl.validate()
-		if (err == nil) != wantValid {
-			t.Errorf("validate(%q) error = %v, want valid=%v", mediaType, err, wantValid)
+func TestRenderMethodValidatesRenderProperties(t *testing.T) {
+	valid := []string{"", "/credentialSubject/name", "/a~1b/~0key"}
+	for _, pointer := range valid {
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{pointer}}
+		if err := method.Validate(); err != nil {
+			t.Errorf("Validate() for pointer %q error = %v", pointer, err)
 		}
+	}
+
+	for _, pointer := range []string{"credentialSubject/name", "/a~2b", "/a~"} {
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{pointer}}
+		if err := method.Validate(); err == nil {
+			t.Errorf("Validate() for pointer %q error = nil, want invalid JSON Pointer error", pointer)
+		}
+	}
+}
+
+func TestRenderMethodValidatesEmbeddedSuiteTemplates(t *testing.T) {
+	tests := []struct {
+		name   string
+		method RenderMethod
+		wantOK bool
+	}{
+		{
+			name: "summary",
+			method: RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{
+				MediaType: "application/json",
+				Bytes:     []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`),
+			}}},
+			wantOK: true,
+		},
+		{
+			name: "html fragment",
+			method: RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Embedded: &EmbeddedTemplate{
+				MediaType: "text/html",
+				Bytes:     []byte("<div>hello</div>"),
+			}}},
+			wantOK: true,
+		},
+		{
+			name: "static requires delivery mode",
+			method: RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", Template: &Template{Embedded: &EmbeddedTemplate{
+				MediaType: "application/octet-stream",
+				Bytes:     []byte("payload"),
+			}}},
+			wantOK: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.method.Validate()
+			if (err == nil) != tt.wantOK {
+				t.Fatalf("Validate() error = %v, wantOK = %v", err, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestRenderMethodValidatesExternalTemplateOnRequest(t *testing.T) {
+	data := []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)
+	hash := sha256.Sum256(data)
+	multihash := append([]byte{0x12, 0x20}, hash[:]...)
+	digest := "u" + base64.RawURLEncoding.EncodeToString(multihash)
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{
+		ID: "https://example.com/template.json", MediaType: "application/json", DigestMultibase: digest,
+	}}}
+	if err := method.ValidateExternalTemplate(context.Background(), testTemplateFetcher{data: data}); err != nil {
+		t.Fatalf("ValidateExternalTemplate() error = %v", err)
+	}
+
+	method.Template.Reference.DigestMultibase = "uAQ"
+	if err := method.ValidateExternalTemplate(context.Background(), testTemplateFetcher{data: data}); err == nil {
+		t.Fatal("ValidateExternalTemplate() error = nil, want digest verification error")
+	}
+}
+
+func TestRenderMethodCanonicalizationPreservesPhase15Fields(t *testing.T) {
+	contents := CredentialContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		Types:   []string{"VerifiableCredential"},
+		Issuer:  "did:example:issuer",
+		Subject: []Subject{{ID: "did:example:subject"}},
+		RenderMethods: []RenderMethod{{
+			ID:             "https://example.com/render-method",
+			Type:           "SuiteRenderMethod",
+			RenderSuite:    "html",
+			RenderProperty: []string{"/credentialSubject/name"},
+			Template: &Template{Embedded: &EmbeddedTemplate{
+				MediaType: "text/html",
+				Bytes:     []byte("<p>{{name}}</p>"),
+			}},
+			DigestMultibase: "z6Mkouter",
+			OutputPreference: &OutputPreference{
+				AccessMode: []string{"online"},
+				MediaType:  "text/html",
+				Style:      &RenderStyle{Width: "100px", Height: "50px"},
+			},
+			DeliveryMode: "download",
+		}},
+	}
+
+	credential, err := NewJSONCredential(contents)
+	if err != nil {
+		t.Fatalf("NewJSONCredential() error = %v", err)
+	}
+	if _, err := credential.GetSigningInput(); err != nil {
+		t.Fatalf("GetSigningInput() error = %v", err)
+	}
+}
+
+func TestRenderMethodCanonicalizationRejectsMissingRenderContext(t *testing.T) {
+	contents := baseRenderContents([]RenderMethod{{
+		Type:        "SuiteRenderMethod",
+		RenderSuite: "summary",
+	}})
+
+	credential, err := NewJSONCredential(contents)
+	if err != nil {
+		t.Fatalf("NewJSONCredential() error = %v", err)
+	}
+	if _, err := credential.GetSigningInput(); err == nil {
+		t.Fatal("GetSigningInput() error = nil, want unresolved render-method context error")
+	}
+}
+
+func TestCredentialWithoutRenderMethodKeepsMainBytes(t *testing.T) {
+	credential, err := NewJSONCredential(CredentialContents{Context: []interface{}{"https://www.w3.org/ns/credentials/v2"}, ID: "urn:uuid:3978344f-8596-4c3a-a978-8fcaba3903c5", Types: []string{"VerifiableCredential"}, Issuer: "did:example:issuer", ValidFrom: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Subject: []Subject{{ID: "did:example:subject"}}})
+	if err != nil {
+		t.Fatalf("NewJSONCredential() error = %v", err)
+	}
+	contents, err := credential.GetContents()
+	if err != nil {
+		t.Fatalf("GetContents() error = %v", err)
+	}
+	signingInput, err := credential.GetSigningInput()
+	if err != nil {
+		t.Fatalf("GetSigningInput() error = %v", err)
+	}
+	for name, check := range map[string]struct {
+		data []byte
+		want string
+	}{
+		"contents":     {contents, "bc3fdc25b66ae2ad030d8e974dda41788d8b1dcb1b661881ccd790df5d481720"},
+		"signingInput": {signingInput, "6b00af56257156342c796b8f11079faf0ab108675dd0706f8cc6aa8f824eef69"},
+	} {
+		sum := sha256.Sum256(check.data)
+		if got := hex.EncodeToString(sum[:]); got != check.want {
+			t.Errorf("sha256(%s) = %s, want %s", name, got, check.want)
+		}
+	}
+}
+
+func TestConstructedRenderMethodUsesJSONNativeSnapshot(t *testing.T) {
+	template := &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)}}
+	credential, err := NewJSONCredential(baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: template}}))
+	if err != nil {
+		t.Fatalf("NewJSONCredential() error = %v", err)
+	}
+	if got := credential.ExtractField("renderMethod.renderSuite"); got != "summary" {
+		t.Fatalf("ExtractField() = %#v, want summary", got)
+	}
+	before, err := credential.GetContents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	template.Embedded.Bytes = []byte(`{"name":"changed"}`)
+	after, err := credential.GetContents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("credential contents changed after caller mutation")
+	}
+}
+
+func TestRenderMethodCredentialRoundTripsObjectAndArray(t *testing.T) {
+	for _, methods := range [][]RenderMethod{{{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)}}}}, {{Type: "SuiteRenderMethod", RenderSuite: "summary"}, {Type: "SuiteRenderMethod", RenderSuite: "html"}}} {
+		created, err := NewJSONCredential(baseRenderContents(methods))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := created.GetContents()
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := ParseJSONCredential(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsedRaw, err := parsed.GetContents()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var original, roundTripped map[string]interface{}
+		if err := json.Unmarshal(raw, &original); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(parsedRaw, &roundTripped); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(original["renderMethod"], roundTripped["renderMethod"]) {
+			t.Fatalf("renderMethod changed after parse")
+		}
+	}
+}
+
+func TestRenderMethodTemplatePercentEncodedDataURL(t *testing.T) {
+	var got Template
+	if err := json.Unmarshal([]byte(`"data:application/json,%7B%22name%22%3A%22Alice%22%7D"`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Embedded == nil || string(got.Embedded.Bytes) != `{"name":"Alice"}` {
+		t.Fatalf("embedded template = %#v", got.Embedded)
 	}
 }

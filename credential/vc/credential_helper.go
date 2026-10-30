@@ -67,7 +67,7 @@ func serializeCredentialContents(vcc *CredentialContents) (CredentialData, error
 
 	if len(vcc.RenderMethods) > 0 {
 		for i, method := range vcc.RenderMethods {
-			if err := method.validate(); err != nil {
+			if err := method.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid renderMethod[%d]: %w", i, err)
 			}
 		}
