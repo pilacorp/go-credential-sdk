@@ -1,11 +1,15 @@
 package vc
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"reflect"
 	"testing"
+	"time"
 )
 
 type testTemplateFetcher struct {
@@ -210,5 +214,96 @@ func TestRenderMethodCanonicalizationRejectsMissingRenderContext(t *testing.T) {
 	}
 	if _, err := credential.GetSigningInput(); err == nil {
 		t.Fatal("GetSigningInput() error = nil, want unresolved render-method context error")
+	}
+}
+
+func TestCredentialWithoutRenderMethodKeepsMainBytes(t *testing.T) {
+	credential, err := NewJSONCredential(CredentialContents{Context: []interface{}{"https://www.w3.org/ns/credentials/v2"}, ID: "urn:uuid:3978344f-8596-4c3a-a978-8fcaba3903c5", Types: []string{"VerifiableCredential"}, Issuer: "did:example:issuer", ValidFrom: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Subject: []Subject{{ID: "did:example:subject"}}})
+	if err != nil {
+		t.Fatalf("NewJSONCredential() error = %v", err)
+	}
+	contents, err := credential.GetContents()
+	if err != nil {
+		t.Fatalf("GetContents() error = %v", err)
+	}
+	signingInput, err := credential.GetSigningInput()
+	if err != nil {
+		t.Fatalf("GetSigningInput() error = %v", err)
+	}
+	for name, check := range map[string]struct {
+		data []byte
+		want string
+	}{
+		"contents":     {contents, "bc3fdc25b66ae2ad030d8e974dda41788d8b1dcb1b661881ccd790df5d481720"},
+		"signingInput": {signingInput, "6b00af56257156342c796b8f11079faf0ab108675dd0706f8cc6aa8f824eef69"},
+	} {
+		sum := sha256.Sum256(check.data)
+		if got := hex.EncodeToString(sum[:]); got != check.want {
+			t.Errorf("sha256(%s) = %s, want %s", name, got, check.want)
+		}
+	}
+}
+
+func TestConstructedRenderMethodUsesJSONNativeSnapshot(t *testing.T) {
+	template := &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)}}
+	credential, err := NewJSONCredential(baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: template}}))
+	if err != nil {
+		t.Fatalf("NewJSONCredential() error = %v", err)
+	}
+	if got := credential.ExtractField("renderMethod.renderSuite"); got != "summary" {
+		t.Fatalf("ExtractField() = %#v, want summary", got)
+	}
+	before, err := credential.GetContents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	template.Embedded.Bytes = []byte(`{"name":"changed"}`)
+	after, err := credential.GetContents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("credential contents changed after caller mutation")
+	}
+}
+
+func TestRenderMethodCredentialRoundTripsObjectAndArray(t *testing.T) {
+	for _, methods := range [][]RenderMethod{{{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)}}}}, {{Type: "SuiteRenderMethod", RenderSuite: "summary"}, {Type: "SuiteRenderMethod", RenderSuite: "html"}}} {
+		created, err := NewJSONCredential(baseRenderContents(methods))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := created.GetContents()
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := ParseJSONCredential(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsedRaw, err := parsed.GetContents()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var original, roundTripped map[string]interface{}
+		if err := json.Unmarshal(raw, &original); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(parsedRaw, &roundTripped); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(original["renderMethod"], roundTripped["renderMethod"]) {
+			t.Fatalf("renderMethod changed after parse")
+		}
+	}
+}
+
+func TestRenderMethodTemplatePercentEncodedDataURL(t *testing.T) {
+	var got Template
+	if err := json.Unmarshal([]byte(`"data:application/json,%7B%22name%22%3A%22Alice%22%7D"`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Embedded == nil || string(got.Embedded.Bytes) != `{"name":"Alice"}` {
+		t.Fatalf("embedded template = %#v", got.Embedded)
 	}
 }
