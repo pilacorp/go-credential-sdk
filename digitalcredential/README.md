@@ -50,6 +50,11 @@ credential without checking its status, and `Result.StatusSkipped` says so. A re
 the caller branches on; `ErrPolicy` is the caller's own mistake, and can show for some tokens only; any other error is
 the caller's `ctx` ending. A claim concealed and not disclosed leaves no trace, so a withheld `cnf` reads as no `cnf`.
 
+`Hash(token)` returns SHA-256 of the bytes of a credential's Issuer-signed JWT exactly as given, the part before the
+first `~` (RFC 9901 §4), so a credential and each presentation of it have one hash: use it to name a credential, for
+example to record or anchor it. Any other serialization, the same token with its signature's S flipped included, has
+another hash. `Hash` verifies nothing, so take the hash of the string `Issue` returned or of a token `Verify` accepted.
+
 For OpenID4VP 1.0 transaction data (§8.4), the holder puts the claim its transaction data type defines in
 `KeyBinding.Claims`, such as `transaction_data_hashes` (Appendix B.3.3.1: the base64url hash of each `transaction_data`
 string as received, by sha-256, or when the request lists `transaction_data_hashes_alg` by one of those, named in a
@@ -117,14 +122,6 @@ This module does not meet HAIP 1.0 yet: §6.1.1 requires every entity to support
 `x5c` certificate chain and every SD-JWT VC to carry that chain, and §6.1 requires `x5c` on Status List Tokens.
 `Verify` and the `Checker` take keys only from an `issuerkey.Resolver` by `iss` and `kid`, and neither `Issue` nor
 `SignToken` writes `x5c`.
-
-`anchor` holds NDA DID's anchoring conventions for these credentials. `anchor.Leaf(token)` returns the leaf of a
-credential for NDA DID's Merkle tree, whose root is anchored: SHA-256 of the bytes of its Issuer-signed JWT exactly as
-given, the part before the first `~`, so a credential and each presentation of it have one leaf. Any other serialization,
-the same token with its signature's S flipped included, is a different credential with no anchored leaf. `Leaf` verifies
-nothing, so take the leaf of the string `Issue` returned or of a token `Verify` accepted.
-`anchor.ChainListID(bits, listID)` returns the id a status list is anchored under,
-`dc-b<bits>-<listID>`. No other package of this module imports `anchor`.
 
 `internal/safehttp` fetches documents whose URL comes from a token, such as a status list or issuer metadata: HTTPS
 without userinfo on every hop (RFC 9110 §4.2.4), or http too only when the caller opts in (`WithInsecureHTTP` for a
