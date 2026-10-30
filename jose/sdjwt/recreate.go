@@ -1,7 +1,8 @@
-// Ported from sd-jwt-python (Apache-2.0), src/sd_jwt/verifier.py
-// (_extract_sd_claims, _unpack_disclosed_claims), and eudi-lib-jvm-sdjwt-kt
-// (Apache-2.0), src/main/kotlin/eu/europa/ec/eudi/sdjwt/RecreateClaims.kt
-// and SdJwtVerifier.kt. See jose/NOTICE.
+// Ported from sd-jwt-python (Apache-2.0) at commit c5fda017,
+// src/sd_jwt/verifier.py (_extract_sd_claims, _unpack_disclosed_claims), and
+// eudi-lib-jvm-sdjwt-kt (Apache-2.0) at commit 19f408b9,
+// src/main/kotlin/eu/europa/ec/eudi/sdjwt/RecreateClaims.kt and
+// SdJwtVerifier.kt. See jose/NOTICE.
 
 package sdjwt
 

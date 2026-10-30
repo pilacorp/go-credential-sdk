@@ -1,7 +1,8 @@
-// Ported from sd-jwt-python (Apache-2.0), src/sd_jwt/issuer.py
-// (_create_sd_claims, _create_sd_claims_object, _create_sd_claims_list), and
-// eudi-lib-jvm-sdjwt-kt (Apache-2.0), src/main/kotlin/eu/europa/ec/eudi/sdjwt/
-// DecoyGen.kt. See jose/NOTICE.
+// Ported from sd-jwt-python (Apache-2.0) at commit c5fda017,
+// src/sd_jwt/issuer.py (_create_sd_claims, _create_sd_claims_object,
+// _create_sd_claims_list), and eudi-lib-jvm-sdjwt-kt (Apache-2.0) at commit
+// 19f408b9, src/main/kotlin/eu/europa/ec/eudi/sdjwt/DecoyGen.kt. See
+// jose/NOTICE.
 
 package sdjwt
 

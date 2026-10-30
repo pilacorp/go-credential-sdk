@@ -1,3 +1,6 @@
+// The Key Binding JWT of RFC 9901: its form and sd_hash (§4.3) and its
+// verification (§7.3 step 5). Written from the RFC, not ported.
+
 package sdjwt
 
 import (
