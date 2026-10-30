@@ -116,14 +116,16 @@ type IssueRequest struct {
 // the signer's own randomness).
 //
 // Work and output grow with (the objects and arrays in Claims, plus the top
-// level) × MinDigests. Issue sets no size or depth limit (RFC 9901 and draft
-// 19 set none), but holders and verifiers built on this SDK refuse an SD-JWT
-// over 1 MiB (sdjwt.Split), with more than 1000 disclosures (sdjwt.Split,
-// sdjwt.Recreate), or nested deeper than 32 levels, the payload counted
-// (sdjwt.Recreate). Issue can sign the first and the last: Claims may nest up
-// to jose.MaxJSONDepth (64) levels, so a credential nested 33 to 64 deep is
-// signed and then refused by every reader on this SDK. sdjwt.Conceal takes at
-// most 1000 paths, one disclosure each, so the second is never reached.
+// level) × MinDigests. RFC 9901 and draft 19 set no limit; sdjwt.Conceal
+// bounds that work and refuses more than 1000 paths, a MinDigests over 1000,
+// or a product over 20000 digests. Holders and verifiers built on this SDK
+// refuse an SD-JWT over 1 MiB (sdjwt.Split), with more than 1000 disclosures
+// (sdjwt.Split, sdjwt.Recreate), or nested deeper than 32 levels, the payload
+// counted (sdjwt.Recreate). Issue can sign the first and the last: Claims may
+// nest up to jose.MaxJSONDepth (64) levels, so a credential nested 33 to 64
+// deep is signed and then refused by every reader on this SDK. sdjwt.Conceal
+// takes at most 1000 paths, one disclosure each, so the second is never
+// reached.
 //
 // Errors: a request breaking the rules of IssueRequest is
 // jose.ErrInvalidArgument naming the field, a Status failing Validate

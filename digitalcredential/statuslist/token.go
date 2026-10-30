@@ -62,8 +62,8 @@ type SigningKey struct {
 // with key.Public before it is returned, so a signer holding another key
 // gives jws.ErrSelfCheck.
 //
-// Draft 21 sets no size limit (§13.4), and SignToken signs a token of any
-// size. A Checker refuses one over 1 MiB, which holds only about 576 KiB of
+// Draft 21 sets no size limit (§13.4); SignToken adds none beyond the List's
+// 16 MiB. A Checker refuses one over 1 MiB, which holds only about 576 KiB of
 // list bytes that do not compress: a larger list reads only while it
 // compresses well, so size or split lists for the highest change rate
 // expected (draft 21 §13.4, Appendix B). Encode uses the best compression level (§4.1 step 4 RECOMMENDS it), whose

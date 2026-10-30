@@ -1,3 +1,4 @@
+// The compact form of an SD-JWT and an SD-JWT+KB: RFC 9901 §4.
 // Ported from sd-jwt-python (Apache-2.0) at commit c5fda017,
 // src/sd_jwt/common.py (_split, _parse_sd_jwt). See jose/NOTICE.
 

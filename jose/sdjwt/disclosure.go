@@ -1,3 +1,4 @@
+// Disclosures and their digests: RFC 9901 §4.2.1 to §4.2.3.
 // Ported from sd-jwt-python (Apache-2.0) at commit c5fda017,
 // src/sd_jwt/disclosure.py (SDJWTDisclosure), and eudi-lib-jvm-sdjwt-kt
 // (Apache-2.0) at commit 19f408b9,

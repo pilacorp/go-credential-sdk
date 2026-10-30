@@ -1,3 +1,5 @@
+// Limits of jose/sdjwt on the work of one call. RFC 9901 sets none.
+
 package sdjwt
 
 // Bounds this package sets; RFC 9901 sets none. Readers bound what an SD-JWT
