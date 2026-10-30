@@ -1,0 +1,70 @@
+{
+  "singleObject": {
+    "@context": [
+      "https://www.w3.org/ns/credentials/v2",
+      "https://www.w3.org/ns/credentials/examples/v2"
+    ],
+    "type": ["VerifiableCredential", "NameCredential"],
+    "issuer": {
+      "id": "did:example:issuer",
+      "name": "Example Issuer"
+    },
+    "credentialSubject": {
+      "id": "did:example:subject",
+      "name": "Example Name",
+      "notRendered": "must be excluded by renderProperty"
+    },
+    "renderMethod": {
+      "type": "SuiteRenderMethod",
+      "renderSuite": "html",
+      "renderProperty": [
+        "/issuer/name",
+        "/credentialSubject/name"
+      ],
+      "template": {
+        "id": "https://example.com/templates/name.html",
+        "mediaType": "text/html",
+        "digestMultibase": "uEiD7Q2J9m9g9Y4sQ4KJ8n3Q5x2n5p8q7w6v4t3r2s1"
+      },
+      "outputPreference": {
+        "accessMode": ["visual"],
+        "mediaType": "application/html",
+        "style": {
+          "width": "800px",
+          "height": "600px"
+        }
+      }
+    }
+  },
+  "multipleArray": {
+    "renderMethod": [
+      {
+        "type": "SuiteRenderMethod",
+        "renderSuite": "summary",
+        "template": "data:application/json,%7B%22name%22%3A%22%2FcredentialSubject%2Fname%22%2C%22description%22%3A%22Example%22%2C%22fields%22%3A%5B%5D%7D"
+      },
+      {
+        "type": "SuiteRenderMethod",
+        "renderSuite": "static",
+        "template": {
+          "id": "https://example.com/templates/name.png",
+          "mediaType": "image/png",
+          "digestMultibase": "uEiD7Q2J9m9g9Y4sQ4KJ8n3Q5x2n5p8q7w6v4t3r2s1"
+        },
+        "deliveryMode": "nfc"
+      },
+      {
+        "type": "SuiteRenderMethod",
+        "renderSuite": "summary",
+        "template": "data:application/json;base64,eyJuYW1lIjoiYmFzZTY0IiwgImRlc2NyaXB0aW9uIjoiRXhhbXBsZSIsICJmaWVsZHMiOltdfQ=="
+      }
+    ]
+  },
+  "unsupportedSuite": {
+    "renderMethod": {
+      "type": "SuiteRenderMethod",
+      "renderSuite": "audio",
+      "template": "data:audio/mpeg;base64,AA=="
+    }
+  }
+}
