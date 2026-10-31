@@ -79,8 +79,8 @@ func manyDisclosures(n int) string {
 	return b.String()
 }
 
-// TC-35 (REQ-25, REQ-48, REQ-51): a nil or zero Credential is not a
-// credential: no hash of "", no presentation, and no panic.
+// TC-35 (REQ-25, REQ-29, REQ-48, REQ-51): a nil or zero Credential is not a
+// credential: no hash of "", no presentation, no verification, and no panic.
 func TestZeroCredential(t *testing.T) {
 	for name, c := range map[string]*Credential{"nil": nil, "zero": {}} {
 		if got := c.Serialize(); got != "" {
@@ -91,6 +91,9 @@ func TestZeroCredential(t *testing.T) {
 		}
 		if _, err := c.Present(t.Context(), PresentRequest{}); !errors.Is(err, jose.ErrInvalidArgument) {
 			t.Errorf("%s: Present err = %v; want jose.ErrInvalidArgument", name, err)
+		}
+		if _, err := c.Verify(t.Context(), keysOf{}); !errors.Is(err, ErrPolicy) {
+			t.Errorf("%s: Verify err = %v; want ErrPolicy", name, err)
 		}
 	}
 }
