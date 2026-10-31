@@ -41,6 +41,13 @@ func holderKey(payload map[string]any, r *sdjwt.Recreated) (crypto.PublicKey, er
 	if !ok {
 		return nil, errNoCnf
 	}
+	return cnfKey(cnf)
+}
+
+// cnfKey reads the Holder's public key from cnf, the value of a cnf claim as
+// jose.DecodeJSON gives it, with the errors holderKey lists after the
+// disclosure.
+func cnfKey(cnf any) (crypto.PublicKey, error) {
 	obj, isObject := cnf.(map[string]any)
 	if isObject {
 		// RFC 7800 §3.1: cnf MUST represent a single proof-of-possession key,
