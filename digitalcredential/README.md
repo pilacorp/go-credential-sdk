@@ -46,7 +46,7 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 | `Checker`, `Config` | `statuslist` | Reads a credential's status from its issuer's Status List Token; share one, it caches by `ttl` |
 | `SigningKey` | `issuerkey` | The Issuer's `jws.Signer`, its public key and `kid` |
 | `PublicKey` | `issuerkey` | A key an Issuer publishes for verifying, with its `kid` (RFC 7517 §4.5) |
-| `Config` | `issuermeta` | The configuration of a `Resolver`, copied at construction; a zero field gives a safe default |
+| `Config` | `issuermeta` | The configuration of a `Resolver`, copied at construction; `Allowed` is required, and any other zero field gives a safe default |
 
 | Interface | Does | In the SDK | Written by the caller, for example |
 |---|---|---|---|
