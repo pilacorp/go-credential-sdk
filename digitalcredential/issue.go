@@ -86,7 +86,9 @@ type IssueRequest struct {
 	// vct#integrity must be integrity metadata whose tokens are sha256,
 	// sha384 or sha512 hash expressions (§6, W3C SRI §3.5): take it from
 	// typemeta.Encoded.Integrity of the published document. An empty value
-	// fits that syntax and is signed, but every Verifier refuses it (§6).
+	// fits that syntax and is signed; Verify with WithTypeMetadata then
+	// refuses the credential (§6), WithOptionalTypeMetadata skips Type
+	// Metadata for it, and without either Type Metadata is not read.
 	Claims map[string]any
 	// Disclose lists the claims to conceal, in any order (sdjwt.Conceal). A
 	// path must not start at one of the eight claims draft 19 §2.2.2.3
@@ -301,7 +303,7 @@ func (req IssueRequest) check(claims map[string]any) error {
 		}
 	}
 	if v, ok := claims["vct#integrity"]; ok {
-		if s, _ := v.(string); !sri.WellFormed(s) {
+		if s, ok := v.(string); !ok || !sri.WellFormed(s) {
 			return fmt.Errorf("%w: dc: Claims vct#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §5.3); take it from typemeta.Encoded.Integrity", jose.ErrInvalidArgument)
 		}
 	}

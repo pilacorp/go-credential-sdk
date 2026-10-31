@@ -34,6 +34,10 @@ func TestIssueRefusesRequest(t *testing.T) {
 		"aka_vcts a string":      func(r *IssueRequest) { r.Claims["aka_vcts"] = "urn:example:id" },
 		"aka_vcts an empty name": func(r *IssueRequest) { r.Claims["aka_vcts"] = []string{""} },
 		"aka_vcts a number":      func(r *IssueRequest) { r.Claims["aka_vcts"] = []any{1} },
+		// draft 19 §5.3: vct#integrity is an integrity metadata string.
+		"vct#integrity a number": func(r *IssueRequest) { r.Claims["vct#integrity"] = 1 },
+		"vct#integrity null":     func(r *IssueRequest) { r.Claims["vct#integrity"] = nil },
+		"vct#integrity an array": func(r *IssueRequest) { r.Claims["vct#integrity"] = []any{} },
 		// Deeper than jose.MaxJSONDepth: the request's mistake, not a
 		// malformed token.
 		"Claims nested too deep": func(r *IssueRequest) { r.Claims["deep"] = nested(70) },
