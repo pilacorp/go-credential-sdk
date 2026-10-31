@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -101,7 +102,7 @@ func newMetaServer(t *testing.T, routes map[string]response) *metaServer {
 // resolver returns a Resolver over s whose clock reads *now.
 func (s *metaServer) resolver(t *testing.T, allowed []string, now *time.Time, disableCache bool) *Resolver {
 	t.Helper()
-	return s.resolverFor(t, Config{Allowed: allowed, DisableCache: disableCache}, now)
+	return s.resolverFor(t, Config{TrustedIssuerOrigins: allowed, DisableCache: disableCache}, now)
 }
 
 // resolverFor returns a Resolver for cfg over s whose clock reads *now.
@@ -221,19 +222,62 @@ func TestFigure15(t *testing.T) {
 }
 
 func TestNewResolver(t *testing.T) {
-	if _, err := NewResolver(Config{}); !errors.Is(err, jose.ErrInvalidArgument) {
-		t.Fatalf("NewResolver(Config{}) = %v, want jose.ErrInvalidArgument", err)
+	// An empty TrustedIssuerOrigins trusts every https issuer.
+	if _, err := NewResolver(Config{}); err != nil {
+		t.Fatalf("NewResolver(Config{}) = %v", err)
 	}
-	// A typo of "https://" that would cover every https iss.
-	if _, err := NewResolver(Config{Allowed: []string{"https:/"}}); !errors.Is(err, jose.ErrInvalidArgument) {
-		t.Fatalf(`NewResolver("https:/") = %v, want jose.ErrInvalidArgument`, err)
+	for _, e := range []string{
+		// Not https, or no host.
+		"https:/", "http://example.com", "example.com", "https://",
+		// A "*" in a host other than a single leading "*." of an origin.
+		"**", "https://*", "https://a*.example.com/", "https://*.*.example.com/", "https://*example.com/",
+		"https://*.example.com/x", "https://user@*.example.com/", "https://*.example.com?x",
+		// Not an origin: a path, query, fragment or userinfo.
+		"https://example.com/tenant/", "https://example.com/tenant", "https://example.com/a*b",
+		"https://example.com?x=*", "https://example.com/?x=/", "https://example.com/#x", "https://user@example.com/",
+		// A host or port that would not match the URL it means: an empty
+		// label, a final "." included, a host not in ASCII, raw or
+		// percent-encoded, or a port with a leading zero or out of range.
+		"https://example.com.", "https://*.example.com./", "https://bücher.example", "https://b%C3%BCcher.example",
+		"https://.example.com", "https://a..example.com", "https://*..example.com",
+		"https://example.com:0443", "https://example.com:0", "https://example.com:65536",
+		// "*": an empty list covers every origin.
+		"*",
+	} {
+		if _, err := NewResolver(Config{TrustedIssuerOrigins: []string{"https://ok.example/", e}}); !errors.Is(err, jose.ErrInvalidArgument) {
+			t.Errorf("NewResolver(%q) = %v, want jose.ErrInvalidArgument", e, err)
+		}
+		if _, err := NewResolver(Config{Redirects: RedirectTo("https://ok.example/", e)}); !errors.Is(err, jose.ErrInvalidArgument) || !strings.Contains(err.Error(), "RedirectTo[1]") {
+			t.Errorf("RedirectTo(%q) = %v, want jose.ErrInvalidArgument naming RedirectTo[1]", e, err)
+		}
+	}
+	if _, err := NewResolver(Config{TrustedIssuerOrigins: []string{"https://example.com/tenant/"}}); err == nil || !strings.Contains(err.Error(), "Resolver that wraps this one") {
+		t.Errorf("NewResolver(path) = %v, want the text to point to a wrapping Resolver", err)
+	}
+	if _, err := NewResolver(Config{TrustedIssuerOrigins: []string{"*"}}); err == nil || !strings.Contains(err.Error(), "leave Config.TrustedIssuerOrigins empty") {
+		t.Errorf(`NewResolver("*") = %v, want the text to point to an empty list`, err)
+	}
+	if _, err := NewResolver(Config{Redirects: RedirectTo("*")}); err == nil || !strings.Contains(err.Error(), "RedirectAny") {
+		t.Errorf(`RedirectTo("*") = %v, want the text to point to RedirectAny`, err)
+	}
+	if _, err := NewResolver(Config{Redirects: RedirectTo()}); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("RedirectTo() = %v, want jose.ErrInvalidArgument", err)
+	}
+	for _, e := range []string{"https://example.com/", "https://example.com", "https://EXAMPLE.com:443", "https://example.com:8443/",
+		"https://xn--bcher-kva.example", "https://*.example.com", "https://*.example.com/", "https://*.example.com:8443/"} {
+		if _, err := NewResolver(Config{TrustedIssuerOrigins: []string{e}, Redirects: RedirectTo(e)}); err != nil {
+			t.Errorf("NewResolver(%q) = %v", e, err)
+		}
+	}
+	if _, err := NewResolver(Config{Redirects: RedirectAny()}); err != nil {
+		t.Errorf("RedirectAny: %v", err)
 	}
 }
 
 // The cache holds at most maxCacheBytes (SDK policy): a store that does not
 // fit is refused, so distinct issuers cannot grow memory without bound.
 func TestCacheBudget(t *testing.T) {
-	r, err := NewResolver(Config{Allowed: []string{"https://"}})
+	r, err := NewResolver(Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +303,7 @@ func TestCacheBudget(t *testing.T) {
 func TestKeysRefused(t *testing.T) {
 	s := newMetaServer(t, nil)
 	now := time.Unix(1_800_000_000, 0)
-	r := s.resolver(t, []string{"https://"}, &now, false)
+	r := s.resolver(t, nil, &now, false)
 	for _, iss := range []string{"", "https://user@example.com", "https://example.com?"} {
 		if _, err := r.Keys(context.Background(), iss); !errors.Is(err, issuerkey.ErrIssuerNotSupported) {
 			t.Errorf("Keys(%q) = %v, want ErrIssuerNotSupported", iss, err)
@@ -270,37 +314,57 @@ func TestKeysRefused(t *testing.T) {
 	}
 }
 
-// An entry ending in "/" covers the iss under it except through a dot
-// segment (RFC 3986 §6.2.2.3; reading \ and %2F as separators and ignoring
-// ;-parameters are SDK policy); any other entry covers only itself.
-func TestAllowed(t *testing.T) {
+// An origin entry, with or without its final "/", covers every iss of its
+// origin, and a subdomain entry every iss of a subdomain, the host in any
+// case and the default port implied (RFC 6454 §4); an empty
+// TrustedIssuerOrigins covers every iss. An iss not covered is refused
+// before any request, whatever Redirects follows.
+func TestTrustedIssuerOrigins(t *testing.T) {
+	covered := []string{"https://example.com", "https://example.com/tenant/1", "https://EXAMPLE.com:443/tenant/2", "https://example.com/tenant/caf%C3%A9"}
+	subdomains := []string{"https://a.example.com/sub/1", "https://B.example.com:443/sub/2"}
 	routes := map[string]response{}
-	for _, iss := range []string{"https://example.com", "https://example.com/tenant/1234"} {
+	for _, iss := range append(covered, subdomains...) {
 		u, _ := MetadataURL(iss)
-		routes[strings.TrimPrefix(u, "https://example.com")] = metadata(iss, twoKeys)
+		pu, _ := url.Parse(u)
+		routes[pu.Path] = metadata(iss, twoKeys)
 	}
-	s := newMetaServer(t, routes)
 	now := time.Unix(1_800_000_000, 0)
-	r := s.resolver(t, []string{"https://example.com", "https://example.com/issuers", "https://example.com/tenant/"}, &now, false)
-	for _, iss := range []string{
-		"https://example.com/issuers-fake",
-		"https://example.com/tenant/../x",
-		"https://example.com/tenant/%2e%2E/x",
-		"https://example.com/tenant/x%2F..%2Fy",
-		`https://example.com/tenant/..\x`,
-		"https://example.com/tenant/..;/x",
+	for _, tc := range []struct {
+		name             string
+		allowed          []string
+		covered, refused []string
+	}{
+		{"empty", nil, append(covered, subdomains...), nil},
+		{"subdomain", []string{"https://*.example.com"}, subdomains, []string{
+			"https://example.com/tenant/1",
+			"https://evilexample.com/sub/1",
+			"https://a.example.com.evil/sub/1",
+			"https://a.example.com:8443/sub/1",
+			"https://attacker.example/a.example.com",
+			"https://attacker.example/.example.com",
+			"https://[2001:db8::1%25.example.com]/sub/1",
+		}},
+		{"origin", []string{"https://example.com/"}, covered, []string{"https://example.org/tenant/1", "https://example.com:8443/tenant/1", "https://sub.example.com/tenant/1"}},
+		{"origin without the final /", []string{"https://example.com"}, covered, []string{"https://example.org/tenant/1", "https://example.com:8443/tenant/1", "https://sub.example.com/tenant/1"}},
+		{"origin with its default port", []string{"https://EXAMPLE.com:443"}, covered, []string{"https://example.com:8443/tenant/1"}},
 	} {
-		if _, err := r.Keys(context.Background(), iss); !errors.Is(err, issuerkey.ErrIssuerNotSupported) {
-			t.Errorf("Keys(%q) = %v, want ErrIssuerNotSupported", iss, err)
-		}
-	}
-	if n := s.hits.Load(); n != 0 {
-		t.Fatalf("refused iss: server got %d requests, want 0", n)
-	}
-	for _, iss := range []string{"https://example.com", "https://example.com/tenant/1234"} {
-		if keys, err := r.Keys(context.Background(), iss); err != nil || len(keys) != 2 {
-			t.Errorf("Keys(%q) = %d keys, %v; want 2 keys", iss, len(keys), err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			s := newMetaServer(t, routes)
+			r := s.resolverFor(t, Config{TrustedIssuerOrigins: tc.allowed, Redirects: RedirectAny()}, &now)
+			for _, iss := range tc.refused {
+				if _, err := r.Keys(context.Background(), iss); !errors.Is(err, issuerkey.ErrIssuerNotSupported) {
+					t.Errorf("Keys(%q) = %v, want ErrIssuerNotSupported", iss, err)
+				}
+			}
+			if n := s.hits.Load(); n != 0 {
+				t.Fatalf("refused iss: server got %d requests, want 0", n)
+			}
+			for _, iss := range tc.covered {
+				if keys, err := r.Keys(context.Background(), iss); err != nil || len(keys) != 2 {
+					t.Errorf("Keys(%q) = %d keys, %v; want 2 keys", iss, len(keys), err)
+				}
+			}
+		})
 	}
 }
 
@@ -343,7 +407,7 @@ func TestJWKSURIHTTP(t *testing.T) {
 // httptest server listens on.
 func TestDefaultClientRefusesLoopback(t *testing.T) {
 	s := newMetaServer(t, nil)
-	r, err := NewResolver(Config{Allowed: []string{"https://"}})
+	r, err := NewResolver(Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,34 +469,42 @@ func TestKeyWalk(t *testing.T) {
 	}
 }
 
-// Under an Allowed entry ending in "/" the credential chooses the metadata
-// path, so a redirect of either retrieval to another origin is refused
-// before it is requested, and the failure is not cached. An iss listed
-// exactly, or AllowCrossOriginRedirects, follows it; the same origin in
-// other case and with its default port is always followed.
-func TestCrossOriginRedirects(t *testing.T) {
+// The credential chooses the path of iss, so by default every redirect, of
+// the metadata and of jwks_uri, stays on the origin of the URL requested
+// whatever TrustedIssuerOrigins holds: another origin is refused before it
+// is requested, and the failure is not cached. RedirectTo adds the origins
+// it lists to that origin, and RedirectAny follows any https URL.
+func TestRedirects(t *testing.T) {
 	const iss = "https://example.com/tenant/1"
-	const prefix = "https://example.com/"
+	const origin = "https://example.com/"
 	byURI := response{"application/json", "max-age=3600", `{"issuer":"` + iss + `","jwks_uri":"https://example.com/jwks"}`}
 	jwkSet := response{"application/jwk-set+json", "", twoKeys}
+	// The test client dials every host to the test server, whose
+	// certificate covers example.com on any port: example.com:8443 is
+	// another origin the redirect can reach.
+	const other = "https://example.com:8443/moved"
 	for _, tc := range []struct {
-		name        string
-		allowed     []string
-		crossOrigin bool
-		jwksURI     bool // the redirect answers jwks_uri, not the metadata
-		location    string
-		refused     bool
+		name      string
+		allowed   []string
+		redirects RedirectPolicy
+		jwksURI   bool // the redirect answers jwks_uri, not the metadata
+		location  string
+		refused   bool
 	}{
 		// Refused before any connection, so the test certificate, which
 		// covers only example.com, is never asked for this name.
-		{"prefix entry, another hostname", []string{prefix}, false, false, "https://other.example/moved", true},
-		{"https:// entry, another port", []string{"https://"}, false, false, "https://example.com:8443/moved", true},
-		{"prefix entry, jwks_uri to another port", []string{prefix}, false, true, "https://example.com:8443/moved", true},
-		{"prefix entry, same origin", []string{prefix}, false, false, "https://EXAMPLE.com:443/moved", false},
-		{"prefix entry and option", []string{prefix}, true, false, "https://example.com:8443/moved", false},
-		{"prefix entry and option, jwks_uri", []string{prefix}, true, true, "https://example.com:8443/moved", false},
-		{"exact entry, another port", []string{iss}, false, false, "https://example.com:8443/moved", false},
-		{"exact entry after a prefix entry", []string{prefix, iss}, false, true, "https://example.com:8443/moved", false},
+		{"another hostname", []string{origin}, RedirectPolicy{}, false, "https://other.example/moved", true},
+		{"another port", []string{origin}, RedirectPolicy{}, false, other, true},
+		{"another port, both origins listed", []string{origin, "https://example.com:8443"}, RedirectPolicy{}, false, other, true},
+		{"empty TrustedIssuerOrigins, another port", nil, RedirectPolicy{}, false, other, true},
+		{"jwks_uri to another port", nil, RedirectPolicy{}, true, other, true},
+		{"same origin, another case and default port", []string{origin}, RedirectPolicy{}, false, "https://EXAMPLE.com:443/moved", false},
+		{"jwks_uri, same origin", nil, RedirectPolicy{}, true, "https://example.com/moved", false},
+		{"RedirectTo the target", []string{origin}, RedirectTo("https://example.com:9443", "https://EXAMPLE.com:8443/"), false, other, false},
+		{"RedirectTo another origin", []string{origin}, RedirectTo("https://example.com:9443"), false, other, true},
+		{"RedirectTo, same origin", []string{origin}, RedirectTo("https://example.com:9443"), false, "https://example.com/moved", false},
+		{"RedirectTo, jwks_uri to the target", nil, RedirectTo("https://example.com:8443"), true, other, false},
+		{"RedirectAny", []string{origin}, RedirectAny(), false, other, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			routes, from := map[string]response{"/moved": metadata(iss, twoKeys)}, "/.well-known/jwt-vc-issuer/tenant/1"
@@ -442,13 +514,13 @@ func TestCrossOriginRedirects(t *testing.T) {
 			s := newMetaServer(t, routes)
 			s.redirects = map[string]string{from: tc.location}
 			now := time.Unix(1_800_000_000, 0)
-			r := s.resolverFor(t, Config{Allowed: tc.allowed, AllowCrossOriginRedirects: tc.crossOrigin}, &now)
+			r := s.resolverFor(t, Config{TrustedIssuerOrigins: tc.allowed, Redirects: tc.redirects}, &now)
 			for range 2 {
 				_, err := r.Keys(context.Background(), iss)
 				switch {
 				// The refusal, not a TLS failure to reach the other name, and
-				// the text names the settings that allow the redirect.
-				case tc.refused && (!errors.Is(err, safehttp.ErrCrossOrigin) || !strings.Contains(err.Error(), "set Config.AllowCrossOriginRedirects")):
+				// the text says how the issuer or the verifier fixes it.
+				case tc.refused && (!errors.Is(err, ErrRedirectNotAllowed) || !strings.Contains(err.Error(), "must serve it from that origin, or the verifier allows the target with RedirectTo")):
 					t.Fatalf("err = %v, want the redirect refused", err)
 				case !tc.refused && err != nil:
 					t.Fatalf("err = %v, want the redirect followed", err)

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -96,6 +97,38 @@ func TestGetRefusesRedirect(t *testing.T) {
 	}
 	if got, want := hops.Load(), int32(limits.MaxRedirects+1); got != want {
 		t.Errorf("server got %d requests, want %d", got, want)
+	}
+}
+
+// Follow judges every hop against the URL Get was given, so a first redirect
+// that stays on its origin cannot carry the fetch to another origin on the
+// next.
+func TestGetChecksEveryRedirect(t *testing.T) {
+	var targetHits atomic.Int32
+	target := jsonServer(t, true, "{}", &targetHits)
+	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a":
+			http.Redirect(w, r, "/b", http.StatusFound)
+		case "/b":
+			http.Redirect(w, r, target.URL+"/c", http.StatusFound)
+		}
+	}))
+	t.Cleanup(s.Close)
+	l := limits
+	var starts []string
+	l.Follow = func(start, target *url.URL) bool {
+		starts = append(starts, start.String())
+		return start.Host == target.Host
+	}
+	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/a", []string{"application/json"}, l); !errors.Is(err, ErrNotFollowed) {
+		t.Errorf("err = %v, want ErrNotFollowed", err)
+	}
+	if want := []string{s.URL + "/a", s.URL + "/a"}; !slices.Equal(starts, want) {
+		t.Errorf("Follow got start %q, want %q", starts, want)
+	}
+	if targetHits.Load() != 0 {
+		t.Errorf("target got %d requests, want 0", targetHits.Load())
 	}
 }
 

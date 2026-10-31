@@ -12,11 +12,13 @@
 // application/json for a JWK Set, RFC 7517 §8.5). A cache miss makes at most
 // two retrievals. Responses are cached as RFC 9111 §4.2 and §5.2 allow, for
 // at most 24 hours and no longer than the least fresh response of the
-// retrieval, redirects included; a failure is never cached. For an iss that
-// only an entry of Config.Allowed ending in "/" covers, both retrievals
-// follow redirects only within their origin unless
-// Config.AllowCrossOriginRedirects is set; otherwise a redirect is followed to
-// any https host, and the server it leads to supplies the keys.
+// retrieval, redirects included; a failure is never cached. By default every
+// redirect, of the metadata and of jwks_uri, stays on the origin of the URL
+// requested, whatever Config.TrustedIssuerOrigins holds: the credential
+// chooses the path of iss, and an open redirect on the issuer's server
+// could otherwise let another server supply the keys of that iss, even
+// when the caller checks the iss itself. Draft 19 §3 leaves following
+// redirects to the Consumer; Config.Redirects widens the default.
 //
 // The default client refuses addresses that are not globally reachable, but
 // hosts reachable only inside the deployment's own network are known to no
@@ -64,7 +66,65 @@ const (
 // accepted too.
 var mediaTypesJWKSet = []string{"application/jwk-set+json", "application/json"}
 
+// limits of every retrieval; NewResolver adds the Follow of Config.Redirects.
 var limits = safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, MaxBytes: maxBodyBytes}
+
+// ErrRedirectNotAllowed: Keys refused, before sending it, a redirect of the
+// metadata or of jwks_uri that Config.Redirects does not follow.
+var ErrRedirectNotAllowed = safehttp.ErrNotFollowed
+
+// RedirectPolicy says where Keys follows a redirect of the metadata or of
+// jwks_uri. The zero value follows one only within the origin of the URL
+// requested: the metadata URL built from iss, or jwks_uri. RedirectTo and
+// RedirectAny widen it. A policy never changes which iss the Resolver trusts,
+// nor which origin jwks_uri may name: the metadata chooses jwks_uri, and only
+// its redirects are judged.
+type RedirectPolicy struct {
+	mode    redirectMode
+	origins []string
+}
+
+// redirectMode is the kind of a RedirectPolicy; the zero mode follows a
+// redirect only within the origin requested.
+type redirectMode int
+
+const (
+	redirectTo redirectMode = iota + 1
+	redirectAny
+)
+
+// RedirectTo also follows a redirect to an origin that origins cover, read as
+// entries of Config.TrustedIssuerOrigins; one within the origin requested is
+// still followed, so there is no policy that follows only the origins listed.
+// It does not trust an iss on those origins, yet each one may answer for
+// every iss the Resolver trusts. NewResolver refuses it with no origin, or
+// with an entry TrustedIssuerOrigins would refuse.
+func RedirectTo(origins ...string) RedirectPolicy {
+	return RedirectPolicy{mode: redirectTo, origins: slices.Clone(origins)}
+}
+
+// RedirectAny follows a redirect to any https URL, one an open redirect on
+// the issuer's server sends included.
+func RedirectAny() RedirectPolicy { return RedirectPolicy{mode: redirectAny} }
+
+// rule checks p and returns the rule it stands for.
+func (p RedirectPolicy) rule() (allowlist.Redirects, error) {
+	switch p.mode {
+	case redirectAny:
+		return allowlist.RedirectsAny(), nil
+	case redirectTo:
+		if len(p.origins) == 0 {
+			return allowlist.Redirects{}, fmt.Errorf("%w: issuermeta: Config.Redirects is RedirectTo with no origin; leave Redirects zero to follow redirects only within the origin requested", jose.ErrInvalidArgument)
+		}
+		for i, e := range p.origins {
+			if why := allowlist.Check(e, allowlist.Hints{All: "use RedirectAny()"}); why != "" {
+				return allowlist.Redirects{}, fmt.Errorf("%w: issuermeta: Config.Redirects RedirectTo[%d] %s", jose.ErrInvalidArgument, i, why)
+			}
+		}
+		return allowlist.RedirectsTo(p.origins), nil
+	}
+	return allowlist.Redirects{}, nil
+}
 
 // Resolver returns the signing keys an issuer publishes in its JWT VC Issuer
 // Metadata. Construct it with NewResolver and share one instance: the cache
@@ -73,16 +133,16 @@ var limits = safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, 
 //
 // The cache counts 4 MiB, estimated from the keys and iss it holds, not
 // total heap. When live entries fill it, new answers are not cached until one
-// expires. With the entry "https://", anyone who can serve https metadata
-// can fill it, which costs legitimate issuers a retrieval on every call
-// until entries expire, never a wrong key. There is no single-flight:
+// expires. With an empty TrustedIssuerOrigins, anyone who can serve
+// https metadata can fill it, which costs legitimate issuers a retrieval on
+// every call until entries expire, never a wrong key. There is no single-flight:
 // concurrent misses on one iss each fetch.
 type Resolver struct {
-	allowed     allowlist.List
-	crossOrigin bool
-	client      *http.Client
-	noCache     bool
-	now         func() time.Time
+	trusted allowlist.List
+	limits  safehttp.Limits
+	client  *http.Client
+	noCache bool
+	now     func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
@@ -94,27 +154,25 @@ type Resolver struct {
 
 // Config configures NewResolver.
 type Config struct {
-	// Allowed lists the issuers this verifier trusts, the Relying Party's
-	// policy of draft 19 §2.5; it is required. An entry ending in "/" covers
-	// every iss that starts with it, except one whose path has a "." or ".."
-	// segment (see Keys); any other entry covers the iss equal to it.
-	// Matching is byte for byte, so case-sensitive: "https://" covers every
-	// iss starting with https:// in lower case.
-	//
-	// Allowed judges iss, not the redirects of its retrievals. An entry equal
-	// to iss names a metadata URL the verifier trusts, so the redirects of
-	// that issuer's server are followed to any https host. Under an entry
-	// ending in "/" the credential chooses the path of the metadata URL, and
-	// an open redirect on the issuer's server would let another origin supply
-	// the keys: there the metadata and the JWK Set are followed only within
-	// the origin each retrieval started from.
-	Allowed []string
-	// AllowCrossOriginRedirects follows redirects to another origin also for
-	// an iss that only an entry ending in "/" covers. Off, such a redirect
-	// fails the retrieval before it is sent, and the failure is not cached;
-	// listing that iss in Allowed also lets its redirects through. Draft 19
-	// §3 leaves following redirects to the Consumer.
-	AllowCrossOriginRedirects bool
+	// TrustedIssuerOrigins lists the origins whose issuers this verifier
+	// trusts, the Relying Party's policy of draft 19 §2.5, in the style of
+	// CORS origins. Empty, it trusts every https issuer, and the caller
+	// judges the iss of a verified credential itself.
+	// An entry "https://host", with or without a port and a final "/",
+	// covers every iss of that origin, and "https://*.host" every iss of an
+	// origin whose host is a subdomain of host, the host in any ASCII case
+	// and the default port implied. Any other entry is refused, one with a
+	// path included: the metadata of every iss sits under /.well-known/ at
+	// the root of its origin (§4, §4.1, RFC 8615 §3), so that origin's server
+	// answers for every issuer it hosts. To trust some issuers of a shared
+	// origin, list the origin and pass those issuers to Verify with
+	// WithAcceptedIssuers. The list does not judge redirects; Redirects does.
+	TrustedIssuerOrigins []string
+	// Redirects says where a redirect of the metadata or of jwks_uri may
+	// lead; the zero value keeps it on the origin of the URL requested. A
+	// refused redirect is not sent, and the failure wraps
+	// ErrRedirectNotAllowed.
+	Redirects RedirectPolicy
 	// HTTPClient retrieves the metadata and JWK Sets; nil uses a client that
 	// refuses addresses that are not globally reachable. A deployment behind
 	// an egress proxy passes its own.
@@ -132,31 +190,45 @@ type Config struct {
 	DisableCache bool
 }
 
-// NewResolver returns a Resolver for cfg, which it copies, Allowed included,
-// and does not read again. An empty Allowed is jose.ErrInvalidArgument, and
-// so is an entry that does not start with https:// (the scheme in any case):
-// it would match no iss or, like "https:/", every one.
+// NewResolver returns a Resolver for cfg, which it copies, the lists
+// included, and does not read again. An entry of TrustedIssuerOrigins, or of
+// a RedirectTo in Redirects, is jose.ErrInvalidArgument when it is not an
+// https origin "https://host" or "https://*.host", each with an optional
+// port and final "/": "*", a path, query, fragment or userinfo is refused,
+// and so is a "*" anywhere else, a host that is not ASCII or has an empty
+// label, such as a final ".", a host with ":" or "[" that is not an IPv6
+// address or has "*." before one, or a port with a leading zero or out of
+// range. So is a RedirectTo with no origin.
 func NewResolver(cfg Config) (*Resolver, error) {
-	if len(cfg.Allowed) == 0 {
-		return nil, fmt.Errorf(`%w: issuermeta: Config.Allowed is empty; list the issuers this verifier trusts, or "https://" for any https issuer`, jose.ErrInvalidArgument)
-	}
-	for i, e := range cfg.Allowed {
-		if !allowlist.ValidEntry(e) {
-			return nil, fmt.Errorf(`%w: issuermeta: Config.Allowed[%d] does not start with https://; list https issuers, or "https://" for any https issuer`, jose.ErrInvalidArgument, i)
+	for i, e := range cfg.TrustedIssuerOrigins {
+		if why := allowlist.Check(e, trustHints); why != "" {
+			return nil, fmt.Errorf("%w: issuermeta: Config.TrustedIssuerOrigins[%d] %s", jose.ErrInvalidArgument, i, why)
 		}
 	}
+	redirects, err := cfg.Redirects.rule()
+	if err != nil {
+		return nil, err
+	}
+	l := limits
+	l.Follow = redirects.Follows
 	r := &Resolver{
-		allowed:     allowlist.New(cfg.Allowed),
-		crossOrigin: cfg.AllowCrossOriginRedirects,
-		client:      cfg.HTTPClient,
-		noCache:     cfg.DisableCache,
-		now:         time.Now,
-		cache:       map[string]cacheEntry{},
+		trusted: allowlist.New(cfg.TrustedIssuerOrigins),
+		limits:  l,
+		client:  cfg.HTTPClient,
+		noCache: cfg.DisableCache,
+		now:     time.Now,
+		cache:   map[string]cacheEntry{},
 	}
 	if r.client == nil {
 		r.client = safehttp.NewClient()
 	}
 	return r, nil
+}
+
+// trustHints complete the texts of a refused entry of TrustedIssuerOrigins.
+var trustHints = allowlist.Hints{
+	All:   "leave Config.TrustedIssuerOrigins empty",
+	Finer: "list the origin and refuse the other iss in a Resolver that wraps this one",
 }
 
 var _ issuerkey.Resolver = (*Resolver)(nil)
@@ -170,18 +242,16 @@ var _ issuerkey.Resolver = (*Resolver)(nil)
 //     §5);
 //   - an error wrapping issuerkey.ErrIssuerNotSupported, before any request:
 //     iss is not an https URL with a host and no query or fragment (§2.5,
-//     §4) and no userinfo (RFC 9110 §4.2.4), or no allowed entry covers it.
-//     An entry ending in "/" covers no iss whose path, decoded once, has a
-//     "." or ".." segment: such a path names a resource outside the entry
-//     (RFC 3986 §2.3, §6.2.2.3). Splitting segments at "\" and %2F too, and
-//     cutting a segment at ";", is SDK policy: some servers resolve them so;
+//     §4) and no userinfo (RFC 9110 §4.2.4), or TrustedIssuerOrigins does not
+//     cover its origin;
 //   - an error wrapping issuerkey.ErrNoUsableKey: the issuer's server
 //     answered, and the metadata or the JWK Set is not valid (§4.2, §4.3,
 //     RFC 7517 §4, §5), so it must not be used;
 //   - any other error: a retrieval failed (§3), and a later call may
 //     succeed. It wraps the cause, such as context.Canceled; an address the
 //     default client refuses (draft 19 §7.1) is such an error, and its text
-//     names a blocked address; it matches no exported sentinel.
+//     names a blocked address. A refused redirect wraps
+//     ErrRedirectNotAllowed; any other matches no exported sentinel.
 //
 // A hit in the cache makes no request and does not look at ctx. A key the
 // issuer removes may still verify for up to min(max-age − Age, 24 h) of the
@@ -205,22 +275,15 @@ func (r *Resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 	if err != nil {
 		return nil, err
 	}
-	if ok, dot := r.allowed.Covers(iss, u); !ok {
-		if dot {
-			return nil, fmt.Errorf("%w: issuermeta: iss is not covered by the allowed issuers: an entry ending in / covers no path with a . or .. segment (RFC 3986 §6.2.2.3; reading \\ and %%2F as separators and ignoring ;-parameters are SDK policy); an issuer should not use such a path", issuerkey.ErrIssuerNotSupported)
-		}
-		return nil, fmt.Errorf("%w: issuermeta: iss is not covered by the allowed issuers", issuerkey.ErrIssuerNotSupported)
+	if !r.trusted.Covers(u) {
+		return nil, fmt.Errorf("%w: issuermeta: the origin of iss is not covered by Config.TrustedIssuerOrigins; list it there to trust it", issuerkey.ErrIssuerNotSupported)
 	}
 	if keys, ok := r.cached(iss); ok {
 		return keys, nil
 	}
 	// RFC 9111 §4.2.3: age is measured from the time the request was sent.
 	sent := r.now()
-	l := limits
-	// An iss listed exactly is a URL the verifier named; one under an entry
-	// ending in "/" is a path the credential chose.
-	l.SameOrigin = !r.crossOrigin && !r.allowed.Names(iss)
-	keys, expires, err := r.fetch(ctx, iss, metaURL, sent, l)
+	keys, expires, err := r.fetch(ctx, iss, metaURL, sent)
 	if err != nil {
 		return nil, err
 	}
@@ -237,9 +300,7 @@ func (r *Resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 //
 // It applies no allowed-issuer check and no verifier policy. An error wraps
 // issuerkey.ErrIssuerNotSupported: iss is not an https URL with a host and no
-// userinfo, query or fragment. Resolver.Keys refuses an iss whose path has .
-// or .. segments when an allowed-issuers entry ending in / is what would
-// match it (SDK policy); an issuer should not use one.
+// userinfo, query or fragment.
 func MetadataURL(iss string) (string, error) {
 	_, s, err := metadataURL(iss)
 	return s, err
@@ -265,10 +326,10 @@ func metadataURL(iss string) (*url.URL, string, error) {
 	return u, "https://" + authority + wellKnown + strings.TrimRight(path, "/"), nil
 }
 
-// fetch retrieves the metadata of iss, requested at sent, and its JWK Set
-// under l, and returns the keys and when they expire.
-func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Time, l safehttp.Limits) ([]issuerkey.PublicKey, time.Time, error) {
-	body, fresh, err := httpcache.Get(ctx, r.client, metaURL, []string{mediaTypeMetadata}, l, maxCacheLifetime)
+// fetch retrieves the metadata of iss, requested at sent, and its JWK Set,
+// and returns the keys and when they expire.
+func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Time) ([]issuerkey.PublicKey, time.Time, error) {
+	body, fresh, err := httpcache.Get(ctx, r.client, metaURL, []string{mediaTypeMetadata}, r.limits, maxCacheLifetime)
 	if err != nil {
 		return nil, time.Time{}, retrievalErr("the issuer metadata", err)
 	}
@@ -303,7 +364,7 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 			return nil, time.Time{}, contentFault("jwks_uri is not an https URL with a host (draft-ietf-oauth-sd-jwt-vc-19 §3, §4.2) and no userinfo (RFC 9110 §4.2.4)")
 		}
 		sent := r.now()
-		body, fresh, err := httpcache.Get(ctx, r.client, s, mediaTypesJWKSet, l, maxCacheLifetime)
+		body, fresh, err := httpcache.Get(ctx, r.client, s, mediaTypesJWKSet, r.limits, maxCacheLifetime)
 		if err != nil {
 			return nil, time.Time{}, retrievalErr("the JWK Set", err)
 		}
@@ -379,11 +440,11 @@ func signingKey(m map[string]any, alg string) bool {
 	return true
 }
 
-// retrievalErr is the error of a failed retrieval of what; a cross-origin
-// redirect refusal also names the two settings that allow it.
+// retrievalErr is the error of a failed retrieval of what; a refused
+// redirect also says how the issuer or the verifier can fix it.
 func retrievalErr(what string, err error) error {
-	if errors.Is(err, safehttp.ErrCrossOrigin) {
-		return fmt.Errorf("issuermeta: fetching %s: %w under an Allowed entry ending in \"/\"; list the iss in Config.Allowed or set Config.AllowCrossOriginRedirects", what, err)
+	if errors.Is(err, safehttp.ErrNotFollowed) {
+		return fmt.Errorf("issuermeta: fetching %s: %w: the redirect leaves the origin of the URL requested for a target Config.Redirects does not allow; the issuer must serve it from that origin, or the verifier allows the target with RedirectTo", what, err)
 	}
 	return fmt.Errorf("issuermeta: fetching %s: %w", what, err)
 }

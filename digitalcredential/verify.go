@@ -116,7 +116,8 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 //  3. the key: iss is the one claim read before the signature, and only as
 //     a string (jose.DecodeJSONStringMember: nothing else is built). An iss
 //     that is not a string, or a payload that is not one JSON object, is
-//     MALFORMED; iss may be absent ("" to the resolver, §2.2.2.3). It goes
+//     MALFORMED; iss may be absent ("" to the resolver, §2.2.2.3). With
+//     WithAcceptedIssuers, an iss not in it: ISSUER_NOT_ACCEPTED. It goes
 //     to issuers, and issuerkey.Select picks the key by kid:
 //     ISSUER_NOT_SUPPORTED, ISSUER_KEY_UNAVAILABLE, ISSUER_KEY_NOT_FOUND;
 //  4. the signature with WithAllowedAlgs (RFC 9901 §7.1 step 2):
@@ -149,7 +150,10 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 // withheld aud as no aud.
 //
 // Errors fall in three classes; test them in this order:
-//   - *Error (errors.As): the token is rejected, and Code says why;
+//   - *Error (errors.As): the token is rejected, and Code says why. One that
+//     an error of issuers, the typemeta.Resolver or the StatusChecker led
+//     to wraps that error, so errors.Is still reaches its sentinels, such
+//     as typemeta.ErrRedirectNotAllowed;
 //   - ErrPolicy (errors.Is): the caller's arguments, options or
 //     dependencies are at fault;
 //   - anything else: ctx ended while issuers, the typemeta.Resolver or the
@@ -217,6 +221,9 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 	iss, hasIss, err := jose.DecodeJSONStringMember(raw, "iss")
 	if err != nil {
 		return reject(CodeMalformed, fmt.Errorf("Issuer-signed JWT payload: %w", err))
+	}
+	if cfg.acceptedIssuers != nil && !slices.Contains(cfg.acceptedIssuers, iss) {
+		return reject(CodeIssuerNotAccepted, errors.New("iss is not an issuer in WithAcceptedIssuers"))
 	}
 	keys, err := issuers.Keys(ctx, iss)
 	switch {

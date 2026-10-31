@@ -188,6 +188,10 @@ func TestVerifyDraft19Example(t *testing.T) {
 	if kb := got.KeyBindingClaims; kb["aud"] != "https://example.com/verifier" || kb["nonce"] != "1234567890" {
 		t.Errorf("KeyBindingClaims = %v, want the aud and nonce of the Figure 8 KB-JWT", kb)
 	}
+	s.extra = []VerifyOption{WithAcceptedIssuers("https://other.example", "https://example.com/issuer")}
+	if _, err := s.verify(ctx, draft19Fig8); err != nil {
+		t.Errorf("WithAcceptedIssuers listing the Figure 8 iss: %v", err)
+	}
 
 	// RFC 9901 §7.2, §4: a KB-JWT that is not checked is rejected, unless
 	// the caller ignores it; then none of its claims may come back.
@@ -229,7 +233,7 @@ func TestVerifyDraft19IssuerMetadata(t *testing.T) {
 	client.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, addr)
 	}
-	r, err := issuermeta.NewResolver(issuermeta.Config{Allowed: []string{"https://example.com/"}, HTTPClient: client})
+	r, err := issuermeta.NewResolver(issuermeta.Config{TrustedIssuerOrigins: []string{"https://example.com/"}, HTTPClient: client})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,8 +244,8 @@ func TestVerifyDraft19IssuerMetadata(t *testing.T) {
 	}
 }
 
-// TC-20, TC-22, TC-23: each rejection has its one Code, or is ErrPolicy for
-// the caller's mistake.
+// TC-20, TC-22, TC-23, TC-51: each rejection has its one Code, or is
+// ErrPolicy for the caller's mistake.
 func TestVerifyRejects(t *testing.T) {
 	issuerJWT, disclosures, kbJWT, err := sdjwt.Split(draft19Fig8)
 	if err != nil {
@@ -316,6 +320,8 @@ func TestVerifyRejects(t *testing.T) {
 		{"duplicate 60 KB header key", echo, nil, CodeMalformed, nil},
 		// RFC 7519 §4.1.4: on or after exp, here exp + the 1 minute skew.
 		{"expired", draft19Fig8, func(s *setting) { s.now = time.Unix(1883000060, 0) }, CodeExpired, nil},
+		// RFC 7519 §4.1.5: before nbf, here nbf less the 1 minute skew and 1 s.
+		{"not yet valid", issued, func(s *setting) { own.set(s); s.now = time.Unix(1700000039, 0) }, CodeNotYetValid, nil},
 		// RFC 7519 §4.1.3: the credential's own aud, not the KB-JWT's.
 		{"credential for another audience", own.withAud, func(s *setting) {
 			own.set(s)
@@ -326,7 +332,14 @@ func TestVerifyRejects(t *testing.T) {
 		{"issuer not supported", draft19Fig8, func(s *setting) {
 			s.issuers = failingResolver{fmt.Errorf("resolver: %w", issuerkey.ErrIssuerNotSupported)}
 		}, CodeIssuerNotSupported, issuerkey.ErrIssuerNotSupported},
-		{"issuer keys unavailable", draft19Fig8, func(s *setting) { s.issuers = failingResolver{errors.New("resolver: connection refused")} }, CodeIssuerKeyUnavailable, nil},
+		// RFC 7519 §2: iss is compared as a StringOrURI, with no case folding
+		// or other normalization, and before the resolver is asked.
+		{"issuer not accepted", draft19Fig8, func(s *setting) {
+			s.issuers = failingResolver{errUnreachable}
+			s.extra = []VerifyOption{WithAcceptedIssuers("https://example.com/issuer/", "HTTPS://example.com/issuer", "https://Example.com/issuer")}
+		}, CodeIssuerNotAccepted, nil},
+		// The resolver's error stays reachable, so a caller can tell its sentinels apart.
+		{"issuer keys unavailable", draft19Fig8, func(s *setting) { s.issuers = failingResolver{fmt.Errorf("resolver: %w", errUnreachable)} }, CodeIssuerKeyUnavailable, errUnreachable},
 		{"resolver wiring", draft19Fig8, func(s *setting) { s.issuers = failingResolver{fmt.Errorf("resolver: %w", jose.ErrInvalidArgument)} }, "", nil},
 		{"two keys share the kid", draft19Fig8, func(s *setting) {
 			s.issuers = keysOf{"https://example.com/issuer": {{KID: "doc-signer-05-25-2022", Public: a5}, {KID: "doc-signer-05-25-2022", Public: a5}}}
@@ -384,7 +397,7 @@ func TestVerifyRejects(t *testing.T) {
 		{"suspended", issued, withStatus(fixedStatus{ref: ref, iss: iss, v: 0x02}), CodeSuspended, nil},
 		{"status 0x03", issued, withStatus(fixedStatus{ref: ref, iss: iss, v: 0x03}), CodeStatusNotAccepted, nil},
 		// draft-ietf-oauth-status-list-21 §8.3: no statement can be made.
-		{"status unavailable", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: errors.New("list unreachable")}), CodeStatusUnavailable, nil},
+		{"status unavailable", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("list: %w", errUnreachable)}), CodeStatusUnavailable, errUnreachable},
 		// draft-ietf-oauth-status-list-21 §8.3 step 6: MUST be rejected.
 		{"idx out of bounds", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("list: %w", statuslist.ErrIndexOutOfBounds)}), CodeMalformed, statuslist.ErrIndexOutOfBounds},
 		// The checker's wiring, as a statuslist.Checker reports a resolver key
@@ -426,6 +439,9 @@ func TestVerifyRejects(t *testing.T) {
 	}
 }
 
+// errUnreachable is a dependency's failure that Verify must keep reachable.
+var errUnreachable = errors.New("connection refused")
+
 // TC-23 (REQ-32, REQ-33): with ctx ended, a resolver's or checker's error
 // wraps ctx.Err() and has no Code, except the definite answers.
 func TestVerifyContextEnded(t *testing.T) {
@@ -454,6 +470,10 @@ func TestVerifyContextEnded(t *testing.T) {
 	if _, err := s.verify(ended, issued); !errors.As(err, &e) || e.Code != CodeMalformed {
 		t.Errorf("ErrIndexOutOfBounds: %v; want MALFORMED", err)
 	}
+	s.extra = []VerifyOption{WithTypeMetadata(failingTypes{errors.New("types: request canceled")})}
+	if _, err := s.verify(ended, issued); !errors.Is(err, context.Canceled) || errors.As(err, &e) || errors.Is(err, ErrPolicy) {
+		t.Errorf("typemeta.Resolver failing: %v; want context.Canceled only", err)
+	}
 }
 
 // TC-22 (REQ-31): status is checked, skipped only when the caller says so,
@@ -480,8 +500,8 @@ func TestVerifyStatusSkipped(t *testing.T) {
 	}
 }
 
-// TC-35, TC-37 (REQ-29 step 1, REQ-53): the caller's mistakes are ErrPolicy
-// before the token is read, and the checker is not called.
+// TC-35, TC-37, TC-51 (REQ-29 step 1, REQ-53): the caller's mistakes are
+// ErrPolicy before the token is read, and the checker is not called.
 func TestVerifyPolicy(t *testing.T) {
 	issued, own := ownCredentials(t)
 	rec := &recordingStatus{}
@@ -490,6 +510,8 @@ func TestVerifyPolicy(t *testing.T) {
 		"WithStatus and WithoutStatusCheck":    {WithStatus(rec), WithoutStatusCheck()},
 		"a nil option":                         {WithStatus(rec), nil},
 		"WithAcceptedStatus()":                 {WithStatus(rec), WithAcceptedStatus()},
+		"WithAcceptedIssuers()":                {WithStatus(rec), WithAcceptedIssuers()},
+		`WithAcceptedIssuers("")`:              {WithStatus(rec), WithAcceptedIssuers("https://example.com/issuer", "")},
 		"WithStatus(nil)":                      {WithStatus(nil)},
 		"WithKeyBinding(7)":                    {WithStatus(rec), WithKeyBinding(7)},
 		"WithMaxKBAge(0)":                      {WithStatus(rec), WithMaxKBAge(0)},

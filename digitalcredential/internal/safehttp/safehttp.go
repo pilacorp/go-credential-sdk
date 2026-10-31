@@ -48,11 +48,11 @@ type Limits struct {
 	// https, for a caller whose standard leaves the scheme to it; the host
 	// and userinfo rules of HTTPSURL still hold.
 	AllowHTTP bool
-	// SameOrigin refuses a redirect whose origin is not that of the URL Get
-	// was given: the host name in any ASCII case, and the port, the scheme's
-	// default when absent. Every URL here is https, so these two fix the
-	// origin. The refusal matches ErrCrossOrigin.
-	SameOrigin bool
+	// Follow, when set, refuses a redirect it reports false for, given the
+	// URL Get was given and the URL the redirect would request; the refusal
+	// matches ErrNotFollowed. It judges every hop against that first URL,
+	// after the scheme and host check and before the redirect count.
+	Follow func(start, target *url.URL) bool
 }
 
 // maxHeaderBytes caps response headers, which would otherwise default to
@@ -116,13 +116,8 @@ type StatusError struct{ Code int }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("safehttp: status %d", e.Code) }
 
-// sameOrigin reports whether a and b have one origin as Limits.SameOrigin
-// reads it.
-func sameOrigin(a, b *url.URL) bool {
-	return strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
-}
-
-func port(u *url.URL) string {
+// Port returns the port of u; when absent, 80 for http and 443 otherwise.
+func Port(u *url.URL) string {
 	if p := u.Port(); p != "" {
 		return p
 	}
@@ -138,9 +133,9 @@ type redirectRefusal string
 
 func (r redirectRefusal) Error() string { return string(r) }
 
-// ErrCrossOrigin is the redirect Get refuses under Limits.SameOrigin; the
-// caller adds how its own configuration allows it.
-var ErrCrossOrigin error = redirectRefusal("redirect to another origin refused")
+// ErrNotFollowed is the redirect Get refuses under Limits.Follow; the caller
+// adds how its own configuration allows it.
+var ErrNotFollowed error = redirectRefusal("redirect refused")
 
 // fetchErr is the error Get returns when net/http fails, requesting or
 // reading the body. Its text never holds the request URL or a redirect
@@ -208,7 +203,7 @@ func (l Limits) schemes() string {
 // every redirect target must pass HTTPSURL (with l.AllowHTTP, or be an http
 // URL with a host and no userinfo), and at most l.MaxRedirects
 // redirects are followed, all checked before the next request is sent; with
-// l.SameOrigin a redirect target must also have the origin of rawURL. The
+// l.Follow a redirect target must also be one it reports true for. The
 // whole fetch ends within l.Timeout. The status must be 2xx, and the media
 // type of Content-Type must be one of mediaTypes (ASCII case ignored,
 // parameters allowed); the list, joined by ", ", is also sent as Accept (RFC
@@ -280,8 +275,8 @@ func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string
 		if !l.allows(r.URL) {
 			return redirectRefusal("redirect to a URL that is not " + l.schemes() + " with a host and no userinfo")
 		}
-		if l.SameOrigin && !sameOrigin(r.URL, via[0].URL) {
-			return ErrCrossOrigin
+		if l.Follow != nil && !l.Follow(u, r.URL) {
+			return ErrNotFollowed
 		}
 		if len(via) > l.MaxRedirects {
 			return redirectRefusal(fmt.Sprintf("more than %d redirects", l.MaxRedirects))
