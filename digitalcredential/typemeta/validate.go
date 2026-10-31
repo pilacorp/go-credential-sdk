@@ -86,8 +86,8 @@ func (m *Metadata) ValidateClaims(issued *sdjwt.Node, opts ValidateOptions) erro
 // which would move the indexes §5.6 counts.
 //
 // payload holds values as jose.DecodeJSON returns them: objects as
-// map[string]any, arrays as []any, and no value refers back to itself;
-// dc.Issue passes such a copy. Any other Go container, such as []string or
+// map[string]any, arrays as []any, and a tree: no container is reachable
+// twice, by a cycle or by sharing; dc.Issue passes such a copy. Any other Go container, such as []string or
 // map[string]string, is read as one value and not walked.
 func (m *Metadata) ValidateIssuance(payload map[string]any, disclose []sdjwt.Path) error {
 	if m == nil || m.vct == "" {
