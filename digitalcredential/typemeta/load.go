@@ -104,14 +104,22 @@ func Load(ctx context.Context, r Resolver, ref Ref) (*Metadata, error) {
 		if err != nil {
 			return nil, fmt.Errorf("document %d of the chain: %w", i, err)
 		}
+		// A document whose own svg_ids repeat fails even when merging would
+		// hide the repeat: two of its claims overriding one inherited path.
+		if err := checkSVGIDs(claims); err != nil {
+			return nil, fmt.Errorf("document %d of the chain: %w", i, err)
+		}
 		if merged, err = mergeClaims(merged, claims); err != nil {
 			return nil, fmt.Errorf("document %d of the chain: %w", i, err)
 		}
+		// §5.4 processes an extended type before the type extending it, so
+		// the claims merged up to each level keep svg_ids unique, as Load of
+		// that level does; a child must not hide a fault of a level between.
+		if checkSVGIDs(merged) != nil {
+			return nil, claimsErr("document %d of the chain gives a claim an svg_id that a claim it inherits already has; draft-ietf-oauth-sd-jwt-vc-19 §5.6 requires it unique", i)
+		}
 	}
 	slices.Reverse(m.chain)
-	if err := checkSVGIDs(merged); err != nil {
-		return nil, err
-	}
 	for _, c := range merged {
 		if !c.hasSD {
 			c.SD = sdAllowed // §5.6.4: allowed when omitted

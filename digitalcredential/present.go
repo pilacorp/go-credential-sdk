@@ -54,7 +54,9 @@ type KeyBinding struct {
 // neither the Issuer's signature nor any claim: the Holder checks the
 // credential when it receives it (§7.2). Those readers' limits hold, so a
 // credential over 1 MiB, with more than 1000 disclosures or nested deeper
-// than 32 is refused here, even one Issue signed.
+// than 32 is refused here, even one Issue signed. Present sets no limit on
+// what it returns: with a Key Binding JWT, a presentation near 1 MiB can pass
+// what sdjwt.Split, and so a Verifier on this SDK, reads.
 //
 // Each path of req.Reveal is resolved as OpenID4VP 1.0 §7.1.1 says: a
 // missing key drops that element from the selection and a missing index

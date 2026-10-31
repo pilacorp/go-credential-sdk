@@ -62,9 +62,12 @@ type response struct {
 // so the identifiers of the draft (example.com, which the httptest
 // certificate names) can be used as they are.
 type metaServer struct {
-	routes map[string]response
-	hits   atomic.Int32
-	srv    *httptest.Server
+	routes     map[string]response
+	redirects  map[string]string // path to the target of a 302
+	hits       atomic.Int32
+	redirected atomic.Int32 // requests answered with a 302
+	moved      atomic.Int32 // requests for /moved
+	srv        *httptest.Server
 }
 
 func newMetaServer(t *testing.T, routes map[string]response) *metaServer {
@@ -72,6 +75,14 @@ func newMetaServer(t *testing.T, routes map[string]response) *metaServer {
 	s := &metaServer{routes: routes}
 	s.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.hits.Add(1)
+		if r.URL.Path == "/moved" {
+			s.moved.Add(1)
+		}
+		if loc, ok := s.redirects[r.URL.Path]; ok {
+			s.redirected.Add(1)
+			http.Redirect(w, r, loc, http.StatusFound)
+			return
+		}
 		resp, ok := s.routes[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
@@ -90,12 +101,19 @@ func newMetaServer(t *testing.T, routes map[string]response) *metaServer {
 // resolver returns a Resolver over s whose clock reads *now.
 func (s *metaServer) resolver(t *testing.T, allowed []string, now *time.Time, disableCache bool) *Resolver {
 	t.Helper()
+	return s.resolverFor(t, Config{Allowed: allowed, DisableCache: disableCache}, now)
+}
+
+// resolverFor returns a Resolver for cfg over s whose clock reads *now.
+func (s *metaServer) resolverFor(t *testing.T, cfg Config, now *time.Time) *Resolver {
+	t.Helper()
 	client := s.srv.Client()
 	addr := s.srv.Listener.Addr().String()
 	client.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, addr)
 	}
-	r, err := NewResolver(Config{Allowed: allowed, HTTPClient: client, DisableCache: disableCache})
+	cfg.HTTPClient = client
+	r, err := NewResolver(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,5 +402,67 @@ func TestKeyWalk(t *testing.T) {
 	}
 	if keys, err := signingKeys(decode(`{"keys":[` + ec(`,"use":"enc"`) + `]}`)); err != nil || keys == nil || len(keys) != 0 {
 		t.Errorf("no usable key: keys = %v, err = %v; want an empty slice", keys, err)
+	}
+}
+
+// Under an Allowed entry ending in "/" the credential chooses the metadata
+// path, so a redirect of either retrieval to another origin is refused
+// before it is requested, and the failure is not cached. An iss listed
+// exactly, or AllowCrossOriginRedirects, follows it; the same origin in
+// other case and with its default port is always followed.
+func TestCrossOriginRedirects(t *testing.T) {
+	const iss = "https://example.com/tenant/1"
+	const prefix = "https://example.com/"
+	byURI := response{"application/json", "max-age=3600", `{"issuer":"` + iss + `","jwks_uri":"https://example.com/jwks"}`}
+	jwkSet := response{"application/jwk-set+json", "", twoKeys}
+	for _, tc := range []struct {
+		name        string
+		allowed     []string
+		crossOrigin bool
+		jwksURI     bool // the redirect answers jwks_uri, not the metadata
+		location    string
+		refused     bool
+	}{
+		// Refused before any connection, so the test certificate, which
+		// covers only example.com, is never asked for this name.
+		{"prefix entry, another hostname", []string{prefix}, false, false, "https://other.example/moved", true},
+		{"https:// entry, another port", []string{"https://"}, false, false, "https://example.com:8443/moved", true},
+		{"prefix entry, jwks_uri to another port", []string{prefix}, false, true, "https://example.com:8443/moved", true},
+		{"prefix entry, same origin", []string{prefix}, false, false, "https://EXAMPLE.com:443/moved", false},
+		{"prefix entry and option", []string{prefix}, true, false, "https://example.com:8443/moved", false},
+		{"prefix entry and option, jwks_uri", []string{prefix}, true, true, "https://example.com:8443/moved", false},
+		{"exact entry, another port", []string{iss}, false, false, "https://example.com:8443/moved", false},
+		{"exact entry after a prefix entry", []string{prefix, iss}, false, true, "https://example.com:8443/moved", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			routes, from := map[string]response{"/moved": metadata(iss, twoKeys)}, "/.well-known/jwt-vc-issuer/tenant/1"
+			if tc.jwksURI {
+				routes, from = map[string]response{from: byURI, "/moved": jwkSet}, "/jwks"
+			}
+			s := newMetaServer(t, routes)
+			s.redirects = map[string]string{from: tc.location}
+			now := time.Unix(1_800_000_000, 0)
+			r := s.resolverFor(t, Config{Allowed: tc.allowed, AllowCrossOriginRedirects: tc.crossOrigin}, &now)
+			for range 2 {
+				_, err := r.Keys(context.Background(), iss)
+				switch {
+				// The refusal, not a TLS failure to reach the other name, and
+				// the text names the settings that allow the redirect.
+				case tc.refused && (!errors.Is(err, safehttp.ErrCrossOrigin) || !strings.Contains(err.Error(), "set Config.AllowCrossOriginRedirects")):
+					t.Fatalf("err = %v, want the redirect refused", err)
+				case !tc.refused && err != nil:
+					t.Fatalf("err = %v, want the redirect followed", err)
+				}
+			}
+			// Each call requests the redirect again: a refusal is not cached,
+			// and a 302 without freshness keeps a followed answer out too.
+			want := int32(2)
+			if tc.refused {
+				want = 0
+			}
+			if redirects, moved := s.redirected.Load(), s.moved.Load(); redirects != 2 || moved != want {
+				t.Fatalf("redirect got %d requests, target %d; want 2 and %d", redirects, moved, want)
+			}
+		})
 	}
 }

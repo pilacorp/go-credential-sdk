@@ -6,6 +6,7 @@ package dc
 import (
 	"context"
 	"crypto"
+	"errors"
 	"fmt"
 	"time"
 
@@ -80,12 +81,23 @@ type IssueRequest struct {
 	// hold iss or vct, nor a claim whose field above is set (status for
 	// Status). With its field
 	// unset it may hold iat, nbf or exp as any NumericDate (RFC 7519 §2), a
-	// fraction included, or cnf in any form RFC 7800 defines (draft 19
-	// §2.2.2.3 only RECOMMENDS jwk). aka_vcts must be a non-empty array of
+	// fraction included, cnf in any form RFC 7800 defines (draft 19
+	// §2.2.2.3 only RECOMMENDS jwk), or status with another mechanism. Those,
+	// and aud, are read as Verify reads them: cnf a JSON object with at most
+	// one of jwk, jwe and jku, a jwk being a valid asymmetric key (RFC 7800
+	// §3.1, §3.2); status a JSON object whose status_list, when present,
+	// holds a string uri and a non-negative integer idx that fits an int
+	// (draft-ietf-oauth-status-list-21 §6.2); aud a string or an array of
+	// strings (RFC 7519 §4.1.3). aka_vcts must be a non-empty array of
 	// non-empty strings without the value of VCT (draft 19 §2.2.2.2).
-	// vct#integrity must hold a sha256, sha384 or sha512 hash expression
-	// (§6): take it from typemeta.Encoded.Integrity of the published
-	// document.
+	// vct#integrity must be integrity metadata whose tokens are sha256,
+	// sha384 or sha512 hash expressions (§6, W3C SRI §3.5): take it from
+	// typemeta.Encoded.Integrity of the published document. An empty value
+	// fits that syntax. With TypeMetadata set, Issue refuses it, as no hash
+	// checks the document (§6). Without, Issue signs it; Verify with
+	// WithTypeMetadata then refuses the credential, WithOptionalTypeMetadata
+	// skips Type Metadata for it, and without either Type Metadata is not
+	// read.
 	Claims map[string]any
 	// Disclose lists the claims to conceal, in any order (sdjwt.Conceal). A
 	// path must not start at one of the eight claims draft 19 §2.2.2.3
@@ -300,8 +312,29 @@ func (req IssueRequest) check(claims map[string]any) error {
 		}
 	}
 	if v, ok := claims["vct#integrity"]; ok {
-		if s, _ := v.(string); !sri.WellFormed(s) {
+		if s, ok := v.(string); !ok || !sri.WellFormed(s) {
 			return fmt.Errorf("%w: dc: Claims vct#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §5.3); take it from typemeta.Encoded.Integrity", jose.ErrInvalidArgument)
+		}
+	}
+	// A status, aud or cnf given in Claims is read by the readers Verify
+	// uses, so Issue signs none that a Verifier on this SDK reads as
+	// malformed.
+	if _, ok := claims["status"]; ok {
+		st, err := readStatus(claims)
+		if err != nil {
+			return fmt.Errorf("%w: dc: Claims %v; set Status for a Status List entry", jose.ErrInvalidArgument, err)
+		}
+		// Verify reads such an idx as past every status list (checkStatus).
+		if st.pastInt {
+			return fmt.Errorf("%w: dc: Claims status.status_list.idx is past every status list; set Status for a Status List entry", jose.ErrInvalidArgument)
+		}
+	}
+	if err := jwt.CheckAud(claims, ""); errors.Is(err, jose.ErrMalformed) {
+		return fmt.Errorf("%w: dc: Claims aud is not a string or an array of strings (RFC 7519 §4.1.3)", jose.ErrInvalidArgument)
+	}
+	if v, ok := claims["cnf"]; ok {
+		if _, err := cnfKey(v); errors.Is(err, jose.ErrMalformed) {
+			return fmt.Errorf("%w: dc: Claims cnf is one a Verifier reads as malformed (%v); set HolderKey for a cnf.jwk", jose.ErrInvalidArgument, err)
 		}
 	}
 	if req.Status != nil {

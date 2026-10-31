@@ -186,7 +186,7 @@ func readImage(m map[string]any, name, at string) (*Image, error) {
 			return nil, invalid("%s.alt_text is not a string (draft-ietf-oauth-sd-jwt-vc-19 %s)", at, section)
 		}
 	}
-	if !optString(im, "uri#integrity", &img.URIIntegrity) {
+	if !optStringPtr(im, "uri#integrity", &img.URIIntegrity) {
 		return nil, invalid("%s.uri#integrity is not a string (draft-ietf-oauth-sd-jwt-vc-19 %s)", at, section)
 	}
 	return img, nil
@@ -202,7 +202,7 @@ func readSVGTemplate(v any, several bool, at string) (SVGTemplate, error) {
 	if t.URI, err = readURI(m, at); err != nil {
 		return SVGTemplate{}, err
 	}
-	if !optString(m, "uri#integrity", &t.URIIntegrity) {
+	if !optStringPtr(m, "uri#integrity", &t.URIIntegrity) {
 		return SVGTemplate{}, invalid("%s.uri#integrity is not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.2)", at)
 	}
 	p, ok := m["properties"]
@@ -407,6 +407,20 @@ func optString(m map[string]any, name string, dst *string) bool {
 		return true
 	}
 	*dst, ok = v.(string)
+	return ok
+}
+
+// optStringPtr is optString for a property whose presence the caller needs:
+// dst stays nil when name is absent.
+func optStringPtr(m map[string]any, name string, dst **string) bool {
+	v, ok := m[name]
+	if !ok {
+		return true
+	}
+	s, ok := v.(string)
+	if ok {
+		*dst = &s
+	}
 	return ok
 }
 
