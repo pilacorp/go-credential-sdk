@@ -255,16 +255,13 @@ func TestPresentKeyBindingCnf(t *testing.T) {
 		{"cnf.jwk off the curve", map[string]any{"jwk": map[string]any{"kty": "EC", "crv": "P-256", "x": jwkP256["x"], "y": jwkP256["x"]}},
 			[]error{jose.ErrMalformed, jwk.ErrBadKey}},
 	} {
-		req := testRequest(t)
-		req.HolderKey = nil
+		// Issue refuses the malformed ones, so every credential is signed
+		// here, as one from another issuer.
+		claims := map[string]any{"iss": "https://issuer.example", "vct": "urn:example:pid"}
 		if tc.cnf != nil {
-			req.Claims["cnf"] = tc.cnf
+			claims["cnf"] = tc.cnf
 		}
-		cred, err := Issue(t.Context(), req, testKey(t))
-		if err != nil {
-			t.Fatalf("%s: Issue: %v", tc.name, err)
-		}
-		_, err = cred.Present(t.Context(), PresentRequest{KeyBinding: kb})
+		_, err = signedCredential(t, claims, nil).Present(t.Context(), PresentRequest{KeyBinding: kb})
 		for _, w := range tc.want {
 			if !errors.Is(err, w) {
 				t.Errorf("%s: %v, want %v", tc.name, err, w)
@@ -280,6 +277,26 @@ func TestPresentKeyBindingCnf(t *testing.T) {
 			t.Errorf("%s: %v matches %d of the three classes, want 1", tc.name, err, n)
 		}
 	}
+}
+
+// signedCredential signs payload as an Issuer-signed JWT with testKey and
+// parses it with disclosures: a credential Issue would not write.
+func signedCredential(t *testing.T, payload map[string]any, disclosures []sdjwt.Disclosure) *Credential {
+	t.Helper()
+	body, err := jose.EncodeJSON(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := testKey(t)
+	issuerJWT, err := jws.Sign(t.Context(), key.Signer, key.Public, jws.Header{"typ": "dc+sd-jwt"}, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := Parse(compactSDJWT(issuerJWT, disclosures))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cred
 }
 
 // TC-18 (REQ-27): draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids cnf and its
@@ -318,20 +335,7 @@ func TestPresentConcealedCnf(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		body, err := jose.EncodeJSON(payload)
-		if err != nil {
-			t.Fatal(err)
-		}
-		key := testKey(t)
-		issuerJWT, err := jws.Sign(t.Context(), key.Signer, key.Public, jws.Header{"typ": "dc+sd-jwt"}, body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cred, err := Parse(compactSDJWT(issuerJWT, ds))
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = cred.Present(t.Context(), PresentRequest{KeyBinding: kb})
+		_, err = signedCredential(t, payload, ds).Present(t.Context(), PresentRequest{KeyBinding: kb})
 		if !errors.Is(err, jose.ErrMalformed) || errors.Is(err, ErrKeyBindingUnsupported) || errors.Is(err, jose.ErrInvalidArgument) {
 			t.Errorf("%v concealed: %v, want jose.ErrMalformed only", conceal, err)
 		}

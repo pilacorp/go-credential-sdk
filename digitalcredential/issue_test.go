@@ -38,6 +38,11 @@ func TestIssueRefusesRequest(t *testing.T) {
 		"vct#integrity a number": func(r *IssueRequest) { r.Claims["vct#integrity"] = 1 },
 		"vct#integrity null":     func(r *IssueRequest) { r.Claims["vct#integrity"] = nil },
 		"vct#integrity an array": func(r *IssueRequest) { r.Claims["vct#integrity"] = []any{} },
+		// Shapes a Verifier reads as malformed: draft-ietf-oauth-status-list-21
+		// §6.2, RFC 7519 §4.1.3, RFC 7800 §3.
+		"status a string": func(r *IssueRequest) { r.Claims["status"] = "valid" },
+		"aud a number":    func(r *IssueRequest) { r.Claims["aud"] = 1 },
+		"cnf a string":    func(r *IssueRequest) { r.HolderKey = nil; r.Claims["cnf"] = "holder-1" },
 		// Deeper than jose.MaxJSONDepth: the request's mistake, not a
 		// malformed token.
 		"Claims nested too deep": func(r *IssueRequest) { r.Claims["deep"] = nested(70) },
