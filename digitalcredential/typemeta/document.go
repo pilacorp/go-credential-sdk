@@ -48,7 +48,9 @@ type SimpleRendering struct {
 }
 
 // Image is a logo or a background image (§5.5.1.1.1, §5.5.1.1.2). URI is an
-// https URL or a data: URI (§5.5.1). URIIntegrity is nil when uri#integrity
+// https URL or a data: URI (§5.5.1). Of a data: URI, only the comma RFC 2397
+// §3 requires is checked: the application that decodes it meets a bad
+// mediatype or base64 there. URIIntegrity is nil when uri#integrity
 // is absent; when set, even to "", the application that fetches URI passes
 // it to CheckIntegrity, which refuses an empty value (§6). AltText is for the
 // logo only (§5.5.1.1.1); it is not read for a background image.
@@ -58,8 +60,8 @@ type Image struct {
 	AltText      string  `json:"alt_text,omitempty"`
 }
 
-// SVGTemplate is one SVG template (§5.5.1.2). URIIntegrity is read as for
-// Image. Properties is required when a type has more than one template.
+// SVGTemplate is one SVG template (§5.5.1.2). URI and URIIntegrity are
+// read as for Image. Properties is required when a type has more than one template.
 type SVGTemplate struct {
 	URI          string         `json:"uri,omitempty"`
 	URIIntegrity *string        `json:"uri#integrity,omitempty"`
