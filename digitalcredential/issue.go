@@ -83,9 +83,10 @@ type IssueRequest struct {
 	// fraction included, or cnf in any form RFC 7800 defines (draft 19
 	// §2.2.2.3 only RECOMMENDS jwk). aka_vcts must be a non-empty array of
 	// non-empty strings without the value of VCT (draft 19 §2.2.2.2).
-	// vct#integrity must hold a sha256, sha384 or sha512 hash expression
-	// (§6): take it from typemeta.Encoded.Integrity of the published
-	// document.
+	// vct#integrity must be integrity metadata whose tokens are sha256,
+	// sha384 or sha512 hash expressions (§6, W3C SRI §3.5): take it from
+	// typemeta.Encoded.Integrity of the published document. An empty value
+	// fits that syntax and is signed, but every Verifier refuses it (§6).
 	Claims map[string]any
 	// Disclose lists the claims to conceal, in any order (sdjwt.Conceal). A
 	// path must not start at one of the eight claims draft 19 §2.2.2.3

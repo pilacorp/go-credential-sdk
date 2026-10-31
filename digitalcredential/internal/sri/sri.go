@@ -27,17 +27,16 @@ var algs = []struct {
 }
 
 // WellFormed reports whether integrity is "integrity metadata" as SRI §3.5
-// writes it and draft 19 §5.3 requires of vct#integrity: at least one token,
-// and every token hash-algo "-" base64-value with options of VCHAR only.
+// writes it and draft 19 §5.3 requires of vct#integrity: every token
+// hash-algo "-" base64-value with options of VCHAR only. The ABNF allows no
+// token at all; Check refuses such a value, as §6 asks of a Consumer.
 func WellFormed(integrity string) bool {
-	n := 0
 	for tok := range strings.FieldsFuncSeq(integrity, isASCIISpace) {
 		if _, _, ok := parseToken(tok); !ok {
 			return false
 		}
-		n++
 	}
-	return n > 0
+	return true
 }
 
 // Check reports whether data matches integrity: draft 19 §6, the digest of
