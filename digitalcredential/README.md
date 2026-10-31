@@ -224,6 +224,9 @@ to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
 
 - `Allowed` is your trust list (§2.5). An entry ending in `/` covers every `iss` that starts with it, except one with
   a `.` or `..` path segment; any other entry covers only the `iss` equal to it. Matching is byte for byte.
+- Redirects are followed to any https host, as draft 19 §3 allows, and are not matched against `Allowed`. Under an
+  entry ending in `/` the credential chooses the path requested, so an open redirect on the issuer's server lets
+  another host supply the keys. `SameHostRedirects` follows only redirects to the host the retrieval started from.
 - An `iss` outside the list is `issuerkey.ErrIssuerNotSupported`, with no request made. Metadata or a JWK Set that
   must not be used is `issuerkey.ErrNoUsableKey`. A failed retrieval is any other error, or one wrapping `ctx.Err()`.
 - Only P-256 and secp256k1 keys whose `use`, `alg` and `key_ops`, if present, allow verifying are returned.

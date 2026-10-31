@@ -62,9 +62,11 @@ type response struct {
 // so the identifiers of the draft (example.com, which the httptest
 // certificate names) can be used as they are.
 type metaServer struct {
-	routes map[string]response
-	hits   atomic.Int32
-	srv    *httptest.Server
+	routes    map[string]response
+	redirects map[string]string // path to the target of a 302
+	hits      atomic.Int32
+	moved     atomic.Int32 // requests for /moved
+	srv       *httptest.Server
 }
 
 func newMetaServer(t *testing.T, routes map[string]response) *metaServer {
@@ -72,6 +74,13 @@ func newMetaServer(t *testing.T, routes map[string]response) *metaServer {
 	s := &metaServer{routes: routes}
 	s.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.hits.Add(1)
+		if r.URL.Path == "/moved" {
+			s.moved.Add(1)
+		}
+		if loc, ok := s.redirects[r.URL.Path]; ok {
+			http.Redirect(w, r, loc, http.StatusFound)
+			return
+		}
 		resp, ok := s.routes[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
@@ -90,12 +99,19 @@ func newMetaServer(t *testing.T, routes map[string]response) *metaServer {
 // resolver returns a Resolver over s whose clock reads *now.
 func (s *metaServer) resolver(t *testing.T, allowed []string, now *time.Time, disableCache bool) *Resolver {
 	t.Helper()
+	return s.resolverFor(t, Config{Allowed: allowed, DisableCache: disableCache}, now)
+}
+
+// resolverFor returns a Resolver for cfg over s whose clock reads *now.
+func (s *metaServer) resolverFor(t *testing.T, cfg Config, now *time.Time) *Resolver {
+	t.Helper()
 	client := s.srv.Client()
 	addr := s.srv.Listener.Addr().String()
 	client.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, addr)
 	}
-	r, err := NewResolver(Config{Allowed: allowed, HTTPClient: client, DisableCache: disableCache})
+	cfg.HTTPClient = client
+	r, err := NewResolver(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,5 +400,45 @@ func TestKeyWalk(t *testing.T) {
 	}
 	if keys, err := signingKeys(decode(`{"keys":[` + ec(`,"use":"enc"`) + `]}`)); err != nil || keys == nil || len(keys) != 0 {
 		t.Errorf("no usable key: keys = %v, err = %v; want an empty slice", keys, err)
+	}
+}
+
+// Draft 19 §3 lets a redirect lead to any https host. SameHostRedirects
+// refuses one to another host, here example.com on another port, before it
+// is requested, and the failure is not cached; the same host in other case
+// and with its default port is followed.
+func TestSameHostRedirects(t *testing.T) {
+	const iss = "https://example.com"
+	for _, tc := range []struct {
+		name     string
+		sameHost bool
+		location string
+		refused  bool
+	}{
+		{"another host, option on", true, "https://example.com:8443/moved", true},
+		{"same host, option on", true, "https://EXAMPLE.com:443/moved", false},
+		{"another host, option off", false, "https://example.com:8443/moved", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newMetaServer(t, map[string]response{"/moved": metadata(iss, twoKeys)})
+			s.redirects = map[string]string{"/.well-known/jwt-vc-issuer": tc.location}
+			now := time.Unix(1_800_000_000, 0)
+			r := s.resolverFor(t, Config{Allowed: []string{iss}, SameHostRedirects: tc.sameHost}, &now)
+			for range 2 {
+				_, err := r.Keys(context.Background(), iss)
+				if tc.refused != (err != nil) {
+					t.Fatalf("err = %v, want refused=%v", err, tc.refused)
+				}
+			}
+			// Each call requests the redirect again: a refusal is not cached,
+			// and a 302 without freshness keeps a followed answer out too.
+			want := int32(2)
+			if tc.refused {
+				want = 0
+			}
+			if redirects, moved := s.hits.Load()-s.moved.Load(), s.moved.Load(); redirects != 2 || moved != want {
+				t.Fatalf("redirect got %d requests, target %d; want 2 and %d", redirects, moved, want)
+			}
+		})
 	}
 }

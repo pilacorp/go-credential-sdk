@@ -48,6 +48,10 @@ type Limits struct {
 	// https, for a caller whose standard leaves the scheme to it; the host
 	// and userinfo rules of HTTPSURL still hold.
 	AllowHTTP bool
+	// SameHost refuses a redirect whose host is not the host of the URL Get
+	// was given: the host name in any ASCII case, and the port, the scheme's
+	// default when absent.
+	SameHost bool
 }
 
 // maxHeaderBytes caps response headers, which would otherwise default to
@@ -110,6 +114,21 @@ func (l Limits) allows(u *url.URL) bool {
 type StatusError struct{ Code int }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("safehttp: status %d", e.Code) }
+
+// sameHost reports whether a and b have one host as Limits.SameHost reads it.
+func sameHost(a, b *url.URL) bool {
+	return strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
+}
+
+func port(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if strings.EqualFold(u.Scheme, "http") {
+		return "80"
+	}
+	return "443"
+}
 
 // redirectRefusal is the text of a redirect Get's CheckRedirect refuses; its
 // own type lets fetchError show that text.
@@ -182,7 +201,8 @@ func (l Limits) schemes() string {
 // Get fetches rawURL and returns the body and the response header. rawURL and
 // every redirect target must pass HTTPSURL (with l.AllowHTTP, or be an http
 // URL with a host and no userinfo), and at most l.MaxRedirects
-// redirects are followed, both checked before the next request is sent. The
+// redirects are followed, all checked before the next request is sent; with
+// l.SameHost a redirect target must also have the host of rawURL. The
 // whole fetch ends within l.Timeout. The status must be 2xx, and the media
 // type of Content-Type must be one of mediaTypes (ASCII case ignored,
 // parameters allowed); the list, joined by ", ", is also sent as Accept (RFC
@@ -253,6 +273,9 @@ func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string
 		}
 		if !l.allows(r.URL) {
 			return redirectRefusal("redirect to a URL that is not " + l.schemes() + " with a host and no userinfo")
+		}
+		if l.SameHost && !sameHost(r.URL, via[0].URL) {
+			return redirectRefusal("redirect to another host than the one requested")
 		}
 		if len(via) > l.MaxRedirects {
 			return redirectRefusal(fmt.Sprintf("more than %d redirects", l.MaxRedirects))

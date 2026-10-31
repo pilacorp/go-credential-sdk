@@ -12,7 +12,9 @@
 // application/json for a JWK Set, RFC 7517 §8.5). A cache miss makes at most
 // two retrievals. Responses are cached as RFC 9111 §4.2 and §5.2 allow, for
 // at most 24 hours and no longer than the least fresh response of the
-// retrieval, redirects included; a failure is never cached.
+// retrieval, redirects included; a failure is never cached. A redirect is
+// followed to any host unless Config.SameHostRedirects is set, and the server
+// it leads to supplies the keys.
 //
 // The default client refuses addresses that are not globally reachable, but
 // hosts reachable only inside the deployment's own network are known to no
@@ -74,6 +76,7 @@ var limits = safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, 
 // concurrent misses on one iss each fetch.
 type Resolver struct {
 	allowed allowlist.List
+	limits  safehttp.Limits
 	client  *http.Client
 	noCache bool
 	now     func() time.Time
@@ -94,7 +97,18 @@ type Config struct {
 	// segment (see Keys); any other entry covers the iss equal to it.
 	// Matching is byte for byte, so case-sensitive: "https://" covers every
 	// iss starting with https:// in lower case.
+	//
+	// Allowed judges iss, not the redirects of its retrievals. Under an entry
+	// ending in "/", the credential chooses the path of the metadata URL, so
+	// an open redirect on the issuer's server lets another host supply the
+	// keys; SameHostRedirects stops it.
 	Allowed []string
+	// SameHostRedirects follows a redirect only to the host of the URL the
+	// retrieval started from: the metadata URL, or jwks_uri for the JWK Set.
+	// Another host fails the retrieval, which is not cached. Draft 19 §3
+	// lets a Consumer follow redirects to any https host, so it is off by
+	// default.
+	SameHostRedirects bool
 	// HTTPClient retrieves the metadata and JWK Sets; nil uses a client that
 	// refuses addresses that are not globally reachable. A deployment behind
 	// an egress proxy passes its own.
@@ -127,6 +141,7 @@ func NewResolver(cfg Config) (*Resolver, error) {
 	}
 	r := &Resolver{
 		allowed: allowlist.New(cfg.Allowed),
+		limits:  limits,
 		client:  cfg.HTTPClient,
 		noCache: cfg.DisableCache,
 		now:     time.Now,
@@ -135,6 +150,7 @@ func NewResolver(cfg Config) (*Resolver, error) {
 	if r.client == nil {
 		r.client = safehttp.NewClient()
 	}
+	r.limits.SameHost = cfg.SameHostRedirects
 	return r, nil
 }
 
@@ -243,7 +259,7 @@ func metadataURL(iss string) (*url.URL, string, error) {
 // fetch retrieves the metadata of iss, requested at sent, and its JWK Set,
 // and returns the keys and when they expire.
 func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Time) ([]issuerkey.PublicKey, time.Time, error) {
-	body, fresh, err := httpcache.Get(ctx, r.client, metaURL, []string{mediaTypeMetadata}, limits, maxCacheLifetime)
+	body, fresh, err := httpcache.Get(ctx, r.client, metaURL, []string{mediaTypeMetadata}, r.limits, maxCacheLifetime)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("issuermeta: fetching the issuer metadata: %w", err)
 	}
@@ -278,7 +294,7 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 			return nil, time.Time{}, contentFault("jwks_uri is not an https URL with a host (draft-ietf-oauth-sd-jwt-vc-19 §3, §4.2) and no userinfo (RFC 9110 §4.2.4)")
 		}
 		sent := r.now()
-		body, fresh, err := httpcache.Get(ctx, r.client, s, mediaTypesJWKSet, limits, maxCacheLifetime)
+		body, fresh, err := httpcache.Get(ctx, r.client, s, mediaTypesJWKSet, r.limits, maxCacheLifetime)
 		if err != nil {
 			return nil, time.Time{}, fmt.Errorf("issuermeta: fetching the JWK Set: %w", err)
 		}
