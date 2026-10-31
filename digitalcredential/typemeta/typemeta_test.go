@@ -181,6 +181,18 @@ func TestLoadRejects(t *testing.T) {
 		{"text_color", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"text_color":"white"}}}]`)}, typemeta.ErrInvalid},
 		{"claim display locale", typemeta.Ref{VCT: a}, []string{doc(a, `,"claims":[{"path":["x"],"display":[{"locale":"en_US","label":"X"}]}]`)}, typemeta.ErrClaims},
 		{"svg_id twice", typemeta.Ref{VCT: a}, []string{doc(a, `,"claims":[{"path":["x"],"svg_id":"s"},{"path":["y"],"svg_id":"s"}]`)}, typemeta.ErrClaims},
+		// §5.4, §5.6: b repeats an svg_id it inherits from g; a overriding
+		// the claim does not hide it.
+		{"svg_id repeated by a middle level", typemeta.Ref{VCT: a}, []string{
+			child(`,"claims":[{"path":["y"],"svg_id":"s3"}]`),
+			doc(b, `,"extends":"https://g.example/t","claims":[{"path":["y"],"svg_id":"s1"}]`),
+			doc("https://g.example/t", `,"claims":[{"path":["x"],"svg_id":"s1"},{"path":["y"],"svg_id":"s2"}]`),
+		}, typemeta.ErrClaims},
+		// Merging would hide the repeat: both claims override one path.
+		{"svg_id twice on one inherited path", typemeta.Ref{VCT: a}, []string{
+			child(`,"claims":[{"path":["x"],"svg_id":"d"},{"path":["x"],"svg_id":"d"}]`),
+			doc(b, `,"claims":[{"path":["x"],"svg_id":"s1"}]`),
+		}, typemeta.ErrClaims},
 		{"claims null", typemeta.Ref{VCT: a}, []string{doc(a, `,"claims":null`)}, typemeta.ErrClaims},
 		// The chain is processed before any claims are read (§5.7).
 		{"claims null, parent missing", typemeta.Ref{VCT: a}, []string{child(`,"claims":null`)}, typemeta.ErrInvalid},
