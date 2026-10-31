@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/sri"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/typemeta"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jwk"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
@@ -39,9 +41,10 @@ var requestClaims = []struct {
 
 // IssueRequest is the content of one SD-JWT VC. Issue writes the values as
 // given and checks only what the standard requires of the Issuer: VCT set,
-// aka_vcts (draft 19 §2.2.2.2), iat, nbf and exp as NumericDate (RFC 7519
-// §4.1.4-4.1.6), Status as statuslist.Ref.Validate checks it, iss or sub
-// beside cnf (RFC 7800 §3), and the structure it
+// aka_vcts (draft 19 §2.2.2.2), vct#integrity as integrity metadata (§6),
+// iat, nbf and exp as NumericDate (RFC 7519 §4.1.4-4.1.6), Status as
+// statuslist.Ref.Validate checks it, iss or sub beside cnf (RFC 7800 §3),
+// the claim metadata of TypeMetadata (§5.6), and the structure it
 // builds itself: the eight claims draft 19 §2.2.2.3 never conceals and the
 // claims the fields below set.
 type IssueRequest struct {
@@ -80,6 +83,9 @@ type IssueRequest struct {
 	// fraction included, or cnf in any form RFC 7800 defines (draft 19
 	// §2.2.2.3 only RECOMMENDS jwk). aka_vcts must be a non-empty array of
 	// non-empty strings without the value of VCT (draft 19 §2.2.2.2).
+	// vct#integrity must hold a sha256, sha384 or sha512 hash expression
+	// (§6): take it from typemeta.Encoded.Integrity of the published
+	// document.
 	Claims map[string]any
 	// Disclose lists the claims to conceal, in any order (sdjwt.Conceal). A
 	// path must not start at one of the eight claims draft 19 §2.2.2.3
@@ -90,6 +96,15 @@ type IssueRequest struct {
 	// object and array of the concealable claims, and the top level, up to
 	// this count. It must be 0 when Disclose is empty (draft 19 §2.2.2.5).
 	MinDigests int
+	// TypeMetadata, when set, is the Type Metadata of VCT, made by
+	// typemeta.Load. Issue then checks the payload against its claim
+	// metadata before concealing anything (ValidateIssuance, §5.6), and adds
+	// no decoy to any array, since §5.6 counts array elements as issued and
+	// a decoy would move every index after it. Its VCT() must equal VCT; with
+	// vct#integrity in Claims, the document it was loaded from must match
+	// it, so the hash written is that of the metadata checked. nil checks
+	// nothing.
+	TypeMetadata *typemeta.Metadata
 }
 
 // issuance is what IssueRequest.prepare builds: the payload to sign and the
@@ -131,6 +146,9 @@ func (req IssueRequest) Validate() error {
 //   - a nil ctx, or a request breaking the rules of IssueRequest:
 //     jose.ErrInvalidArgument naming the field; sdjwt.Conceal errors, all
 //     jose.ErrInvalidArgument, wrapped unchanged;
+//   - a payload breaking the claim metadata of TypeMetadata:
+//     jose.ErrInvalidArgument also wrapping typemeta.ErrViolated, or
+//     typemeta.ErrClaims when the check reads over the SDK's limit;
 //   - a HolderKey jwk.FromPublicKey refuses: its error unchanged,
 //     jose.ErrUnsupportedKey or jwk.ErrBadKey;
 //   - jws.Sign errors unchanged: jose.ErrUnsupportedKey or jws.ErrBadKey for
@@ -193,6 +211,12 @@ func (req IssueRequest) prepare() (issuance, error) {
 	claims["vct"] = req.VCT
 	putTime(claims, "nbf", req.NotBefore)
 	putTime(claims, "exp", req.Expiry)
+	// Every claim to be signed is in place and none is concealed yet.
+	if req.TypeMetadata != nil {
+		if err := req.TypeMetadata.ValidateIssuance(claims, req.Disclose); err != nil {
+			return issuance{}, fmt.Errorf("%w: dc: TypeMetadata: %w", jose.ErrInvalidArgument, err)
+		}
+	}
 
 	// The eight claims go apart, so that Conceal neither conceals them nor
 	// pads them with decoys, then come back after it.
@@ -203,7 +227,10 @@ func (req IssueRequest) prepare() (issuance, error) {
 			delete(claims, name)
 		}
 	}
-	payload, disclosures, err := sdjwt.Conceal(claims, req.Disclose, sdjwt.ConcealOptions{MinDigests: req.MinDigests})
+	payload, disclosures, err := sdjwt.Conceal(claims, req.Disclose, sdjwt.ConcealOptions{
+		MinDigests:    req.MinDigests,
+		NoArrayDecoys: req.TypeMetadata != nil,
+	})
 	if err != nil {
 		return issuance{}, fmt.Errorf("dc: %w", err)
 	}
@@ -272,6 +299,11 @@ func (req IssueRequest) check(claims map[string]any) error {
 			return fmt.Errorf("%w: dc: Claims aka_vcts %v (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.2)", jose.ErrInvalidArgument, err)
 		}
 	}
+	if v, ok := claims["vct#integrity"]; ok {
+		if s, _ := v.(string); !sri.WellFormed(s) {
+			return fmt.Errorf("%w: dc: Claims vct#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §5.3); take it from typemeta.Encoded.Integrity", jose.ErrInvalidArgument)
+		}
+	}
 	if req.Status != nil {
 		if err := req.Status.Validate(); err != nil {
 			return fmt.Errorf("dc: Status: %w", err)
@@ -290,6 +322,17 @@ func (req IssueRequest) check(claims map[string]any) error {
 	// MUST NOT contain _sd, and decoys alone would add one.
 	if len(req.Disclose) == 0 && req.MinDigests > 0 {
 		return fmt.Errorf("%w: dc: MinDigests %d with no Disclose path: draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.5 forbids _sd when no claim is selectively disclosable", jose.ErrInvalidArgument, req.MinDigests)
+	}
+	if m := req.TypeMetadata; m != nil {
+		// The zero Metadata has VCT() "" and VCT is not empty here.
+		if m.VCT() != req.VCT {
+			return fmt.Errorf("%w: dc: TypeMetadata is not the Type Metadata of VCT made by typemeta.Load", jose.ErrInvalidArgument)
+		}
+		if s, ok := claims["vct#integrity"].(string); ok {
+			if err := typemeta.CheckIntegrity(m.Documents()[0], s); err != nil {
+				return fmt.Errorf("%w: dc: Claims vct#integrity does not match the document TypeMetadata was loaded from (draft-ietf-oauth-sd-jwt-vc-19 §6): %v", jose.ErrInvalidArgument, err)
+			}
+		}
 	}
 	// RFC 7800 §3: "At least one of the sub and iss claims MUST be present"
 	// beside cnf. draft-ietf-oauth-sd-jwt-vc-20 §2.2.2.3 lifts this; drop the

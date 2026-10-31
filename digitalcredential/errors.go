@@ -78,6 +78,11 @@ const (
 	// list the value of WithCredentialAudience, or that option is not passed
 	// (RFC 7519 §4.1.3).
 	CodeAudienceMismatch Code = "AUDIENCE_MISMATCH"
+	// CodeVCTNotAccepted: neither vct nor any aka_vcts element, nor with
+	// WithExtendedVCTMatch any type of the extends chain, is in
+	// WithAcceptedVCTs (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.1, §2.2.2.2,
+	// §5.4).
+	CodeVCTNotAccepted Code = "VCT_NOT_ACCEPTED"
 	// CodeKBMissing: Key Binding is required, the credential's cnf holds a
 	// key this SDK checks Key Binding with, and no Key Binding JWT came (RFC
 	// 9901 §7.3 step 2): the holder can present it again with one.
@@ -113,6 +118,23 @@ const (
 	// not match the SD-JWT received (RFC 9901 §7.3 step 5g): Disclosures were
 	// dropped or added after it was signed.
 	CodeKBSDHashMismatch Code = "KB_SD_HASH_MISMATCH"
+	// CodeTypeMetadataNotFound: under WithTypeMetadata, no resolver has Type
+	// Metadata for the credential's vct (typemeta.ErrNotFound).
+	CodeTypeMetadataNotFound Code = "TYPE_METADATA_NOT_FOUND"
+	// CodeTypeMetadataUnavailable: under WithTypeMetadata, the resolver
+	// failed while ctx was live; a later call may pass.
+	CodeTypeMetadataUnavailable Code = "TYPE_METADATA_UNAVAILABLE"
+	// CodeTypeMetadataInvalid: the Type Metadata cannot be processed
+	// (draft-ietf-oauth-sd-jwt-vc-19 §5.7). Under WithTypeMetadata, a document
+	// fails its integrity, its structure or its vct, or the extends chain
+	// cannot be completed (typemeta.ErrInvalid); under either option, the
+	// claim metadata breaks §5.6 or extends loops (typemeta.ErrClaims,
+	// typemeta.ErrCycle).
+	CodeTypeMetadataInvalid Code = "TYPE_METADATA_INVALID"
+	// CodeTypeMetadataViolated: the payload breaks the claim metadata of its
+	// Type Metadata (draft 19 §5.6, typemeta.ErrViolated): a path error, a
+	// mandatory claim certainly missing, or a claim against its sd.
+	CodeTypeMetadataViolated Code = "TYPE_METADATA_VIOLATED"
 	// CodeRevoked: the status is 0x01, INVALID in
 	// draft-ietf-oauth-status-list-21 §7.1, and not in WithAcceptedStatus.
 	CodeRevoked Code = "REVOKED"
