@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/typemeta"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/sdjwt"
@@ -347,6 +349,83 @@ func TestHTTPResolver(t *testing.T) {
 	}
 	if _, err := typemeta.NewHTTPResolver(typemeta.Config{}); !errors.Is(err, jose.ErrInvalidArgument) {
 		t.Errorf("empty Allowed: got %v", err)
+	}
+}
+
+// Under an Allowed entry ending in "/" the credential or an extending
+// document chooses the path, and the same author writes its integrity, so a
+// redirect to another origin is refused before it is requested, integrity or
+// not, for vct and extends alike, and the failure is not cached. A URL listed
+// exactly, or AllowCrossOriginRedirects, follows it.
+func TestCrossOriginRedirects(t *testing.T) {
+	const root, parent = "https://example.com/root", "https://example.com/p/parent"
+	const moved = "https://example.com:8443/moved"
+	for _, tc := range []struct {
+		name        string
+		allowed     []string
+		crossOrigin bool
+		ref         typemeta.Ref
+		from        string // the path answered with a 302 to moved
+		refused     bool
+	}{
+		{"prefix entry", []string{"https://example.com/"}, false, typemeta.Ref{VCT: root}, "/root", true},
+		{"prefix entry, integrity of the target", []string{"https://example.com/"}, false, typemeta.Ref{VCT: root, Integrity: typemeta.Integrity([]byte(doc(root, "")))}, "/root", true},
+		{"https:// entry", []string{"https://"}, false, typemeta.Ref{VCT: root}, "/root", true},
+		{"extends under a prefix entry", []string{root, "https://example.com/p/"}, false, typemeta.Ref{VCT: root}, "/p/parent", true},
+		{"exact entry", []string{root}, false, typemeta.Ref{VCT: root}, "/root", false},
+		{"prefix entry and option", []string{"https://example.com/"}, true, typemeta.Ref{VCT: root}, "/root", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var redirected, served atomic.Int32
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case tc.from:
+					redirected.Add(1)
+					http.Redirect(w, r, moved, http.StatusFound)
+				case "/moved":
+					served.Add(1)
+					if tc.from == "/root" {
+						w.Write([]byte(doc(root, "")))
+					} else {
+						w.Write([]byte(doc(parent, "")))
+					}
+				case "/root":
+					w.Write([]byte(doc(root, `,"extends":"`+parent+`"`)))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			client := srv.Client()
+			addr := srv.Listener.Addr().String()
+			client.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			}
+			r, err := typemeta.NewHTTPResolver(typemeta.Config{Allowed: tc.allowed, AllowCrossOriginRedirects: tc.crossOrigin, HTTPClient: client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				_, err := typemeta.Load(context.Background(), r, tc.ref)
+				switch {
+				// The refusal, matching no sentinel Verify reads as NOT_FOUND
+				// or INVALID, and naming the settings that allow it.
+				case tc.refused && (!errors.Is(err, safehttp.ErrCrossOrigin) || errors.Is(err, typemeta.ErrNotFound) || errors.Is(err, typemeta.ErrInvalid) ||
+					!strings.Contains(err.Error(), "set Config.AllowCrossOriginRedirects")):
+					t.Fatalf("err = %v, want the redirect refused", err)
+				case !tc.refused && err != nil:
+					t.Fatalf("err = %v, want the redirect followed", err)
+				}
+			}
+			want := int32(2)
+			if tc.refused {
+				want = 0
+			}
+			if n, m := redirected.Load(), served.Load(); n != 2 || m != want {
+				t.Fatalf("redirect got %d requests, target %d; want 2 and %d", n, m, want)
+			}
+		})
 	}
 }
 
