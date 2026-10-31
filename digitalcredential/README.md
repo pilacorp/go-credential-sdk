@@ -165,8 +165,10 @@ res, err := cred.Verify(ctx, resolver, dc.WithTypeMetadata(types))
 check of the issuer metadata resolver, and caches a document for its HTTP freshness, at most 24 hours; a document
 whose integrity was checked stays until evicted. Redirects follow the rule of the issuer metadata resolver: a `vct` or
 `extends` that only an entry ending in `/` covers is followed only within its origin, integrity or not, unless
-`AllowCrossOriginRedirects` is set; one listed exactly follows any https redirect. `typemeta.Static(docs...)` serves documents you ship, and
-`typemeta.Multi(r1, r2, …)` asks resolvers in order, moving on only on `typemeta.ErrNotFound`.
+`AllowCrossOriginRedirects` is set; one listed exactly follows any https redirect. Integrity does not lift the rule,
+because the issuer writes the hash as well as the path, while `Allowed` trusts the publisher.
+`typemeta.Static(docs...)` serves documents you ship, and `typemeta.Multi(r1, r2, …)` asks resolvers in order, moving
+on only on `typemeta.ErrNotFound`.
 
 `typemeta.Load` follows `extends` up to 8 documents, checks each `#integrity` (§6, W3C SRI), the structure and the
 `vct`, and merges display and claim metadata (§5.5.2, §5.6.5). `Verify` then checks the payload as issued against the

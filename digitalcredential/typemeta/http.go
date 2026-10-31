@@ -36,9 +36,10 @@ type Config struct {
 	// server's redirects are followed to any https host. Under an entry
 	// ending in "/" the credential or the extending document chooses the
 	// path, and an open redirect on the publisher's server would let another
-	// origin supply the document, even one matching its integrity, which the
-	// same author writes: there redirects are followed only within the
-	// origin of that URL.
+	// origin supply the document. Integrity does not prevent it: the issuer,
+	// or the author of the extending document, writes the hash as well as
+	// the path, while Allowed trusts the publisher. There redirects are
+	// followed only within the origin of that URL.
 	Allowed []string
 	// AllowCrossOriginRedirects follows redirects to another origin also for
 	// a URL that only an entry ending in "/" covers. Off, such a redirect
