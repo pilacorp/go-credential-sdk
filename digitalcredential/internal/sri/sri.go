@@ -72,8 +72,12 @@ func strongest(integrity string) (alg int, digests [][]byte) {
 		// base64-value allows any padding up to "==", so it is decoded
 		// unpadded. A value that does not decode, or decodes to the wrong
 		// length, is still a valid token of its algorithm (§3.3.3), and
-		// matches no document.
-		d, _ := base64.RawStdEncoding.DecodeString(strings.TrimRight(value, "="))
+		// matches no document. DecodeString returns the bytes before the
+		// fault with its error, so they are dropped rather than compared.
+		d, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(value, "="))
+		if err != nil {
+			d = nil
+		}
 		if i < alg || alg < 0 {
 			alg, digests = i, nil
 		}

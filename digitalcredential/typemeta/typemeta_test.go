@@ -20,9 +20,10 @@ import (
 const vct42 = "https://betelgeuse.example.com/education_credential/v42"
 
 // Digests of testdata/figure30.json, computed with
-// openssl dgst -sha256|-sha512 -binary testdata/figure30.json | base64.
+// openssl dgst -sha256|-sha384|-sha512 -binary testdata/figure30.json | base64.
 const (
 	fig30SHA256 = "sha256-0NNETsymXj4lLpt500run69TjKZK3Auh+Nzyo62cFy4="
+	fig30SHA384 = "sha384-K6vzl4qlxvRC/WWssfa6CkEXTI9ZS7ABZXTqlcdJAKeoMQNGzbQz7pSFgHBIeusj"
 	fig30SHA512 = "sha512-jkygk2dpt/Sw5MmrAZ7ekuWdfXspiSw1iMwIQ+KwrGrK6wFH1BZKCH2Aq4f5V+SbN77oj0vPbXN8q0OaIz0bcQ=="
 	// Of the empty input: a digest that matches no document here.
 	emptySHA256 = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
@@ -114,6 +115,8 @@ func TestCheckIntegrity(t *testing.T) {
 	doc := readFile(t, "testdata/figure30.json")
 	ok := []string{
 		fig30SHA256,
+		fig30SHA384,
+		fig30SHA384 + "A " + fig30SHA384, // a digest that does not decode only fails to match
 		"SHA256-" + strings.TrimPrefix(fig30SHA256, "sha256-"),
 		emptySHA256 + " " + fig30SHA512,
 		fig30SHA256 + "?opt",
@@ -133,6 +136,10 @@ func TestCheckIntegrity(t *testing.T) {
 		"\u017fha256-" + strings.TrimPrefix(fig30SHA256, "sha256-"),  // U+017F folds to s outside ASCII
 		fig30SHA256 + "?\x01", // options are VCHAR
 		fig30SHA256 + "?\u00e9",
+		// One character past the digest does not decode; the 48 bytes
+		// before it must not match, and the token still outranks sha256.
+		fig30SHA384 + "A",
+		fig30SHA384 + "A " + fig30SHA256,
 	}
 	for _, s := range bad {
 		if err := typemeta.CheckIntegrity(doc, s); !errors.Is(err, typemeta.ErrInvalid) {
