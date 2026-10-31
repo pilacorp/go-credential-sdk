@@ -48,10 +48,11 @@ type Limits struct {
 	// https, for a caller whose standard leaves the scheme to it; the host
 	// and userinfo rules of HTTPSURL still hold.
 	AllowHTTP bool
-	// SameHost refuses a redirect whose host is not the host of the URL Get
+	// SameOrigin refuses a redirect whose origin is not that of the URL Get
 	// was given: the host name in any ASCII case, and the port, the scheme's
-	// default when absent.
-	SameHost bool
+	// default when absent. Every URL here is https, so these two fix the
+	// origin. The refusal matches ErrCrossOrigin.
+	SameOrigin bool
 }
 
 // maxHeaderBytes caps response headers, which would otherwise default to
@@ -115,8 +116,9 @@ type StatusError struct{ Code int }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("safehttp: status %d", e.Code) }
 
-// sameHost reports whether a and b have one host as Limits.SameHost reads it.
-func sameHost(a, b *url.URL) bool {
+// sameOrigin reports whether a and b have one origin as Limits.SameOrigin
+// reads it.
+func sameOrigin(a, b *url.URL) bool {
 	return strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
 }
 
@@ -135,6 +137,10 @@ func port(u *url.URL) string {
 type redirectRefusal string
 
 func (r redirectRefusal) Error() string { return string(r) }
+
+// ErrCrossOrigin is the redirect Get refuses under Limits.SameOrigin; the
+// caller adds how its own configuration allows it.
+var ErrCrossOrigin error = redirectRefusal("redirect to another origin refused")
 
 // fetchErr is the error Get returns when net/http fails, requesting or
 // reading the body. Its text never holds the request URL or a redirect
@@ -202,7 +208,7 @@ func (l Limits) schemes() string {
 // every redirect target must pass HTTPSURL (with l.AllowHTTP, or be an http
 // URL with a host and no userinfo), and at most l.MaxRedirects
 // redirects are followed, all checked before the next request is sent; with
-// l.SameHost a redirect target must also have the host of rawURL. The
+// l.SameOrigin a redirect target must also have the origin of rawURL. The
 // whole fetch ends within l.Timeout. The status must be 2xx, and the media
 // type of Content-Type must be one of mediaTypes (ASCII case ignored,
 // parameters allowed); the list, joined by ", ", is also sent as Accept (RFC
@@ -274,8 +280,8 @@ func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string
 		if !l.allows(r.URL) {
 			return redirectRefusal("redirect to a URL that is not " + l.schemes() + " with a host and no userinfo")
 		}
-		if l.SameHost && !sameHost(r.URL, via[0].URL) {
-			return redirectRefusal("redirect to another host than the one requested")
+		if l.SameOrigin && !sameOrigin(r.URL, via[0].URL) {
+			return ErrCrossOrigin
 		}
 		if len(via) > l.MaxRedirects {
 			return redirectRefusal(fmt.Sprintf("more than %d redirects", l.MaxRedirects))

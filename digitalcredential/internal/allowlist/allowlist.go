@@ -49,6 +49,10 @@ func (l List) Covers(raw string, u *url.URL) (ok, dot bool) {
 	return false, dot
 }
 
+// Names reports whether an entry is raw: the caller then wrote this URL
+// itself, rather than a prefix under which the token chose it.
+func (l List) Names(raw string) bool { return slices.Contains(l.entries, raw) }
+
 // hasDotSegment reports whether path, already decoded once by url.Parse, has a
 // "." or ".." segment. Raw and %2e forms name a resource outside an entry
 // ending in "/" (RFC 3986 §2.3, §6.2.2.3); "\" and %2F as separators and ";"

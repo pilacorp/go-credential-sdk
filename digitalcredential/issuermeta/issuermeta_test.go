@@ -405,44 +405,50 @@ func TestKeyWalk(t *testing.T) {
 	}
 }
 
-// Draft 19 §3 lets a redirect lead to any https host. SameHostRedirects
-// refuses one to another host, here example.com on another port, before it
-// is requested, and the failure is not cached; the same host in other case
-// and with its default port is followed.
-func TestSameHostRedirects(t *testing.T) {
-	const iss = "https://example.com"
-	byURI := response{"application/json", "max-age=3600", `{"issuer":"` + iss + `","jwks_uri":"` + iss + `/jwks"}`}
+// Under an Allowed entry ending in "/" the credential chooses the metadata
+// path, so a redirect of either retrieval to another origin is refused
+// before it is requested, and the failure is not cached. An iss listed
+// exactly, or AllowCrossOriginRedirects, follows it; the same origin in
+// other case and with its default port is always followed.
+func TestCrossOriginRedirects(t *testing.T) {
+	const iss = "https://example.com/tenant/1"
+	const prefix = "https://example.com/"
+	byURI := response{"application/json", "max-age=3600", `{"issuer":"` + iss + `","jwks_uri":"https://example.com/jwks"}`}
 	jwkSet := response{"application/jwk-set+json", "", twoKeys}
 	for _, tc := range []struct {
-		name     string
-		sameHost bool
-		jwksURI  bool // the redirect answers jwks_uri, not the metadata
-		location string
-		refused  bool
+		name        string
+		allowed     []string
+		crossOrigin bool
+		jwksURI     bool // the redirect answers jwks_uri, not the metadata
+		location    string
+		refused     bool
 	}{
-		{"another port, option on", true, false, "https://example.com:8443/moved", true},
 		// Refused before any connection, so the test certificate, which
 		// covers only example.com, is never asked for this name.
-		{"another hostname, option on", true, false, "https://other.example/moved", true},
-		{"same host, option on", true, false, "https://EXAMPLE.com:443/moved", false},
-		{"another port, option off", false, false, "https://example.com:8443/moved", false},
-		{"jwks_uri to another port, option on", true, true, "https://example.com:8443/moved", true},
-		{"jwks_uri to another port, option off", false, true, "https://example.com:8443/moved", false},
+		{"prefix entry, another hostname", []string{prefix}, false, false, "https://other.example/moved", true},
+		{"https:// entry, another port", []string{"https://"}, false, false, "https://example.com:8443/moved", true},
+		{"prefix entry, jwks_uri to another port", []string{prefix}, false, true, "https://example.com:8443/moved", true},
+		{"prefix entry, same origin", []string{prefix}, false, false, "https://EXAMPLE.com:443/moved", false},
+		{"prefix entry and option", []string{prefix}, true, false, "https://example.com:8443/moved", false},
+		{"prefix entry and option, jwks_uri", []string{prefix}, true, true, "https://example.com:8443/moved", false},
+		{"exact entry, another port", []string{iss}, false, false, "https://example.com:8443/moved", false},
+		{"exact entry after a prefix entry", []string{prefix, iss}, false, true, "https://example.com:8443/moved", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			routes, from := map[string]response{"/moved": metadata(iss, twoKeys)}, "/.well-known/jwt-vc-issuer"
+			routes, from := map[string]response{"/moved": metadata(iss, twoKeys)}, "/.well-known/jwt-vc-issuer/tenant/1"
 			if tc.jwksURI {
 				routes, from = map[string]response{from: byURI, "/moved": jwkSet}, "/jwks"
 			}
 			s := newMetaServer(t, routes)
 			s.redirects = map[string]string{from: tc.location}
 			now := time.Unix(1_800_000_000, 0)
-			r := s.resolverFor(t, Config{Allowed: []string{iss}, SameHostRedirects: tc.sameHost}, &now)
+			r := s.resolverFor(t, Config{Allowed: tc.allowed, AllowCrossOriginRedirects: tc.crossOrigin}, &now)
 			for range 2 {
 				_, err := r.Keys(context.Background(), iss)
 				switch {
-				// The refusal, not a TLS failure to reach the other name.
-				case tc.refused && (err == nil || !strings.Contains(err.Error(), "another host")):
+				// The refusal, not a TLS failure to reach the other name, and
+				// the text names the settings that allow the redirect.
+				case tc.refused && (!errors.Is(err, safehttp.ErrCrossOrigin) || !strings.Contains(err.Error(), "set Config.AllowCrossOriginRedirects")):
 					t.Fatalf("err = %v, want the redirect refused", err)
 				case !tc.refused && err != nil:
 					t.Fatalf("err = %v, want the redirect followed", err)

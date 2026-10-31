@@ -12,9 +12,11 @@
 // application/json for a JWK Set, RFC 7517 §8.5). A cache miss makes at most
 // two retrievals. Responses are cached as RFC 9111 §4.2 and §5.2 allow, for
 // at most 24 hours and no longer than the least fresh response of the
-// retrieval, redirects included; a failure is never cached. A redirect is
-// followed to any host unless Config.SameHostRedirects is set, and the server
-// it leads to supplies the keys.
+// retrieval, redirects included; a failure is never cached. For an iss that
+// only an entry of Config.Allowed ending in "/" covers, both retrievals
+// follow redirects only within their origin unless
+// Config.AllowCrossOriginRedirects is set; otherwise a redirect is followed to
+// any https host, and the server it leads to supplies the keys.
 //
 // The default client refuses addresses that are not globally reachable, but
 // hosts reachable only inside the deployment's own network are known to no
@@ -27,6 +29,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -75,11 +78,11 @@ var limits = safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, 
 // until entries expire, never a wrong key. There is no single-flight:
 // concurrent misses on one iss each fetch.
 type Resolver struct {
-	allowed allowlist.List
-	limits  safehttp.Limits
-	client  *http.Client
-	noCache bool
-	now     func() time.Time
+	allowed     allowlist.List
+	crossOrigin bool
+	client      *http.Client
+	noCache     bool
+	now         func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
@@ -98,17 +101,20 @@ type Config struct {
 	// Matching is byte for byte, so case-sensitive: "https://" covers every
 	// iss starting with https:// in lower case.
 	//
-	// Allowed judges iss, not the redirects of its retrievals. Under an entry
-	// ending in "/", the credential chooses the path of the metadata URL, so
-	// an open redirect on the issuer's server lets another host supply the
-	// keys; SameHostRedirects stops it.
+	// Allowed judges iss, not the redirects of its retrievals. An entry equal
+	// to iss names a metadata URL the verifier trusts, so the redirects of
+	// that issuer's server are followed to any https host. Under an entry
+	// ending in "/" the credential chooses the path of the metadata URL, and
+	// an open redirect on the issuer's server would let another origin supply
+	// the keys: there the metadata and the JWK Set are followed only within
+	// the origin each retrieval started from.
 	Allowed []string
-	// SameHostRedirects follows a redirect only to the host of the URL the
-	// retrieval started from: the metadata URL, or jwks_uri for the JWK Set.
-	// Another host fails the retrieval, which is not cached. Draft 19 §3
-	// lets a Consumer follow redirects to any https host, so it is off by
-	// default.
-	SameHostRedirects bool
+	// AllowCrossOriginRedirects follows redirects to another origin also for
+	// an iss that only an entry ending in "/" covers. Off, such a redirect
+	// fails the retrieval before it is sent, and the failure is not cached;
+	// listing that iss in Allowed also lets its redirects through. Draft 19
+	// §3 leaves following redirects to the Consumer.
+	AllowCrossOriginRedirects bool
 	// HTTPClient retrieves the metadata and JWK Sets; nil uses a client that
 	// refuses addresses that are not globally reachable. A deployment behind
 	// an egress proxy passes its own.
@@ -140,17 +146,16 @@ func NewResolver(cfg Config) (*Resolver, error) {
 		}
 	}
 	r := &Resolver{
-		allowed: allowlist.New(cfg.Allowed),
-		limits:  limits,
-		client:  cfg.HTTPClient,
-		noCache: cfg.DisableCache,
-		now:     time.Now,
-		cache:   map[string]cacheEntry{},
+		allowed:     allowlist.New(cfg.Allowed),
+		crossOrigin: cfg.AllowCrossOriginRedirects,
+		client:      cfg.HTTPClient,
+		noCache:     cfg.DisableCache,
+		now:         time.Now,
+		cache:       map[string]cacheEntry{},
 	}
 	if r.client == nil {
 		r.client = safehttp.NewClient()
 	}
-	r.limits.SameHost = cfg.SameHostRedirects
 	return r, nil
 }
 
@@ -211,7 +216,11 @@ func (r *Resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 	}
 	// RFC 9111 §4.2.3: age is measured from the time the request was sent.
 	sent := r.now()
-	keys, expires, err := r.fetch(ctx, iss, metaURL, sent)
+	l := limits
+	// An iss listed exactly is a URL the verifier named; one under an entry
+	// ending in "/" is a path the credential chose.
+	l.SameOrigin = !r.crossOrigin && !r.allowed.Names(iss)
+	keys, expires, err := r.fetch(ctx, iss, metaURL, sent, l)
 	if err != nil {
 		return nil, err
 	}
@@ -256,12 +265,12 @@ func metadataURL(iss string) (*url.URL, string, error) {
 	return u, "https://" + authority + wellKnown + strings.TrimRight(path, "/"), nil
 }
 
-// fetch retrieves the metadata of iss, requested at sent, and its JWK Set,
-// and returns the keys and when they expire.
-func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Time) ([]issuerkey.PublicKey, time.Time, error) {
-	body, fresh, err := httpcache.Get(ctx, r.client, metaURL, []string{mediaTypeMetadata}, r.limits, maxCacheLifetime)
+// fetch retrieves the metadata of iss, requested at sent, and its JWK Set
+// under l, and returns the keys and when they expire.
+func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Time, l safehttp.Limits) ([]issuerkey.PublicKey, time.Time, error) {
+	body, fresh, err := httpcache.Get(ctx, r.client, metaURL, []string{mediaTypeMetadata}, l, maxCacheLifetime)
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("issuermeta: fetching the issuer metadata: %w", err)
+		return nil, time.Time{}, retrievalErr("the issuer metadata", err)
 	}
 	expires := sent.Add(fresh)
 	meta, err := jose.DecodeJSONObject(body)
@@ -294,9 +303,9 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 			return nil, time.Time{}, contentFault("jwks_uri is not an https URL with a host (draft-ietf-oauth-sd-jwt-vc-19 §3, §4.2) and no userinfo (RFC 9110 §4.2.4)")
 		}
 		sent := r.now()
-		body, fresh, err := httpcache.Get(ctx, r.client, s, mediaTypesJWKSet, r.limits, maxCacheLifetime)
+		body, fresh, err := httpcache.Get(ctx, r.client, s, mediaTypesJWKSet, l, maxCacheLifetime)
 		if err != nil {
-			return nil, time.Time{}, fmt.Errorf("issuermeta: fetching the JWK Set: %w", err)
+			return nil, time.Time{}, retrievalErr("the JWK Set", err)
 		}
 		if e := sent.Add(fresh); e.Before(expires) {
 			expires = e
@@ -368,6 +377,15 @@ func signingKey(m map[string]any, alg string) bool {
 		}
 	}
 	return true
+}
+
+// retrievalErr is the error of a failed retrieval of what; a cross-origin
+// redirect refusal also names the two settings that allow it.
+func retrievalErr(what string, err error) error {
+	if errors.Is(err, safehttp.ErrCrossOrigin) {
+		return fmt.Errorf("issuermeta: fetching %s: %w under an Allowed entry ending in \"/\"; list the iss in Config.Allowed or set Config.AllowCrossOriginRedirects", what, err)
+	}
+	return fmt.Errorf("issuermeta: fetching %s: %w", what, err)
 }
 
 // contentFault is the error of a metadata document or JWK Set that must not
