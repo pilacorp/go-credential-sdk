@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -41,8 +42,11 @@ func TestIssueRefusesRequest(t *testing.T) {
 		// Shapes a Verifier reads as malformed: draft-ietf-oauth-status-list-21
 		// §6.2, RFC 7519 §4.1.3, RFC 7800 §3.
 		"status a string": func(r *IssueRequest) { r.Claims["status"] = "valid" },
-		"aud a number":    func(r *IssueRequest) { r.Claims["aud"] = 1 },
-		"cnf a string":    func(r *IssueRequest) { r.HolderKey = nil; r.Claims["cnf"] = "holder-1" },
+		"status idx past every list": func(r *IssueRequest) {
+			r.Claims["status"] = map[string]any{"status_list": map[string]any{"uri": "https://issuer.example/status/1", "idx": json.Number("9223372036854775808")}}
+		},
+		"aud a number": func(r *IssueRequest) { r.Claims["aud"] = 1 },
+		"cnf a string": func(r *IssueRequest) { r.HolderKey = nil; r.Claims["cnf"] = "holder-1" },
 		// Deeper than jose.MaxJSONDepth: the request's mistake, not a
 		// malformed token.
 		"Claims nested too deep": func(r *IssueRequest) { r.Claims["deep"] = nested(70) },

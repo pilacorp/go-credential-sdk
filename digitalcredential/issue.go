@@ -86,7 +86,7 @@ type IssueRequest struct {
 	// and aud, are read as Verify reads them: cnf a JSON object with at most
 	// one of jwk, jwe and jku, a jwk being a valid asymmetric key (RFC 7800
 	// §3.1, §3.2); status a JSON object whose status_list, when present,
-	// holds a string uri and a non-negative integer idx
+	// holds a string uri and a non-negative integer idx that fits an int
 	// (draft-ietf-oauth-status-list-21 §6.2); aud a string or an array of
 	// strings (RFC 7519 §4.1.3). aka_vcts must be a non-empty array of
 	// non-empty strings without the value of VCT (draft 19 §2.2.2.2).
@@ -320,8 +320,13 @@ func (req IssueRequest) check(claims map[string]any) error {
 	// uses, so Issue signs none that a Verifier on this SDK reads as
 	// malformed.
 	if _, ok := claims["status"]; ok {
-		if _, err := readStatus(claims); err != nil {
+		st, err := readStatus(claims)
+		if err != nil {
 			return fmt.Errorf("%w: dc: Claims %v; set Status for a Status List entry", jose.ErrInvalidArgument, err)
+		}
+		// Verify reads such an idx as past every status list (checkStatus).
+		if st.pastInt {
+			return fmt.Errorf("%w: dc: Claims status.status_list.idx is past every status list; set Status for a Status List entry", jose.ErrInvalidArgument)
 		}
 	}
 	if err := jwt.CheckAud(claims, ""); errors.Is(err, jose.ErrMalformed) {
