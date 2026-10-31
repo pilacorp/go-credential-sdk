@@ -316,6 +316,8 @@ func TestVerifyRejects(t *testing.T) {
 		{"duplicate 60 KB header key", echo, nil, CodeMalformed, nil},
 		// RFC 7519 §4.1.4: on or after exp, here exp + the 1 minute skew.
 		{"expired", draft19Fig8, func(s *setting) { s.now = time.Unix(1883000060, 0) }, CodeExpired, nil},
+		// RFC 7519 §4.1.5: before nbf, here nbf less the 1 minute skew and 1 s.
+		{"not yet valid", issued, func(s *setting) { own.set(s); s.now = time.Unix(1700000039, 0) }, CodeNotYetValid, nil},
 		// RFC 7519 §4.1.3: the credential's own aud, not the KB-JWT's.
 		{"credential for another audience", own.withAud, func(s *setting) {
 			own.set(s)

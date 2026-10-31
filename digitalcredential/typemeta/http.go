@@ -30,12 +30,23 @@ type Config struct {
 	// that starts with it, except one whose path has a "." or ".." segment;
 	// any other entry covers the vct equal to it. Matching is byte for byte,
 	// as for issuermeta.Config.Allowed. Allowed is matched against vct, the
-	// URL the credential names. Redirects its server answers with are
-	// followed (https, at most 3, §3) without being matched against Allowed,
-	// so an entry trusts whatever its server redirects to, an open redirect
-	// included; list only publishers that do not redirect on input they do
-	// not control.
+	// URL the credential names, or the extends of a document, and not
+	// against the redirects of its retrieval (https, at most 3, §3). An entry
+	// equal to that URL names a document the application trusts, so its
+	// server's redirects are followed to any https host. Under an entry
+	// ending in "/" the credential or the extending document chooses the
+	// path, and an open redirect on the publisher's server would let another
+	// origin supply the document. Integrity does not prevent it: the issuer,
+	// or the author of the extending document, writes the hash as well as
+	// the path, while Allowed trusts the publisher. There redirects are
+	// followed only within the origin of that URL.
 	Allowed []string
+	// AllowCrossOriginRedirects follows redirects to another origin also for
+	// a URL that only an entry ending in "/" covers. Off, such a redirect
+	// fails the retrieval before it is sent, and the failure is not cached;
+	// listing that URL in Allowed also lets its redirects through. Draft 19
+	// §3 leaves following redirects to the Consumer.
+	AllowCrossOriginRedirects bool
 	// HTTPClient retrieves the documents; nil uses a client that refuses
 	// addresses that are not globally reachable (§7.1). A client passed here
 	// is trusted code: the URL checks and the limits still apply, but the
@@ -48,10 +59,11 @@ type Config struct {
 
 // httpResolver is the Resolver of NewHTTPResolver.
 type httpResolver struct {
-	allowed allowlist.List
-	client  *http.Client
-	noCache bool
-	now     func() time.Time
+	allowed     allowlist.List
+	crossOrigin bool
+	client      *http.Client
+	noCache     bool
+	now         func() time.Time
 
 	mu    sync.Mutex
 	cache map[Ref]cacheEntry
@@ -72,9 +84,11 @@ type httpResolver struct {
 // Metadata returns ErrNotFound, without a request, when ref.VCT is not an
 // https URL with a host, has userinfo or a fragment, or no entry of Allowed
 // covers it. Otherwise it sends a GET to exactly ref.VCT: https on every
-// redirect, at most 3 redirects, 5 seconds, a 2xx application/json response
-// of at most 256 KiB (§3); a 404 is ErrNotFound, any other failure an error
-// that matches no sentinel of this package, its cause wrapped. The cache
+// redirect, at most 3 redirects, within the origin of ref.VCT when no entry
+// equals it and AllowCrossOriginRedirects is off, 5 seconds, a 2xx
+// application/json response of at most 256 KiB (§3); a 404 is ErrNotFound,
+// any other failure an error that matches no sentinel of this package, its
+// cause wrapped. The cache
 // counts an estimated 4 MiB and is keyed by the Ref. With ref.Integrity, a
 // document is cached only when it passes CheckIntegrity, and then with no
 // expiry (§5.3.4); one that fails is returned uncached for Load to reject.
@@ -92,11 +106,12 @@ func NewHTTPResolver(cfg Config) (Resolver, error) {
 		}
 	}
 	r := &httpResolver{
-		allowed: allowlist.New(cfg.Allowed),
-		client:  cfg.HTTPClient,
-		noCache: cfg.DisableCache,
-		now:     time.Now,
-		cache:   map[Ref]cacheEntry{},
+		allowed:     allowlist.New(cfg.Allowed),
+		crossOrigin: cfg.AllowCrossOriginRedirects,
+		client:      cfg.HTTPClient,
+		noCache:     cfg.DisableCache,
+		now:         time.Now,
+		cache:       map[Ref]cacheEntry{},
 	}
 	if r.client == nil {
 		r.client = safehttp.NewClient()
@@ -120,10 +135,17 @@ func (r *httpResolver) Metadata(ctx context.Context, ref Ref) ([]byte, error) {
 	}
 	// RFC 9111 §4.2.3: age is measured from the time the request was sent.
 	sent := r.now()
-	doc, fresh, err := httpcache.Get(ctx, r.client, ref.VCT, []string{mediaTypeMetadata}, limits, maxCacheLifetime)
+	l := limits
+	// A URL listed exactly is one the application named; one under an entry
+	// ending in "/" is a path the credential or a document chose.
+	l.SameOrigin = !r.crossOrigin && !r.allowed.Names(ref.VCT)
+	doc, fresh, err := httpcache.Get(ctx, r.client, ref.VCT, []string{mediaTypeMetadata}, l, maxCacheLifetime)
 	if err != nil {
 		if se := (*safehttp.StatusError)(nil); errors.As(err, &se) && se.Code == http.StatusNotFound {
 			return nil, fmt.Errorf("%w: typemeta: the publisher answered 404", ErrNotFound)
+		}
+		if errors.Is(err, safehttp.ErrCrossOrigin) {
+			return nil, fmt.Errorf("typemeta: fetching the Type Metadata: %w under an Allowed entry ending in \"/\"; list the vct in Config.Allowed or set Config.AllowCrossOriginRedirects", err)
 		}
 		return nil, fmt.Errorf("typemeta: fetching the Type Metadata: %w", err)
 	}

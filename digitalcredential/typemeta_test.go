@@ -1,6 +1,7 @@
 package dc
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -163,6 +164,7 @@ func TestTypeMetadataRejects(t *testing.T) {
 		{WithTypeMetadata(badClaims), CodeTypeMetadataInvalid},
 		{WithOptionalTypeMetadata(badClaims), CodeTypeMetadataInvalid},
 		{WithTypeMetadata(other), CodeTypeMetadataNotFound},
+		{WithTypeMetadata(failingTypes{errors.New("type metadata: connection refused")}), CodeTypeMetadataUnavailable},
 		{WithTypeMetadata(types), ""},
 	} {
 		s.extra = []VerifyOption{tt.opt}
@@ -319,4 +321,11 @@ func cloneClaims(c map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// failingTypes is a typemeta.Resolver that answers every ref with err.
+type failingTypes struct{ err error }
+
+func (r failingTypes) Metadata(context.Context, typemeta.Ref) ([]byte, error) {
+	return nil, r.err
 }
