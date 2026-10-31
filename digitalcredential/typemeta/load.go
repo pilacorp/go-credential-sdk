@@ -104,6 +104,11 @@ func Load(ctx context.Context, r Resolver, ref Ref) (*Metadata, error) {
 		if err != nil {
 			return nil, fmt.Errorf("document %d of the chain: %w", i, err)
 		}
+		// §5.4 processes a parent before its child, so a parent whose own
+		// svg_ids repeat fails even when the child overrides one of them.
+		if err := checkSVGIDs(claims); err != nil {
+			return nil, fmt.Errorf("document %d of the chain: %w", i, err)
+		}
 		if merged, err = mergeClaims(merged, claims); err != nil {
 			return nil, fmt.Errorf("document %d of the chain: %w", i, err)
 		}
