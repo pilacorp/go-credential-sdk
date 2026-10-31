@@ -48,20 +48,21 @@ type SimpleRendering struct {
 }
 
 // Image is a logo or a background image (§5.5.1.1.1, §5.5.1.1.2). URI is an
-// https URL or a data: URI (§5.5.1); URIIntegrity, when set, is checked by
-// the application that fetches it, with CheckIntegrity. AltText is for the
+// https URL or a data: URI (§5.5.1). URIIntegrity is nil when uri#integrity
+// is absent; when set, even to "", the application that fetches URI passes
+// it to CheckIntegrity, which refuses an empty value (§6). AltText is for the
 // logo only (§5.5.1.1.1); it is not read for a background image.
 type Image struct {
-	URI          string `json:"uri,omitempty"`
-	URIIntegrity string `json:"uri#integrity,omitempty"`
-	AltText      string `json:"alt_text,omitempty"`
+	URI          string  `json:"uri,omitempty"`
+	URIIntegrity *string `json:"uri#integrity,omitempty"`
+	AltText      string  `json:"alt_text,omitempty"`
 }
 
-// SVGTemplate is one SVG template (§5.5.1.2). Properties is required when a
-// type has more than one template.
+// SVGTemplate is one SVG template (§5.5.1.2). URIIntegrity is read as for
+// Image. Properties is required when a type has more than one template.
 type SVGTemplate struct {
 	URI          string         `json:"uri,omitempty"`
-	URIIntegrity string         `json:"uri#integrity,omitempty"`
+	URIIntegrity *string        `json:"uri#integrity,omitempty"`
 	Properties   *SVGProperties `json:"properties,omitempty"`
 }
 
@@ -182,10 +183,12 @@ func (d Display) clone() Display {
 			s := *r.Simple
 			if s.Logo != nil {
 				l := *s.Logo
+				l.URIIntegrity = cloneString(l.URIIntegrity)
 				s.Logo = &l
 			}
 			if s.BackgroundImage != nil {
 				b := *s.BackgroundImage
+				b.URIIntegrity = cloneString(b.URIIntegrity)
 				s.BackgroundImage = &b
 			}
 			r.Simple = &s
@@ -193,6 +196,7 @@ func (d Display) clone() Display {
 		if r.SVGTemplates != nil {
 			r.SVGTemplates = slices.Clone(r.SVGTemplates)
 			for i, t := range r.SVGTemplates {
+				r.SVGTemplates[i].URIIntegrity = cloneString(t.URIIntegrity)
 				if t.Properties != nil {
 					p := *t.Properties
 					r.SVGTemplates[i].Properties = &p
@@ -208,4 +212,12 @@ func (c Claim) clone() Claim {
 	c.Path = slices.Clone(c.Path)
 	c.Display = slices.Clone(c.Display)
 	return c
+}
+
+func cloneString(p *string) *string {
+	if p == nil {
+		return nil
+	}
+	s := *p
+	return &s
 }
