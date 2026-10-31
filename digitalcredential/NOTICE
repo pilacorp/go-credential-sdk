@@ -1,0 +1,14 @@
+go-credential-sdk / digitalcredential
+Copyright (c) 2026 Pila Corp
+Licensed under the MIT License (see LICENSE at the repository root).
+
+Packages dc (directory digitalcredential), digitalcredential/issuerkey,
+digitalcredential/issuermeta and digitalcredential/internal/safehttp are
+written from scratch.
+
+The test vector testdata/draft-ietf-oauth-sd-jwt-vc-19-A.1-figure24.txt is
+copied from draft-ietf-oauth-sd-jwt-vc-19, Appendix A.1 (Figure 24).
+
+Third-party code: none is copied into this module. It depends on module
+github.com/pilacorp/go-credential-sdk/jose of this repository, and through it
+on github.com/decred/dcrd/dcrec/secp256k1/v4 (ISC License).
