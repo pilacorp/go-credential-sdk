@@ -1,0 +1,9 @@
+go-credential-sdk / jose
+Copyright (c) 2026 Pila Corp
+Licensed under the MIT License (see LICENSE at the repository root).
+
+Packages jose, jose/jws, jose/jwt, jose/jwk, jose/internal/ec and
+jose/internal/errtext are written from scratch.
+
+Third-party code: none is copied into this module. It depends on
+github.com/decred/dcrd/dcrec/secp256k1/v4 (ISC License) for secp256k1.
