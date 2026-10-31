@@ -62,11 +62,12 @@ type response struct {
 // so the identifiers of the draft (example.com, which the httptest
 // certificate names) can be used as they are.
 type metaServer struct {
-	routes    map[string]response
-	redirects map[string]string // path to the target of a 302
-	hits      atomic.Int32
-	moved     atomic.Int32 // requests for /moved
-	srv       *httptest.Server
+	routes     map[string]response
+	redirects  map[string]string // path to the target of a 302
+	hits       atomic.Int32
+	redirected atomic.Int32 // requests answered with a 302
+	moved      atomic.Int32 // requests for /moved
+	srv        *httptest.Server
 }
 
 func newMetaServer(t *testing.T, routes map[string]response) *metaServer {
@@ -78,6 +79,7 @@ func newMetaServer(t *testing.T, routes map[string]response) *metaServer {
 			s.moved.Add(1)
 		}
 		if loc, ok := s.redirects[r.URL.Path]; ok {
+			s.redirected.Add(1)
 			http.Redirect(w, r, loc, http.StatusFound)
 			return
 		}
@@ -409,25 +411,41 @@ func TestKeyWalk(t *testing.T) {
 // and with its default port is followed.
 func TestSameHostRedirects(t *testing.T) {
 	const iss = "https://example.com"
+	byURI := response{"application/json", "max-age=3600", `{"issuer":"` + iss + `","jwks_uri":"` + iss + `/jwks"}`}
+	jwkSet := response{"application/jwk-set+json", "", twoKeys}
 	for _, tc := range []struct {
 		name     string
 		sameHost bool
+		jwksURI  bool // the redirect answers jwks_uri, not the metadata
 		location string
 		refused  bool
 	}{
-		{"another host, option on", true, "https://example.com:8443/moved", true},
-		{"same host, option on", true, "https://EXAMPLE.com:443/moved", false},
-		{"another host, option off", false, "https://example.com:8443/moved", false},
+		{"another port, option on", true, false, "https://example.com:8443/moved", true},
+		// Refused before any connection, so the test certificate, which
+		// covers only example.com, is never asked for this name.
+		{"another hostname, option on", true, false, "https://other.example/moved", true},
+		{"same host, option on", true, false, "https://EXAMPLE.com:443/moved", false},
+		{"another port, option off", false, false, "https://example.com:8443/moved", false},
+		{"jwks_uri to another port, option on", true, true, "https://example.com:8443/moved", true},
+		{"jwks_uri to another port, option off", false, true, "https://example.com:8443/moved", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := newMetaServer(t, map[string]response{"/moved": metadata(iss, twoKeys)})
-			s.redirects = map[string]string{"/.well-known/jwt-vc-issuer": tc.location}
+			routes, from := map[string]response{"/moved": metadata(iss, twoKeys)}, "/.well-known/jwt-vc-issuer"
+			if tc.jwksURI {
+				routes, from = map[string]response{from: byURI, "/moved": jwkSet}, "/jwks"
+			}
+			s := newMetaServer(t, routes)
+			s.redirects = map[string]string{from: tc.location}
 			now := time.Unix(1_800_000_000, 0)
 			r := s.resolverFor(t, Config{Allowed: []string{iss}, SameHostRedirects: tc.sameHost}, &now)
 			for range 2 {
 				_, err := r.Keys(context.Background(), iss)
-				if tc.refused != (err != nil) {
-					t.Fatalf("err = %v, want refused=%v", err, tc.refused)
+				switch {
+				// The refusal, not a TLS failure to reach the other name.
+				case tc.refused && (err == nil || !strings.Contains(err.Error(), "another host")):
+					t.Fatalf("err = %v, want the redirect refused", err)
+				case !tc.refused && err != nil:
+					t.Fatalf("err = %v, want the redirect followed", err)
 				}
 			}
 			// Each call requests the redirect again: a refusal is not cached,
@@ -436,7 +454,7 @@ func TestSameHostRedirects(t *testing.T) {
 			if tc.refused {
 				want = 0
 			}
-			if redirects, moved := s.hits.Load()-s.moved.Load(), s.moved.Load(); redirects != 2 || moved != want {
+			if redirects, moved := s.redirected.Load(), s.moved.Load(); redirects != 2 || moved != want {
 				t.Fatalf("redirect got %d requests, target %d; want 2 and %d", redirects, moved, want)
 			}
 		})
