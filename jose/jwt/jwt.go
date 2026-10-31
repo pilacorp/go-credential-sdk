@@ -39,12 +39,19 @@ var (
 // in the past (an nbf in the far future would read as long gone).
 const maxUnix = math.MaxInt64 - 62135596800
 
+// minUnix is the first second whose date time.Time computes: its calendar
+// counts from 1 March of year -292277022400, and an earlier value comes out
+// with a wrong year (math.MinInt64 reads as year 292277026596). It is exact in
+// float64.
+const minUnix = -9223372028741760000
+
 // NumericDate converts a claim value, as jose.DecodeJSON yields it
 // (json.Number), to a time. RFC 7519 §2: a JSON number of seconds since
 // 1970-01-01T00:00:00Z UTC; non-integer values can be represented. The value
 // is read as a float64, so a fraction is kept to that precision. float64, int
-// and int64 are accepted too. Anything else, NaN, ±Inf, or a value time.Time
-// cannot hold is jose.ErrMalformed.
+// and int64 are accepted too. Anything else, NaN, ±Inf, or a value outside
+// the dates time.Time computes (-292277022400-03-01T00:00:00Z to
+// 292277024627-12-06T15:30:07Z) is jose.ErrMalformed.
 func NumericDate(v any) (time.Time, error) {
 	switch n := v.(type) {
 	case json.Number:
@@ -157,7 +164,7 @@ func fromFloat(f float64) (time.Time, error) {
 	// Converting a float64 outside int64 to int64 is implementation-defined in
 	// Go, so the range is checked first. float64(maxUnix) is not exact; the
 	// strict < keeps the floor of f at or below maxUnix either way.
-	if math.IsNaN(f) || f < math.MinInt64 || f >= float64(maxUnix) {
+	if math.IsNaN(f) || f < minUnix || f >= float64(maxUnix) {
 		return time.Time{}, fmt.Errorf("%w: NumericDate %v is out of range", jose.ErrMalformed, f)
 	}
 	sec := math.Floor(f)

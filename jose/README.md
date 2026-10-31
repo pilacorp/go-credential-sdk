@@ -20,7 +20,7 @@ One package per standard:
   payload with the same checks, for a reader that needs the claims before or without `Verify`; nothing in it is
   trusted either. `Header.TypIs(mediaType)` compares `typ` as RFC 7515 §4.1.9 says (explicit typing, RFC 8725 §3.11).
 - `jose/jwt`: `jwt.NumericDate(v)` turns an `exp`, `nbf` or `iat` value into a `time.Time` (RFC 7519 §2), fractions
-  included; a non-number, NaN, ±Inf or a value `time.Time` cannot hold is `jose.ErrMalformed`. `jwt.DateClaim`
+  included; a non-number, NaN, ±Inf or a value outside the dates `time.Time` computes is `jose.ErrMalformed`. `jwt.DateClaim`
   reads one such claim from a payload. `jwt.CheckExpNbf(claims, now, skew)` checks `exp` and `nbf` when present
   (RFC 7519 §4.1.4, §4.1.5) and wraps `jwt.ErrExpired` or `jwt.ErrNotYetValid`; the skew is the caller's policy. `jwt.CheckAud(claims, audience)` checks `aud` when present (RFC 7519 §4.1.3):
   a string or an array of strings that lists `audience`, else `jwt.ErrAudience` (`jose.ErrMalformed` for another

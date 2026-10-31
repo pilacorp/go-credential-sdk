@@ -28,6 +28,9 @@ func TestNumericDate(t *testing.T) {
 		{"json.Number not a number", json.Number("1700000000x"), time.Time{}},
 		{"NaN", math.NaN(), time.Time{}},
 		{"below int64", -1e19, time.Time{}},
+		{"math.MinInt64, before the calendar", json.Number("-9223372036854775808"), time.Time{}},
+		{"one float64 step before the calendar", json.Number("-9223372028741761024"), time.Time{}},
+		{"first second of the calendar", json.Number("-9223372028741760000"), time.Date(-292277022400, 3, 1, 0, 0, 0, 0, time.UTC)},
 		{"past time.Time", json.Number("9223371974719179008"), time.Time{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
