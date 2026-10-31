@@ -20,7 +20,7 @@ One package per standard:
   payload with the same checks, for a reader that needs the claims before or without `Verify`; nothing in it is
   trusted either. `Header.TypIs(mediaType)` compares `typ` as RFC 7515 §4.1.9 says (explicit typing, RFC 8725 §3.11).
 - `jose/jwt`: `jwt.NumericDate(v)` turns an `exp`, `nbf` or `iat` value into a `time.Time` (RFC 7519 §2), fractions
-  included; a non-number, NaN, ±Inf or a value `time.Time` cannot hold is `jose.ErrMalformed`. `jwt.DateClaim`
+  included; a non-number, NaN, ±Inf or a value outside the dates `time.Time` computes is `jose.ErrMalformed`. `jwt.DateClaim`
   reads one such claim from a payload. `jwt.CheckExpNbf(claims, now, skew)` checks `exp` and `nbf` when present
   (RFC 7519 §4.1.4, §4.1.5) and wraps `jwt.ErrExpired` or `jwt.ErrNotYetValid`; the skew is the caller's policy. `jwt.CheckAud(claims, audience)` checks `aud` when present (RFC 7519 §4.1.3):
   a string or an array of strings that lists `audience`, else `jwt.ErrAudience` (`jose.ErrMalformed` for another
@@ -39,7 +39,9 @@ One package per standard:
   `opts.MinDigests` in every object and array (only in objects with `opts.NoArrayDecoys`, for a payload whose arrays
   are addressed by index); `sdjwt.Split` separates the compact form; `sdjwt.Recreate(payload, disclosures)` rebuilds
   the claims (§7.1 steps 3 to 5) and tells which disclosures each claim needs. It neither signs the Issuer-signed JWT
-  nor checks its validity claims. `Recreated.Disclosed(path)` tells whether a claim, an ancestor or a descendant came
+  nor checks its validity claims. RFC 9901 sets no limits; this package's readers do: `Split` refuses a compact
+  SD-JWT over 1 MiB or with more than 1000 disclosures, and `Recreate` nesting deeper than 32. `Conceal` and
+  `NewKBJWT` do not hold their output to these limits. `Recreated.Disclosed(path)` tells whether a claim, an ancestor or a descendant came
   from a disclosure; `Recreated.Issued()` gives the payload as issued, each array element in its place at issuance
   and a hidden one marked `Hidden`.
 - `jose/sdjwt`, Key Binding JWT (RFC 9901 §4.3, §7.3): `SDHash`, `NewKBJWT` and `VerifyKBJWT` (check order in its

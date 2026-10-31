@@ -287,8 +287,13 @@ func jsonKind(c byte) string {
 // keys that become equal once each invalid byte is replaced by U+FFFD (such
 // as "a\xff" and "a\xfe", or "\xff" and "\ufffd") come out as one key twice,
 // which DecodeJSON refuses as a duplicate. Map keys come out sorted, so the same
-// value always gives the same bytes. A value encoding/json cannot encode (a
-// channel, a function, NaN) is ErrInvalidArgument.
+// value gives the same bytes under one Go toolchain; from go1.27, whose
+// encoding/json is JSONv2, some of these cases come out differently, such as
+// U+FFFD written as UTF-8 rather than \ufffd. A json.Marshaler or
+// json.RawMessage keeps its own bytes, only reformatted by encoding/json: its
+// keys are not checked for duplicates, and bytes that are not UTF-8 make the
+// output ErrInvalidArgument (RFC 8259 §8.1). A value encoding/json cannot
+// encode (a channel, a function, NaN) is ErrInvalidArgument.
 func EncodeJSON(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -296,7 +301,11 @@ func EncodeJSON(v any) ([]byte, error) {
 	if err := enc.Encode(v); err != nil {
 		return nil, fmt.Errorf("%w: encode JSON: %w", ErrInvalidArgument, err)
 	}
-	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+	out := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+	if !utf8.Valid(out) {
+		return nil, fmt.Errorf("%w: encode JSON: a json.Marshaler or json.RawMessage in the value gave bytes that are not UTF-8, and JSON must be UTF-8 (RFC 8259 §8.1); make it write UTF-8", ErrInvalidArgument)
+	}
+	return out, nil
 }
 
 func readJSONValue(dec *json.Decoder, depth int) (any, error) {
