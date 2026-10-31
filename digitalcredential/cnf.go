@@ -41,12 +41,18 @@ func holderKey(payload map[string]any, r *sdjwt.Recreated) (crypto.PublicKey, er
 	if !ok {
 		return nil, errNoCnf
 	}
-	return cnfKey(cnf)
+	key, err := cnfKey(cnf)
+	if errors.Is(err, jose.ErrMalformed) {
+		// Only here is the credential already issued; Issue reads cnf with
+		// cnfKey before signing, when nothing is to be reissued.
+		return nil, fmt.Errorf("%w; the Issuer must reissue the credential", err)
+	}
+	return key, err
 }
 
 // cnfKey reads the Holder's public key from cnf, the value of a cnf claim as
 // jose.DecodeJSON gives it, with the errors holderKey lists after the
-// disclosure.
+// disclosure. Their text names the fault in cnf and not who is to act.
 func cnfKey(cnf any) (crypto.PublicKey, error) {
 	obj, isObject := cnf.(map[string]any)
 	if isObject {
@@ -59,7 +65,7 @@ func cnfKey(cnf any) (crypto.PublicKey, error) {
 			}
 		}
 		if n > 1 {
-			return nil, fmt.Errorf("%w: dc: the credential's cnf has more than one of jwk, jwe and jku, and RFC 7800 §3.1 allows one; the Issuer must reissue it", jose.ErrMalformed)
+			return nil, fmt.Errorf("%w: dc: cnf has more than one of jwk, jwe and jku, and RFC 7800 §3.1 allows one", jose.ErrMalformed)
 		}
 		if _, ok := obj["jwk"]; !ok {
 			return nil, fmt.Errorf("%w: its cnf has no jwk member, and this SDK binds only to cnf.jwk holding an EC P-256 or secp256k1 key", ErrKeyBindingUnsupported)
@@ -67,19 +73,19 @@ func cnfKey(cnf any) (crypto.PublicKey, error) {
 	}
 	m, ok := obj["jwk"].(map[string]any) // obj is nil when cnf is not an object
 	if !ok {
-		return nil, fmt.Errorf("%w: dc: the credential's cnf or cnf.jwk is not a JSON object (RFC 7800 §3, §3.2); the Issuer must reissue it: %w", jose.ErrMalformed, jwk.ErrBadKey)
+		return nil, fmt.Errorf("%w: dc: cnf or cnf.jwk is not a JSON object (RFC 7800 §3, §3.2): %w", jose.ErrMalformed, jwk.ErrBadKey)
 	}
 	// RFC 7800 §3.2: a symmetric key goes in jwk only when the JWT is
 	// encrypted, and the Issuer-signed JWT of an SD-JWT is a JWS.
 	if kty, _ := m["kty"].(string); kty == "oct" {
-		return nil, fmt.Errorf("%w: dc: the credential's cnf.jwk is a symmetric key in a JWT that is not encrypted (RFC 7800 §3.2); the Issuer must reissue it: %w", jose.ErrMalformed, jwk.ErrBadKey)
+		return nil, fmt.Errorf("%w: dc: cnf.jwk is a symmetric key in a JWT that is not encrypted (RFC 7800 §3.2): %w", jose.ErrMalformed, jwk.ErrBadKey)
 	}
 	key, err := jwk.ToPublicKey(m)
 	if errors.Is(err, jose.ErrUnsupportedKey) {
 		return nil, fmt.Errorf("%w: its cnf.jwk holds a key this SDK does not bind (%w)", ErrKeyBindingUnsupported, err)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: dc: the credential's cnf.jwk is not a usable key; the Issuer must reissue it: %w", jose.ErrMalformed, err)
+		return nil, fmt.Errorf("%w: dc: cnf.jwk is not a usable key: %w", jose.ErrMalformed, err)
 	}
 	return key, nil
 }
