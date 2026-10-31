@@ -4,8 +4,9 @@ package sdjwt
 
 // Bounds this package sets; RFC 9901 sets none. Readers bound what an SD-JWT
 // from anyone may cost them. Conceal bounds the work of one call for its
-// caller; those are not the readers' limits, and Conceal may produce an
-// SD-JWT that Split or Recreate refuse (over 1 MiB, or nested deeper than 32).
+// caller; those are not the readers' limits, and Conceal and NewKBJWT may
+// produce an SD-JWT that Split or Recreate refuse (over 1 MiB, or nested
+// deeper than 32).
 const (
 	maxBytes       = 1 << 20 // bytes of a compact SD-JWT; Split, when reading
 	maxDisclosures = 1000    // disclosures of one SD-JWT; Split and Recreate, when reading

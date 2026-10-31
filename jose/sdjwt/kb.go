@@ -87,6 +87,10 @@ type KBClaims struct {
 // names, nesting past jose.MaxJSONDepth) is jose.ErrInvalidArgument. jws.Sign
 // errors are wrapped unchanged: a nil ctx is jose.ErrInvalidArgument, and a
 // signer that does not hold the private key of holder gives jws.ErrSelfCheck.
+//
+// The size of Extra is not bounded here. Split refuses an SD-JWT over 1 MiB
+// with its KB-JWT, so a large Extra makes a presentation that readers of this
+// package refuse.
 func NewKBJWT(ctx context.Context, s jws.Signer, holder crypto.PublicKey, c KBClaims) (string, error) {
 	if s == nil || isNilKey(holder) {
 		return "", fmt.Errorf("%w: sdjwt: NewKBJWT needs a signer and the holder key", jose.ErrInvalidArgument)

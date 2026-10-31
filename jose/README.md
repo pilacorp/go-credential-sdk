@@ -39,7 +39,9 @@ One package per standard:
   `opts.MinDigests` in every object and array (only in objects with `opts.NoArrayDecoys`, for a payload whose arrays
   are addressed by index); `sdjwt.Split` separates the compact form; `sdjwt.Recreate(payload, disclosures)` rebuilds
   the claims (§7.1 steps 3 to 5) and tells which disclosures each claim needs. It neither signs the Issuer-signed JWT
-  nor checks its validity claims. `Recreated.Disclosed(path)` tells whether a claim, an ancestor or a descendant came
+  nor checks its validity claims. RFC 9901 sets no limits; this package's readers do: `Split` refuses a compact
+  SD-JWT over 1 MiB or with more than 1000 disclosures, and `Recreate` nesting deeper than 32. `Conceal` and
+  `NewKBJWT` do not hold their output to these limits. `Recreated.Disclosed(path)` tells whether a claim, an ancestor or a descendant came
   from a disclosure; `Recreated.Issued()` gives the payload as issued, each array element in its place at issuance
   and a hidden one marked `Hidden`.
 - `jose/sdjwt`, Key Binding JWT (RFC 9901 §4.3, §7.3): `SDHash`, `NewKBJWT` and `VerifyKBJWT` (check order in its
