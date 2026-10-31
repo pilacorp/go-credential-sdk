@@ -105,6 +105,12 @@ func (l Limits) allows(u *url.URL) bool {
 	return HTTPSURL(u)
 }
 
+// StatusError is a final response whose status is not 2xx. Its own type lets
+// a caller tell a missing document (404) from a failed retrieval.
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("safehttp: status %d", e.Code) }
+
 // redirectRefusal is the text of a redirect Get's CheckRedirect refuses; its
 // own type lets fetchError show that text.
 type redirectRefusal string
@@ -260,7 +266,7 @@ func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, nil, fmt.Errorf("safehttp: status %d", resp.StatusCode)
+		return nil, nil, &StatusError{Code: resp.StatusCode}
 	}
 	mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil || !slices.ContainsFunc(mediaTypes, func(want string) bool { return strings.EqualFold(mt, want) }) {

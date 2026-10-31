@@ -16,6 +16,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/typemeta"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 	"github.com/pilacorp/go-credential-sdk/jose/jwt"
@@ -93,6 +94,13 @@ type Result struct {
 	// StatusSkipped: the credential has status and WithoutStatusCheck
 	// skipped it.
 	StatusSkipped bool
+	// TypeMetadata is the credential's Type Metadata, fully processed and
+	// the payload checked against it (draft 19 §5.7); nil when no Type
+	// Metadata option is passed or WithOptionalTypeMetadata skipped it.
+	TypeMetadata *typemeta.Metadata
+	// TypeMetadataSkipped is why WithOptionalTypeMetadata skipped Type
+	// Metadata, for logs; nil otherwise.
+	TypeMetadataSkipped error
 }
 
 // neverDisclosableSorted holds neverDisclosable in a fixed order, so one
@@ -124,9 +132,15 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 //  7. vct, aka_vcts, vct#integrity (§2.2.2.1-2.2.2.3, §5.3) and the shape of
 //     status (draft-ietf-oauth-status-list-21 §6.2): MALFORMED. idx is read
 //     by its value (RFC 8259 §6), so 1.0, 1e3 and -0 are the indexes 1, 1000
-//     and 0;
+//     and 0. With WithAcceptedVCTs and without WithExtendedVCTMatch, the
+//     types: VCT_NOT_ACCEPTED;
 //  8. Key Binding, per WithKeyBinding (RFC 9901 §7.3): the KB_ codes;
-//  9. status last (draft-ietf-oauth-status-list-21 §8.3), unless
+//  9. with WithTypeMetadata or WithOptionalTypeMetadata, Type Metadata
+//     (§5.7): typemeta.Load for vct and vct#integrity, then the payload as
+//     issued against its claim metadata (§5.6): the TYPE_METADATA_ codes.
+//     With WithExtendedVCTMatch, the types, the extends chain included:
+//     VCT_NOT_ACCEPTED;
+//  10. status last (draft-ietf-oauth-status-list-21 §8.3), unless
 //     WithoutStatusCheck: the status codes, MALFORMED for an idx outside the
 //     list.
 //
@@ -138,7 +152,8 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 //   - *Error (errors.As): the token is rejected, and Code says why;
 //   - ErrPolicy (errors.Is): the caller's arguments, options or
 //     dependencies are at fault;
-//   - anything else: ctx ended while issuers or the StatusChecker ran, and
+//   - anything else: ctx ended while issuers, the typemeta.Resolver or the
+//     StatusChecker ran, and
 //     the error wraps ctx.Err(); nothing is known about the token.
 //     ErrIssuerNotSupported or ErrNoUsableKey from issuers, and
 //     statuslist.ErrIndexOutOfBounds from the StatusChecker, are definite
@@ -286,11 +301,21 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 	if err != nil {
 		return reject(CodeMalformed, err)
 	}
+	if cfg.acceptedVCTs != nil && !cfg.extendedVCT && !cfg.typeAccepted(res) {
+		return reject(CodeVCTNotAccepted, errors.New("neither vct nor aka_vcts is a type in WithAcceptedVCTs"))
+	}
 
 	if res.KeyBindingClaims, err = cfg.checkKeyBinding(c.compact, kbJWT, payload, r); err != nil {
 		return nil, err
 	}
 	res.KeyBound = res.KeyBindingClaims != nil
+
+	if err := cfg.checkTypeMetadata(ctx, r, kbJWT, res); err != nil {
+		return nil, err
+	}
+	if cfg.extendedVCT && !cfg.typeAccepted(res) {
+		return reject(CodeVCTNotAccepted, errors.New("neither vct, aka_vcts nor a type its Type Metadata extends is a type in WithAcceptedVCTs"))
+	}
 
 	if !st.present {
 		return res, nil
@@ -408,6 +433,71 @@ func (cfg verifyConfig) checkKeyBinding(compact, kbJWT string, payload map[strin
 	default:
 		return nil, &Error{Code: CodeKBInvalid, Err: err}
 	}
+}
+
+// checkTypeMetadata is step 9: with a Type Metadata option, it processes the
+// Type Metadata of res.VCT (draft 19 §5.7) and checks r, the payload as
+// issued, against it (§5.6), setting res.TypeMetadata or, when
+// WithOptionalTypeMetadata skips it, res.TypeMetadataSkipped. Its errors are
+// *Error, ErrPolicy, or wrap ctx.Err().
+func (cfg verifyConfig) checkTypeMetadata(ctx context.Context, r *sdjwt.Recreated, kbJWT string, res *Result) error {
+	if cfg.types == nil {
+		return nil
+	}
+	if cfg.allDisclosures && kbJWT != "" {
+		return policyErr("WithAllDisclosures with a presentation that has a Key Binding JWT: a Verifier is never sure to hold every Disclosure (draft-ietf-oauth-sd-jwt-vc-19 §5.6); drop WithAllDisclosures")
+	}
+	integrity, present := res.Claims["vct#integrity"].(string) // step 7 checked its type
+	var m *typemeta.Metadata
+	var err error
+	if present && integrity == "" {
+		// §6: an integrity property that is present must be verified, and
+		// an empty one names no hash, so the document cannot be accepted.
+		err = fmt.Errorf("%w: dc: vct#integrity is present and empty, so no hash can check the Type Metadata document; the issuer writes typemeta.Integrity(doc) or leaves it out (draft-ietf-oauth-sd-jwt-vc-19 §6)", typemeta.ErrInvalid)
+	} else {
+		m, err = typemeta.Load(ctx, cfg.types, typemeta.Ref{VCT: res.VCT, Integrity: integrity})
+	}
+	switch {
+	case err == nil:
+	case ctx.Err() != nil:
+		return fmt.Errorf("dc: processing the Type Metadata: %w (%v)", ctx.Err(), err)
+	// The resolver's wiring, such as one not made by its constructor.
+	case errors.Is(err, jose.ErrInvalidArgument):
+		return policyErr("the typemeta.Resolver: %v", err)
+	// §5.7: claim metadata that cannot be processed MUST reject, whatever
+	// the policy; so must a cycle (§7.4).
+	case errors.Is(err, typemeta.ErrClaims), errors.Is(err, typemeta.ErrCycle):
+		return &Error{Code: CodeTypeMetadataInvalid, Err: err}
+	case cfg.typesOptional:
+		res.TypeMetadataSkipped = err
+		return nil
+	case errors.Is(err, typemeta.ErrNotFound):
+		return &Error{Code: CodeTypeMetadataNotFound, Err: err}
+	case errors.Is(err, typemeta.ErrInvalid):
+		return &Error{Code: CodeTypeMetadataInvalid, Err: err}
+	default:
+		return &Error{Code: CodeTypeMetadataUnavailable, Err: fmt.Errorf("the typemeta.Resolver could not return the Type Metadata: %w", err)}
+	}
+	if err := m.ValidateClaims(r.Issued(), typemeta.ValidateOptions{AllDisclosures: cfg.allDisclosures}); err != nil {
+		// ErrClaims: claim metadata the SDK cannot check on this payload.
+		if errors.Is(err, typemeta.ErrClaims) {
+			return &Error{Code: CodeTypeMetadataInvalid, Err: err}
+		}
+		return &Error{Code: CodeTypeMetadataViolated, Err: err}
+	}
+	res.TypeMetadata = m
+	return nil
+}
+
+// typeAccepted reports whether a type of res is in WithAcceptedVCTs: vct,
+// aka_vcts and, with WithExtendedVCTMatch, the extends chain of its Type
+// Metadata (draft 19 §2.2.2.1, §2.2.2.2, §5.4), compared byte for byte.
+func (cfg verifyConfig) typeAccepted(res *Result) bool {
+	types := append([]string{res.VCT}, res.AKAVCTs...)
+	if cfg.extendedVCT {
+		types = append(types, res.TypeMetadata.Chain()...) // nil when skipped
+	}
+	return slices.ContainsFunc(types, func(t string) bool { return slices.Contains(cfg.acceptedVCTs, t) })
 }
 
 // statusClaim is the status claim as Verify reads it.

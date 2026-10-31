@@ -33,6 +33,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/allowlist"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/httpcache"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/jose"
@@ -71,7 +73,7 @@ var limits = safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, 
 // until entries expire, never a wrong key. There is no single-flight:
 // concurrent misses on one iss each fetch.
 type Resolver struct {
-	allowed []string
+	allowed allowlist.List
 	client  *http.Client
 	noCache bool
 	now     func() time.Time
@@ -119,12 +121,12 @@ func NewResolver(cfg Config) (*Resolver, error) {
 		return nil, fmt.Errorf(`%w: issuermeta: Config.Allowed is empty; list the issuers this verifier trusts, or "https://" for any https issuer`, jose.ErrInvalidArgument)
 	}
 	for i, e := range cfg.Allowed {
-		if len(e) < len("https://") || !strings.EqualFold(e[:len("https://")], "https://") {
+		if !allowlist.ValidEntry(e) {
 			return nil, fmt.Errorf(`%w: issuermeta: Config.Allowed[%d] does not start with https://; list https issuers, or "https://" for any https issuer`, jose.ErrInvalidArgument, i)
 		}
 	}
 	r := &Resolver{
-		allowed: slices.Clone(cfg.Allowed),
+		allowed: allowlist.New(cfg.Allowed),
 		client:  cfg.HTTPClient,
 		noCache: cfg.DisableCache,
 		now:     time.Now,
@@ -182,7 +184,7 @@ func (r *Resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 	if err != nil {
 		return nil, err
 	}
-	if ok, dot := r.covers(iss, u); !ok {
+	if ok, dot := r.allowed.Covers(iss, u); !ok {
 		if dot {
 			return nil, fmt.Errorf("%w: issuermeta: iss is not covered by the allowed issuers: an entry ending in / covers no path with a . or .. segment (RFC 3986 §6.2.2.3; reading \\ and %%2F as separators and ignoring ;-parameters are SDK policy); an issuer should not use such a path", issuerkey.ErrIssuerNotSupported)
 		}
@@ -238,46 +240,10 @@ func metadataURL(iss string) (*url.URL, string, error) {
 	return u, "https://" + authority + wellKnown + strings.TrimRight(path, "/"), nil
 }
 
-// covers reports whether an allowed entry covers iss, u being iss parsed,
-// and whether an entry ending in "/" starts iss but the dot rule refused it.
-// iss comes from a token not yet verified, so its path is scanned at most
-// once, and only when such an entry starts it.
-func (r *Resolver) covers(iss string, u *url.URL) (ok, dot bool) {
-	for _, e := range r.allowed {
-		switch {
-		case !strings.HasSuffix(e, "/"):
-			if iss == e {
-				return true, false
-			}
-		case dot || !strings.HasPrefix(iss, e):
-		case hasDotSegment(u.Path):
-			dot = true
-		default:
-			return true, false
-		}
-	}
-	return false, dot
-}
-
-// hasDotSegment reports whether path, already decoded once by url.Parse, has a
-// "." or ".." segment. Raw and %2e forms name a resource outside an entry
-// ending in "/" (RFC 3986 §2.3, §6.2.2.3); "\" and %2F as separators and ";"
-// path parameters are SDK policy: some servers resolve them so, and no issuer
-// identifier needs them. Under draft-ietf-oauth-sd-jwt-vc-20 §4 an issuer
-// MUST NOT use dot segments at all, and the check would move to metadataURL.
-func hasDotSegment(path string) bool {
-	for s := range strings.FieldsFuncSeq(path, func(c rune) bool { return c == '/' || c == '\\' }) {
-		if s, _, _ = strings.Cut(s, ";"); s == "." || s == ".." {
-			return true
-		}
-	}
-	return false
-}
-
 // fetch retrieves the metadata of iss, requested at sent, and its JWK Set,
 // and returns the keys and when they expire.
 func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Time) ([]issuerkey.PublicKey, time.Time, error) {
-	body, fresh, err := r.get(ctx, metaURL, []string{mediaTypeMetadata})
+	body, fresh, err := httpcache.Get(ctx, r.client, metaURL, []string{mediaTypeMetadata}, limits, maxCacheLifetime)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("issuermeta: fetching the issuer metadata: %w", err)
 	}
@@ -312,7 +278,7 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 			return nil, time.Time{}, contentFault("jwks_uri is not an https URL with a host (draft-ietf-oauth-sd-jwt-vc-19 §3, §4.2) and no userinfo (RFC 9110 §4.2.4)")
 		}
 		sent := r.now()
-		body, fresh, err := r.get(ctx, s, mediaTypesJWKSet)
+		body, fresh, err := httpcache.Get(ctx, r.client, s, mediaTypesJWKSet, limits, maxCacheLifetime)
 		if err != nil {
 			return nil, time.Time{}, fmt.Errorf("issuermeta: fetching the JWK Set: %w", err)
 		}
@@ -328,28 +294,6 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 		return nil, time.Time{}, err
 	}
 	return keys, expires, nil
-}
-
-// get retrieves rawURL through safehttp.Get and returns the body and how
-// long, from the time the request was sent, it may be reused: the least
-// freshness of the final response and of every redirect leading to it, since
-// reusing the answer to rawURL reuses those redirects too (RFC 9111 §4).
-func (r *Resolver) get(ctx context.Context, rawURL string, mediaTypes []string) ([]byte, time.Duration, error) {
-	c := *r.client
-	next := c.CheckRedirect
-	fresh := maxCacheLifetime
-	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		fresh = min(fresh, freshness(req.Response.Header))
-		if next != nil {
-			return next(req, via)
-		}
-		return nil
-	}
-	body, h, err := safehttp.Get(ctx, &c, rawURL, mediaTypes, limits)
-	if err != nil {
-		return nil, 0, err
-	}
-	return body, min(fresh, freshness(h)), nil
 }
 
 // signingKeys walks the JWK Set set in its order. A JWK this SDK cannot use

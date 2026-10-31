@@ -30,6 +30,7 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 | Writes the Key Binding JWT with `sd_hash` over exactly the SD-JWT sent (RFC 9901 §4.3.1), signed by the key of `cnf.jwk` | Sets `KeyBinding` when the Verifier requires Key Binding, with the Verifier's `aud` and `nonce` |
 | Retrieves JWT VC Issuer Metadata with the bounds of draft 19 §3 and refuses addresses that are not globally reachable (§7.1) | Lists the issuers it trusts (`Config.Allowed`, §2.5), blocks hosts of its own network with its egress policy |
 | Verifies the signature, the Disclosures, the times, Key Binding and status (draft 19 §2.4, RFC 9901 §7.1, §7.3) | Sets `aud` and a fresh `nonce` per transaction and accepts each nonce once; checks that the issuer may issue this `vct` (§7.7) and the claims a protocol adds to the KB-JWT |
+| Retrieves, checks, merges and caches Type Metadata, and checks the payload against its claim metadata (draft 19 §5, §6) | Decides whether Type Metadata is processed and required, and which publishers it trusts (`typemeta.Config.Allowed`, §5.7, §7.8); renders the credential |
 | Fetches, verifies and caches Status List Tokens (draft-ietf-oauth-status-list-21 §8) | Chooses the issuers whose status keys it trusts (`statuslist.Config.Issuers`) and how old a list may be (`MaxAge`) |
 
 ## Object model
@@ -69,6 +70,12 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
   needs `iss` or `sub` (RFC 7800 §3). Decoys (`MinDigests`) need at least one `Disclose` path (§2.2.2.5).
 - `Issue` caps no size. `sdjwt.Conceal` refuses work that is too large for one call; Holders and Verifiers built on
   this SDK refuse a credential over 1 MiB, with more than 1000 disclosures or nested deeper than 32 levels.
+- `TypeMetadata`, from `typemeta.Load`, makes `Issue` check the payload against the claim metadata before signing
+  (draft 19 §5.6): a missing `mandatory` claim, an `sd: always` claim in the clear or an `sd: never` claim concealed
+  is `jose.ErrInvalidArgument` wrapping `typemeta.ErrViolated`, and a check over the SDK's limit wraps
+  `typemeta.ErrClaims`. Arrays then get no decoys, since §5.6 counts array
+  elements as issued. Its `VCT()` must be `VCT`, and a `vct#integrity` in `Claims` must match the document it was
+  loaded from.
 
 Prefer P-256 for the signing key and for `HolderKey`. No standard here requires a Verifier to support `ES256K`. HAIP 1.0
 §7 requires `ES256` for the KB-JWT and the Status List Token, which a secp256k1 `HolderKey` or status key would sign
@@ -124,9 +131,14 @@ With no option, `Verify` follows the standard's rule where it sets one, and othe
 | `WithoutStatusCheck()` | Status is checked, as -19 §2.4 says it SHOULD be; with this option it is not, and `Result.StatusSkipped` says so |
 | `WithAcceptedStatus(v...)` | Only `0x00`, VALID (draft 21 §7.1) |
 | `WithNow(t)` | `time.Now()`, read once |
+| `WithAcceptedVCTs(vcts...)` | Types are not compared; read `Result.VCT` and `Result.AKAVCTs`. Passed, a credential whose `vct` and `aka_vcts` match none is `VCT_NOT_ACCEPTED` (§2.2.2.1, §2.2.2.2) |
+| `WithExtendedVCTMatch()` | `WithAcceptedVCTs` matches `vct` and `aka_vcts` only; with it, the types the credential's type `extends` too (§5.4) |
+| `WithTypeMetadata(r)`, `WithOptionalTypeMetadata(r)` | Type Metadata is not processed (§5.7 leaves it to the Verifier); see Type Metadata below |
+| `WithAllDisclosures()` | The claim metadata is checked as a Verifier must, never reading a claim it was not shown as one left out (§5.6) |
 
 Each option may be passed once per call. An option the call cannot use (no alg, a negative duration, `WithStatus` with
-`WithoutStatusCheck`, `KeyBindingRequired` without `WithAudience` and `WithNonce`) is `dc.ErrPolicy`, before the token is
+`WithoutStatusCheck`, `KeyBindingRequired` without `WithAudience` and `WithNonce`, both Type Metadata options,
+`WithAllDisclosures` or `WithExtendedVCTMatch` without a Type Metadata option) is `dc.ErrPolicy`, before the token is
 read.
 
 `Verify` keeps no state: accepting each nonce once is the caller's (§7.3 step 5f). It does not check that the issuer may
@@ -134,6 +146,42 @@ issue the credential's type (draft 19 §7.7), nor the claims a protocol adds to 
 `transaction_data_hashes`: read them from `Result.KeyBindingClaims`. A claim the Issuer concealed and the Holder
 withheld is absent, so a withheld `cnf` reads as no `cnf`; use `KeyBindingRequired` when your use case always needs Key
 Binding.
+
+## Type Metadata
+
+Package `typemeta` implements SD-JWT VC Type Metadata (draft 19 §5, §6). A publisher builds a `typemeta.Document` and
+serves the bytes of `Encode`; `Encoded.Integrity()` is the value an Issuer writes as `vct#integrity`. Issuer, Holder
+and Verifier get a type's documents through a `typemeta.Resolver`:
+
+```go
+types, err := typemeta.NewHTTPResolver(typemeta.Config{
+	Allowed: []string{"https://types.example/"}, // the publishers you trust (§7.8)
+})
+if err != nil { /* ... */ }
+res, err := cred.Verify(ctx, resolver, dc.WithTypeMetadata(types))
+```
+
+`NewHTTPResolver` fetches a `vct` that is an https URL under `Allowed` (§5.3.1), with the bounds of §3 and the address
+check of the issuer metadata resolver (redirects are followed without being matched against `Allowed`), and caches a document for its HTTP freshness, at most 24 hours; a document
+whose integrity was checked stays until evicted. `typemeta.Static(docs...)` serves documents you ship, and
+`typemeta.Multi(r1, r2, …)` asks resolvers in order, moving on only on `typemeta.ErrNotFound`.
+
+`typemeta.Load` follows `extends` up to 8 documents, checks each `#integrity` (§6, W3C SRI), the structure and the
+`vct`, and merges display and claim metadata (§5.5.2, §5.6.5). `Verify` then checks the payload as issued against the
+claim metadata (§5.6) and returns the merged `*typemeta.Metadata` in `Result.TypeMetadata`:
+
+| Outcome | `WithTypeMetadata` | `WithOptionalTypeMetadata` |
+|---|---|---|
+| No resolver has the type | `TYPE_METADATA_NOT_FOUND` | skipped, `Result.TypeMetadataSkipped` says why |
+| Retrieval failed | `TYPE_METADATA_UNAVAILABLE` | skipped |
+| A document is not usable: hash, structure, `vct`, broken chain | `TYPE_METADATA_INVALID` | skipped |
+| Claim metadata breaks §5.6 or needs more work than the SDK's limit, or an `extends` cycle (§7.4) | `TYPE_METADATA_INVALID` | `TYPE_METADATA_INVALID` (§5.7) |
+| The payload violates the claim metadata | `TYPE_METADATA_VIOLATED` | `TYPE_METADATA_VIOLATED` |
+
+A Verifier sees only the Disclosures it was sent, so a `mandatory` claim that an undisclosed digest may hold passes
+(§5.6). The Holder, which received every Disclosure, passes `dc.WithAllDisclosures()` to see a missing one; with a Key
+Binding JWT it is `ErrPolicy`. Choosing a locale, rendering, and fetching the images and SVG templates a document
+names are the display application's; `typemeta.CheckIntegrity` checks what it fetches.
 
 ## Status
 
