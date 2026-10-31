@@ -16,7 +16,8 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 |---|---|---|
 | Issuer | Signs a credential for a Holder | `dc.Issue(ctx, req, key)`, `req.Validate()` |
 | Holder | Stores the credential, then presents only the claims it chooses, with a Key Binding JWT when the Verifier asks for one | `dc.Parse(s)`, `cred.Present(ctx, req)` |
-| Verifier | Finds the Issuer's keys | `issuermeta.NewResolver(cfg)`, `issuerkey.Multi`, `issuerkey.Select` |
+| Verifier | Checks a presented credential and reads its claims | `dc.Parse(s)`, `cred.Verify(ctx, issuers, opts...)`, `issuermeta.NewResolver(cfg)`, `statuslist.NewChecker(cfg)` |
+| Status Issuer | Publishes the status of the credentials it issued | `statuslist.New(size, bits)`, `list.Set(i, v)`, `list.IssueToken(ctx, claims, key)` |
 | Any | Names a credential, for example to record or anchor it | `cred.Hash()` |
 
 ## What the SDK does and what the caller does
@@ -28,6 +29,8 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 | Selects the disclosures of the claims in `Reveal` by OpenID4VP 1.0 §7.1.1 claims path pointers, with their concealed ancestors (RFC 9901 §4.2.6) | Asks the user which claims to present; RFC 9901 §7.2 leaves consent out of scope |
 | Writes the Key Binding JWT with `sd_hash` over exactly the SD-JWT sent (RFC 9901 §4.3.1), signed by the key of `cnf.jwk` | Sets `KeyBinding` when the Verifier requires Key Binding, with the Verifier's `aud` and `nonce` |
 | Retrieves JWT VC Issuer Metadata with the bounds of draft 19 §3 and refuses addresses that are not globally reachable (§7.1) | Lists the issuers it trusts (`Config.Allowed`, §2.5), blocks hosts of its own network with its egress policy |
+| Verifies the signature, the Disclosures, the times, Key Binding and status (draft 19 §2.4, RFC 9901 §7.1, §7.3) | Sets `aud` and a fresh `nonce` per transaction and accepts each nonce once; checks that the issuer may issue this `vct` (§7.7) and the claims a protocol adds to the KB-JWT |
+| Fetches, verifies and caches Status List Tokens (draft-ietf-oauth-status-list-21 §8) | Chooses the issuers whose status keys it trusts (`statuslist.Config.Issuers`) and how old a list may be (`MaxAge`) |
 
 ## Object model
 
@@ -36,7 +39,10 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 | `Credential` | `dc` | An SD-JWT VC in compact form: as issued, as kept or as presented (RFC 9901 §4, §4.3). It never changes; `Serialize` returns its string as given |
 | `IssueRequest` | `dc` | The content of one credential: `vct`, `iss`, `iat`, `nbf`, `exp`, the holder key, other claims, paths to conceal |
 | `PresentRequest`, `KeyBinding` | `dc` | Which claims to present, and the content of the Key Binding JWT |
-| `Error`, `Code` | `dc` | Why `Parse` refused a string; `Code` is a fixed value to branch on and store |
+| `Error`, `Code` | `dc` | Why `Parse` or `Verify` refused a token; `Code` is a fixed value to branch on and store |
+| `VerifyOption`, `Result` | `dc` | One choice the standards leave to the Verifier, and what `Verify` returns for an accepted credential |
+| `List`, `Ref`, `TokenClaims` | `statuslist` | A Status List (draft 21 §4), the `status_list` reference of a credential (§6.2), the claims of a Status List Token (§5.1) |
+| `Checker`, `Config` | `statuslist` | Reads a credential's status from its issuer's Status List Token; share one, it caches by `ttl` |
 | `SigningKey` | `issuerkey` | The Issuer's `jws.Signer`, its public key and `kid` |
 | `PublicKey` | `issuerkey` | A key an Issuer publishes for verifying, with its `kid` (RFC 7517 §4.5) |
 | `Config` | `issuermeta` | The configuration of a `Resolver`, copied at construction; a zero field gives a safe default |
@@ -45,6 +51,7 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 |---|---|---|---|
 | `jws.Signer` | Declares `alg` and signs the JWS Signing Input | `jws.PrivateKeySigner`, `jws.DigestSigner` | KMS, HSM, wallet key store |
 | `issuerkey.Resolver` | Returns the keys an `iss` currently publishes | `issuermeta.Resolver` (draft 19 §4); `issuerkey.Multi` combines resolvers | DID-based resolver, fixed key table |
+| `dc.StatusChecker` | Returns the raw status of the entry a credential points to | `*statuslist.Checker` | Another status mechanism, a local mirror of the lists |
 
 ## Issue
 
@@ -56,6 +63,8 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 - A claim whose field is unset may come in `Claims` instead, in any form the standards allow: `iat`, `nbf`, `exp` as
   a NumericDate with a fraction (RFC 7519 §2), `cnf` in any form of RFC 7800, `status`. `iss` and `vct` come only from
   their fields, and a claim set both ways is refused.
+- `Status` is written as `status.status_list` `{"idx", "uri"}` (draft-ietf-oauth-status-list-21 §6.2) and must pass
+  `statuslist.Ref.Validate`. Another status mechanism goes in `Claims`, with `Status` nil.
 - `aka_vcts` must be a non-empty array of strings without the value of `vct` (§2.2.2.2). A credential with `cnf`
   needs `iss` or `sub` (RFC 7800 §3). Decoys (`MinDigests`) need at least one `Disclose` path (§2.2.2.5).
 - `Issue` caps no size. `sdjwt.Conceal` refuses work that is too large for one call; Holders and Verifiers built on
@@ -78,6 +87,79 @@ this SDK cannot bind (no `jwk`, or a key type other than EC P-256 or secp256k1) 
 
 For OpenID4VP 1.0 transaction data (§8.4), put the claim its type defines, such as `transaction_data_hashes`
 (Appendix B.3.3.1), in `KeyBinding.Claims`.
+
+## Verify
+
+`cred.Verify(ctx, issuers, opts...)` checks a credential as received (draft 19 §2.4) and returns a `*dc.Result`: the
+processed claims (RFC 9901 §7.1), `Issuer`, `VCT`, `AKAVCTs`, whether a Key Binding JWT was checked (`KeyBound`) and its
+claims, and the status value.
+
+```go
+cred, err := dc.Parse(presented)
+if err != nil { /* *dc.Error */ }
+res, err := cred.Verify(ctx, resolver,
+	dc.WithAudience("https://verifier.example"), // the Verifier's client_id
+	dc.WithNonce(nonce),                         // fresh per transaction
+	dc.WithStatus(checker))                      // a *statuslist.Checker
+var e *dc.Error
+switch {
+case errors.As(err, &e): // rejected: e.Code, such as dc.CodeRevoked
+case errors.Is(err, dc.ErrPolicy): // the caller's arguments or wiring
+case err != nil: // ctx ended: nothing is known about the token
+}
+```
+
+With no option, `Verify` follows the standard's rule where it sets one, and otherwise the SDK default in the table, which never accepts what the standard rejects. The options set what the standards leave to the Verifier:
+
+| Option | Not passed |
+|---|---|
+| `WithAllowedAlgs(algs...)` | `ES256` and `ES256K`, for the Issuer-signed JWT and the KB-JWT |
+| `WithKeyBinding(mode)` | `KeyBindingIfCnf`: Key Binding is required exactly when the credential has `cnf` |
+| `WithIgnoreUncheckedKBJWT()` | A KB-JWT that is not required is `KB_UNEXPECTED`: RFC 9901 §7.2 and §4 require that under `KeyBindingNotRequired`, and it is the SDK default for a credential without `cnf` |
+| `WithAudience(aud)`, `WithNonce(n)` | Needed whenever a KB-JWT is checked, compared byte for byte (§7.3 step 5f) |
+| `WithCredentialAudience(aud)` | A credential with `aud` is `AUDIENCE_MISMATCH` (RFC 7519 §4.1.3) |
+| `WithMaxKBAge(d)` | 5 minutes for the KB-JWT `iat` (§7.3 step 5e) |
+| `WithClockSkew(d)` | 1 minute on `exp`, `nbf` and the KB-JWT `iat` |
+| `WithStatus(checker)` | A credential with `status_list` is `ErrPolicy`, so a forgotten checker never accepts a revoked credential |
+| `WithoutStatusCheck()` | Status is checked, as -19 §2.4 says it SHOULD be; with this option it is not, and `Result.StatusSkipped` says so |
+| `WithAcceptedStatus(v...)` | Only `0x00`, VALID (draft 21 §7.1) |
+| `WithNow(t)` | `time.Now()`, read once |
+
+Each option may be passed once per call. An option the call cannot use (no alg, a negative duration, `WithStatus` with
+`WithoutStatusCheck`, `KeyBindingRequired` without `WithAudience` and `WithNonce`) is `dc.ErrPolicy`, before the token is
+read.
+
+`Verify` keeps no state: accepting each nonce once is the caller's (§7.3 step 5f). It does not check that the issuer may
+issue the credential's type (draft 19 §7.7), nor the claims a protocol adds to the KB-JWT, such as OpenID4VP 1.0
+`transaction_data_hashes`: read them from `Result.KeyBindingClaims`. A claim the Issuer concealed and the Holder
+withheld is absent, so a withheld `cnf` reads as no `cnf`; use `KeyBindingRequired` when your use case always needs Key
+Binding.
+
+## Status
+
+The Status Issuer keeps one `statuslist.List` per set of credentials, sets an entry per credential and publishes the
+list as a Status List Token (draft-ietf-oauth-status-list-21 §5):
+
+```go
+list, err := statuslist.New(1<<17, 1) // 131072 entries of 1 bit
+if err != nil { /* ... */ }
+if err := list.Set(7, 0x01); err != nil { /* ... */ } // entry 7 INVALID (§7.1)
+token, err := list.IssueToken(ctx, statuslist.TokenClaims{
+	Sub: "https://status.example/lists/1", IssuedAt: time.Now(), TTL: 12 * time.Hour,
+}, key) // an issuerkey.SigningKey; serve token as application/statuslist+jwt (§8.2)
+```
+
+The Issuer writes `Status: &statuslist.Ref{URI: "https://status.example/lists/1", Index: 7}` in the `IssueRequest`.
+Choose each index at random among the unused ones and add decoy entries, so the list does not show how many
+credentials exist (§12.4, §12.5.1).
+
+The Verifier builds one `statuslist.Checker` and passes it with `dc.WithStatus`. It fetches the list over https only,
+verifies its signature with a key of the credential's `iss` from `Config.Issuers`, checks `typ`, `sub`, `iat`, `exp`
+and `aud` (§5.1, §8.3), and caches it for its `ttl`, at most 24 hours. A list without `ttl` is fetched again on every
+check. `Status` returns the raw value; `Verify` maps it: `0x01` is `REVOKED`, `0x02` `SUSPENDED`, any other value not
+accepted `STATUS_NOT_ACCEPTED`, and a list it cannot fetch or verify `STATUS_UNAVAILABLE`. An index outside the list is
+`MALFORMED` (§8.3 step 6). `Config.AllowedAlgs`, `ClockSkew` and the clock of the Checker are its own:
+`dc.WithAllowedAlgs`, `dc.WithClockSkew` and `dc.WithNow` do not reach it.
 
 ## Hash
 

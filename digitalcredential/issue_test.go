@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 	"github.com/pilacorp/go-credential-sdk/jose/sdjwt"
@@ -38,6 +39,14 @@ func TestIssueRefusesRequest(t *testing.T) {
 		"Claims nested too deep": func(r *IssueRequest) { r.Claims["deep"] = nested(70) },
 		"Disclose path absent":   func(r *IssueRequest) { r.Disclose = []sdjwt.Path{{"family_name"}} },
 		"Claims exp a time.Time": func(r *IssueRequest) { r.Expiry = time.Time{}; r.Claims["exp"] = time.Unix(1800000000, 0) },
+		// draft-ietf-oauth-status-list-21 §6.2: idx is a non-negative integer.
+		"Status with a negative Index": func(r *IssueRequest) {
+			r.Status = &statuslist.Ref{URI: "https://status.example/lists/1", Index: -1}
+		},
+		"Claims holding status and Status set": func(r *IssueRequest) {
+			r.Status = &statuslist.Ref{URI: "https://status.example/lists/1", Index: 7}
+			r.Claims["status"] = map[string]any{"status_list": map[string]any{"idx": 7, "uri": "https://status.example/lists/1"}}
+		},
 		// RFC 7800 §3: iss or sub MUST be present beside cnf.
 		"cnf without iss or sub": func(r *IssueRequest) { r.Issuer = ""; delete(r.Claims, "sub") },
 		// RFC 9901 §4.1: _sd is reserved, in the eight claims too.

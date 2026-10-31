@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jwk"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
@@ -33,12 +34,14 @@ var requestClaims = []struct {
 	{"nbf", "NotBefore", false, func(r IssueRequest) bool { return !r.NotBefore.IsZero() }},
 	{"exp", "Expiry", false, func(r IssueRequest) bool { return !r.Expiry.IsZero() }},
 	{"cnf", "HolderKey", false, func(r IssueRequest) bool { return r.HolderKey != nil }},
+	{"status", "Status", false, func(r IssueRequest) bool { return r.Status != nil }},
 }
 
 // IssueRequest is the content of one SD-JWT VC. Issue writes the values as
 // given and checks only what the standard requires of the Issuer: VCT set,
 // aka_vcts (draft 19 §2.2.2.2), iat, nbf and exp as NumericDate (RFC 7519
-// §4.1.4-4.1.6), iss or sub beside cnf (RFC 7800 §3), and the structure it
+// §4.1.4-4.1.6), Status as statuslist.Ref.Validate checks it, iss or sub
+// beside cnf (RFC 7800 §3), and the structure it
 // builds itself: the eight claims draft 19 §2.2.2.3 never conceals and the
 // claims the fields below set.
 type IssueRequest struct {
@@ -62,10 +65,17 @@ type IssueRequest struct {
 	// HolderKey is written as cnf.jwk (RFC 7800 §3.2); nil writes no cnf. A
 	// key jwk.FromPublicKey refuses gives its error unchanged.
 	HolderKey crypto.PublicKey
+	// Status is written as status.status_list {"idx", "uri"}
+	// (draft-ietf-oauth-status-list-21 §6.2), the Referenced Token's entry in
+	// the issuer's Status List; nil writes no status. It must pass
+	// statuslist.Ref.Validate. Another status mechanism goes in Claims, with
+	// Status nil.
+	Status *statuslist.Ref
 	// Claims holds every other claim, sub, vct#integrity and aka_vcts
 	// included. Issue reads it through jose.EncodeJSON, so any value
 	// encoding/json encodes may be given, and never modifies it. It must not
-	// hold iss or vct, nor a claim whose field above is set. With its field
+	// hold iss or vct, nor a claim whose field above is set (status for
+	// Status). With its field
 	// unset it may hold iat, nbf or exp as any NumericDate (RFC 7519 §2), a
 	// fraction included, or cnf in any form RFC 7800 defines (draft 19
 	// §2.2.2.3 only RECOMMENDS jwk). aka_vcts must be a non-empty array of
@@ -173,6 +183,9 @@ func (req IssueRequest) prepare() (issuance, error) {
 		}
 		claims["cnf"] = map[string]any{"jwk": holder}
 	}
+	if req.Status != nil {
+		claims["status"] = map[string]any{"status_list": map[string]any{"idx": req.Status.Index, "uri": req.Status.URI}}
+	}
 	putTime(claims, "iat", req.IssuedAt)
 	if req.Issuer != "" {
 		claims["iss"] = req.Issuer
@@ -257,6 +270,11 @@ func (req IssueRequest) check(claims map[string]any) error {
 	if v, ok := claims["aka_vcts"]; ok {
 		if err := checkAkaVCTs(v, req.VCT); err != nil {
 			return fmt.Errorf("%w: dc: Claims aka_vcts %v (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.2)", jose.ErrInvalidArgument, err)
+		}
+	}
+	if req.Status != nil {
+		if err := req.Status.Validate(); err != nil {
+			return fmt.Errorf("dc: Status: %w", err)
 		}
 	}
 	for i, p := range req.Disclose {
