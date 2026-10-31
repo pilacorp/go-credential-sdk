@@ -34,6 +34,27 @@ One package per standard:
   `ToPublicKey` refuses a public JWK whose `kty`, or `crv` of an EC key, is a string it does not convert with
   `jose.ErrUnsupportedKey`, without checking the rest of the key, which may be valid or broken. Every other refusal, a
   JWK carrying `d` included, is `jwk.ErrBadKey`; no error matches both.
+- `jose/sdjwt`: the SD-JWT format of RFC 9901. `sdjwt.Conceal(claims, paths, opts)` makes the claims at `paths`
+  selectively disclosable and returns the payload to sign and the disclosures, with decoy digests up to
+  `opts.MinDigests` in every object and array (only in objects with `opts.NoArrayDecoys`, for a payload whose arrays
+  are addressed by index); `sdjwt.Split` separates the compact form; `sdjwt.Recreate(payload, disclosures)` rebuilds
+  the claims (§7.1 steps 3 to 5) and tells which disclosures each claim needs. It neither signs the Issuer-signed JWT
+  nor checks its validity claims. `Recreated.Disclosed(path)` tells whether a claim, an ancestor or a descendant came
+  from a disclosure; `Recreated.Issued()` gives the payload as issued, each array element in its place at issuance
+  and a hidden one marked `Hidden`.
+- `jose/sdjwt`, Key Binding JWT (RFC 9901 §4.3, §7.3): `SDHash`, `NewKBJWT` and `VerifyKBJWT` (check order in its
+  godoc), which returns `ErrKBInvalid`, `ErrKBAudience`, `ErrKBNonce` or `ErrKBSDHash` for the token;
+  `jose.ErrInvalidArgument` for caller mistakes, `jose.ErrUnsupportedAlg` or `jose.ErrUnsupportedKey` for an
+  `AllowedAlgs` entry or a holder key the SDK does not support, and `jws.ErrBadKey` for a broken holder key. The
+  caller's inputs are checked before the token is read, so their class never depends on the token. `VerifyKBJWT`
+  accepts only the alg of the holder key (ES256 or ES256K, never none), and only one in `KBVerifyParams.AllowedAlgs` (§7.3 step 5b; nil means both). It has
+  no default window: `MaxAge` must be positive and a `ClockSkew` of 0 allows no skew (§7.3 step 5e leaves both to
+  the Verifier). An `aud`, `nonce` or `sd_hash` that is missing or not a string is `ErrKBInvalid`; the other three
+  mean a well-formed value that differs. `KBClaims.Extra` adds the claims a protocol defines, such as
+  `transaction_data_hashes` of OpenID4VP 1.0 Appendix B.3.3.1, never in place of `iat`, `aud`, `nonce` or `sd_hash`,
+  and `VerifyKBJWT` returns every claim of a KB-JWT it accepts, for the caller to check the protocol's own.
+  A Holder that receives an SD-JWT+KB must reject it (§7.2): `Split` returns a non-empty `kbJWT` for one, and
+  that check is the receiving Holder's, not `Recreate`'s.
 - `jose`: `EncodeSegment` / `DecodeSegment` and `EncodeJSON` / `DecodeJSON` (the strict encodings every part of a token
   is read with), `DecodeJSONStringMember` (one top-level string member, such as `iss` before the signature is checked,
   without building any other value), and the errors every package returns: `ErrMalformed` for bad input,
@@ -49,6 +70,7 @@ One package per standard:
 | Find the verification key from a source the caller trusts (RFC 7515 §6, §10.3) | The caller |
 | Check structure, alg, key and signature of a received token | `jws.Verify` |
 | Decide which claims a token must carry, the clock and the skew | The caller, with `jose/jwt` for the checks |
+| Accept each KB-JWT `nonce` once per transaction (RFC 9901 §7.3 step 5f) | The caller; `VerifyKBJWT` keeps no state |
 
 ```go
 package example
