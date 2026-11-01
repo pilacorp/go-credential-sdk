@@ -284,6 +284,10 @@ func TestVerifyRejects(t *testing.T) {
 	// Figure 8's header and signature over a payload with a duplicate claim:
 	// the signature is checked before the payload is decoded in full.
 	dupClaim := header + "." + jose.EncodeSegment([]byte(`{"iss":"https://example.com/issuer","vct":"x","vct":"y"}`)) + "." + sig + "~"
+	// Figure 8's header and signature over a payload with another iss.
+	issWith := func(iss string) string {
+		return header + "." + jose.EncodeSegment([]byte(`{"iss":"`+iss+`","vct":"x"}`)) + "." + sig + "~"
+	}
 	// A Key Binding JWT whose alg the caller does not allow; its signature
 	// is never reached.
 	kbES256K := strings.Replace(draft19Fig8, kbJWT[:strings.IndexByte(kbJWT, '.')], jose.EncodeSegment([]byte(`{"alg":"ES256K","typ":"kb+jwt"}`)), 1)
@@ -354,6 +358,16 @@ func TestVerifyRejects(t *testing.T) {
 			s.issuers = failingResolver{errUnreachable}
 			s.extra = []VerifyOption{WithAcceptedIssuers("https://example.com/issuer/", "HTTPS://example.com/issuer", "https://Example.com/issuer")}
 		}, CodeIssuerNotAccepted, nil},
+		// RFC 7519 §2: an iss holding ":" is a URI, checked before the resolver
+		// is asked. An https iss without a host reaches the resolver: RFC 9110
+		// §4.2.1, §4.2.2 bind the resolver (the HTTP client) that fetches it.
+		{"iss with a host in Unicode", issWith("https://bücher.example/issuer"), func(s *setting) { s.issuers = failingResolver{errUnreachable} }, CodeMalformed, nil},
+		{"https iss without a host reaches the resolver", issWith("https:///issuer"), func(s *setting) {
+			s.issuers = failingResolver{fmt.Errorf("resolver: %w", issuerkey.ErrIssuerNotSupported)}
+		}, CodeIssuerNotSupported, issuerkey.ErrIssuerNotSupported},
+		{"https iss with no authority reaches the resolver", issWith("https:x"), func(s *setting) {
+			s.issuers = failingResolver{fmt.Errorf("resolver: %w", issuerkey.ErrIssuerNotSupported)}
+		}, CodeIssuerNotSupported, issuerkey.ErrIssuerNotSupported},
 		// The resolver's error stays reachable, so a caller can tell its sentinels apart.
 		{"issuer keys unavailable", draft19Fig8, func(s *setting) { s.issuers = failingResolver{fmt.Errorf("resolver: %w", errUnreachable)} }, CodeIssuerKeyUnavailable, errUnreachable},
 		{"resolver wiring", draft19Fig8, func(s *setting) { s.issuers = failingResolver{fmt.Errorf("resolver: %w", jose.ErrInvalidArgument)} }, "", nil},

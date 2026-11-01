@@ -13,6 +13,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/uri"
 	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
@@ -242,8 +243,9 @@ func readSVGTemplate(v any, several bool, at string) (SVGTemplate, error) {
 	return t, nil
 }
 
-// readURI reads the uri of a rendering resource: an https URL with a host
-// and no userinfo, or a data: URI (§5.5.1; RFC 2397 §3).
+// readURI reads the uri of a rendering resource: a URI (RFC 3986) that is
+// an https URL with a host and no userinfo, or a data: URI (§5.5.1; RFC 2397
+// §3).
 func readURI(m map[string]any, at string) (string, error) {
 	s, ok := m["uri"].(string)
 	if !ok {
@@ -251,15 +253,16 @@ func readURI(m map[string]any, at string) (string, error) {
 	}
 	u, err := url.Parse(s)
 	switch {
-	case err != nil:
+	// url.Parse accepts more than RFC 3986, such as a host in Unicode.
+	case err != nil, !uri.Valid(s):
 	case safehttp.HTTPSURL(u):
 		return s, nil
 	// RFC 2397 §3: data:[<mediatype>][;base64],<data>; the comma is
-	// required.
+	// required, and data is *uric (EID 2045).
 	case u.Scheme == "data" && strings.Contains(u.Opaque, ","):
 		return s, nil
 	}
-	return "", invalid("%s.uri is neither an https URL with a host nor a data: URI (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1)", at)
+	return "", invalid("%s.uri is neither an https URL with a host nor a data: URI, by RFC 3986 (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1)", at)
 }
 
 // readClaims reads the claims property of d (§5.6), nil when absent. Its

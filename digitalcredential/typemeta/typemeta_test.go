@@ -179,6 +179,9 @@ func TestLoadRejects(t *testing.T) {
 		{"mandatory true to false", typemeta.Ref{VCT: a}, []string{child(`,"claims":[{"path":["x"],"mandatory":false}]`), parentSD}, typemeta.ErrClaims},
 		{"svg template without properties", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"svg_templates":[{"uri":"https://a.example/1.svg","properties":{"contrast":"high"}},{"uri":"https://a.example/2.svg"}]}}]`)}, typemeta.ErrInvalid},
 		{"logo over http", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"http://a.example/l.png"}}}}]`)}, typemeta.ErrInvalid},
+		{"logo uri not a URI", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"https://bücher.example/l.png"}}}}]`)}, typemeta.ErrInvalid},
+		// RFC 2397 §3 as corrected by EID 2045: data is *uric.
+		{"logo data: uri with raw characters", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"data:image/svg+xml,<svg/>"}}}}]`)}, typemeta.ErrInvalid},
 		{"display locale", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en_US","name":"n"}]`)}, typemeta.ErrInvalid},
 		{"text_color", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"text_color":"white"}}}]`)}, typemeta.ErrInvalid},
 		{"claim display locale", typemeta.Ref{VCT: a}, []string{doc(a, `,"claims":[{"path":["x"],"display":[{"locale":"en_US","label":"X"}]}]`)}, typemeta.ErrClaims},
@@ -327,7 +330,7 @@ func TestHTTPResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	for _, v := range []string{"urn:example:t", "http" + strings.TrimPrefix(vct, "https"), "https://other.example/t", vct + "#f"} {
+	for _, v := range []string{"urn:example:t", "http" + strings.TrimPrefix(vct, "https"), "https://other.example/t", vct + "#f", vct + "/ü"} {
 		if _, err := r.Metadata(ctx, typemeta.Ref{VCT: v}); !errors.Is(err, typemeta.ErrNotFound) {
 			t.Errorf("%s: got %v, want ErrNotFound", v, err)
 		}
@@ -433,7 +436,7 @@ func TestRedirects(t *testing.T) {
 		{"another origin, both origins listed", []string{origin, "https://example.com:8443/"}, within, typemeta.Ref{VCT: root}, "/root", moved, true},
 		{"subdomain entry, another subdomain", []string{"https://*.example.com/"}, within, typemeta.Ref{VCT: "https://a.example.com/root"}, "/root", "https://b.example.com/moved", true},
 		{"empty TrustedPublisherOrigins", nil, within, typemeta.Ref{VCT: root}, "/root", moved, true},
-		{"another host, equal under Unicode case folding", nil, within, typemeta.Ref{VCT: "https://σ.example.com/root"}, "/root", "https://ς.example.com/moved", true},
+		{"another host, equal under Unicode case folding", nil, within, typemeta.Ref{VCT: "https://%CF%83.example.com/root"}, "/root", "https://ς.example.com/moved", true},
 		{"same origin, another case and default port", []string{origin}, within, typemeta.Ref{VCT: root}, "/root", "https://EXAMPLE.com:443/moved", false},
 		{"RedirectTo the target", []string{origin}, typemeta.RedirectTo("https://example.com:9443", "https://EXAMPLE.com:8443/"), typemeta.Ref{VCT: root}, "/root", moved, false},
 		{"RedirectTo another origin", []string{origin}, typemeta.RedirectTo("https://example.com:9443"), typemeta.Ref{VCT: root}, "/root", moved, true},
@@ -518,6 +521,10 @@ func TestEncodedAndStatic(t *testing.T) {
 	_, err = typemeta.Document{VCT: a, Claims: []typemeta.Claim{{Path: []any{"x"}, SVGID: "s"}, {Path: []any{"y"}, SVGID: "s"}}}.Encode()
 	if !errors.Is(err, typemeta.ErrClaims) {
 		t.Errorf("Encode with svg_id twice: got %v, want ErrClaims", err)
+	}
+	// RFC 2397 §3 as corrected by EID 2045: percent-encoded data is *uric.
+	if _, err := typemeta.ParseEncoded([]byte(doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"data:image/svg+xml,%3Csvg%2F%3E"}}}}]`))); err != nil {
+		t.Errorf("ParseEncoded with a percent-encoded data: logo: %v", err)
 	}
 	if _, err := typemeta.Static([]byte(doc(a, "")), []byte(doc(a, `,"name":"n"`))); !errors.Is(err, jose.ErrInvalidArgument) {
 		t.Errorf("Static with one vct twice: got %v", err)

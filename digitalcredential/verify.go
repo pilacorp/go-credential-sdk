@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/uri"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/typemeta"
@@ -116,8 +118,9 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 //     MALFORMED; typ dc+sd-jwt (§2.2.1, RFC 9901 §9.11): TYP_INVALID;
 //  3. the key: iss is the one claim read before the signature, and only as
 //     a string (jose.DecodeJSONStringMember: nothing else is built). An iss
-//     that is not a string, or a payload that is not one JSON object, is
-//     MALFORMED; iss may be absent ("" to the resolver, §2.2.2.3). With
+//     that is not a string, one holding ":" that is not a URI (RFC 7519 §2,
+//     RFC 3986), or a payload that is not one JSON object, is MALFORMED; iss
+//     may be absent ("" to the resolver, §2.2.2.3). With
 //     WithAcceptedIssuers, an iss not in it: ISSUER_NOT_ACCEPTED. It goes
 //     to issuers, and issuerkey.Select picks the key by kid:
 //     ISSUER_NOT_SUPPORTED, ISSUER_KEY_UNAVAILABLE, ISSUER_KEY_NOT_FOUND;
@@ -228,6 +231,13 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 	iss, hasIss, err := jose.DecodeJSONStringMember(raw, "iss")
 	if err != nil {
 		return reject(CodeMalformed, fmt.Errorf("Issuer-signed JWT payload: %w", err))
+	}
+	// RFC 7519 §2: a StringOrURI holding ":" MUST be a URI; §4.1.1 leaves
+	// the reaction to the application, and Verify refuses it. Neither the
+	// scheme nor the host is checked: §2.5 lets a key come from other
+	// mechanisms, and RFC 9110 §4.2.1, §4.2.2 bind the resolver that fetches iss.
+	if strings.Contains(iss, ":") && !uri.Valid(iss) {
+		return reject(CodeMalformed, errors.New("the Issuer-signed JWT payload's iss is not a URI (RFC 3986)"))
 	}
 	if cfg.acceptedIssuers != nil && !slices.Contains(cfg.acceptedIssuers, iss) {
 		return reject(CodeIssuerNotAccepted, errors.New("iss is not an issuer in WithAcceptedIssuers"))
