@@ -69,7 +69,9 @@ cred, err := dc.Issue(ctx, dc.IssueRequest{
 	Claims:    map[string]any{"given_name": "Erika", "birthdate": "1963-08-12"},
 	Disclose:  []sdjwt.Path{{"given_name"}, {"birthdate"}}, // concealed, disclosed by the Holder
 }, issuerkey.SigningKey{Signer: signer, Public: issuerPub, KID: "key-1"}) // signer: a jws.Signer
-if err != nil { /* jose.ErrInvalidArgument for a request the standard refuses */ }
+if err != nil {
+	return err // jose.ErrInvalidArgument for the request; key and signer errors as jwk and jws return them
+}
 issued := cred.Serialize()
 ```
 
@@ -104,7 +106,9 @@ the Issuer's signature: check the credential when you receive it. It refuses an 
 
 ```go
 held, err := dc.Parse(issued)
-if err != nil { /* *dc.Error */ }
+if err != nil {
+	return err // a *dc.Error
+}
 vp, err := held.Present(ctx, dc.PresentRequest{
 	Reveal: []sdjwt.Path{{"given_name"}},
 	KeyBinding: &dc.KeyBinding{
@@ -114,6 +118,9 @@ vp, err := held.Present(ctx, dc.PresentRequest{
 		IssuedAt: time.Now(),
 	},
 })
+if err != nil {
+	return err // jose.ErrInvalidArgument, jose.ErrMalformed, dc.ErrKeyBindingUnsupported, or a jws error from signing
+}
 send(vp.Serialize())
 ```
 
@@ -132,7 +139,9 @@ claims, and the status value.
 
 ```go
 cred, err := dc.Parse(presented)
-if err != nil { /* *dc.Error */ }
+if err != nil {
+	return err // a *dc.Error
+}
 res, err := cred.Verify(ctx, resolver,
 	dc.WithAudience("https://verifier.example"), // the Verifier's client_id
 	dc.WithNonce(nonce),                         // fresh per transaction
@@ -142,6 +151,9 @@ switch {
 case errors.As(err, &e): // rejected: e.Code, such as dc.CodeRevoked
 case errors.Is(err, dc.ErrPolicy): // the caller's arguments or wiring
 case err != nil: // ctx ended: nothing is known about the token
+}
+if err != nil {
+	return err
 }
 ```
 
@@ -195,8 +207,13 @@ and Verifier get a type's documents through a `typemeta.Resolver`:
 types, err := typemeta.NewHTTPResolver(typemeta.Config{
 	TrustedPublisherOrigins: []string{"https://types.example"}, // the publishers you trust (§7.8)
 })
-if err != nil { /* ... */ }
+if err != nil {
+	return err
+}
 res, err := cred.Verify(ctx, resolver, dc.WithTypeMetadata(types))
+if err != nil {
+	return err
+}
 ```
 
 `NewHTTPResolver` fetches a `vct` that is a URI (RFC 3986) and an https URL whose origin `TrustedPublisherOrigins` covers (§5.3.1), with the
@@ -237,11 +254,19 @@ list as a Status List Token (draft-ietf-oauth-status-list-21 §5):
 
 ```go
 list, err := statuslist.New(1<<17, 1) // 131072 entries of 1 bit
-if err != nil { /* ... */ }
-if err := list.Set(7, 0x01); err != nil { /* ... */ } // entry 7 INVALID (§7.1)
+if err != nil {
+	return err
+}
+if err := list.Set(7, 0x01); err != nil { // entry 7 INVALID (§7.1)
+	return err
+}
 token, err := list.IssueToken(ctx, statuslist.TokenClaims{
 	Sub: "https://status.example/lists/1", IssuedAt: time.Now(), TTL: 12 * time.Hour,
-}, key) // an issuerkey.SigningKey; serve token as application/statuslist+jwt (§8.2)
+}, key) // an issuerkey.SigningKey
+if err != nil {
+	return err
+}
+serve(token) // as application/statuslist+jwt (§8.2)
 ```
 
 The Issuer writes `Status: &statuslist.Ref{URI: "https://status.example/lists/1", Index: 7}` in the `IssueRequest`.
@@ -306,6 +331,9 @@ identical to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
   	TrustedIssuerOrigins: []string{"https://issuer.example"},
   	Redirects:            issuermeta.RedirectTo("https://keys-cdn.example"),
   })
+  if err != nil {
+  	return err
+  }
   ```
 
   So does an issuer whose metadata redirects from `https://abc.com` to `https://www.abc.com`, with
@@ -336,8 +364,13 @@ For some issuers of a shared origin, list the origin and pass the issuers to `Ve
 
 ```go
 saas, err := issuermeta.NewResolver(issuermeta.Config{TrustedIssuerOrigins: []string{"https://vc.example"}})
-if err != nil { /* ... */ }
+if err != nil {
+	return err
+}
 res, err := cred.Verify(ctx, saas, dc.WithAcceptedIssuers("https://vc.example/bank-a/"))
+if err != nil {
+	return err
+}
 ```
 
 `iss` must equal an entry byte for byte, so `https://vc.example/bank-a` is another issuer. An `iss` outside the list
