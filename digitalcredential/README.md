@@ -283,8 +283,12 @@ identical to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
 - Only P-256 and secp256k1 keys whose `use`, `alg` and `key_ops`, if present, allow verifying are returned.
 - Answers are cached as RFC 9111 allows, at most 24 hours. A key the issuer removes still verifies while its answer
   is cached; `DisableCache` retrieves every time. Share one `Resolver`.
-- `HTTPClient` passes your own client, for an egress proxy or an internal host. That client is trusted code: the
-  address check exists only in the default one, which cannot know hosts reachable only inside your network.
+- `HTTPClient` passes your own client, for an egress proxy. That client is trusted code: the address check exists
+  only in the default one, which cannot know hosts reachable only inside your network, so block those with your
+  egress policy. Draft 19 §7.1 forbids fetching issuer metadata or Type Metadata from such hosts. For an issuer
+  inside your network, use an `issuerkey.Resolver` over a fixed key table, and `typemeta.Static` for its Type
+  Metadata. A status list on an internal host is the Relying Party's choice (draft 21 §6.2): pass
+  `statuslist.Config.HTTPClient` or a `StatusChecker` of your own.
 
 `issuerkey.Multi(r1, r2, …)` asks resolvers in order and moves to the next only on `ErrIssuerNotSupported`, so a
 failed retrieval never sends an issuer to another key source. `issuerkey.Select(keys, header)` picks the key the JWS
