@@ -206,9 +206,9 @@ func draft21C4(t *testing.T) appendixCVector {
 	return v
 }
 
-// Decode refuses a preset dictionary, a bad Adler-32 and an lst that inflates
-// past 16 MiB, and accepts exactly 16 MiB. The inputs are built with
-// compress/zlib and the draft 21 §4.1 bytes, not with Encode.
+// Decode refuses a bad header, a preset dictionary, a bad Adler-32 and an lst
+// that inflates past 16 MiB, and accepts exactly 16 MiB. The inputs are built
+// with compress/zlib and the draft 21 §4.1 bytes, not with Encode.
 func TestDecodeRejects(t *testing.T) {
 	draft := mustHex(t, "78dadbb918000217015d") // draft 21 §4.1, bits=1, [0xb9, 0xa3]
 	badAdler := append([]byte(nil), draft...)
@@ -216,18 +216,24 @@ func TestDecodeRejects(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  []byte
+		is   error // when set, errors.Is must hold too
 	}{
+		// RFC 1950 §2.2, §2.3: CM 0 is not deflate, which a decompressor must refuse.
+		{"bad header", mustHex(t, "0000"), zlib.ErrHeader},
 		// FLG 0xf9 sets FDICT; DICTID 00000001 is the Adler-32 of an empty
 		// dictionary, which compress/zlib accepts.
-		{"preset dictionary", mustHex(t, "78f900000001dab918100000ffff0217015d")},
-		{"bad Adler-32", badAdler},
-		{"inflates past 16 MiB", deflate(t, make([]byte, 16<<20+1))},
+		{"preset dictionary", mustHex(t, "78f900000001dab918100000ffff0217015d"), nil},
+		{"bad Adler-32", badAdler, zlib.ErrChecksum},
+		{"inflates past 16 MiB", deflate(t, make([]byte, 16<<20+1)), nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Decode(base64.RawURLEncoding.EncodeToString(tt.raw), 1)
 			if !errors.Is(err, jose.ErrMalformed) {
 				t.Fatalf("Decode = %v, want jose.ErrMalformed", err)
+			}
+			if tt.is != nil && !errors.Is(err, tt.is) {
+				t.Fatalf("Decode = %v, want it to match %v", err, tt.is)
 			}
 		})
 	}

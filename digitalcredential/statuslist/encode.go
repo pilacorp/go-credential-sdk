@@ -38,8 +38,11 @@ func (l *List) Encode() (string, error) {
 // list of bits-bit entries. It refuses, with jose.ErrMalformed:
 //   - bits other than 1, 2, 4 or 8, and lst that is not strict base64url;
 //   - a ZLIB stream with a bad header or Adler-32 checksum (RFC 1950 §2.3),
-//     or with a preset dictionary: §2.3 requires rejecting one when the
-//     enclosing format uses none, and draft 21 uses none;
+//     or that is cut short or does not inflate (RFC 1951 §3.2), the error
+//     then also wrapping the cause: zlib.ErrHeader, zlib.ErrChecksum,
+//     io.ErrUnexpectedEOF or a flate.CorruptInputError;
+//   - a ZLIB stream with a preset dictionary: §2.3 requires rejecting one when
+//     the enclosing format uses none, and draft 21 uses none;
 //   - a byte array over 16 MiB.
 //
 // An empty byte array is a list with no entries: §4.1 step 2 sets no minimum
@@ -64,12 +67,12 @@ func Decode(lst string, bits int) (*List, error) {
 	}
 	zr, err := zlib.NewReader(bytes.NewReader(raw))
 	if err != nil {
-		return nil, fmt.Errorf("%w: statuslist: lst: %v", jose.ErrMalformed, err)
+		return nil, fmt.Errorf("%w: statuslist: lst: %w", jose.ErrMalformed, err)
 	}
 	// Reading to EOF verifies the Adler-32 checksum; nothing else needs closing.
 	b, err := io.ReadAll(io.LimitReader(zr, maxListBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: statuslist: lst: %v", jose.ErrMalformed, err)
+		return nil, fmt.Errorf("%w: statuslist: lst: %w", jose.ErrMalformed, err)
 	}
 	if len(b) > maxListBytes {
 		return nil, fmt.Errorf("%w: statuslist: lst inflates past %d bytes", jose.ErrMalformed, maxListBytes)

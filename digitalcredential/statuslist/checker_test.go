@@ -1,10 +1,14 @@
 package statuslist
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +19,6 @@ import (
 	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
-	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
@@ -37,6 +40,7 @@ func (s keySet) Keys(_ context.Context, iss string) ([]issuerkey.PublicKey, erro
 // the httptest certificate names) can be used as they are.
 type listServer struct {
 	tokens map[string]string
+	types  map[string]string // Content-Type by path; application/statuslist+jwt when absent
 	hits   atomic.Int32
 	srv    *httptest.Server
 }
@@ -46,7 +50,11 @@ func newListServer(t *testing.T, tokens map[string]string) *listServer {
 	s := &listServer{tokens: tokens}
 	s.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.hits.Add(1)
-		w.Header().Set("Content-Type", "application/statuslist+jwt")
+		ct, ok := s.types[r.URL.Path]
+		if !ok {
+			ct = "application/statuslist+jwt"
+		}
+		w.Header().Set("Content-Type", ct)
 		w.Write([]byte(s.tokens[r.URL.Path]))
 	}))
 	t.Cleanup(s.srv.Close)
@@ -207,6 +215,15 @@ func TestCheckerRejects(t *testing.T) {
 			m["status_list"] = map[string]any{"bits": 1, "lst": base64.RawURLEncoding.EncodeToString([]byte{0, 0})}
 		})), 0, false},
 	}
+	// The rows whose failure has its own sentinel; each must wrap it.
+	sentinels := map[string]error{
+		"sub is not the uri":         ErrSubjectMismatch,
+		"typ is not statuslist+jwt":  ErrTokenType,
+		"iss naming another issuer":  ErrIssuerMismatch,
+		"no iat":                     jose.ErrMalformed,
+		"iat after now and the skew": ErrIssuedInFuture,
+		"ttl 0":                      jose.ErrMalformed,
+	}
 	tokens := map[string]string{}
 	for i, tt := range tests {
 		tokens["/statuslists/"+strconv.Itoa(i)] = tt.token
@@ -224,6 +241,9 @@ func TestCheckerRejects(t *testing.T) {
 		// Only §8.3 step 6 is a MUST reject; a caller tells it apart.
 		if errors.Is(err, ErrIndexOutOfBounds) != tt.oob {
 			t.Errorf("%s: errors.Is(%v, ErrIndexOutOfBounds) = %v, want %v", tt.name, err, !tt.oob, tt.oob)
+		}
+		if want, ok := sentinels[tt.name]; ok && !errors.Is(err, want) {
+			t.Errorf("%s: Status error %v, want one wrapping %v", tt.name, err, want)
 		}
 	}
 }
@@ -322,8 +342,8 @@ func TestCheckerMaxAge(t *testing.T) {
 		}
 	}
 	now = draft21Now.Add(32 * time.Minute) // aged 92 minutes, past 90 plus the 1-minute skew
-	if _, err := c.Status(context.Background(), Ref{URI: uri}, "https://a.example"); err == nil {
-		t.Fatal("Status of a list older than Config.MaxAge: no error")
+	if _, err := c.Status(context.Background(), Ref{URI: uri}, "https://a.example"); !errors.Is(err, ErrTooOld) {
+		t.Fatalf("Status of a list older than Config.MaxAge = %v, want ErrTooOld", err)
 	}
 	if n := s.hits.Load(); n != 2 {
 		t.Errorf("server got %d requests, want 2 (cached, then fetched again at the max age)", n)
@@ -532,8 +552,8 @@ func TestCheckerRefusesPrivateAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = c.Status(context.Background(), Ref{URI: s.srv.URL + "/statuslists/1"}, "https://a.example")
-	if !errors.Is(err, safehttp.ErrBlockedAddress) {
-		t.Fatalf("Status = %v, want safehttp.ErrBlockedAddress", err)
+	if !errors.Is(err, ErrAddressBlocked) {
+		t.Fatalf("Status = %v, want ErrAddressBlocked", err)
 	}
 	if n := s.hits.Load(); n != 0 {
 		t.Fatalf("server got %d requests, want 0", n)
@@ -576,8 +596,8 @@ func TestCheckerHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := c.Status(context.Background(), ref, "https://a.example"); err == nil || errors.Is(err, jose.ErrInvalidArgument) {
-		t.Errorf("default, http uri: Status = %d, %v; want an error other than jose.ErrInvalidArgument", got, err)
+	if got, err := c.Status(context.Background(), ref, "https://a.example"); !errors.Is(err, ErrURINotSupported) || errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("default, http uri: Status = %d, %v; want ErrURINotSupported, not jose.ErrInvalidArgument", got, err)
 	}
 	if n := plainHits.Load(); n != 0 {
 		t.Errorf("default, http uri: server got %d requests, want 0", n)
@@ -596,8 +616,8 @@ func TestCheckerHTTP(t *testing.T) {
 	if c, err = NewChecker(Config{Issuers: issuers, HTTPClient: downgrade.Client()}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := c.Status(context.Background(), Ref{URI: downgrade.URL + "/statuslists/1"}, "https://a.example"); err == nil {
-		t.Errorf("default, redirect to http: Status = %d, nil; want an error", got)
+	if got, err := c.Status(context.Background(), Ref{URI: downgrade.URL + "/statuslists/1"}, "https://a.example"); !errors.Is(err, ErrRedirectTargetNotAllowed) {
+		t.Errorf("default, redirect to http: Status = %d, %v; want ErrRedirectTargetNotAllowed", got, err)
 	}
 	if n := plainHits.Load(); n != 0 {
 		t.Errorf("default, redirect to http: http server got %d requests, want 0", n)
@@ -607,6 +627,12 @@ func TestCheckerHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.now = func() time.Time { return draft21Now }
+	// The rule of the fetch holds before it in this mode too.
+	for _, uri := range []string{"urn:example:list", "http://user@" + strings.TrimPrefix(plain.URL, "http://") + "/statuslists/1"} {
+		if _, err := c.Status(context.Background(), Ref{URI: uri}, "https://a.example"); !errors.Is(err, ErrURINotSupported) {
+			t.Errorf("InsecureHTTP, %s: Status error %v, want ErrURINotSupported", uri, err)
+		}
+	}
 	if got, err := c.Status(context.Background(), ref, "https://a.example"); err != nil || got != 1 {
 		t.Errorf("InsecureHTTP: Status = %d, %v; want 1", got, err)
 	}
@@ -645,8 +671,114 @@ func TestCheckerAllowedAlgs(t *testing.T) {
 	}
 }
 
+// A Config.Issuers key jws cannot verify with is the verifier's wiring, not
+// the list's fault: jose.ErrInvalidArgument, still matching the key's class.
+func TestCheckerKeyItCannotVerifyWith(t *testing.T) {
+	signer, pub := newP256Signer(t)
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const uri = "https://example.com/statuslists/1"
+	token := signClaims(t, signer, pub, jws.Header{"typ": "statuslist+jwt", "kid": "k"}, map[string]any{
+		"sub":         uri,
+		"iat":         draft21Now.Add(-time.Hour).Unix(),
+		"status_list": map[string]any{"bits": 1, "lst": "eNrbuRgAAhcBXQ"},
+	})
+	s := newListServer(t, map[string]string{"/statuslists/1": token})
+	for _, tt := range []struct {
+		name string
+		key  *ecdsa.PublicKey
+		want error
+	}{
+		{"P-384", &p384.PublicKey, jose.ErrUnsupportedKey},
+		{"off P-256", &ecdsa.PublicKey{Curve: elliptic.P256(), X: big.NewInt(1), Y: big.NewInt(1)}, jws.ErrBadKey},
+	} {
+		c := s.checker(t, Config{Issuers: keySet{"https://a.example": {{KID: "k", Public: tt.key}}}})
+		got, err := c.Status(context.Background(), Ref{URI: uri}, "https://a.example")
+		if !errors.Is(err, jose.ErrInvalidArgument) || !errors.Is(err, tt.want) {
+			t.Errorf("%s key: Status = %d, %v; want jose.ErrInvalidArgument and %v", tt.name, got, err, tt.want)
+		}
+	}
+}
+
 func newP256Signer(t *testing.T) (jws.Signer, *ecdsa.PublicKey) {
 	t.Helper()
 	key := newSigningKey(t, "")
 	return key.Signer, key.Public.(*ecdsa.PublicKey)
+}
+
+// A failed fetch wraps the cause statuslist exports for it (draft 21 §8.2:
+// a 2xx status and application/statuslist+jwt; §11.4: bounded redirects),
+// and the body cap holds.
+func TestCheckerFetchCauses(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/missing":
+			http.NotFound(w, r)
+		case "/large":
+			w.Header().Set("Content-Type", "application/statuslist+jwt")
+			w.Write(bytes.Repeat([]byte("a"), maxTokenBytes+1))
+		default: // /loop/n redirects to /loop/n+1
+			n, _ := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/loop/"))
+			http.Redirect(w, r, "/loop/"+strconv.Itoa(n+1), http.StatusFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c, err := NewChecker(Config{Issuers: keySet{}, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]error{
+		"/large":  ErrBodyTooLarge,
+		"/loop/0": ErrTooManyRedirects,
+	} {
+		if _, err := c.Status(context.Background(), Ref{URI: srv.URL + path}, "https://a.example"); !errors.Is(err, want) {
+			t.Errorf("%s: Status error %v, want one wrapping %v", path, err, want)
+		}
+	}
+	var se *StatusError
+	if _, err := c.Status(context.Background(), Ref{URI: srv.URL + "/missing"}, "https://a.example"); !errors.As(err, &se) || se.Code != http.StatusNotFound {
+		t.Errorf("/missing: Status error %v, want a StatusError with Code 404", err)
+	}
+}
+
+// §8.2 puts the content-type MUST on the Status Provider, and typ carries the
+// type (RFC 8725 §3.11): a token served as another type is used, and a body
+// that is not a token fails as one.
+func TestCheckerAnyContentType(t *testing.T) {
+	signer, pub := newP256Signer(t)
+	const uri = "https://example.com/statuslists/1"
+	token := signClaims(t, signer, pub, jws.Header{"typ": "statuslist+jwt", "kid": "a"}, map[string]any{
+		"sub": uri, "iat": draft21Now.Add(-time.Hour).Unix(),
+		"status_list": map[string]any{"bits": 1, "lst": "eNrbuRgAAhcBXQ"},
+	})
+	s := newListServer(t, map[string]string{"/statuslists/1": token, "/statuslists/html": "<html></html>"})
+	s.types = map[string]string{"/statuslists/1": "application/json", "/statuslists/html": "text/html"}
+	c := s.checker(t, Config{Issuers: keySet{"https://a.example": {{KID: "a", Public: pub}}}})
+	if _, err := c.Status(context.Background(), Ref{URI: uri}, "https://a.example"); err != nil {
+		t.Errorf("token served as application/json: %v", err)
+	}
+	if _, err := c.Status(context.Background(), Ref{URI: "https://example.com/statuslists/html"}, "https://a.example"); !errors.Is(err, jose.ErrMalformed) {
+		t.Errorf("HTML page: Status error %v, want one wrapping jose.ErrMalformed", err)
+	}
+}
+
+// Config.ClockSkew is the leeway on a future iat: a Status Issuer whose clock
+// runs 5 minutes ahead is refused by default and accepted with 10 minutes.
+func TestCheckerClockSkewOnIat(t *testing.T) {
+	signer, pub := newP256Signer(t)
+	const uri = "https://example.com/statuslists/1"
+	token := signClaims(t, signer, pub, jws.Header{"typ": "statuslist+jwt", "kid": "a"}, map[string]any{
+		"sub": uri, "iat": draft21Now.Add(5 * time.Minute).Unix(),
+		"status_list": map[string]any{"bits": 1, "lst": "eNrbuRgAAhcBXQ"},
+	})
+	s := newListServer(t, map[string]string{"/statuslists/1": token})
+	issuers := keySet{"https://a.example": {{KID: "a", Public: pub}}}
+	if _, err := s.checker(t, Config{Issuers: issuers}).Status(context.Background(), Ref{URI: uri}, "https://a.example"); !errors.Is(err, ErrIssuedInFuture) {
+		t.Errorf("default skew: Status error %v, want one wrapping ErrIssuedInFuture", err)
+	}
+	if _, err := s.checker(t, Config{Issuers: issuers, ClockSkew: 10 * time.Minute}).Status(context.Background(), Ref{URI: uri}, "https://a.example"); err != nil {
+		t.Errorf("ClockSkew 10m: %v", err)
+	}
 }

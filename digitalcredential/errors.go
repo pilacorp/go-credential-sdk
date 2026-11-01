@@ -194,8 +194,10 @@ var ErrKeyBindingUnsupported = errors.New("dc: this SDK cannot use this credenti
 // ErrPolicy: Credential.Verify was called with arguments, options or a
 // dependency that cannot verify: the caller's code or configuration is at
 // fault, not the token. Some cases show only for some tokens and only after
-// the caller's own network calls: a resolver key on a curve this SDK does not
-// verify with (the error then also wraps the jws.Verify error), no
+// the caller's own network calls: a resolver key jws cannot verify with, on
+// a curve this SDK does not support or nil or off its curve (the error then
+// also wraps the jws.Verify error; from the StatusChecker, only
+// jose.ErrUnsupportedKey or jws.ErrBadKey), no
 // WithAudience or WithNonce when a Key Binding JWT must be checked, no
 // WithStatus for a credential with status_list, or a resolver or checker
 // error wrapping jose.ErrInvalidArgument. So do not treat it as a
@@ -203,3 +205,13 @@ var ErrKeyBindingUnsupported = errors.New("dc: this SDK cannot use this credenti
 // this SDK does not implement (jose.ErrUnsupportedAlg), it wraps no other
 // sentinel.
 var ErrPolicy = errors.New("dc: invalid verify policy")
+
+// keyPolicyError is ErrPolicy that also matches one key sentinel, such as
+// jose.ErrUnsupportedKey, and nothing else of the error it was made from.
+type keyPolicyError struct {
+	text string
+	key  error
+}
+
+func (e *keyPolicyError) Error() string   { return e.text }
+func (e *keyPolicyError) Unwrap() []error { return []error{ErrPolicy, e.key} }

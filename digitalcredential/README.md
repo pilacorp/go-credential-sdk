@@ -219,13 +219,24 @@ The Issuer writes `Status: &statuslist.Ref{URI: "https://status.example/lists/1"
 Choose each index at random among the unused ones and add decoy entries, so the list does not show how many
 credentials exist (§12.4, §12.5.1).
 
-The Verifier builds one `statuslist.Checker` and passes it with `dc.WithStatus`. It fetches the list over https only,
-verifies its signature with a key of the credential's `iss` from `Config.Issuers`, checks `typ`, `sub`, `iat`, `exp`
-and `aud` (§5.1, §8.3), and caches it for its `ttl`, at most 24 hours. A list without `ttl` is fetched again on every
-check. `Status` returns the raw value; `Verify` maps it: `0x01` is `REVOKED`, `0x02` `SUSPENDED`, any other value not
-accepted `STATUS_NOT_ACCEPTED`, and a list it cannot fetch or verify `STATUS_UNAVAILABLE`. An index outside the list is
-`MALFORMED` (§8.3 step 6). `Config.AllowedAlgs`, `ClockSkew` and the clock of the Checker are its own:
-`dc.WithAllowedAlgs`, `dc.WithClockSkew` and `dc.WithNow` do not reach it.
+The Verifier builds one `statuslist.Checker` and passes it with `dc.WithStatus`. It fetches the list over https only
+(http too with `Config.InsecureHTTP`), verifies its signature with a key of the credential's `iss` from
+`Config.Issuers`, checks `typ`, `sub`, `iat`, `exp` and `aud` (§5.1, §8.3), and caches it for its `ttl`, at most 24
+hours. A list without `ttl` is fetched again on every check. `Status` returns the raw value; `Verify` maps it: `0x01` is
+`REVOKED`, `0x02` `SUSPENDED`, any other value not accepted `STATUS_NOT_ACCEPTED`, and a list it cannot fetch or verify
+`STATUS_UNAVAILABLE`. An index outside the list is `MALFORMED` (§8.3 step 6). `Config.AllowedAlgs`, `ClockSkew` and the
+clock of the Checker are its own: `dc.WithAllowedAlgs`, `dc.WithClockSkew` and `dc.WithNow` do not reach it.
+
+The Checker follows up to 3 redirects to any origin (§8.2), each to an https URL with a host and no userinfo (http too
+with `Config.InsecureHTTP`). The response's Content-Type is not judged: §8.2 puts that MUST on the Status Provider, and
+`typ` carries the type. The list is bound to the credential's issuer by its signature and to the uri by `sub`, so any
+server that answers can return only a list that issuer signed for that uri, an older one included. `exp` is RECOMMENDED,
+not required (§5.1): with `Config.MaxAge` zero, a list without `exp` is accepted at any age. `Config.HTTPClient`'s
+`CheckRedirect` can refuse redirects too. Under `STATUS_UNAVAILABLE`, each failure wraps its own value:
+`statuslist.ErrURINotSupported`, `ErrTokenType`, `ErrSubjectMismatch`, `ErrIssuerMismatch`, `ErrIssuedInFuture`,
+`ErrTooOld`, `jose.ErrMalformed`, the error of `jws` or `jwt`, or for a failed fetch `statuslist.StatusError` and the
+causes of the issuer metadata resolver under `statuslist` names, except `ErrRedirectNotAllowed` and
+`ErrContentTypeNotAccepted`.
 
 ## Hash
 
@@ -280,8 +291,12 @@ identical to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
 - Only P-256 and secp256k1 keys whose `use`, `alg` and `key_ops`, if present, allow verifying are returned.
 - Answers are cached as RFC 9111 allows, at most 24 hours. A key the issuer removes still verifies while its answer
   is cached; `DisableCache` retrieves every time. Share one `Resolver`.
-- `HTTPClient` passes your own client, for an egress proxy or an internal host. That client is trusted code: the
-  address check exists only in the default one, which cannot know hosts reachable only inside your network.
+- `HTTPClient` passes your own client, for an egress proxy. That client is trusted code: the address check exists
+  only in the default one, which cannot know hosts reachable only inside your network, so block those with your
+  egress policy. Draft 19 §7.1 forbids fetching issuer metadata or Type Metadata from such hosts. For an issuer
+  inside your network, use an `issuerkey.Resolver` over a fixed key table, and `typemeta.Static` for its Type
+  Metadata. A status list on an internal host is the Relying Party's choice (draft 21 §6.2): pass
+  `statuslist.Config.HTTPClient` or a `StatusChecker` of your own.
 
 `issuerkey.Multi(r1, r2, …)` asks resolvers in order and moves to the next only on `ErrIssuerNotSupported`, so a
 failed retrieval never sends an issuer to another key source. `issuerkey.Select(keys, header)` picks the key the JWS

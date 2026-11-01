@@ -53,6 +53,10 @@ type Limits struct {
 	// matches ErrNotFollowed. It judges every hop against that first URL,
 	// after the scheme and host check and before the redirect count.
 	Follow func(start, target *url.URL) bool
+	// AnyContentType keeps sending the media types in Accept but does not
+	// judge the Content-Type of the response, for a caller whose standard
+	// puts that MUST on the server and checks the type in the content.
+	AnyContentType bool
 }
 
 // maxHeaderBytes caps response headers, which would otherwise default to
@@ -101,9 +105,9 @@ func HTTPSURL(u *url.URL) bool {
 	return u != nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
-// allows reports whether Get may request u: HTTPSURL, or with AllowHTTP the
+// Allows reports whether Get may request u: HTTPSURL, or with AllowHTTP the
 // same rules for an http URL.
-func (l Limits) allows(u *url.URL) bool {
+func (l Limits) Allows(u *url.URL) bool {
 	if l.AllowHTTP && u != nil && u.Scheme == "http" {
 		return u.Hostname() != "" && u.User == nil
 	}
@@ -214,7 +218,7 @@ func fetchError(step string, err error) error {
 	return &fetchErr{text: text, cause: cause}
 }
 
-// schemes names what allows accepts, for errors.
+// schemes names what Allows accepts, for errors.
 func (l Limits) schemes() string {
 	if l.AllowHTTP {
 		return "http or https"
@@ -246,7 +250,8 @@ func (l Limits) schemes() string {
 //
 // A final status that is not 2xx is a *StatusError. A refused redirect
 // matches ErrRedirectTargetNotAllowed, ErrNotFollowed or ErrTooManyRedirects,
-// a refused media type ErrContentTypeNotAccepted, and a body over
+// a refused media type ErrContentTypeNotAccepted (unless l.AnyContentType),
+// and a body over
 // l.MaxBytes ErrBodyTooLarge.
 //
 // The text of every error Get returns never holds the request URL or a
@@ -274,7 +279,7 @@ func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string
 		return nil, nil, fmt.Errorf("safehttp: max bytes %d out of range", l.MaxBytes)
 	}
 	u, err := url.Parse(rawURL)
-	if err != nil || !l.allows(u) {
+	if err != nil || !l.Allows(u) {
 		return nil, nil, fmt.Errorf("safehttp: URL is not %s with a host and no userinfo", l.schemes())
 	}
 
@@ -300,7 +305,7 @@ func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string
 				return err
 			}
 		}
-		if !l.allows(r.URL) {
+		if !l.Allows(r.URL) {
 			return &checkError{text: "redirect to a URL that is not " + l.schemes() + " with a host and no userinfo", err: ErrRedirectTargetNotAllowed}
 		}
 		if l.Follow != nil && !l.Follow(u, r.URL) {
@@ -320,9 +325,11 @@ func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, nil, &StatusError{Code: resp.StatusCode}
 	}
-	mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if err != nil || !slices.ContainsFunc(mediaTypes, func(want string) bool { return strings.EqualFold(mt, want) }) {
-		return nil, nil, &checkError{text: "safehttp: content type is not " + strings.Join(mediaTypes, " or "), err: ErrContentTypeNotAccepted}
+	if !l.AnyContentType {
+		mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		if err != nil || !slices.ContainsFunc(mediaTypes, func(want string) bool { return strings.EqualFold(mt, want) }) {
+			return nil, nil, &checkError{text: "safehttp: content type is not " + strings.Join(mediaTypes, " or "), err: ErrContentTypeNotAccepted}
+		}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, l.MaxBytes+1))
 	if err != nil {

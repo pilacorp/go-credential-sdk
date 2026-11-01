@@ -95,26 +95,36 @@ type Config struct {
 	// Checker still judge the URLs requested and the response returned, but
 	// the address check exists only in the default transport, and the
 	// 5-second timeout holds only if its transport honours the request
-	// context.
+	// context. Its CheckRedirect runs before the Checker's redirect checks,
+	// so it can refuse redirects the Checker would follow.
 	HTTPClient *http.Client
 	// InsecureHTTP makes the Checker fetch http status list uris and follow
 	// redirects to http, as well as https; false, https only, which draft 21
 	// §6.2 leaves to the Relying Party. Over http an on-path attacker can
 	// serve an older signed list, so a revoked credential reads valid until
-	// that list's exp, and sees which lists are fetched. Meant for local
-	// development or a trusted network.
+	// the earlier of that list's exp and, when MaxAge is set, its iat plus
+	// MaxAge, each plus ClockSkew; without end when it has no exp and MaxAge
+	// is zero. The attacker also sees which lists are fetched. Meant for
+	// local development or a trusted network.
 	InsecureHTTP bool
 	// ClockSkew is the leeway on the Status List Token's exp and nbf (RFC
 	// 7519 §4.1.4, §4.1.5) and on an iat later than now; zero is 1 minute,
-	// negative makes NewChecker fail. It applies to the Status List Token
-	// only: dc.WithClockSkew does not reach the Checker, so set both to
-	// change the skew for both.
+	// negative makes NewChecker fail. Raise it to accept a Status Issuer
+	// whose clock runs ahead; exp, nbf and the MaxAge check get the same
+	// leeway, and RFC 7519 §4.1.4 calls a few minutes usual. It applies to
+	// the Status List Token only: dc.WithClockSkew does not reach the
+	// Checker, so set both to change the skew for both.
 	ClockSkew time.Duration
 	// MaxAge is how old a Status List Token may be, by its iat, for the
 	// Checker to use it: the local freshness policy of draft 21 §8.3 step 4b.
 	// A token issued more than MaxAge plus the clock skew ago makes Status
-	// fail, and a cached list leaves the cache at that age. Zero sets no
-	// limit; negative makes NewChecker fail.
+	// fail with ErrTooOld, and a cached list leaves the cache at that age.
+	// Zero sets no limit; negative makes NewChecker fail. Draft 21 §5.1
+	// makes exp RECOMMENDED, not required: with MaxAge zero a token without
+	// exp is accepted at any age, so a server answering at the uri, or at a
+	// redirect target, with an older token of that issuer for that uri makes
+	// Status return the status that older token holds, or ErrIndexOutOfBounds
+	// for an index past the end of that older list (§13.4 lets a list grow).
 	MaxAge time.Duration
 	// AllowedAlgs are the algorithms accepted for the Status List Token (RFC
 	// 8725 §3.1); nil or empty means ES256 and ES256K, as jws.Verify. Another
@@ -130,14 +140,21 @@ type Config struct {
 // the instance. It is safe for concurrent use.
 //
 // Its limits are fixed: the fetch of a token ends within 5 seconds, follows at
-// most 3 redirects and reads at most 1 MiB; a list inflates to at most 16 MiB.
-// It caches verified lists for the token's ttl, at most 24 hours and never
-// past exp or the max age; a token without ttl is not cached. The cache counts
+// most 3 redirects, to any origin, and reads at most 1 MiB; a list inflates
+// to at most 16 MiB. It caches verified lists for the token's ttl, at most
+// 24 hours and never past exp or the max age; a token without ttl is not
+// cached. The cache counts
 // 32 MiB, estimated from the lists and keys it holds, not total heap. When
 // live entries fill it, a new list is not cached until one expires; no live
 // entry is evicted. Any issuer the resolver accepts can fill it with lists of
 // its own, one per uri, which costs other issuers a fetch on every call until
 // entries expire, never a wrong status.
+//
+// Draft 21 §8.2: clients SHOULD follow redirects. A target must be an https URL
+// with a host and no userinfo (http too with Config.InsecureHTTP), and its
+// origin is not judged: the token must verify under a key of iss and its sub
+// must equal ref.URI, so whichever server answers can return only a token
+// that issuer signed for that uri, an older one included (see Config.MaxAge).
 //
 // At most 4 lists are decoded at once, in arrival order. Each cache miss holds
 // up to about 1 MiB of token data until its decode runs, and the issuer's
@@ -224,11 +241,16 @@ func NewChecker(cfg Config) (*Checker, error) {
 // jose.ErrUnsupportedKey) or that is broken (also jws.ErrBadKey) are
 // jose.ErrInvalidArgument. Any error means no statement about the
 // status can be made (§8.3), and is never a status: a uri the Checker does
-// not fetch (not https, unless Config.InsecureHTTP), a failed fetch, a token
-// whose alg is not in Config.AllowedAlgs (jws.ErrAlgNotAllowed), a token
-// that is malformed, not signed by a key of iss (issuerkey.Select), carrying
-// an iss claim other than iss (RFC 8725 §3.8), or failing a check of §5.1 or
-// §8.3, an lst Decode refuses, or an index outside the list, which wraps
+// not fetch (ErrURINotSupported), a failed fetch (StatusError and the other
+// causes in errors.go), a token whose alg is not in Config.AllowedAlgs
+// (jws.ErrAlgNotAllowed), a token that is malformed (jose.ErrMalformed, an
+// iat absent or a ttl that is not a positive number included), whose typ is
+// not statuslist+jwt (ErrTokenType), not signed by a key of iss
+// (issuerkey.Select), with a sub other than ref.URI (ErrSubjectMismatch), an
+// iss claim other than iss (ErrIssuerMismatch), an iat in the future
+// (ErrIssuedInFuture) or older than Config.MaxAge (ErrTooOld), or failing
+// another check of §5.1 or §8.3, an lst Decode refuses, or an index outside
+// the list, which wraps
 // ErrIndexOutOfBounds: the Referenced Token MUST be rejected
 // (draft-ietf-oauth-status-list-21 §8.3 step 6), and the caller made no
 // mistake. That error comes only from the token fetched during the call:
@@ -236,12 +258,14 @@ func NewChecker(cfg Config) (*Checker, error) {
 // one another call cached meanwhile included, is read from a fresh fetch,
 // and a cache hit then costs a fetch. When that fetch fails, Status returns
 // its error, not ErrIndexOutOfBounds. Errors of the resolver, jose/jws and
-// jose/jwt are wrapped unchanged. No error of the fetch holds the status
-// list uri or a redirect target, which may carry a secret: safehttp writes
-// its own text for its checks and passes every net/http error through an
-// allowlist. A network error through a proxy of a Config.HTTPClient can still
-// quote certificate names. errors.Is still reaches the cause, such as
-// context.Canceled.
+// jose/jwt are wrapped unchanged. No error text holds the userinfo, path or
+// query of the uri or of a redirect target, which may carry a secret:
+// safehttp writes its own text for its checks and passes every net/http error
+// through an allowlist. A network error names the host, or ip:port, of the hop
+// that failed, and through a proxy of a Config.HTTPClient can quote
+// certificate names. errors.Is still reaches the cause, such as
+// context.Canceled; the net/http cause, if printed, may hold the full URL
+// (see safehttp.Get).
 func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error) {
 	if c == nil || c.issuers == nil {
 		return 0, fmt.Errorf("%w: statuslist: Checker not made by NewChecker", jose.ErrInvalidArgument)
@@ -256,8 +280,12 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 	// Not jose.ErrInvalidArgument: the uri comes from the credential, and the
 	// caller made no mistake. The uri stays out of the error: it may carry a
 	// password in its userinfo (RFC 3986 §7.5) or a token in its query.
-	if u, err := url.Parse(ref.URI); !c.insecureHTTP && (err != nil || !safehttp.HTTPSURL(u)) {
-		return 0, errors.New("statuslist: status list uri: Checker fetches only https URLs with a host and no userinfo (Config.InsecureHTTP allows http)")
+	// The rule of the fetch itself, applied before it in both modes.
+	if u, err := url.Parse(ref.URI); err != nil || !(safehttp.Limits{AllowHTTP: c.insecureHTTP}).Allows(u) {
+		if c.insecureHTTP {
+			return 0, fmt.Errorf("%w: the Checker fetches only https or http URLs with a host and no userinfo", ErrURINotSupported)
+		}
+		return 0, fmt.Errorf("%w: the Checker fetches only https URLs with a host and no userinfo (Config.InsecureHTTP allows http)", ErrURINotSupported)
 	}
 	// Keyed by iss too: keyed by uri alone, a list verified with one issuer's
 	// key would answer for another issuer's token pointing to the same uri.
@@ -295,9 +323,11 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 // fetched, and a newer list is never dropped for an older one.
 func (c *Checker) load(ctx context.Context, key cacheKey, idx int) (*List, error) {
 	fetched := c.now()
-	// §8.1, §8.2; redirects bounded (§11.4) to maxRedirects.
+	// §8.1, §8.2; redirects bounded (§11.4) to maxRedirects. §8.2 puts the
+	// content-type MUST on the Status Provider, and typ (§5.1; RFC 8725
+	// §3.11) carries the type, so the Content-Type is not judged.
 	body, _, err := safehttp.Get(ctx, c.client, key.uri, []string{mediaTypeJWT},
-		safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, MaxBytes: maxTokenBytes, AllowHTTP: c.insecureHTTP})
+		safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, MaxBytes: maxTokenBytes, AllowHTTP: c.insecureHTTP, AnyContentType: true})
 	if err != nil {
 		return nil, fmt.Errorf("statuslist: %w", err)
 	}
@@ -311,7 +341,7 @@ func (c *Checker) load(ctx context.Context, key cacheKey, idx int) (*List, error
 	// §5.1: typ MUST be statuslist+jwt (RFC 8725 §3.11). Refusing on the
 	// unverified header accepts nothing and spares the resolver call.
 	if !header.TypIs(typStatusList) {
-		return nil, errors.New("statuslist: token typ is not statuslist+jwt")
+		return nil, ErrTokenType
 	}
 	keys, err := c.issuers.Keys(ctx, key.iss)
 	if err != nil {
@@ -402,7 +432,7 @@ func (c *Checker) decode(tc listClaims) (*List, error) {
 func (c *Checker) checkAge(iat, now time.Time) error {
 	// Shifting now, not the claim, keeps a far-off date from overflowing.
 	if c.maxAge > 0 && iat.Before(now.Add(-c.maxAge).Add(-c.skew)) {
-		return fmt.Errorf("statuslist: token iat %s is older than the max age %v (Config.MaxAge)", iat.UTC(), c.maxAge)
+		return fmt.Errorf("%w: iat %s, max age %v", ErrTooOld, iat.UTC(), c.maxAge)
 	}
 	return nil
 }
@@ -424,29 +454,29 @@ func checkClaims(claims map[string]any, iss, uri string, now time.Time, skew tim
 	// §5.1 and §8.3 step 4a: sub equals the uri of the Referenced Token,
 	// compared without transformation (RFC 7519 §7.3).
 	if sub, _ := claims["sub"].(string); sub != uri {
-		return tc, errors.New("statuslist: token sub is not the uri of the Referenced Token")
+		return tc, ErrSubjectMismatch
 	}
 	// RFC 8725 §3.8: a present iss must own the key that verified the token.
 	// The Checker verifies only with keys of iss (see NewChecker), so iss, a
 	// string (RFC 7519 §4.1.1), must equal it unchanged (RFC 7519 §7.3).
 	if v, ok := claims["iss"]; ok {
 		if s, isString := v.(string); !isString || s != iss {
-			return tc, errors.New("statuslist: token iss is not the issuer of the Referenced Token")
+			return tc, ErrIssuerMismatch
 		}
 	}
 	// §5.1: iat is REQUIRED (§8.3 step 3b). One later than now + skew is
-	// refused because the cache keeps the list with the later iat (cache.go),
-	// so a future iat would hold its list over newer ones until it expires.
-	// This is not the freshness policy of §8.3 step 4b, which Config.MaxAge sets.
+	// refused, an SDK policy §5.1 rule 4 leaves to the Relying Party:
+	// Config.MaxAge counts age from iat and the cache keeps the list with the
+	// later iat (cache.go), so a future iat would escape both.
 	iat, ok, err := jwt.DateClaim(claims, "iat")
 	if err != nil {
 		return tc, fmt.Errorf("statuslist: token: %w", err)
 	}
 	if !ok {
-		return tc, errors.New("statuslist: token has no iat")
+		return tc, fmt.Errorf("%w: statuslist: token has no iat", jose.ErrMalformed)
 	}
 	if iat.After(now.Add(skew)) {
-		return tc, errors.New("statuslist: token iat is in the future")
+		return tc, ErrIssuedInFuture
 	}
 	tc.iat = iat
 	// §5.1 rule 3 and §8.3 step 4c: exp, and nbf, per RFC 7519 §4.1.4, §4.1.5.
@@ -469,7 +499,7 @@ func checkClaims(claims map[string]any, iss, uri string, now time.Time, skew tim
 		n, _ := v.(json.Number) // any other type reads as "" and fails to parse
 		f, err := strconv.ParseFloat(string(n), 64)
 		if err != nil || !(f > 0) {
-			return tc, errors.New("statuslist: token ttl is not a positive number")
+			return tc, fmt.Errorf("%w: statuslist: token ttl is not a positive number", jose.ErrMalformed)
 		}
 		tc.ttl = maxCacheLifetime
 		if f < maxCacheLifetime.Seconds() {

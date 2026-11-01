@@ -210,6 +210,16 @@ func TestGetMediaTypes(t *testing.T) {
 	if !errors.Is(err, ErrContentTypeNotAccepted) || err.Error() != "safehttp: content type is not application/jwk-set+json or application/json" {
 		t.Errorf("Content-Type text/html: err = %v", err)
 	}
+	// AnyContentType skips only the Content-Type check: Accept is still sent.
+	accept.Store("")
+	lax := limits
+	lax.AnyContentType = true
+	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/text/html", types, lax); err != nil {
+		t.Errorf("Content-Type text/html with AnyContentType: err = %v", err)
+	}
+	if got := accept.Load(); got != "application/jwk-set+json, application/json" {
+		t.Errorf("Accept with AnyContentType = %q", got)
+	}
 }
 
 func TestGetRefusesBodyOverCap(t *testing.T) {
