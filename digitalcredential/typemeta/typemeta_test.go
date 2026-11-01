@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -302,6 +304,10 @@ func TestHTTPResolver(t *testing.T) {
 	var served atomic.Int32
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
+		if r.URL.Path == "/unavailable" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		if r.URL.Path != "/t" {
 			http.NotFound(w, r)
 			return
@@ -316,7 +322,7 @@ func TestHTTPResolver(t *testing.T) {
 	defer srv.Close()
 	vct := srv.URL + "/t"
 	good = []byte(doc(vct, ""))
-	r, err := typemeta.NewHTTPResolver(typemeta.Config{Allowed: []string{srv.URL + "/"}, HTTPClient: srv.Client()})
+	r, err := typemeta.NewHTTPResolver(typemeta.Config{TrustedPublisherOrigins: []string{srv.URL + "/"}, HTTPClient: srv.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,8 +335,12 @@ func TestHTTPResolver(t *testing.T) {
 	if n := requests.Load(); n != 0 {
 		t.Fatalf("%d requests for refused vcts", n)
 	}
-	if _, err := r.Metadata(ctx, typemeta.Ref{VCT: srv.URL + "/missing"}); !errors.Is(err, typemeta.ErrNotFound) {
-		t.Errorf("404: got %v, want ErrNotFound", err)
+	var se *typemeta.StatusError
+	if _, err := r.Metadata(ctx, typemeta.Ref{VCT: srv.URL + "/missing"}); !errors.Is(err, typemeta.ErrNotFound) || errors.As(err, &se) {
+		t.Errorf("404: got %v, want ErrNotFound without a StatusError", err)
+	}
+	if _, err := r.Metadata(ctx, typemeta.Ref{VCT: srv.URL + "/unavailable"}); !errors.As(err, &se) || se.Code != http.StatusServiceUnavailable || errors.Is(err, typemeta.ErrNotFound) {
+		t.Errorf("503: got %v, want a StatusError with code 503, not ErrNotFound", err)
 	}
 	ref := typemeta.Ref{VCT: vct, Integrity: typemeta.Integrity(good)}
 	if _, err := typemeta.Load(ctx, r, ref); !errors.Is(err, typemeta.ErrInvalid) {
@@ -345,8 +355,148 @@ func TestHTTPResolver(t *testing.T) {
 	if n := served.Load(); n != 2 {
 		t.Errorf("served %d times, want 2", n)
 	}
-	if _, err := typemeta.NewHTTPResolver(typemeta.Config{}); !errors.Is(err, jose.ErrInvalidArgument) {
-		t.Errorf("empty Allowed: got %v", err)
+	// An empty TrustedPublisherOrigins recognizes every https publisher.
+	if _, err := typemeta.NewHTTPResolver(typemeta.Config{}); err != nil {
+		t.Errorf("empty TrustedPublisherOrigins: got %v", err)
+	}
+	// Entries are origins: a path, query or userinfo is refused, and so is
+	// "*", a "*" in a host other than a leading "*.", a host with an empty
+	// label or not ASCII, and a port with a leading zero. RedirectTo reads
+	// entries alike.
+	for _, e := range []string{"*", "**", "https://a*.example.com/", "https://*", "https://", "http://example.com",
+		"https://example.com/t1/", "https://example.com/t1", "https://example.com/a*b", "https://example.com?x=*", "https://user@example.com",
+		"https://example.com.", "https://bücher.example", "https://a..example.com", "https://example.com:0443"} {
+		if _, err := typemeta.NewHTTPResolver(typemeta.Config{TrustedPublisherOrigins: []string{"https://ok.example/", e}}); !errors.Is(err, jose.ErrInvalidArgument) {
+			t.Errorf("NewHTTPResolver(%q) = %v, want jose.ErrInvalidArgument", e, err)
+		}
+		if _, err := typemeta.NewHTTPResolver(typemeta.Config{Redirects: typemeta.RedirectTo("https://ok.example/", e)}); !errors.Is(err, jose.ErrInvalidArgument) || !strings.Contains(err.Error(), "RedirectTo[1]") {
+			t.Errorf("RedirectTo(%q) = %v, want jose.ErrInvalidArgument naming RedirectTo[1]", e, err)
+		}
+	}
+	if _, err := typemeta.NewHTTPResolver(typemeta.Config{Redirects: typemeta.RedirectTo()}); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("RedirectTo() = %v, want jose.ErrInvalidArgument", err)
+	}
+	for _, e := range []string{"https://example.com", "https://example.com/", "https://*.example.com"} {
+		if _, err := typemeta.NewHTTPResolver(typemeta.Config{TrustedPublisherOrigins: []string{e}, Redirects: typemeta.RedirectTo(e)}); err != nil {
+			t.Errorf("NewHTTPResolver(%q) = %v", e, err)
+		}
+	}
+	// A vct of another origin is not found, so Multi asks the next resolver,
+	// whatever Redirects follows.
+	or, err := typemeta.NewHTTPResolver(typemeta.Config{TrustedPublisherOrigins: []string{"https://example.com"}, Redirects: typemeta.RedirectAny()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, vct := range []string{"https://example.org/t1", "https://example.com:8443/t1", "https://a.example.com/t1"} {
+		if _, err := or.Metadata(t.Context(), typemeta.Ref{VCT: vct}); !errors.Is(err, typemeta.ErrNotFound) {
+			t.Errorf("Metadata(%q) = %v, want ErrNotFound", vct, err)
+		}
+	}
+}
+
+// draft 19 §7.1: the default client refuses the loopback address the
+// httptest server listens on.
+func TestDefaultClientRefusesLoopback(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	r, err := typemeta.NewHTTPResolver(typemeta.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Metadata(t.Context(), typemeta.Ref{VCT: srv.URL + "/t"}); !errors.Is(err, typemeta.ErrAddressBlocked) {
+		t.Fatalf("err = %v, want ErrAddressBlocked", err)
+	}
+}
+
+// The credential or an extending document chooses the URL, and the same
+// author writes its integrity, so by default a redirect stays on the origin
+// of the URL requested whatever TrustedPublisherOrigins holds: another
+// origin is refused before it is requested, integrity or not, for vct and
+// extends alike, and the failure is not cached. RedirectTo adds the origins
+// it lists to that origin, and RedirectAny follows any https URL.
+func TestRedirects(t *testing.T) {
+	const root, parent = "https://example.com/root", "https://example.com/p/parent"
+	const moved = "https://example.com:8443/moved"
+	const origin = "https://example.com/"
+	var within typemeta.RedirectPolicy
+	for _, tc := range []struct {
+		name      string
+		allowed   []string
+		redirects typemeta.RedirectPolicy
+		ref       typemeta.Ref
+		from, to  string // from is answered with a 302 to to
+		refused   bool
+	}{
+		{"another origin", []string{origin}, within, typemeta.Ref{VCT: root}, "/root", moved, true},
+		{"another origin, integrity of the target", []string{origin}, within, typemeta.Ref{VCT: root, Integrity: typemeta.Integrity([]byte(doc(root, "")))}, "/root", moved, true},
+		{"extends", []string{origin}, within, typemeta.Ref{VCT: root}, "/p/parent", moved, true},
+		{"another origin, both origins listed", []string{origin, "https://example.com:8443/"}, within, typemeta.Ref{VCT: root}, "/root", moved, true},
+		{"subdomain entry, another subdomain", []string{"https://*.example.com/"}, within, typemeta.Ref{VCT: "https://a.example.com/root"}, "/root", "https://b.example.com/moved", true},
+		{"empty TrustedPublisherOrigins", nil, within, typemeta.Ref{VCT: root}, "/root", moved, true},
+		{"another host, equal under Unicode case folding", nil, within, typemeta.Ref{VCT: "https://σ.example.com/root"}, "/root", "https://ς.example.com/moved", true},
+		{"same origin, another case and default port", []string{origin}, within, typemeta.Ref{VCT: root}, "/root", "https://EXAMPLE.com:443/moved", false},
+		{"RedirectTo the target", []string{origin}, typemeta.RedirectTo("https://example.com:9443", "https://EXAMPLE.com:8443/"), typemeta.Ref{VCT: root}, "/root", moved, false},
+		{"RedirectTo another origin", []string{origin}, typemeta.RedirectTo("https://example.com:9443"), typemeta.Ref{VCT: root}, "/root", moved, true},
+		{"RedirectTo, same origin", []string{origin}, typemeta.RedirectTo("https://example.com:9443"), typemeta.Ref{VCT: root}, "/root", "https://example.com/moved", false},
+		{"RedirectTo, extends to the target", []string{origin}, typemeta.RedirectTo("https://example.com:8443"), typemeta.Ref{VCT: root}, "/p/parent", moved, false},
+		{"RedirectAny", []string{origin}, typemeta.RedirectAny(), typemeta.Ref{VCT: root}, "/root", moved, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var redirected, served atomic.Int32
+			to, err := url.Parse(tc.to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := to.Path
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case tc.from:
+					redirected.Add(1)
+					http.Redirect(w, r, tc.to, http.StatusFound)
+				case target:
+					served.Add(1)
+					if tc.from == "/p/parent" {
+						w.Write([]byte(doc(parent, "")))
+					} else {
+						w.Write([]byte(doc(tc.ref.VCT, "")))
+					}
+				case "/root":
+					w.Write([]byte(doc(root, `,"extends":"`+parent+`"`)))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			client := srv.Client()
+			addr := srv.Listener.Addr().String()
+			client.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			}
+			r, err := typemeta.NewHTTPResolver(typemeta.Config{TrustedPublisherOrigins: tc.allowed, Redirects: tc.redirects, HTTPClient: client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				_, err := typemeta.Load(context.Background(), r, tc.ref)
+				switch {
+				// The refusal, matching no sentinel Verify reads as NOT_FOUND
+				// or INVALID, and saying how the publisher or the verifier fixes it.
+				case tc.refused && (!errors.Is(err, typemeta.ErrRedirectNotAllowed) || errors.Is(err, typemeta.ErrNotFound) || errors.Is(err, typemeta.ErrInvalid) ||
+					!strings.Contains(err.Error(), "must serve it from that origin, or the verifier allows the target with RedirectTo")):
+					t.Fatalf("err = %v, want the redirect refused", err)
+				case !tc.refused && err != nil:
+					t.Fatalf("err = %v, want the redirect followed", err)
+				}
+			}
+			want := int32(2)
+			if tc.refused {
+				want = 0
+			}
+			if n, m := redirected.Load(), served.Load(); n != 2 || m != want {
+				t.Fatalf("redirect got %d requests, target %d; want 2 and %d", n, m, want)
+			}
+		})
 	}
 }
 

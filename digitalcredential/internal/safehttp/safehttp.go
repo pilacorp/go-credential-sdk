@@ -48,11 +48,11 @@ type Limits struct {
 	// https, for a caller whose standard leaves the scheme to it; the host
 	// and userinfo rules of HTTPSURL still hold.
 	AllowHTTP bool
-	// SameOrigin refuses a redirect whose origin is not that of the URL Get
-	// was given: the host name in any ASCII case, and the port, the scheme's
-	// default when absent. Every URL here is https, so these two fix the
-	// origin. The refusal matches ErrCrossOrigin.
-	SameOrigin bool
+	// Follow, when set, refuses a redirect it reports false for, given the
+	// URL Get was given and the URL the redirect would request; the refusal
+	// matches ErrNotFollowed. It judges every hop against that first URL,
+	// after the scheme and host check and before the redirect count.
+	Follow func(start, target *url.URL) bool
 }
 
 // maxHeaderBytes caps response headers, which would otherwise default to
@@ -116,13 +116,8 @@ type StatusError struct{ Code int }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("safehttp: status %d", e.Code) }
 
-// sameOrigin reports whether a and b have one origin as Limits.SameOrigin
-// reads it.
-func sameOrigin(a, b *url.URL) bool {
-	return strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
-}
-
-func port(u *url.URL) string {
+// Port returns the port of u; when absent, 80 for http and 443 otherwise.
+func Port(u *url.URL) string {
 	if p := u.Port(); p != "" {
 		return p
 	}
@@ -132,15 +127,38 @@ func port(u *url.URL) string {
 	return "443"
 }
 
-// redirectRefusal is the text of a redirect Get's CheckRedirect refuses; its
-// own type lets fetchError show that text.
-type redirectRefusal string
+// checkError is an error of a check of Get: the text it shows and the
+// sentinel it matches. Its own type lets fetchError show the text of a
+// redirect Get's CheckRedirect refuses.
+type checkError struct {
+	text string
+	err  error
+}
 
-func (r redirectRefusal) Error() string { return string(r) }
+func (e *checkError) Error() string { return e.text }
+func (e *checkError) Unwrap() error { return e.err }
 
-// ErrCrossOrigin is the redirect Get refuses under Limits.SameOrigin; the
-// caller adds how its own configuration allows it.
-var ErrCrossOrigin error = redirectRefusal("redirect to another origin refused")
+// The sentinels of Get's own checks. An error of one of them matches it with
+// errors.Is; its text says what failed.
+var (
+	// ErrNotFollowed is the redirect Get refuses under Limits.Follow; the
+	// caller adds how its own configuration allows it.
+	ErrNotFollowed = errors.New("redirect refused")
+	// ErrRedirectTargetNotAllowed is a redirect to a URL Get does not
+	// request: one that is not https (or http with Limits.AllowHTTP), has
+	// no host or has userinfo. It is checked before Limits.Follow.
+	ErrRedirectTargetNotAllowed = errors.New("safehttp: redirect target not allowed")
+	// ErrTooManyRedirects is a redirect past Limits.MaxRedirects.
+	ErrTooManyRedirects = errors.New("safehttp: too many redirects")
+	// ErrContentTypeNotAccepted is a final response whose media type is
+	// none of those Get was given.
+	ErrContentTypeNotAccepted = errors.New("safehttp: content type not accepted")
+	// ErrBodyTooLarge is a body over Limits.MaxBytes.
+	ErrBodyTooLarge = errors.New("safehttp: body too large")
+)
+
+// notFollowed is the refusal of a redirect under Limits.Follow.
+var notFollowed = &checkError{text: "redirect refused", err: ErrNotFollowed}
 
 // fetchErr is the error Get returns when net/http fails, requesting or
 // reading the body. Its text never holds the request URL or a redirect
@@ -167,12 +185,12 @@ func fetchError(step string, err error) error {
 	if errors.As(err, &ue) {
 		cause = ue.Err
 	}
-	var refusal redirectRefusal
+	var refusal *checkError
 	var op *net.OpError
 	var text string
 	switch {
 	case errors.As(cause, &refusal):
-		text = string(refusal)
+		text = refusal.text
 	case errors.Is(cause, context.Canceled):
 		text = context.Canceled.Error()
 	case errors.Is(cause, context.DeadlineExceeded):
@@ -208,7 +226,7 @@ func (l Limits) schemes() string {
 // every redirect target must pass HTTPSURL (with l.AllowHTTP, or be an http
 // URL with a host and no userinfo), and at most l.MaxRedirects
 // redirects are followed, all checked before the next request is sent; with
-// l.SameOrigin a redirect target must also have the origin of rawURL. The
+// l.Follow a redirect target must also be one it reports true for. The
 // whole fetch ends within l.Timeout. The status must be 2xx, and the media
 // type of Content-Type must be one of mediaTypes (ASCII case ignored,
 // parameters allowed); the list, joined by ", ", is also sent as Accept (RFC
@@ -225,6 +243,11 @@ func (l Limits) schemes() string {
 // and TLS rules and can send a request elsewhere, and l.Timeout bounds it only
 // if it honours the request context. Its CheckRedirect runs before these
 // checks, so a URL it rewrites is checked too.
+//
+// A final status that is not 2xx is a *StatusError. A refused redirect
+// matches ErrRedirectTargetNotAllowed, ErrNotFollowed or ErrTooManyRedirects,
+// a refused media type ErrContentTypeNotAccepted, and a body over
+// l.MaxBytes ErrBodyTooLarge.
 //
 // The text of every error Get returns never holds the request URL or a
 // redirect target. Its own checks (arguments, URL, status, content type,
@@ -278,13 +301,13 @@ func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string
 			}
 		}
 		if !l.allows(r.URL) {
-			return redirectRefusal("redirect to a URL that is not " + l.schemes() + " with a host and no userinfo")
+			return &checkError{text: "redirect to a URL that is not " + l.schemes() + " with a host and no userinfo", err: ErrRedirectTargetNotAllowed}
 		}
-		if l.SameOrigin && !sameOrigin(r.URL, via[0].URL) {
-			return ErrCrossOrigin
+		if l.Follow != nil && !l.Follow(u, r.URL) {
+			return notFollowed
 		}
 		if len(via) > l.MaxRedirects {
-			return redirectRefusal(fmt.Sprintf("more than %d redirects", l.MaxRedirects))
+			return &checkError{text: fmt.Sprintf("more than %d redirects", l.MaxRedirects), err: ErrTooManyRedirects}
 		}
 		return nil
 	}
@@ -299,14 +322,14 @@ func Get(ctx context.Context, c *http.Client, rawURL string, mediaTypes []string
 	}
 	mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil || !slices.ContainsFunc(mediaTypes, func(want string) bool { return strings.EqualFold(mt, want) }) {
-		return nil, nil, fmt.Errorf("safehttp: content type is not %s", strings.Join(mediaTypes, " or "))
+		return nil, nil, &checkError{text: "safehttp: content type is not " + strings.Join(mediaTypes, " or "), err: ErrContentTypeNotAccepted}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, l.MaxBytes+1))
 	if err != nil {
 		return nil, nil, fetchError("reading body", err)
 	}
 	if int64(len(body)) > l.MaxBytes {
-		return nil, nil, fmt.Errorf("safehttp: body over %d bytes", l.MaxBytes)
+		return nil, nil, &checkError{text: fmt.Sprintf("safehttp: body over %d bytes", l.MaxBytes), err: ErrBodyTooLarge}
 	}
 	return body, resp.Header, nil
 }

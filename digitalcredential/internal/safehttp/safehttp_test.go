@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -72,8 +73,8 @@ func TestGetRefusesRedirect(t *testing.T) {
 	}))
 	t.Cleanup(s.Close)
 
-	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/downgrade", []string{"application/json"}, limits); err == nil {
-		t.Error("redirect to http: err = nil")
+	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/downgrade", []string{"application/json"}, limits); !errors.Is(err, ErrRedirectTargetNotAllowed) {
+		t.Errorf("redirect to http: err = %v, want ErrRedirectTargetNotAllowed", err)
 	}
 	if plainHits.Load() != 0 {
 		t.Errorf("http server got %d requests, want 0", plainHits.Load())
@@ -84,18 +85,50 @@ func TestGetRefusesRedirect(t *testing.T) {
 	// Get, not the TLS handshake, the check that refuses it.
 	c := s.Client()
 	c.Transport.(*http.Transport).TLSClientConfig.ServerName = "127.0.0.1"
-	if _, _, err := Get(context.Background(), c, s.URL+"/nohost", []string{"application/json"}, limits); err == nil {
-		t.Error("redirect to https without a host: err = nil")
+	if _, _, err := Get(context.Background(), c, s.URL+"/nohost", []string{"application/json"}, limits); !errors.Is(err, ErrRedirectTargetNotAllowed) {
+		t.Errorf("redirect to https without a host: err = %v, want ErrRedirectTargetNotAllowed", err)
 	}
 	if targetHits.Load() != 0 {
 		t.Errorf("local server got %d requests, want 0", targetHits.Load())
 	}
 
-	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/hop/0", []string{"application/json"}, limits); err == nil {
-		t.Error("too many redirects: err = nil")
+	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/hop/0", []string{"application/json"}, limits); !errors.Is(err, ErrTooManyRedirects) {
+		t.Errorf("too many redirects: err = %v, want ErrTooManyRedirects", err)
 	}
 	if got, want := hops.Load(), int32(limits.MaxRedirects+1); got != want {
 		t.Errorf("server got %d requests, want %d", got, want)
+	}
+}
+
+// Follow judges every hop against the URL Get was given, so a first redirect
+// that stays on its origin cannot carry the fetch to another origin on the
+// next.
+func TestGetChecksEveryRedirect(t *testing.T) {
+	var targetHits atomic.Int32
+	target := jsonServer(t, true, "{}", &targetHits)
+	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a":
+			http.Redirect(w, r, "/b", http.StatusFound)
+		case "/b":
+			http.Redirect(w, r, target.URL+"/c", http.StatusFound)
+		}
+	}))
+	t.Cleanup(s.Close)
+	l := limits
+	var starts []string
+	l.Follow = func(start, target *url.URL) bool {
+		starts = append(starts, start.String())
+		return start.Host == target.Host
+	}
+	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/a", []string{"application/json"}, l); !errors.Is(err, ErrNotFollowed) {
+		t.Errorf("err = %v, want ErrNotFollowed", err)
+	}
+	if want := []string{s.URL + "/a", s.URL + "/a"}; !slices.Equal(starts, want) {
+		t.Errorf("Follow got start %q, want %q", starts, want)
+	}
+	if targetHits.Load() != 0 {
+		t.Errorf("target got %d requests, want 0", targetHits.Load())
 	}
 }
 
@@ -174,7 +207,7 @@ func TestGetMediaTypes(t *testing.T) {
 		t.Errorf("Accept = %q", got)
 	}
 	_, _, err := Get(context.Background(), s.Client(), s.URL+"/text/html", types, limits)
-	if err == nil || err.Error() != "safehttp: content type is not application/jwk-set+json or application/json" {
+	if !errors.Is(err, ErrContentTypeNotAccepted) || err.Error() != "safehttp: content type is not application/jwk-set+json or application/json" {
 		t.Errorf("Content-Type text/html: err = %v", err)
 	}
 }
@@ -182,8 +215,8 @@ func TestGetMediaTypes(t *testing.T) {
 func TestGetRefusesBodyOverCap(t *testing.T) {
 	var hits atomic.Int32
 	s := jsonServer(t, true, strings.Repeat("a", int(limits.MaxBytes)+1), &hits)
-	if _, _, err := Get(context.Background(), s.Client(), s.URL, []string{"application/json"}, limits); err == nil {
-		t.Fatal("err = nil")
+	if _, _, err := Get(context.Background(), s.Client(), s.URL, []string{"application/json"}, limits); !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("err = %v, want ErrBodyTooLarge", err)
 	}
 }
 

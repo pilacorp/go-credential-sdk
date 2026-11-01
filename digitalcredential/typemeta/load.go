@@ -40,7 +40,8 @@ import (
 //     inherited sd of always or never, or an inherited mandatory true to
 //     false (§5.6.5.1), or two claims share an svg_id.
 //
-// Load keeps nothing between calls. Texts quote no vct or URL.
+// Load keeps nothing between calls. Its own texts quote no vct or URL; an
+// error of r keeps its text.
 func Load(ctx context.Context, r Resolver, ref Ref) (*Metadata, error) {
 	if ctx == nil || r == nil {
 		return nil, fmt.Errorf("%w: typemeta: Load needs a non-nil context and Resolver", jose.ErrInvalidArgument)

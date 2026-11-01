@@ -28,9 +28,9 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 | Signs through `jws.Signer` and checks the signature with `SigningKey.Public` before returning (`jose`) | Holds the private key: a `jws.Signer` over a key in memory, or `jws.DigestSigner` over a remote signing service |
 | Selects the disclosures of the claims in `Reveal` by OpenID4VP 1.0 §7.1.1 claims path pointers, with their concealed ancestors (RFC 9901 §4.2.6) | Asks the user which claims to present; RFC 9901 §7.2 leaves consent out of scope |
 | Writes the Key Binding JWT with `sd_hash` over exactly the SD-JWT sent (RFC 9901 §4.3.1), signed by the key of `cnf.jwk` | Sets `KeyBinding` when the Verifier requires Key Binding, with the Verifier's `aud` and `nonce` |
-| Retrieves JWT VC Issuer Metadata with the bounds of draft 19 §3 and refuses addresses that are not globally reachable (§7.1) | Lists the issuers it trusts (`Config.Allowed`, §2.5), blocks hosts of its own network with its egress policy |
+| Retrieves JWT VC Issuer Metadata with the bounds of draft 19 §3 and refuses addresses that are not globally reachable (§7.1) | Lists the issuers it trusts (`Config.TrustedIssuerOrigins`, §2.5), blocks hosts of its own network with its egress policy |
 | Verifies the signature, the Disclosures, the times, Key Binding and status (draft 19 §2.4, RFC 9901 §7.1, §7.3) | Sets `aud` and a fresh `nonce` per transaction and accepts each nonce once; checks that the issuer may issue this `vct` (§7.7) and the claims a protocol adds to the KB-JWT |
-| Retrieves, checks, merges and caches Type Metadata, and checks the payload against its claim metadata (draft 19 §5, §6) | Decides whether Type Metadata is processed and required, and which publishers it trusts (`typemeta.Config.Allowed`, §5.7, §7.8); renders the credential |
+| Retrieves, checks, merges and caches Type Metadata, and checks the payload against its claim metadata (draft 19 §5, §6) | Decides whether Type Metadata is processed and required, and which publishers it trusts (`typemeta.Config.TrustedPublisherOrigins`, §5.7, §7.8); renders the credential |
 | Fetches, verifies and caches Status List Tokens (draft-ietf-oauth-status-list-21 §8) | Chooses the issuers whose status keys it trusts (`statuslist.Config.Issuers`) and how old a list may be (`MaxAge`) |
 
 ## Object model
@@ -46,7 +46,7 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 | `Checker`, `Config` | `statuslist` | Reads a credential's status from its issuer's Status List Token; share one, it caches by `ttl` |
 | `SigningKey` | `issuerkey` | The Issuer's `jws.Signer`, its public key and `kid` |
 | `PublicKey` | `issuerkey` | A key an Issuer publishes for verifying, with its `kid` (RFC 7517 §4.5) |
-| `Config` | `issuermeta` | The configuration of a `Resolver`, copied at construction; `Allowed` is required, and any other zero field gives a safe default |
+| `Config` | `issuermeta` | The configuration of a `Resolver`, copied at construction; an empty `TrustedIssuerOrigins` trusts every https issuer, and any other zero field gives a safe default |
 
 | Interface | Does | In the SDK | Written by the caller, for example |
 |---|---|---|---|
@@ -116,6 +116,9 @@ case err != nil: // ctx ended: nothing is known about the token
 }
 ```
 
+An `*dc.Error` that a resolver or the `StatusChecker` led to wraps its error, and so does the ctx error, which wraps
+`ctx.Err()` too. `errors.Is` and `errors.As` reach the cause, such as an `issuermeta.StatusError`.
+
 With no option, `Verify` follows the standard's rule where it sets one, and otherwise the SDK default in the table, which never accepts what the standard rejects. The options set what the standards leave to the Verifier:
 
 | Option | Not passed |
@@ -131,6 +134,7 @@ With no option, `Verify` follows the standard's rule where it sets one, and othe
 | `WithoutStatusCheck()` | Status is checked, as -19 §2.4 says it SHOULD be; with this option it is not, and `Result.StatusSkipped` says so |
 | `WithAcceptedStatus(v...)` | Only `0x00`, VALID (draft 21 §7.1) |
 | `WithNow(t)` | `time.Now()`, read once |
+| `WithAcceptedIssuers(iss...)` | `iss` is not compared; the resolver decides which issuers it accepts. Passed, an `iss` equal to none, byte for byte (RFC 7519 §2), is `ISSUER_NOT_ACCEPTED`, and the resolver is not asked |
 | `WithAcceptedVCTs(vcts...)` | Types are not compared; read `Result.VCT` and `Result.AKAVCTs`. Passed, a credential whose `vct` and `aka_vcts` match none is `VCT_NOT_ACCEPTED` (§2.2.2.1, §2.2.2.2) |
 | `WithExtendedVCTMatch()` | `WithAcceptedVCTs` matches `vct` and `aka_vcts` only; with it, the types the credential's type `extends` too (§5.4) |
 | `WithTypeMetadata(r)`, `WithOptionalTypeMetadata(r)` | Type Metadata is not processed (§5.7 leaves it to the Verifier); see Type Metadata below |
@@ -155,16 +159,23 @@ and Verifier get a type's documents through a `typemeta.Resolver`:
 
 ```go
 types, err := typemeta.NewHTTPResolver(typemeta.Config{
-	Allowed: []string{"https://types.example/"}, // the publishers you trust (§7.8)
+	TrustedPublisherOrigins: []string{"https://types.example"}, // the publishers you trust (§7.8)
 })
 if err != nil { /* ... */ }
 res, err := cred.Verify(ctx, resolver, dc.WithTypeMetadata(types))
 ```
 
-`NewHTTPResolver` fetches a `vct` that is an https URL under `Allowed` (§5.3.1), with the bounds of §3 and the address
-check of the issuer metadata resolver (redirects are followed without being matched against `Allowed`), and caches a document for its HTTP freshness, at most 24 hours; a document
-whose integrity was checked stays until evicted. `typemeta.Static(docs...)` serves documents you ship, and
-`typemeta.Multi(r1, r2, …)` asks resolvers in order, moving on only on `typemeta.ErrNotFound`.
+`NewHTTPResolver` fetches a `vct` that is an https URL whose origin `TrustedPublisherOrigins` covers (§5.3.1), with the
+bounds of §3 and the address check of the issuer metadata resolver, and caches a document for its HTTP freshness, at
+most 24 hours; a document whose integrity was checked stays until evicted. An empty `TrustedPublisherOrigins` recognizes
+every https publisher; its entries are origins, read as for the issuer metadata resolver. `Redirects` judges each
+redirect of a `vct` or `extends` as it does for the issuer metadata, integrity or not; the refusal is
+`typemeta.ErrRedirectNotAllowed`, which `Verify` reports as `TYPE_METADATA_UNAVAILABLE` under `WithTypeMetadata`, and a
+`vct` served from a CDN on another origin needs `typemeta.RedirectTo`. A 404 is `typemeta.ErrNotFound`; any other failed
+retrieval wraps its cause, with the sentinels and `StatusError` of the issuer metadata resolver under `typemeta` names.
+Integrity does not lift the rule, because the issuer writes the hash as well as the URL, while the origin is what you
+recognize. `typemeta.Static(docs...)` serves documents you ship, and `typemeta.Multi(r1, r2, …)` asks resolvers in
+order, moving on only on `typemeta.ErrNotFound`.
 
 `typemeta.Load` follows `extends` up to 8 documents, checks each `#integrity` (§6, W3C SRI), the structure and the
 `vct`, and merges display and claim metadata (§5.5.2, §5.6.5). `Verify` then checks the payload as issued against the
@@ -218,18 +229,46 @@ one you verified.
 
 ## Issuer keys
 
-`issuermeta.NewResolver(issuermeta.Config{Allowed: …})` returns an `issuerkey.Resolver` that reads the keys of an https
-issuer from its JWT VC Issuer Metadata (draft 19 §4): the metadata at the well-known location, its `issuer` identical
-to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
+`issuermeta.NewResolver(issuermeta.Config{TrustedIssuerOrigins: …})` returns an `issuerkey.Resolver` that reads the keys of
+an https issuer from its JWT VC Issuer Metadata (draft 19 §4): the metadata at the well-known location, its `issuer`
+identical to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
 
-- `Allowed` is your trust list (§2.5). An entry ending in `/` covers every `iss` that starts with it, except one with
-  a `.` or `..` path segment; any other entry covers only the `iss` equal to it. Matching is byte for byte.
-- Redirects are not matched against `Allowed`. For an `iss` that only an entry ending in `/` covers, the credential
-  chooses the path requested, so the metadata and the JWK Set follow redirects only within the origin each retrieval
-  started from; another origin fails the retrieval before it is sent. An `iss` listed exactly, or
-  `AllowCrossOriginRedirects`, follows redirects to any https host, and the server they lead to supplies the keys.
-- An `iss` outside the list is `issuerkey.ErrIssuerNotSupported`, with no request made. Metadata or a JWK Set that
-  must not be used is `issuerkey.ErrNoUsableKey`. A failed retrieval is any other error, or one wrapping `ctx.Err()`.
+- `TrustedIssuerOrigins` is your trust list (§2.5), with entries in the style of CORS origins. Empty, it trusts every
+  https issuer, and you judge the `iss` of a verified credential yourself. An entry `https://host`, with or without a
+  port and a final `/`, covers every `iss` of that origin, and `https://*.host` every `iss` of a subdomain of `host`,
+  not `host` itself; both compare the parsed host in any ASCII case and the port with the default implied (RFC 6454 §4).
+  Any other entry is rejected: `"*"`, since the empty list already trusts every issuer; a host with an empty label,
+  a final `.` included, or not in ASCII (write each non-ASCII label as its `xn--` A-label); a host with `:` or `[` that is
+  not an IPv6 address, or `*.` before one; a port with a leading zero or out of range; and one with a path such as
+  `https://host/tenant/`. The origin's server decides which resource a path names (RFC 3986 §3.2), and the metadata
+  of every `iss` sits under `/.well-known/` at the root of its origin (§4, §4.1, RFC 8615 §3), so that server answers
+  for every issuer it hosts. To trust some issuers of a shared origin, list the origin and pass those issuers to
+  `Verify` with `WithAcceptedIssuers`, as below. An issuer writes the host of its `iss` the same way, as A-labels: a
+  host in Unicode is not a URI (RFC 7519 §2, RFC 3986 §3.2.2).
+- `Redirects` says where a redirect of the metadata or of `jwks_uri` may lead, and the trust list does not. By default
+  each one must stay on the origin of the URL requested, or the retrieval fails before it is sent: the credential
+  chooses the path of `iss`, and an open redirect on the issuer's server could otherwise hand its keys to another
+  server, even when you check the `iss` yourself. `issuermeta.RedirectTo(origins...)` also follows a redirect to the
+  origins listed, entries read as in the trust list, without trusting an `iss` there; `issuermeta.RedirectAny()`
+  follows any https redirect, one an open redirect on the issuer's server sends included. `jwks_uri` itself may name
+  another origin, since the metadata chose it; only its redirects are judged, from its own origin. A `jwks_uri` that
+  redirects to a key CDN on another origin needs `RedirectTo`:
+
+  ```go
+  r, err := issuermeta.NewResolver(issuermeta.Config{
+  	TrustedIssuerOrigins: []string{"https://issuer.example"},
+  	Redirects:            issuermeta.RedirectTo("https://keys-cdn.example"),
+  })
+  ```
+
+  So does an issuer whose metadata redirects from `https://abc.com` to `https://www.abc.com`, with
+  `RedirectTo("https://www.abc.com")`: they are one site but two origins (RFC 6454 §5).
+- An `iss` outside the list is `issuerkey.ErrIssuerNotSupported`, with no request made. Metadata or a JWK Set that must
+  not be used is `issuerkey.ErrNoUsableKey`. A failed retrieval is any other error, which `Verify` reports as
+  `ISSUER_KEY_UNAVAILABLE`, or as the ctx error once ctx is done. It wraps the cause: an `issuermeta.StatusError`,
+  `ErrRedirectNotAllowed` for a redirect `Redirects` refuses, `ErrRedirectTargetNotAllowed` for one that is not https
+  with a host and no userinfo, `ErrTooManyRedirects`, `ErrContentTypeNotAccepted`, `ErrBodyTooLarge`,
+  `ErrAddressBlocked`, or an error of the client.
 - Only P-256 and secp256k1 keys whose `use`, `alg` and `key_ops`, if present, allow verifying are returned.
 - Answers are cached as RFC 9111 allows, at most 24 hours. A key the issuer removes still verifies while its answer
   is cached; `DisableCache` retrieves every time. Share one `Resolver`.
@@ -240,6 +279,51 @@ to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
 failed retrieval never sends an issuer to another key source. `issuerkey.Select(keys, header)` picks the key the JWS
 header names: a `kid` must match exactly one key, and a token without `kid` needs exactly one key; keys are never
 tried in turn.
+
+For some issuers of a shared origin, list the origin and pass the issuers to `Verify`:
+
+```go
+saas, err := issuermeta.NewResolver(issuermeta.Config{TrustedIssuerOrigins: []string{"https://vc.example"}})
+if err != nil { /* ... */ }
+res, err := cred.Verify(ctx, saas, dc.WithAcceptedIssuers("https://vc.example/bank-a/"))
+```
+
+`iss` must equal an entry byte for byte, so `https://vc.example/bank-a` is another issuer. An `iss` outside the list
+is `ISSUER_NOT_ACCEPTED`, and the resolver is not asked.
+
+For issuers enabled per tenant in a database, load the tenant's list and pass it with `WithAcceptedIssuers` on each
+`Verify`. A tenant with no issuer has nothing to verify: refuse before `Verify`, since an empty list is `ErrPolicy`.
+
+For a rule you can judge only per `iss`, wrap the outermost resolver, `issuerkey.Multi` included: inside `Multi`,
+`ErrIssuerNotSupported` means "not this source", and a later resolver may accept the `iss`. Return
+`issuerkey.ErrIssuerNotSupported` for an `iss` you refuse, which `Verify` reports as `ISSUER_NOT_SUPPORTED`; an error of
+your own check is `ISSUER_KEY_UNAVAILABLE`, or the ctx error once ctx is done. Compare `iss` as it came, and keep it
+out of the error text. A `typemeta.Resolver` is wrapped the same way, outside `typemeta.Multi`, refusing with
+`typemeta.ErrNotFound`.
+
+```go
+type tenantIssuers struct {
+	next    issuerkey.Resolver
+	enabled func(ctx context.Context, iss string) (bool, error)
+}
+
+func (t tenantIssuers) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey, error) {
+	ok, err := t.enabled(ctx, iss)
+	if err != nil {
+		return nil, fmt.Errorf("checking the tenant's issuers: %w", err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w: iss not enabled for this tenant", issuerkey.ErrIssuerNotSupported)
+	}
+	return t.next.Keys(ctx, iss)
+}
+```
+
+An origin in `RedirectTo` may answer for every `iss` the resolver trusts; it is not scoped to one issuer, and
+`WithAcceptedIssuers` filters `iss` without narrowing it. Tenants of one origin that must not share a redirect target
+each get their own resolver, picked by `iss` in a resolver that wraps them all and refuses any other `iss` with
+`issuerkey.ErrIssuerNotSupported`. `issuerkey.Multi` cannot pick between resolvers whose trust lists overlap: the first
+one takes every `iss` both cover. The same holds for `typemeta`, by `vct`, with `typemeta.ErrNotFound`.
 
 ## HAIP
 

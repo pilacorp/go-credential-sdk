@@ -60,6 +60,7 @@ type verifyConfig struct {
 	status            StatusChecker
 	skipStatus        bool
 	accepted          []uint8
+	acceptedIssuers   []string
 	acceptedVCTs      []string
 	extendedVCT       bool
 	types             typemeta.Resolver
@@ -255,6 +256,28 @@ func WithAcceptedStatus(v ...uint8) VerifyOption {
 			return policyErr("WithAcceptedStatus needs at least one value")
 		}
 		c.accepted = v
+		return nil
+	}}
+}
+
+// WithAcceptedIssuers lists the issuers this Verifier accepts: the
+// credential passes when its iss equals one byte for byte, as RFC 7519 §2
+// compares a StringOrURI, with no case folding and no other normalization;
+// otherwise ISSUER_NOT_ACCEPTED, before issuers is asked for a key. It
+// narrows what issuers accepts, such as some issuers of an origin that
+// issuermeta.Config.TrustedIssuerOrigins lists. A credential without iss
+// is ISSUER_NOT_ACCEPTED. Not passed, iss is not compared. No issuer, or an
+// empty one, is ErrPolicy. iss is copied.
+func WithAcceptedIssuers(iss ...string) VerifyOption {
+	iss = slices.Clone(iss)
+	return option{"WithAcceptedIssuers", func(c *verifyConfig) error {
+		if len(iss) == 0 {
+			return policyErr("WithAcceptedIssuers needs at least one issuer")
+		}
+		if i := slices.Index(iss, ""); i >= 0 {
+			return policyErr("WithAcceptedIssuers issuer %d is empty; Verify reads an absent iss as \"\", so the entry would let a credential without iss past this check", i)
+		}
+		c.acceptedIssuers = iss
 		return nil
 	}}
 }

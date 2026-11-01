@@ -40,6 +40,10 @@ const (
 	// CodeIssuerNotSupported: the issuerkey.Resolver given to Verify answered
 	// issuerkey.ErrIssuerNotSupported: this verifier does not accept iss.
 	CodeIssuerNotSupported Code = "ISSUER_NOT_SUPPORTED"
+	// CodeIssuerNotAccepted: WithAcceptedIssuers is passed and iss is none of
+	// its issuers (RFC 7519 §4.1.1). Verify answers it before it asks the
+	// issuerkey.Resolver.
+	CodeIssuerNotAccepted Code = "ISSUER_NOT_ACCEPTED"
 	// CodeIssuerKeyNotFound: no single key verifies the token
 	// (issuerkey.Select). Err keeps Select's text, which tells the cases
 	// apart: the issuer publishes no key or none with the header kid (rotated
@@ -53,7 +57,8 @@ const (
 	// CodeIssuerKeyUnavailable: the resolver could not find out the issuer's
 	// keys while ctx was live, and draft-ietf-oauth-sd-jwt-vc-19 §2.5 says to
 	// reject when the key cannot be validated. Err wraps the resolver's
-	// error; a later call may succeed.
+	// error, so errors.Is and errors.As reach its cause, such as
+	// issuermeta.ErrRedirectNotAllowed or an issuermeta.StatusError.
 	CodeIssuerKeyUnavailable Code = "ISSUER_KEY_UNAVAILABLE"
 	// CodeAlgNotAllowed: the Issuer-signed JWT alg is none, not ES256 or
 	// ES256K, or not in WithAllowedAlgs (RFC 9901 §7.1 step 2a).
@@ -122,7 +127,9 @@ const (
 	// Metadata for the credential's vct (typemeta.ErrNotFound).
 	CodeTypeMetadataNotFound Code = "TYPE_METADATA_NOT_FOUND"
 	// CodeTypeMetadataUnavailable: under WithTypeMetadata, the resolver
-	// failed while ctx was live; a later call may pass.
+	// failed while ctx was live. Err wraps the resolver's error, so errors.Is
+	// and errors.As reach its cause, such as typemeta.ErrRedirectNotAllowed
+	// or a typemeta.StatusError.
 	CodeTypeMetadataUnavailable Code = "TYPE_METADATA_UNAVAILABLE"
 	// CodeTypeMetadataInvalid: the Type Metadata cannot be processed
 	// (draft-ietf-oauth-sd-jwt-vc-19 §5.7). Under WithTypeMetadata, a document
@@ -146,9 +153,9 @@ const (
 	// CodeStatusUnavailable: no statement about the status could be made
 	// (draft-ietf-oauth-status-list-21 §8.3, SHOULD be rejected): a failed
 	// fetch, a list token failing its checks, a uri the checker does not
-	// fetch, or a status mechanism other than status_list. Some causes pass
-	// on retry, others do not. A caller whose own policy accepts such a token
-	// calls Verify again with WithoutStatusCheck.
+	// fetch, or a status mechanism other than status_list. When the
+	// StatusChecker failed, Err wraps its error. WithoutStatusCheck verifies
+	// a token without checking its status.
 	CodeStatusUnavailable Code = "STATUS_UNAVAILABLE"
 )
 

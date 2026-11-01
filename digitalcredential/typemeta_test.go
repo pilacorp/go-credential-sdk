@@ -1,9 +1,11 @@
 package dc
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -170,6 +172,15 @@ func TestTypeMetadataRejects(t *testing.T) {
 			t.Errorf("got %v, want %q", err, tt.want)
 		}
 	}
+	// A failure with no sentinel Verify reads, its sentinel still reachable.
+	s.extra = []VerifyOption{WithTypeMetadata(failingTypes{fmt.Errorf("fetch: %w", typemeta.ErrRedirectNotAllowed)})}
+	if _, err := s.verify(t.Context(), compact); codeOf(err) != CodeTypeMetadataUnavailable || !errors.Is(err, typemeta.ErrRedirectNotAllowed) {
+		t.Errorf("redirect refused: %v; want TYPE_METADATA_UNAVAILABLE matching ErrRedirectNotAllowed", err)
+	}
+	s.extra = []VerifyOption{WithOptionalTypeMetadata(failingTypes{fmt.Errorf("fetch: %w", typemeta.ErrRedirectNotAllowed)})}
+	if res, err := s.verify(t.Context(), compact); err != nil || !errors.Is(res.TypeMetadataSkipped, typemeta.ErrRedirectNotAllowed) {
+		t.Errorf("optional, redirect refused: %v, %+v", err, res)
+	}
 	s.extra = []VerifyOption{WithOptionalTypeMetadata(other)}
 	if res, err := s.verify(t.Context(), compact); err != nil || res.TypeMetadata != nil || !errors.Is(res.TypeMetadataSkipped, typemeta.ErrNotFound) {
 		t.Errorf("optional, not found: %v, %+v", err, res)
@@ -319,4 +330,23 @@ func cloneClaims(c map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// failingTypes is a typemeta.Resolver that answers every ref with err.
+type failingTypes struct{ err error }
+
+func (r failingTypes) Metadata(context.Context, typemeta.Ref) ([]byte, error) {
+	return nil, r.err
+}
+
+// cancellingTypes ends ctx while it runs, as a caller's deadline does during
+// a fetch, and then fails with err.
+type cancellingTypes struct {
+	cancel context.CancelFunc
+	err    error
+}
+
+func (r cancellingTypes) Metadata(context.Context, typemeta.Ref) ([]byte, error) {
+	r.cancel()
+	return nil, r.err
 }
