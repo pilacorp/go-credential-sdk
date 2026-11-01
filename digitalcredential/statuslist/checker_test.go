@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -665,6 +668,37 @@ func TestCheckerAllowedAlgs(t *testing.T) {
 	_, err = NewChecker(Config{Issuers: keySet{}, AllowedAlgs: []string{"RS256"}})
 	if !errors.Is(err, jose.ErrInvalidArgument) || !errors.Is(err, jose.ErrUnsupportedAlg) {
 		t.Errorf("AllowedAlgs RS256: NewChecker = %v, want jose.ErrInvalidArgument and jose.ErrUnsupportedAlg", err)
+	}
+}
+
+// A Config.Issuers key jws cannot verify with is the verifier's wiring, not
+// the list's fault: jose.ErrInvalidArgument, still matching the key's class.
+func TestCheckerKeyItCannotVerifyWith(t *testing.T) {
+	signer, pub := newP256Signer(t)
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const uri = "https://example.com/statuslists/1"
+	token := signClaims(t, signer, pub, jws.Header{"typ": "statuslist+jwt", "kid": "k"}, map[string]any{
+		"sub":         uri,
+		"iat":         draft21Now.Add(-time.Hour).Unix(),
+		"status_list": map[string]any{"bits": 1, "lst": "eNrbuRgAAhcBXQ"},
+	})
+	s := newListServer(t, map[string]string{"/statuslists/1": token})
+	for _, tt := range []struct {
+		name string
+		key  *ecdsa.PublicKey
+		want error
+	}{
+		{"P-384", &p384.PublicKey, jose.ErrUnsupportedKey},
+		{"off P-256", &ecdsa.PublicKey{Curve: elliptic.P256(), X: big.NewInt(1), Y: big.NewInt(1)}, jws.ErrBadKey},
+	} {
+		c := s.checker(t, Config{Issuers: keySet{"https://a.example": {{KID: "k", Public: tt.key}}}})
+		got, err := c.Status(context.Background(), Ref{URI: uri}, "https://a.example")
+		if !errors.Is(err, jose.ErrInvalidArgument) || !errors.Is(err, tt.want) {
+			t.Errorf("%s key: Status = %d, %v; want jose.ErrInvalidArgument and %v", tt.name, got, err, tt.want)
+		}
 	}
 }
 

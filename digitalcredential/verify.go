@@ -55,8 +55,11 @@ const (
 //     MUST be rejected), whatever ctx says;
 //   - when ctx is done, Verify returns an error wrapping both ctx.Err() and
 //     the error of Status;
-//   - one wrapping jose.ErrInvalidArgument is ErrPolicy; a statuslist.Checker
-//     wraps it also when its resolver returned a key it cannot verify with;
+//   - one wrapping jose.ErrInvalidArgument is ErrPolicy, which matches no
+//     other sentinel of that error except jose.ErrUnsupportedKey or
+//     jws.ErrBadKey: a statuslist.Checker wraps one of those next to
+//     jose.ErrInvalidArgument when its resolver returned a key it cannot
+//     verify with;
 //   - any other is STATUS_UNAVAILABLE.
 //
 // statuslist.List.Get reports an index outside the list as
@@ -256,7 +259,7 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 	case err == nil:
 	// The resolver returned a key jws does not verify with: the caller's
 	// resolver, not the token, so ErrPolicy, which keeps the key's class.
-	case errors.Is(err, jose.ErrUnsupportedKey), errors.Is(err, jws.ErrBadKey):
+	case keySentinel(err) != nil:
 		return nil, fmt.Errorf("%w: dc: the issuerkey.Resolver returned a key that cannot verify: %w", ErrPolicy, err)
 	case errors.Is(err, jws.ErrAlgNotAllowed):
 		return reject(CodeAlgNotAllowed, err)
@@ -589,11 +592,34 @@ func (cfg verifyConfig) checkStatus(ctx context.Context, st statusClaim, iss str
 	// statuslist.Checker not made by NewChecker, or one whose resolver
 	// returned a key it cannot verify with.
 	case errors.Is(err, jose.ErrInvalidArgument):
-		return 0, policyErr("WithStatus: %v", err)
+		return 0, statusPolicyErr(err)
 	// Never by jose.ErrMalformed: a fetch can fail with it too.
 	default:
 		return 0, &Error{Code: CodeStatusUnavailable, Err: fmt.Errorf("StatusChecker: %w", err)}
 	}
+}
+
+// statusPolicyErr is policyErr for a StatusChecker's wiring error. When that
+// error comes from a key jws cannot verify with, the result also matches the
+// key's sentinel, as on the credential path; it never matches the rest of the
+// checker's error, such as jose.ErrInvalidArgument or a *Error.
+func statusPolicyErr(err error) error {
+	pe := policyErr("WithStatus: %v", err)
+	if key := keySentinel(err); key != nil {
+		return &keyPolicyError{text: pe.Error(), key: key}
+	}
+	return pe
+}
+
+// keySentinel returns the sentinel by which err says that jws.Verify got a key
+// it cannot verify with, jose.ErrUnsupportedKey or jws.ErrBadKey, or nil.
+func keySentinel(err error) error {
+	for _, key := range []error{jose.ErrUnsupportedKey, jws.ErrBadKey} {
+		if errors.Is(err, key) {
+			return key
+		}
+	}
+	return nil
 }
 
 func reject(c Code, err error) (*Result, error) {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -363,6 +364,9 @@ func TestVerifyRejects(t *testing.T) {
 		{"resolver key on P-384", draft19Fig8, func(s *setting) {
 			s.issuers = keysOf{"https://example.com/issuer": {{KID: "doc-signer-05-25-2022", Public: &p384.PublicKey}}}
 		}, "", jose.ErrUnsupportedKey},
+		{"resolver key off P-256", draft19Fig8, func(s *setting) {
+			s.issuers = keysOf{"https://example.com/issuer": {{KID: "doc-signer-05-25-2022", Public: &ecdsa.PublicKey{Curve: elliptic.P256(), X: big.NewInt(1), Y: big.NewInt(1)}}}}
+		}, "", jws.ErrBadKey},
 		// RFC 9901 §7.3 step 2, §9.5: the credential binds a key (cnf).
 		{"KB-JWT stripped", stripped, nil, CodeKBMissing, nil},
 		{"KB-JWT stripped, KeyBindingRequired", stripped, func(s *setting) { s.extra = []VerifyOption{WithKeyBinding(KeyBindingRequired)} }, CodeKBMissing, nil},
@@ -416,9 +420,12 @@ func TestVerifyRejects(t *testing.T) {
 		{"status unavailable", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("list: %w", errUnreachable)}), CodeStatusUnavailable, errUnreachable},
 		// draft-ietf-oauth-status-list-21 §8.3 step 6: MUST be rejected.
 		{"idx out of bounds", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("list: %w", statuslist.ErrIndexOutOfBounds)}), CodeMalformed, statuslist.ErrIndexOutOfBounds},
-		// The checker's wiring, as a statuslist.Checker reports a resolver key
-		// it cannot verify with.
-		{"status checker wiring", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("%w: statuslist: Config.Issuers returned a key that cannot verify", jose.ErrInvalidArgument)}), "", nil},
+		// The checker's wiring, such as a statuslist.Checker not made by NewChecker.
+		{"status checker wiring", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("%w: statuslist: a Checker not made by NewChecker", jose.ErrInvalidArgument)}), "", nil},
+		// As a statuslist.Checker reports a resolver key it cannot verify
+		// with: the key's class stays, as on the credential path.
+		{"status checker key", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("%w: statuslist: Config.Issuers returned a key that cannot verify: %w", jose.ErrInvalidArgument, jose.ErrUnsupportedKey)}), "", jose.ErrUnsupportedKey},
+		{"status checker bad key", issued, withStatus(fixedStatus{ref: ref, iss: iss, err: fmt.Errorf("%w: statuslist: Config.Issuers returned a key that cannot verify: %w", jose.ErrInvalidArgument, jws.ErrBadKey)}), "", jws.ErrBadKey},
 		// draft 21 §8.3: status is checked unless the caller opts out.
 		{"status and no WithStatus", issued, own.set, "", nil},
 	}
@@ -438,7 +445,7 @@ func TestVerifyRejects(t *testing.T) {
 			case res != nil:
 				t.Fatalf("accepted: %s", encodeJSON(t, res.Claims))
 			case tc.want == "":
-				if !errors.Is(err, ErrPolicy) || errors.As(err, &e) {
+				if !errors.Is(err, ErrPolicy) || errors.As(err, &e) || errors.Is(err, jose.ErrInvalidArgument) {
 					t.Fatalf("got %v; want ErrPolicy only", err)
 				}
 			case !errors.As(err, &e) || e.Code != tc.want || errors.Is(err, ErrPolicy):
