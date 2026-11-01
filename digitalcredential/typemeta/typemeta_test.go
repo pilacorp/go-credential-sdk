@@ -530,3 +530,84 @@ func TestEncodedAndStatic(t *testing.T) {
 		t.Errorf("Static with one vct twice: got %v", err)
 	}
 }
+
+// A resolver that fails every request with err.
+type failing struct{ err error }
+
+func (f failing) Metadata(context.Context, typemeta.Ref) ([]byte, error) { return nil, f.err }
+
+// A resolver that counts the requests it passes to r.
+type counted struct {
+	r     typemeta.Resolver
+	calls *int
+}
+
+func (c counted) Metadata(ctx context.Context, ref typemeta.Ref) ([]byte, error) {
+	*c.calls++
+	return c.r.Metadata(ctx, ref)
+}
+
+// Multi asks the next resolver only after ErrNotFound, so a failed retrieval
+// never moves a type to another source.
+func TestMulti(t *testing.T) {
+	ctx := context.Background()
+	const a, b = "https://a.example/t", "https://b.example/t"
+	ra, err := typemeta.Static([]byte(doc(a, "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb, err := typemeta.Static([]byte(doc(b, "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bCalls int
+	cb := counted{r: rb, calls: &bCalls}
+	m, err := typemeta.Multi(ra, cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, vct := range []string{a, b} {
+		if got, err := m.Metadata(ctx, typemeta.Ref{VCT: vct}); err != nil || string(got) != doc(vct, "") {
+			t.Errorf("%s = %s, %v; want its document", vct, got, err)
+		}
+	}
+	bCalls = 0
+	if _, err := m.Metadata(ctx, typemeta.Ref{VCT: a}); err != nil || bCalls != 0 {
+		t.Errorf("found by the first: err = %v, b called %d times; want b not called", err, bCalls)
+	}
+	if _, err := m.Metadata(ctx, typemeta.Ref{VCT: "https://c.example/t"}); !errors.Is(err, typemeta.ErrNotFound) {
+		t.Errorf("unknown vct: err = %v; want ErrNotFound", err)
+	}
+
+	fetch := errors.New("fetch failed")
+	m, err = typemeta.Multi(failing{fetch}, cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bCalls = 0
+	if _, err := m.Metadata(ctx, typemeta.Ref{VCT: b}); !errors.Is(err, fetch) || bCalls != 0 {
+		t.Errorf("Multi(failing, b): err = %v, b called %d times; want the fetch error and b not called", err, bCalls)
+	}
+
+	m, err = typemeta.Multi(ra, cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, cancel := context.WithCancel(ctx)
+	cancel()
+	bCalls = 0
+	if _, err := m.Metadata(done, typemeta.Ref{VCT: b}); !errors.Is(err, context.Canceled) || bCalls != 0 {
+		t.Errorf("ended ctx: err = %v, b called %d times; want context.Canceled and b not called", err, bCalls)
+	}
+	var nilCtx context.Context
+	if _, err := m.Metadata(nilCtx, typemeta.Ref{VCT: b}); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("nil ctx: err = %v; want jose.ErrInvalidArgument", err)
+	}
+
+	if _, err := typemeta.Multi(); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("Multi(): err = %v; want jose.ErrInvalidArgument", err)
+	}
+	if _, err := typemeta.Multi(ra, nil); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("Multi(ra, nil): err = %v; want jose.ErrInvalidArgument", err)
+	}
+}
