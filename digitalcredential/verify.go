@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/sri"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/uri"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
@@ -137,11 +138,11 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 //     keeps out of them: DISCLOSURE_INVALID;
 //  6. exp, nbf (RFC 7519 §4.1.4, §4.1.5) and aud (§4.1.3): EXPIRED,
 //     NOT_YET_VALID, AUDIENCE_MISMATCH;
-//  7. vct, aka_vcts, vct#integrity (§2.2.2.1-2.2.2.3, §5.3) and the shape of
-//     status (draft-ietf-oauth-status-list-21 §6.2): MALFORMED. idx is read
-//     by its value (RFC 8259 §6), so 1.0, 1e3 and -0 are the indexes 1, 1000
-//     and 0. With WithAcceptedVCTs and without WithExtendedVCTMatch, the
-//     types: VCT_NOT_ACCEPTED;
+//  7. vct, aka_vcts, vct#integrity as integrity metadata (§2.2.2.1-2.2.2.3,
+//     §5.3) and the shape of status (draft-ietf-oauth-status-list-21 §6.2):
+//     MALFORMED. idx is read by its value (RFC 8259 §6), so 1.0, 1e3 and -0
+//     are the indexes 1, 1000 and 0. With WithAcceptedVCTs and without
+//     WithExtendedVCTMatch, the types: VCT_NOT_ACCEPTED;
 //  8. Key Binding, per WithKeyBinding (RFC 9901 §7.3): the KB_ codes;
 //  9. with WithTypeMetadata or WithOptionalTypeMetadata, Type Metadata
 //     (§5.7): typemeta.Load for vct and vct#integrity, then the payload as
@@ -371,8 +372,8 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 }
 
 // readTypes reads vct and aka_vcts from claims, the processed payload, and
-// checks that vct#integrity is a string (draft 19 §2.2.2.1-2.2.2.3, §5.3). An
-// error is a claim of the wrong shape.
+// checks that vct#integrity is integrity metadata (draft 19 §2.2.2.1-2.2.2.3,
+// §5.3), as Issue does. An error is a claim of the wrong shape.
 func readTypes(claims map[string]any) (vct string, akaVCTs []string, err error) {
 	if vct, _ = claims["vct"].(string); vct == "" {
 		return "", nil, errors.New("vct is absent, which draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids, or not a non-empty string as §2.2.2.1 requires")
@@ -386,8 +387,8 @@ func readTypes(claims map[string]any) (vct string, akaVCTs []string, err error) 
 		}
 	}
 	if v, ok := claims["vct#integrity"]; ok {
-		if _, ok := v.(string); !ok {
-			return "", nil, errors.New("vct#integrity is not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.3)")
+		if s, ok := v.(string); !ok || !sri.WellFormed(s) {
+			return "", nil, errors.New("vct#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §5.3)")
 		}
 	}
 	return vct, akaVCTs, nil

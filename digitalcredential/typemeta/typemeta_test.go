@@ -112,7 +112,7 @@ func TestFigure30(t *testing.T) {
 	}
 }
 
-// W3C SRI §3.3.3 parsing and draft 19 §6 matching.
+// W3C SRI §3.5 syntax and draft 19 §6 matching.
 func TestCheckIntegrity(t *testing.T) {
 	doc := readFile(t, "testdata/figure30.json")
 	ok := []string{
@@ -122,8 +122,6 @@ func TestCheckIntegrity(t *testing.T) {
 		"SHA256-" + strings.TrimPrefix(fig30SHA256, "sha256-"),
 		emptySHA256 + " " + fig30SHA512,
 		fig30SHA256 + "?opt",
-		"md5-x " + fig30SHA256,
-		"sha512-not*base64 " + fig30SHA256, // not hash-with-options, skipped
 	}
 	for _, s := range ok {
 		if err := typemeta.CheckIntegrity(doc, s); err != nil {
@@ -134,9 +132,13 @@ func TestCheckIntegrity(t *testing.T) {
 		emptySHA512 + " " + fig30SHA256, // only the sha512 token counts
 		"",
 		"md5-x",
+		// hash-algo is CSP Level 2's closed list, so one other token makes
+		// the value malformed even beside a matching one.
+		"md5-x " + fig30SHA256,
+		"sha512-not*base64 " + fig30SHA256,
 		strings.NewReplacer("+", "-", "/", "_").Replace(fig30SHA256), // base64url
 		"\u017fha256-" + strings.TrimPrefix(fig30SHA256, "sha256-"),  // U+017F folds to s outside ASCII
-		fig30SHA256 + "?\x01", // options are VCHAR
+		fig30SHA256 + "?\x01",                                        // options are VCHAR
 		fig30SHA256 + "?\u00e9",
 		// One character past the digest does not decode; the 48 bytes
 		// before it must not match, and the token still outranks sha256.
@@ -202,6 +204,8 @@ func TestLoadRejects(t *testing.T) {
 		// The chain is processed before any claims are read (§5.7).
 		{"claims null, parent missing", typemeta.Ref{VCT: a}, []string{child(`,"claims":null`)}, typemeta.ErrInvalid},
 		{"extends#integrity empty", typemeta.Ref{VCT: a}, []string{child(`,"extends#integrity":""`), doc(b, "")}, typemeta.ErrInvalid},
+		{"logo uri#integrity malformed", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"https://a.example/l.png","uri#integrity":"md5-x `+emptySHA256+`"}}}}]`)}, typemeta.ErrInvalid},
+		{"svg template uri#integrity malformed", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"svg_templates":[{"uri":"https://a.example/1.svg","uri#integrity":"md5-x `+emptySHA256+`"}]}}]`)}, typemeta.ErrInvalid},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -525,6 +529,13 @@ func TestEncodedAndStatic(t *testing.T) {
 	// RFC 2397 §3 as corrected by EID 2045: percent-encoded data is *uric.
 	if _, err := typemeta.ParseEncoded([]byte(doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"data:image/svg+xml,%3Csvg%2F%3E"}}}}]`))); err != nil {
 		t.Errorf("ParseEncoded with a percent-encoded data: logo: %v", err)
+	}
+	// A publisher cannot write an extends#integrity no Consumer can check.
+	parent := typemeta.Integrity([]byte(doc("https://b.example/t", "")))
+	for _, v := range []string{"md5-x " + parent, "  "} {
+		if _, err := typemeta.ParseEncoded([]byte(doc(a, `,"extends":"https://b.example/t","extends#integrity":"`+v+`"`))); !errors.Is(err, typemeta.ErrInvalid) {
+			t.Errorf("ParseEncoded with extends#integrity %q: got %v, want ErrInvalid", v, err)
+		}
 	}
 	if _, err := typemeta.Static([]byte(doc(a, "")), []byte(doc(a, `,"name":"n"`))); !errors.Is(err, jose.ErrInvalidArgument) {
 		t.Errorf("Static with one vct twice: got %v", err)

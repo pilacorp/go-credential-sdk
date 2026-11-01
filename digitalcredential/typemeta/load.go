@@ -21,7 +21,8 @@ import (
 //
 // Phase one walks the chain from ref: for each document it checks ctx, asks
 // r, checks the size (256 KiB), the integrity of the reference that led to
-// it, its structure (§5.2, §5.5) and that its vct equals that reference's
+// it, its structure (§5.2, §5.5; each #integrity it holds is integrity
+// metadata, §6) and that its vct equals that reference's
 // (§5.3), then follows extends with extends#integrity. Phase two reads the
 // claims of every document (§5.6) and merges from the furthest document
 // down: a nearer display replaces the whole display (§5.5.2); a claim with

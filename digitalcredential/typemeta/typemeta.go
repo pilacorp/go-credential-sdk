@@ -76,7 +76,8 @@ const (
 // extends#integrity (§5.3, §5.4). Integrity is "" when the reference has
 // none. A vct#integrity that is present but empty is a failed integrity
 // check (§6), not a missing one: a caller that reads it rejects the document
-// itself, as dc.Verify does, and Load refuses an empty extends#integrity.
+// itself, as dc.Verify does, and Load refuses an extends#integrity that
+// holds no hash.
 type Ref struct {
 	VCT       string
 	Integrity string

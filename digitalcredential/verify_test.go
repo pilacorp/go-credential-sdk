@@ -419,6 +419,8 @@ func TestVerifyRejects(t *testing.T) {
 		{"no vct", own.issue(map[string]any{"iss": iss}, nil), own.set, CodeMalformed, nil},
 		{"aka_vcts holding vct", own.issue(map[string]any{"iss": iss, "vct": "urn:example:pid", "aka_vcts": []any{"urn:example:pid"}}, nil), own.set, CodeMalformed, nil},
 		{"vct#integrity a number", own.issue(map[string]any{"iss": iss, "vct": "urn:example:pid", "vct#integrity": 1}, nil), own.set, CodeMalformed, nil},
+		// hash-algo is CSP Level 2's closed list, checked without Type Metadata.
+		{"vct#integrity not integrity metadata", own.issue(map[string]any{"iss": iss, "vct": "urn:example:pid", "vct#integrity": "md5-x sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="}, nil), own.set, CodeMalformed, nil},
 		// draft-ietf-oauth-status-list-21 §6.2: status is an object.
 		{"status a string", own.issue(map[string]any{"iss": iss, "vct": "urn:example:pid", "status": "valid"}, nil), withStatus(&recordingStatus{}), CodeMalformed, nil},
 		// draft-ietf-oauth-status-list-21 §8.3 step 1: the one mechanism checked.
