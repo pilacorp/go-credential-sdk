@@ -57,7 +57,21 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 ## Issue
 
 `dc.Issue(ctx, req, key)` returns `<Issuer-signed JWT>~<Disclosure>~…~`, with `typ` `dc+sd-jwt` and `kid` from
-`key.KID`. `req.Validate()` returns the error `Issue` would return for `req`, without signing.
+`key.KID`. `req.Validate()` returns the error `Issue` would return for `req`, without signing. `Example` in
+`example_test.go` runs issue, present and verify end to end.
+
+```go
+cred, err := dc.Issue(ctx, dc.IssueRequest{
+	Issuer:    "https://issuer.example",
+	VCT:       "https://credentials.example/identity_credential",
+	IssuedAt:  time.Now(),
+	HolderKey: holderPub, // written as cnf.jwk
+	Claims:    map[string]any{"given_name": "Erika", "birthdate": "1963-08-12"},
+	Disclose:  []sdjwt.Path{{"given_name"}, {"birthdate"}}, // concealed, disclosed by the Holder
+}, issuerkey.SigningKey{Signer: signer, Public: issuerPub, KID: "key-1"}) // signer: a jws.Signer
+if err != nil { /* jose.ErrInvalidArgument for a request the standard refuses */ }
+issued := cred.Serialize()
+```
 
 - `VCT` is required (draft 19 §2.2.2.3). `Issuer`, `IssuedAt`, `NotBefore` and `Expiry` are optional; times are
   written in whole seconds. `HolderKey` is written as `cnf.jwk` (RFC 7800 §3.2).
@@ -87,6 +101,21 @@ with `ES256K` (see Algorithms in the `jose` README).
 a string selects a key, a non-negative int an index, `nil` every element of an array. Naming a claim inside a
 concealed object sends that object's disclosure too, which shows its other plain members. `Present` does not verify
 the Issuer's signature: check the credential when you receive it. It refuses an SD-JWT+KB.
+
+```go
+held, err := dc.Parse(issued)
+if err != nil { /* *dc.Error */ }
+vp, err := held.Present(ctx, dc.PresentRequest{
+	Reveal: []sdjwt.Path{{"given_name"}},
+	KeyBinding: &dc.KeyBinding{
+		Signer:   holderSigner, // the private key of cnf.jwk
+		Audience: "https://verifier.example",
+		Nonce:    nonce, // from the Verifier's request
+		IssuedAt: time.Now(),
+	},
+})
+send(vp.Serialize())
+```
 
 With `KeyBinding` set, the key comes from `cnf.jwk`. A credential with no `cnf` is `jose.ErrInvalidArgument`. A `cnf`
 this SDK cannot bind (no `jwk`, or a key type other than EC P-256 or secp256k1) is `dc.ErrKeyBindingUnsupported`. A
