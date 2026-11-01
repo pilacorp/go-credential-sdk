@@ -43,6 +43,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/allowlist"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/httpcache"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/uri"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jwk"
@@ -269,9 +270,9 @@ var _ issuerkey.Resolver = (*Resolver)(nil)
 //     (RFC 7517 §4.2-4.5, RFC 8725 §3.1); other JWKs are skipped (RFC 7517
 //     §5);
 //   - an error wrapping issuerkey.ErrIssuerNotSupported, before any request:
-//     iss is not an https URL with a host and no query or fragment (§2.5,
-//     §4) and no userinfo (RFC 9110 §4.2.4), or TrustedIssuerOrigins does not
-//     cover its origin;
+//     iss is not a URI (§4, RFC 3986), or not an https URL with a
+//     host and no query or fragment (§2.5, §4) and no userinfo (RFC 9110
+//     §4.2.4), or TrustedIssuerOrigins does not cover its origin;
 //   - an error wrapping issuerkey.ErrNoUsableKey: the issuer's server
 //     answered, and the metadata or the JWK Set is not valid (§4.2, §4.3,
 //     RFC 7517 §4, §5), so it must not be used;
@@ -329,14 +330,19 @@ func (r *Resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 // metadata there.
 //
 // It applies no allowed-issuer check and no verifier policy. An error wraps
-// issuerkey.ErrIssuerNotSupported: iss is not an https URL with a host and no
-// userinfo, query or fragment.
+// issuerkey.ErrIssuerNotSupported: iss is not a URI (RFC 3986), or not an
+// https URL with a host and no userinfo, query or fragment.
 func MetadataURL(iss string) (string, error) {
 	_, s, err := metadataURL(iss)
 	return s, err
 }
 
 func metadataURL(iss string) (*url.URL, string, error) {
+	// draft-ietf-oauth-sd-jwt-vc-19 §4: iss MUST be an https URL as defined
+	// in RFC 3986; url.Parse accepts more, such as a host in Unicode.
+	if !uri.Valid(iss) {
+		return nil, "", fmt.Errorf("%w: issuermeta: iss is not a URI (RFC 3986)", issuerkey.ErrIssuerNotSupported)
+	}
 	u, err := url.Parse(iss)
 	if err != nil || !safehttp.HTTPSURL(u) {
 		return nil, "", fmt.Errorf("%w: issuermeta: iss is not an https URL with a host (draft-ietf-oauth-sd-jwt-vc-19 §4) and no userinfo (RFC 9110 §4.2.4)", issuerkey.ErrIssuerNotSupported)
@@ -375,7 +381,7 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 	}
 	// A member present as null counts as present.
 	jwks, hasJWKS := meta["jwks"]
-	uri, hasURI := meta["jwks_uri"]
+	jwksURI, hasURI := meta["jwks_uri"]
 	var set map[string]any
 	switch {
 	case hasJWKS && hasURI:
@@ -389,7 +395,12 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 	default:
 		// Checked here rather than by safehttp, whose refusal would read as a
 		// failed retrieval: this one is a fault of the issuer's document.
-		s, _ := uri.(string)
+		s, ok := jwksURI.(string)
+		// §4.2: jwks_uri is a URL string, so a URI (RFC 3986 §1.1.3), which
+		// url.Parse does not check.
+		if ok && !uri.Valid(s) {
+			return nil, time.Time{}, contentFault("jwks_uri is not a URI (RFC 3986)")
+		}
 		if u, err := url.Parse(s); err != nil || !safehttp.HTTPSURL(u) {
 			return nil, time.Time{}, contentFault("jwks_uri is not an https URL with a host (draft-ietf-oauth-sd-jwt-vc-19 §3, §4.2) and no userinfo (RFC 9110 §4.2.4)")
 		}

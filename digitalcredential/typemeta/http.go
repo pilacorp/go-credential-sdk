@@ -17,6 +17,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/allowlist"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/httpcache"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/uri"
 	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
@@ -182,11 +183,11 @@ type httpResolver struct {
 // port with a leading zero or out of range. So is a RedirectTo with no
 // origin.
 //
-// Metadata returns ErrNotFound, without a request, when ref.VCT is not an
-// https URL with a host, has userinfo or a fragment, or no entry of
-// TrustedPublisherOrigins covers its origin. Otherwise it sends a GET to
-// exactly ref.VCT: https on every redirect, at most 3 redirects, each one
-// that Config.Redirects follows from ref.VCT, 5 seconds, a 2xx
+// Metadata returns ErrNotFound, without a request, when ref.VCT is not a URI
+// (RFC 3986) or not an https URL with a host, has userinfo or a fragment, or
+// no entry of TrustedPublisherOrigins covers its origin. Otherwise it sends
+// a GET to exactly ref.VCT: https on every redirect, at most 3 redirects,
+// each one that Config.Redirects follows from ref.VCT, 5 seconds, a 2xx
 // application/json response of at most 256 KiB; §3 asks for these bounds,
 // the values are SDK policy. A 404 is ErrNotFound and carries no
 // StatusError. Any other failure wraps its cause: a StatusError,
@@ -232,6 +233,11 @@ func NewHTTPResolver(cfg Config) (Resolver, error) {
 func (r *httpResolver) Metadata(ctx context.Context, ref Ref) ([]byte, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: typemeta: nil context", jose.ErrInvalidArgument)
+	}
+	// §5.3.1: the document is retrieved from a vct that is an https URL, so
+	// a URI (RFC 3986 §1.1.3), which url.Parse does not check.
+	if !uri.Valid(ref.VCT) {
+		return nil, fmt.Errorf("%w: typemeta: vct is not a URI (RFC 3986)", ErrNotFound)
 	}
 	u, err := url.Parse(ref.VCT)
 	if err != nil || !safehttp.HTTPSURL(u) || strings.Contains(ref.VCT, "#") {

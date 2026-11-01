@@ -145,6 +145,11 @@ Each option may be passed once per call. An option the call cannot use (no alg, 
 `WithAllDisclosures` or `WithExtendedVCTMatch` without a Type Metadata option) is `dc.ErrPolicy`, before the token is
 read.
 
+An `iss` holding `:` that is not a URI (RFC 7519 §2, RFC 3986), a host in Unicode included, is `MALFORMED`, and the
+resolver is not asked. Any other `iss` reaches the resolver as written, whatever its scheme, since a key may come from a
+mechanism other than https (§2.5). The host of an http or https `iss` is the resolver's to check (RFC 9110 §4.2.1,
+§4.2.2): `issuermeta` refuses one without a host with `ErrIssuerNotSupported` (§4).
+
 `Verify` keeps no state: accepting each nonce once is the caller's (§7.3 step 5f). It does not check that the issuer may
 issue the credential's type (draft 19 §7.7), nor the claims a protocol adds to the KB-JWT, such as OpenID4VP 1.0
 `transaction_data_hashes`: read them from `Result.KeyBindingClaims`. A claim the Issuer concealed and the Holder
@@ -165,7 +170,7 @@ if err != nil { /* ... */ }
 res, err := cred.Verify(ctx, resolver, dc.WithTypeMetadata(types))
 ```
 
-`NewHTTPResolver` fetches a `vct` that is an https URL whose origin `TrustedPublisherOrigins` covers (§5.3.1), with the
+`NewHTTPResolver` fetches a `vct` that is a URI (RFC 3986) and an https URL whose origin `TrustedPublisherOrigins` covers (§5.3.1), with the
 bounds of §3 and the address check of the issuer metadata resolver, and caches a document for its HTTP freshness, at
 most 24 hours; a document whose integrity was checked stays until evicted. An empty `TrustedPublisherOrigins` recognizes
 every https publisher; its entries are origins, read as for the issuer metadata resolver. `Redirects` judges each
@@ -192,7 +197,9 @@ claim metadata (§5.6) and returns the merged `*typemeta.Metadata` in `Result.Ty
 A Verifier sees only the Disclosures it was sent, so a `mandatory` claim that an undisclosed digest may hold passes
 (§5.6). The Holder, which received every Disclosure, passes `dc.WithAllDisclosures()` to see a missing one; with a Key
 Binding JWT it is `ErrPolicy`. Choosing a locale, rendering, and fetching the images and SVG templates a document
-names are the display application's; `typemeta.CheckIntegrity` checks what it fetches.
+names are the display application's; `typemeta.CheckIntegrity` checks what it fetches. A rendering `uri` that is a
+`data:` URI holds only RFC 3986 characters, since its data is `*uric` (RFC 2397 §3 as corrected by EID 2045): raw `<`,
+space or non-ASCII is `ErrInvalid`, and percent-encoded or base64 data passes.
 
 ## Status
 
@@ -263,8 +270,9 @@ identical to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
 
   So does an issuer whose metadata redirects from `https://abc.com` to `https://www.abc.com`, with
   `RedirectTo("https://www.abc.com")`: they are one site but two origins (RFC 6454 §5).
-- An `iss` outside the list is `issuerkey.ErrIssuerNotSupported`, with no request made. Metadata or a JWK Set that must
-  not be used is `issuerkey.ErrNoUsableKey`. A failed retrieval is any other error, which `Verify` reports as
+- An `iss` outside the list, or one that is not a URI (RFC 3986), is `issuerkey.ErrIssuerNotSupported`, with no request
+  made. Metadata or a JWK Set that must not be used, a `jwks_uri` that is not a URI or not an https URL included, is
+  `issuerkey.ErrNoUsableKey`. A failed retrieval is any other error, which `Verify` reports as
   `ISSUER_KEY_UNAVAILABLE`, or as the ctx error once ctx is done. It wraps the cause: an `issuermeta.StatusError`,
   `ErrRedirectNotAllowed` for a redirect `Redirects` refuses, `ErrRedirectTargetNotAllowed` for one that is not https
   with a host and no userinfo, `ErrTooManyRedirects`, `ErrContentTypeNotAccepted`, `ErrBodyTooLarge`,

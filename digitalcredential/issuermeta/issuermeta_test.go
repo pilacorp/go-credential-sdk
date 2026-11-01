@@ -303,7 +303,7 @@ func TestKeysRefused(t *testing.T) {
 	s := newMetaServer(t, nil)
 	now := time.Unix(1_800_000_000, 0)
 	r := s.resolver(t, nil, &now, false)
-	for _, iss := range []string{"", "https://user@example.com", "https://example.com?"} {
+	for _, iss := range []string{"", "https://user@example.com", "https://example.com?", "https://bücher.example", "https:///issuer", "https:x"} {
 		if _, err := r.Keys(context.Background(), iss); !errors.Is(err, issuerkey.ErrIssuerNotSupported) {
 			t.Errorf("Keys(%q) = %v, want ErrIssuerNotSupported", iss, err)
 		}
@@ -388,17 +388,19 @@ func TestIssuerMismatch(t *testing.T) {
 // draft 19 §3: a jwks_uri that is not https is a fault of the metadata, and
 // no JWK Set is requested.
 func TestJWKSURIHTTP(t *testing.T) {
-	s := newMetaServer(t, map[string]response{
-		"/.well-known/jwt-vc-issuer": {"application/json", "", `{"issuer":"https://example.com","jwks_uri":"http://example.com/jwks"}`},
-		"/jwks":                      {"application/json", "", twoKeys},
-	})
-	now := time.Unix(1_800_000_000, 0)
-	r := s.resolver(t, []string{"https://example.com"}, &now, false)
-	if _, err := r.Keys(context.Background(), "https://example.com"); !errors.Is(err, issuerkey.ErrNoUsableKey) {
-		t.Fatalf("err = %v, want ErrNoUsableKey", err)
-	}
-	if n := s.hits.Load(); n != 1 {
-		t.Fatalf("hits = %d, want 1 (the metadata only)", n)
+	for _, jwksURI := range []string{"http://example.com/jwks", "https://bücher.example/jwks"} {
+		s := newMetaServer(t, map[string]response{
+			"/.well-known/jwt-vc-issuer": {"application/json", "", `{"issuer":"https://example.com","jwks_uri":"` + jwksURI + `"}`},
+			"/jwks":                      {"application/json", "", twoKeys},
+		})
+		now := time.Unix(1_800_000_000, 0)
+		r := s.resolver(t, []string{"https://example.com"}, &now, false)
+		if _, err := r.Keys(context.Background(), "https://example.com"); !errors.Is(err, issuerkey.ErrNoUsableKey) {
+			t.Fatalf("%s: err = %v, want ErrNoUsableKey", jwksURI, err)
+		}
+		if n := s.hits.Load(); n != 1 {
+			t.Fatalf("%s: hits = %d, want 1 (the metadata only)", jwksURI, n)
+		}
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/uri"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
@@ -64,7 +65,9 @@ type Ref struct {
 // a Referenced Token checks it here; Checker.Status applies it too, and then
 // its own https rule (see Config.InsecureHTTP).
 func (r Ref) Validate() error {
-	if err := checkListURI(r.URI); err != nil {
+	// §6.2: uri is a URI conforming to RFC 3986, as RFC 7519 §2 requires of
+	// a StringOrURI holding ":".
+	if err := uri.Check(r.URI); err != nil {
 		return fmt.Errorf("%w: statuslist: Ref.URI %v", jose.ErrInvalidArgument, err)
 	}
 	// §6.2: idx is a non-negative integer.

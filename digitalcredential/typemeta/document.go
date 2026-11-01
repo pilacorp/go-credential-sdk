@@ -48,9 +48,11 @@ type SimpleRendering struct {
 }
 
 // Image is a logo or a background image (§5.5.1.1.1, §5.5.1.1.2). URI is an
-// https URL or a data: URI (§5.5.1). Of a data: URI, only the comma RFC 2397
-// §3 requires is checked: the application that decodes it meets a bad
-// mediatype or base64 there. URIIntegrity is nil when uri#integrity
+// https URL or a data: URI (§5.5.1). A data: URI is a URI (RFC 3986) with
+// the comma RFC 2397 §3 requires, so its data is *uric (RFC 2397 §3 as
+// corrected by EID 2045): raw "<", space or non-ASCII is refused, and
+// percent-encoded or base64 data passes. The application that decodes it
+// meets a bad mediatype or base64 there. URIIntegrity is nil when uri#integrity
 // is absent; when set, even to "", the application that fetches URI passes
 // it to CheckIntegrity, which refuses an empty value (§6). AltText is for the
 // logo only (§5.5.1.1.1); it is not read for a background image.
