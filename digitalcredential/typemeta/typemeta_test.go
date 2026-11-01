@@ -1,0 +1,624 @@
+package typemeta_test
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/typemeta"
+	"github.com/pilacorp/go-credential-sdk/jose"
+	"github.com/pilacorp/go-credential-sdk/jose/sdjwt"
+)
+
+const vct42 = "https://betelgeuse.example.com/education_credential/v42"
+
+// Digests of testdata/figure30.json, computed with
+// openssl dgst -sha256|-sha384|-sha512 -binary testdata/figure30.json | base64.
+const (
+	fig30SHA256 = "sha256-0NNETsymXj4lLpt500run69TjKZK3Auh+Nzyo62cFy4="
+	fig30SHA384 = "sha384-K6vzl4qlxvRC/WWssfa6CkEXTI9ZS7ABZXTqlcdJAKeoMQNGzbQz7pSFgHBIeusj"
+	fig30SHA512 = "sha512-jkygk2dpt/Sw5MmrAZ7ekuWdfXspiSw1iMwIQ+KwrGrK6wFH1BZKCH2Aq4f5V+SbN77oj0vPbXN8q0OaIz0bcQ=="
+	// Of the empty input: a digest that matches no document here.
+	emptySHA256 = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+	emptySHA512 = "sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg=="
+)
+
+func readFile(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func load(t *testing.T, ref typemeta.Ref, docs ...string) (*typemeta.Metadata, error) {
+	t.Helper()
+	var bs [][]byte
+	for _, d := range docs {
+		bs = append(bs, []byte(d))
+	}
+	r, err := typemeta.Static(bs...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return typemeta.Load(context.Background(), r, ref)
+}
+
+// Figure 30 of draft-ietf-oauth-sd-jwt-vc-19 Appendix A.2, without extends,
+// whose parent the draft does not give, checked against Figure 29.
+func TestFigure30(t *testing.T) {
+	doc := readFile(t, "testdata/figure30.json")
+	r, err := typemeta.Static(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := typemeta.Load(context.Background(), r, typemeta.Ref{VCT: vct42, Integrity: fig30SHA256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := m.Claims()
+	if len(claims) != 7 {
+		t.Fatalf("got %d claims, want 7", len(claims))
+	}
+	if c := claims[4]; fmt.Sprint(c.Path) != "[degrees <nil>]" || c.SD != "always" || c.Mandatory {
+		t.Errorf("claims[4] = %+v", c)
+	}
+	if c := claims[0]; !c.Mandatory || c.SD != "always" || len(c.Display) != 2 || c.Display[1].Label != "Name" {
+		t.Errorf("claims[0] = %+v", c)
+	}
+	if c := claims[2]; c.SVGID != "address_street_address" {
+		t.Errorf("claims[2].SVGID = %q", c.SVGID)
+	}
+	d := m.Display()
+	if len(d) != 2 || d[1].Locale != "de-DE" || d[0].Rendering.Simple.BackgroundColor != "#12107c" ||
+		d[0].Rendering.SVGTemplates[0].Properties.Orientation != "landscape" {
+		t.Errorf("display = %+v", d)
+	}
+	if got := m.Documents(); len(got) != 1 || !bytes.Equal(got[0], doc) {
+		t.Error("Documents() is not the document as served")
+	}
+	enc, err := typemeta.ParseEncoded(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enc.Integrity() != fig30SHA256 {
+		t.Errorf("Integrity() = %s, want %s", enc.Integrity(), fig30SHA256)
+	}
+
+	payload, err := jose.DecodeJSONObject(readFile(t, "testdata/figure29.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	disclose := []sdjwt.Path{{"name"}, {"address"}, {"address", "street_address"}}
+	for i := range 3 {
+		disclose = append(disclose, sdjwt.Path{"degrees", i}, sdjwt.Path{"degrees", i, "date_awarded"})
+	}
+	if err := m.ValidateIssuance(payload, disclose); err != nil {
+		t.Errorf("ValidateIssuance: %v", err)
+	}
+	// field_of_study is sd: never.
+	if err := m.ValidateIssuance(payload, append(disclose, sdjwt.Path{"degrees", 1, "field_of_study"})); !errors.Is(err, typemeta.ErrViolated) {
+		t.Errorf("field_of_study disclosed: got %v, want ErrViolated", err)
+	}
+}
+
+// W3C SRI §3.5 syntax and draft 19 §6 matching.
+func TestCheckIntegrity(t *testing.T) {
+	doc := readFile(t, "testdata/figure30.json")
+	ok := []string{
+		fig30SHA256,
+		fig30SHA384,
+		fig30SHA384 + "A " + fig30SHA384, // a digest that does not decode only fails to match
+		"SHA256-" + strings.TrimPrefix(fig30SHA256, "sha256-"),
+		emptySHA256 + " " + fig30SHA512,
+		fig30SHA256 + "?opt",
+	}
+	for _, s := range ok {
+		if err := typemeta.CheckIntegrity(doc, s); err != nil {
+			t.Errorf("%q: %v", s, err)
+		}
+	}
+	bad := []string{
+		emptySHA512 + " " + fig30SHA256, // only the sha512 token counts
+		"",
+		"md5-x",
+		// hash-algo is CSP Level 2's closed list, so one other token makes
+		// the value malformed even beside a matching one.
+		"md5-x " + fig30SHA256,
+		"sha512-not*base64 " + fig30SHA256,
+		strings.NewReplacer("+", "-", "/", "_").Replace(fig30SHA256), // base64url
+		"\u017fha256-" + strings.TrimPrefix(fig30SHA256, "sha256-"),  // U+017F folds to s outside ASCII
+		fig30SHA256 + "?\x01",                                        // options are VCHAR
+		fig30SHA256 + "?\u00e9",
+		// One character past the digest does not decode; the 48 bytes
+		// before it must not match, and the token still outranks sha256.
+		fig30SHA384 + "A",
+		fig30SHA384 + "A " + fig30SHA256,
+	}
+	for _, s := range bad {
+		if err := typemeta.CheckIntegrity(doc, s); !errors.Is(err, typemeta.ErrInvalid) {
+			t.Errorf("%q: got %v, want ErrInvalid", s, err)
+		}
+	}
+}
+
+func doc(vct, extra string) string {
+	return fmt.Sprintf(`{"vct":%q%s}`, vct, extra)
+}
+
+func TestLoadRejects(t *testing.T) {
+	a, b := "https://a.example/t", "https://b.example/t"
+	child := func(extra string) string { return doc(a, `,"extends":"`+b+`"`+extra) }
+	chain := []string{}
+	for i := range 9 {
+		chain = append(chain, doc(fmt.Sprintf("https://c.example/%d", i), fmt.Sprintf(`,"extends":"https://c.example/%d"`, i+1)))
+	}
+	chain[8] = doc("https://c.example/8", "")
+	parentSD := doc(b, `,"claims":[{"path":["x"],"sd":"always","mandatory":true}]`)
+	tests := []struct {
+		name string
+		ref  typemeta.Ref
+		docs []string
+		want error
+	}{
+		{"integrity", typemeta.Ref{VCT: a, Integrity: emptySHA256}, []string{doc(a, "")}, typemeta.ErrInvalid},
+		{"md5 only", typemeta.Ref{VCT: a, Integrity: "md5-x"}, []string{doc(a, "")}, typemeta.ErrInvalid},
+		{"cycle", typemeta.Ref{VCT: a}, []string{child(""), doc(b, `,"extends":"`+a+`"`)}, typemeta.ErrCycle},
+		{"9 documents", typemeta.Ref{VCT: "https://c.example/0"}, chain, typemeta.ErrInvalid},
+		{"parent missing", typemeta.Ref{VCT: a}, []string{child("")}, typemeta.ErrInvalid},
+		{"not found", typemeta.Ref{VCT: b}, []string{doc(a, "")}, typemeta.ErrNotFound},
+		{"sd always to allowed", typemeta.Ref{VCT: a}, []string{child(`,"claims":[{"path":["x"],"sd":"allowed"}]`), parentSD}, typemeta.ErrClaims},
+		{"mandatory true to false", typemeta.Ref{VCT: a}, []string{child(`,"claims":[{"path":["x"],"mandatory":false}]`), parentSD}, typemeta.ErrClaims},
+		{"svg template without properties", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"svg_templates":[{"uri":"https://a.example/1.svg","properties":{"contrast":"high"}},{"uri":"https://a.example/2.svg"}]}}]`)}, typemeta.ErrInvalid},
+		{"logo over http", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"http://a.example/l.png"}}}}]`)}, typemeta.ErrInvalid},
+		{"logo uri not a URI", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"https://bücher.example/l.png"}}}}]`)}, typemeta.ErrInvalid},
+		// RFC 2397 §3 as corrected by EID 2045: data is *uric.
+		{"logo data: uri with raw characters", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"data:image/svg+xml,<svg/>"}}}}]`)}, typemeta.ErrInvalid},
+		{"display locale", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en_US","name":"n"}]`)}, typemeta.ErrInvalid},
+		{"text_color", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"text_color":"white"}}}]`)}, typemeta.ErrInvalid},
+		{"claim display locale", typemeta.Ref{VCT: a}, []string{doc(a, `,"claims":[{"path":["x"],"display":[{"locale":"en_US","label":"X"}]}]`)}, typemeta.ErrClaims},
+		{"svg_id twice", typemeta.Ref{VCT: a}, []string{doc(a, `,"claims":[{"path":["x"],"svg_id":"s"},{"path":["y"],"svg_id":"s"}]`)}, typemeta.ErrClaims},
+		// §5.4, §5.6: b repeats an svg_id it inherits from g; a overriding
+		// the claim does not hide it.
+		{"svg_id repeated by a middle level", typemeta.Ref{VCT: a}, []string{
+			child(`,"claims":[{"path":["y"],"svg_id":"s3"}]`),
+			doc(b, `,"extends":"https://g.example/t","claims":[{"path":["y"],"svg_id":"s1"}]`),
+			doc("https://g.example/t", `,"claims":[{"path":["x"],"svg_id":"s1"},{"path":["y"],"svg_id":"s2"}]`),
+		}, typemeta.ErrClaims},
+		// Merging would hide the repeat: both claims override one path.
+		{"svg_id twice on one inherited path", typemeta.Ref{VCT: a}, []string{
+			child(`,"claims":[{"path":["x"],"svg_id":"d"},{"path":["x"],"svg_id":"d"}]`),
+			doc(b, `,"claims":[{"path":["x"],"svg_id":"s1"}]`),
+		}, typemeta.ErrClaims},
+		{"claims null", typemeta.Ref{VCT: a}, []string{doc(a, `,"claims":null`)}, typemeta.ErrClaims},
+		// The chain is processed before any claims are read (§5.7).
+		{"claims null, parent missing", typemeta.Ref{VCT: a}, []string{child(`,"claims":null`)}, typemeta.ErrInvalid},
+		{"extends#integrity empty", typemeta.Ref{VCT: a}, []string{child(`,"extends#integrity":""`), doc(b, "")}, typemeta.ErrInvalid},
+		{"logo uri#integrity malformed", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"https://a.example/l.png","uri#integrity":"md5-x `+emptySHA256+`"}}}}]`)}, typemeta.ErrInvalid},
+		{"svg template uri#integrity malformed", typemeta.Ref{VCT: a}, []string{doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"svg_templates":[{"uri":"https://a.example/1.svg","uri#integrity":"md5-x `+emptySHA256+`"}]}}]`)}, typemeta.ErrInvalid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := load(t, tt.ref, tt.docs...)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("got %v, want %v", err, tt.want)
+			}
+			if tt.want != typemeta.ErrNotFound && errors.Is(err, typemeta.ErrNotFound) {
+				t.Fatalf("%v also wraps ErrNotFound", err)
+			}
+		})
+	}
+	for _, s := range []string{"en-US", "de-DE-1996", "x-private", "i-klingon"} {
+		if _, err := load(t, typemeta.Ref{VCT: a}, doc(a, `,"display":[{"locale":"`+s+`","name":"n"}]`)); err != nil {
+			t.Errorf("locale %s: %v", s, err)
+		}
+	}
+	for _, s := range []string{"#FFF", "rgb(18, 16, 124)", "RGB(10%,0%,0%)"} {
+		if _, err := load(t, typemeta.Ref{VCT: a}, doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"text_color":"`+s+`"}}}]`)); err != nil {
+			t.Errorf("color %s: %v", s, err)
+		}
+	}
+}
+
+// A resolver that answers every vct with the same document.
+type answer []byte
+
+func (a answer) Metadata(context.Context, typemeta.Ref) ([]byte, error) { return a, nil }
+
+func TestLoadVCTMismatch(t *testing.T) {
+	_, err := typemeta.Load(context.Background(), answer(doc("https://a.example/u", "")), typemeta.Ref{VCT: "https://a.example/t"})
+	if !errors.Is(err, typemeta.ErrInvalid) {
+		t.Fatalf("got %v, want ErrInvalid", err)
+	}
+}
+
+func clear() *sdjwt.Node     { return &sdjwt.Node{Value: "v"} }
+func disclosed() *sdjwt.Node { return &sdjwt.Node{Value: "v", Disclosed: true} }
+func hidden() *sdjwt.Node    { return &sdjwt.Node{Hidden: true} }
+func object(hiddenFields int, kv ...any) *sdjwt.Node {
+	n := &sdjwt.Node{Value: map[string]any{}, Fields: map[string]*sdjwt.Node{}, HiddenFields: hiddenFields}
+	for i := 0; i < len(kv); i += 2 {
+		n.Fields[kv[i].(string)] = kv[i+1].(*sdjwt.Node)
+	}
+	return n
+}
+func array(elems ...*sdjwt.Node) *sdjwt.Node {
+	return &sdjwt.Node{Value: []any{}, Elems: append([]*sdjwt.Node{}, elems...)}
+}
+
+// Claim metadata validation, draft 19 §5.6, on the payload as issued.
+func TestValidateClaims(t *testing.T) {
+	const a = "https://a.example/t"
+	meta := func(claim string) *typemeta.Metadata {
+		m, err := load(t, typemeta.Ref{VCT: a}, doc(a, `,"claims":[`+claim+`]`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	degrees := `{"path":["degrees",null,"type"],"mandatory":true}`
+	tests := []struct {
+		name   string
+		claim  string
+		issued *sdjwt.Node
+		all    bool
+		ok     bool
+	}{
+		{"sd always in the clear", `{"path":["x"],"sd":"always"}`, object(0, "x", clear()), false, false},
+		{"sd never disclosed", `{"path":["x"],"sd":"never"}`, object(0, "x", disclosed()), false, false},
+		{"mandatory missing", `{"path":["x"],"mandatory":true}`, object(0), false, false},
+		{"mandatory maybe hidden", `{"path":["x"],"mandatory":true}`, object(2), false, true},
+		{"mandatory missing, all disclosures", `{"path":["x"],"mandatory":true}`, object(2), true, false},
+		{"key in a string", `{"path":["x","y"]}`, object(0, "x", clear()), false, false},
+		{"index as issued", `{"path":["n",1],"mandatory":true,"sd":"never"}`, object(0, "n", array(hidden(), clear())), false, true},
+		{"index beyond the array", `{"path":["n",2],"mandatory":true}`, object(0, "n", array(clear(), clear())), false, false},
+		{"hidden element is selectively disclosable", `{"path":["n",0],"sd":"always"}`, object(0, "n", array(hidden())), false, true},
+		{"hidden element under sd never", `{"path":["n",0],"sd":"never"}`, object(0, "n", array(hidden())), false, false},
+		{"decoy dropped, all disclosures", `{"path":["n",1],"mandatory":true}`, object(0, "n", array(hidden(), clear())), true, false},
+		{"one degree lacks type", degrees, object(0, "degrees", array(object(0, "type", clear()), object(0))), false, false},
+		{"no degrees", degrees, object(0, "degrees", array()), false, true},
+		{"hidden degree", degrees, object(0, "degrees", array(object(0, "type", clear()), hidden())), false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := meta(tt.claim).ValidateClaims(tt.issued, typemeta.ValidateOptions{AllDisclosures: tt.all})
+			if tt.ok && err != nil {
+				t.Fatal(err)
+			}
+			if !tt.ok && !errors.Is(err, typemeta.ErrViolated) {
+				t.Fatalf("got %v, want ErrViolated", err)
+			}
+		})
+	}
+	if err := (&typemeta.Metadata{}).ValidateClaims(object(0), typemeta.ValidateOptions{}); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("zero Metadata: got %v", err)
+	}
+}
+
+func TestHTTPResolver(t *testing.T) {
+	good := []byte(doc("https://placeholder", ""))
+	var requests atomic.Int32
+	var served atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path == "/unavailable" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if r.URL.Path != "/t" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if served.Add(1) == 1 {
+			w.Write(bytes.Replace(good, []byte("}"), []byte(` }`), 1)) // one byte off
+			return
+		}
+		w.Write(good)
+	}))
+	defer srv.Close()
+	vct := srv.URL + "/t"
+	good = []byte(doc(vct, ""))
+	r, err := typemeta.NewHTTPResolver(typemeta.Config{TrustedPublisherOrigins: []string{srv.URL + "/"}, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, v := range []string{"urn:example:t", "http" + strings.TrimPrefix(vct, "https"), "https://other.example/t", vct + "#f", vct + "/ü"} {
+		if _, err := r.Metadata(ctx, typemeta.Ref{VCT: v}); !errors.Is(err, typemeta.ErrNotFound) {
+			t.Errorf("%s: got %v, want ErrNotFound", v, err)
+		}
+	}
+	if n := requests.Load(); n != 0 {
+		t.Fatalf("%d requests for refused vcts", n)
+	}
+	var se *typemeta.StatusError
+	if _, err := r.Metadata(ctx, typemeta.Ref{VCT: srv.URL + "/missing"}); !errors.Is(err, typemeta.ErrNotFound) || errors.As(err, &se) {
+		t.Errorf("404: got %v, want ErrNotFound without a StatusError", err)
+	}
+	if _, err := r.Metadata(ctx, typemeta.Ref{VCT: srv.URL + "/unavailable"}); !errors.As(err, &se) || se.Code != http.StatusServiceUnavailable || errors.Is(err, typemeta.ErrNotFound) {
+		t.Errorf("503: got %v, want a StatusError with code 503, not ErrNotFound", err)
+	}
+	ref := typemeta.Ref{VCT: vct, Integrity: typemeta.Integrity(good)}
+	if _, err := typemeta.Load(ctx, r, ref); !errors.Is(err, typemeta.ErrInvalid) {
+		t.Fatalf("first Load: got %v, want ErrInvalid", err)
+	}
+	for range 2 {
+		if _, err := typemeta.Load(ctx, r, ref); err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+	}
+	// The document that failed was not cached; the one that passed was.
+	if n := served.Load(); n != 2 {
+		t.Errorf("served %d times, want 2", n)
+	}
+	// An empty TrustedPublisherOrigins recognizes every https publisher.
+	if _, err := typemeta.NewHTTPResolver(typemeta.Config{}); err != nil {
+		t.Errorf("empty TrustedPublisherOrigins: got %v", err)
+	}
+	// Entries are origins: a path, query or userinfo is refused, and so is
+	// "*", a "*" in a host other than a leading "*.", a host with an empty
+	// label or not ASCII, and a port with a leading zero. RedirectTo reads
+	// entries alike.
+	for _, e := range []string{"*", "**", "https://a*.example.com/", "https://*", "https://", "http://example.com",
+		"https://example.com/t1/", "https://example.com/t1", "https://example.com/a*b", "https://example.com?x=*", "https://user@example.com",
+		"https://example.com.", "https://bücher.example", "https://a..example.com", "https://example.com:0443"} {
+		if _, err := typemeta.NewHTTPResolver(typemeta.Config{TrustedPublisherOrigins: []string{"https://ok.example/", e}}); !errors.Is(err, jose.ErrInvalidArgument) {
+			t.Errorf("NewHTTPResolver(%q) = %v, want jose.ErrInvalidArgument", e, err)
+		}
+		if _, err := typemeta.NewHTTPResolver(typemeta.Config{Redirects: typemeta.RedirectTo("https://ok.example/", e)}); !errors.Is(err, jose.ErrInvalidArgument) || !strings.Contains(err.Error(), "RedirectTo[1]") {
+			t.Errorf("RedirectTo(%q) = %v, want jose.ErrInvalidArgument naming RedirectTo[1]", e, err)
+		}
+	}
+	if _, err := typemeta.NewHTTPResolver(typemeta.Config{Redirects: typemeta.RedirectTo()}); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("RedirectTo() = %v, want jose.ErrInvalidArgument", err)
+	}
+	for _, e := range []string{"https://example.com", "https://example.com/", "https://*.example.com"} {
+		if _, err := typemeta.NewHTTPResolver(typemeta.Config{TrustedPublisherOrigins: []string{e}, Redirects: typemeta.RedirectTo(e)}); err != nil {
+			t.Errorf("NewHTTPResolver(%q) = %v", e, err)
+		}
+	}
+	// A vct of another origin is not found, so Multi asks the next resolver,
+	// whatever Redirects follows.
+	or, err := typemeta.NewHTTPResolver(typemeta.Config{TrustedPublisherOrigins: []string{"https://example.com"}, Redirects: typemeta.RedirectAny()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, vct := range []string{"https://example.org/t1", "https://example.com:8443/t1", "https://a.example.com/t1"} {
+		if _, err := or.Metadata(t.Context(), typemeta.Ref{VCT: vct}); !errors.Is(err, typemeta.ErrNotFound) {
+			t.Errorf("Metadata(%q) = %v, want ErrNotFound", vct, err)
+		}
+	}
+}
+
+// draft 19 §7.1: the default client refuses the loopback address the
+// httptest server listens on.
+func TestDefaultClientRefusesLoopback(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	r, err := typemeta.NewHTTPResolver(typemeta.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Metadata(t.Context(), typemeta.Ref{VCT: srv.URL + "/t"}); !errors.Is(err, typemeta.ErrAddressBlocked) {
+		t.Fatalf("err = %v, want ErrAddressBlocked", err)
+	}
+}
+
+// The credential or an extending document chooses the URL, and the same
+// author writes its integrity, so by default a redirect stays on the origin
+// of the URL requested whatever TrustedPublisherOrigins holds: another
+// origin is refused before it is requested, integrity or not, for vct and
+// extends alike, and the failure is not cached. RedirectTo adds the origins
+// it lists to that origin, and RedirectAny follows any https URL.
+func TestRedirects(t *testing.T) {
+	const root, parent = "https://example.com/root", "https://example.com/p/parent"
+	const moved = "https://example.com:8443/moved"
+	const origin = "https://example.com/"
+	var within typemeta.RedirectPolicy
+	for _, tc := range []struct {
+		name      string
+		allowed   []string
+		redirects typemeta.RedirectPolicy
+		ref       typemeta.Ref
+		from, to  string // from is answered with a 302 to to
+		refused   bool
+	}{
+		{"another origin", []string{origin}, within, typemeta.Ref{VCT: root}, "/root", moved, true},
+		{"another origin, integrity of the target", []string{origin}, within, typemeta.Ref{VCT: root, Integrity: typemeta.Integrity([]byte(doc(root, "")))}, "/root", moved, true},
+		{"extends", []string{origin}, within, typemeta.Ref{VCT: root}, "/p/parent", moved, true},
+		{"another origin, both origins listed", []string{origin, "https://example.com:8443/"}, within, typemeta.Ref{VCT: root}, "/root", moved, true},
+		{"subdomain entry, another subdomain", []string{"https://*.example.com/"}, within, typemeta.Ref{VCT: "https://a.example.com/root"}, "/root", "https://b.example.com/moved", true},
+		{"empty TrustedPublisherOrigins", nil, within, typemeta.Ref{VCT: root}, "/root", moved, true},
+		{"another host, equal under Unicode case folding", nil, within, typemeta.Ref{VCT: "https://%CF%83.example.com/root"}, "/root", "https://ς.example.com/moved", true},
+		{"same origin, another case and default port", []string{origin}, within, typemeta.Ref{VCT: root}, "/root", "https://EXAMPLE.com:443/moved", false},
+		{"RedirectTo the target", []string{origin}, typemeta.RedirectTo("https://example.com:9443", "https://EXAMPLE.com:8443/"), typemeta.Ref{VCT: root}, "/root", moved, false},
+		{"RedirectTo another origin", []string{origin}, typemeta.RedirectTo("https://example.com:9443"), typemeta.Ref{VCT: root}, "/root", moved, true},
+		{"RedirectTo, same origin", []string{origin}, typemeta.RedirectTo("https://example.com:9443"), typemeta.Ref{VCT: root}, "/root", "https://example.com/moved", false},
+		{"RedirectTo, extends to the target", []string{origin}, typemeta.RedirectTo("https://example.com:8443"), typemeta.Ref{VCT: root}, "/p/parent", moved, false},
+		{"RedirectAny", []string{origin}, typemeta.RedirectAny(), typemeta.Ref{VCT: root}, "/root", moved, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var redirected, served atomic.Int32
+			to, err := url.Parse(tc.to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := to.Path
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case tc.from:
+					redirected.Add(1)
+					http.Redirect(w, r, tc.to, http.StatusFound)
+				case target:
+					served.Add(1)
+					if tc.from == "/p/parent" {
+						w.Write([]byte(doc(parent, "")))
+					} else {
+						w.Write([]byte(doc(tc.ref.VCT, "")))
+					}
+				case "/root":
+					w.Write([]byte(doc(root, `,"extends":"`+parent+`"`)))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			client := srv.Client()
+			addr := srv.Listener.Addr().String()
+			client.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			}
+			r, err := typemeta.NewHTTPResolver(typemeta.Config{TrustedPublisherOrigins: tc.allowed, Redirects: tc.redirects, HTTPClient: client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				_, err := typemeta.Load(context.Background(), r, tc.ref)
+				switch {
+				// The refusal, matching no sentinel Verify reads as NOT_FOUND
+				// or INVALID, and saying how the publisher or the verifier fixes it.
+				case tc.refused && (!errors.Is(err, typemeta.ErrRedirectNotAllowed) || errors.Is(err, typemeta.ErrNotFound) || errors.Is(err, typemeta.ErrInvalid) ||
+					!strings.Contains(err.Error(), "must serve it from that origin, or the verifier allows the target with RedirectTo")):
+					t.Fatalf("err = %v, want the redirect refused", err)
+				case !tc.refused && err != nil:
+					t.Fatalf("err = %v, want the redirect followed", err)
+				}
+			}
+			want := int32(2)
+			if tc.refused {
+				want = 0
+			}
+			if n, m := redirected.Load(), served.Load(); n != 2 || m != want {
+				t.Fatalf("redirect got %d requests, target %d; want 2 and %d", n, m, want)
+			}
+		})
+	}
+}
+
+func TestEncodedAndStatic(t *testing.T) {
+	const a = "https://a.example/t"
+	ext := []byte(doc(a, `, "x_ext": {"k": 1}, "display":[{"locale":"en","name":"n","dir":"ltr"}]`))
+	enc, err := typemeta.ParseEncoded(ext)
+	if err != nil || !bytes.Equal(enc.Bytes(), ext) {
+		t.Fatalf("ParseEncoded: %v", err)
+	}
+	r, err := typemeta.Static(enc.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := typemeta.Load(context.Background(), r, typemeta.Ref{VCT: a, Integrity: enc.Integrity()})
+	if err != nil || !bytes.Equal(m.Documents()[0], ext) {
+		t.Fatalf("Load: %v", err)
+	}
+	_, err = typemeta.Document{VCT: a, Claims: []typemeta.Claim{{Path: []any{"x"}, SVGID: "s"}, {Path: []any{"y"}, SVGID: "s"}}}.Encode()
+	if !errors.Is(err, typemeta.ErrClaims) {
+		t.Errorf("Encode with svg_id twice: got %v, want ErrClaims", err)
+	}
+	// RFC 2397 §3 as corrected by EID 2045: percent-encoded data is *uric.
+	if _, err := typemeta.ParseEncoded([]byte(doc(a, `,"display":[{"locale":"en","name":"n","rendering":{"simple":{"logo":{"uri":"data:image/svg+xml,%3Csvg%2F%3E"}}}}]`))); err != nil {
+		t.Errorf("ParseEncoded with a percent-encoded data: logo: %v", err)
+	}
+	// A publisher cannot write an extends#integrity no Consumer can check.
+	parent := typemeta.Integrity([]byte(doc("https://b.example/t", "")))
+	for _, v := range []string{"md5-x " + parent, "  "} {
+		if _, err := typemeta.ParseEncoded([]byte(doc(a, `,"extends":"https://b.example/t","extends#integrity":"`+v+`"`))); !errors.Is(err, typemeta.ErrInvalid) {
+			t.Errorf("ParseEncoded with extends#integrity %q: got %v, want ErrInvalid", v, err)
+		}
+	}
+	if _, err := typemeta.Static([]byte(doc(a, "")), []byte(doc(a, `,"name":"n"`))); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("Static with one vct twice: got %v", err)
+	}
+}
+
+// A resolver that fails every request with err.
+type failing struct{ err error }
+
+func (f failing) Metadata(context.Context, typemeta.Ref) ([]byte, error) { return nil, f.err }
+
+// A resolver that counts the requests it passes to r.
+type counted struct {
+	r     typemeta.Resolver
+	calls *int
+}
+
+func (c counted) Metadata(ctx context.Context, ref typemeta.Ref) ([]byte, error) {
+	*c.calls++
+	return c.r.Metadata(ctx, ref)
+}
+
+// Multi asks the next resolver only after ErrNotFound, so a failed retrieval
+// never moves a type to another source.
+func TestMulti(t *testing.T) {
+	ctx := context.Background()
+	const a, b = "https://a.example/t", "https://b.example/t"
+	ra, err := typemeta.Static([]byte(doc(a, "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb, err := typemeta.Static([]byte(doc(b, "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bCalls int
+	cb := counted{r: rb, calls: &bCalls}
+	m, err := typemeta.Multi(ra, cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, vct := range []string{a, b} {
+		if got, err := m.Metadata(ctx, typemeta.Ref{VCT: vct}); err != nil || string(got) != doc(vct, "") {
+			t.Errorf("%s = %s, %v; want its document", vct, got, err)
+		}
+	}
+	bCalls = 0
+	if _, err := m.Metadata(ctx, typemeta.Ref{VCT: a}); err != nil || bCalls != 0 {
+		t.Errorf("found by the first: err = %v, b called %d times; want b not called", err, bCalls)
+	}
+	if _, err := m.Metadata(ctx, typemeta.Ref{VCT: "https://c.example/t"}); !errors.Is(err, typemeta.ErrNotFound) {
+		t.Errorf("unknown vct: err = %v; want ErrNotFound", err)
+	}
+
+	fetch := errors.New("fetch failed")
+	m, err = typemeta.Multi(failing{fetch}, cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bCalls = 0
+	if _, err := m.Metadata(ctx, typemeta.Ref{VCT: b}); !errors.Is(err, fetch) || bCalls != 0 {
+		t.Errorf("Multi(failing, b): err = %v, b called %d times; want the fetch error and b not called", err, bCalls)
+	}
+
+	m, err = typemeta.Multi(ra, cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, cancel := context.WithCancel(ctx)
+	cancel()
+	bCalls = 0
+	if _, err := m.Metadata(done, typemeta.Ref{VCT: b}); !errors.Is(err, context.Canceled) || bCalls != 0 {
+		t.Errorf("ended ctx: err = %v, b called %d times; want context.Canceled and b not called", err, bCalls)
+	}
+	var nilCtx context.Context
+	if _, err := m.Metadata(nilCtx, typemeta.Ref{VCT: b}); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("nil ctx: err = %v; want jose.ErrInvalidArgument", err)
+	}
+
+	if _, err := typemeta.Multi(); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("Multi(): err = %v; want jose.ErrInvalidArgument", err)
+	}
+	if _, err := typemeta.Multi(ra, nil); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("Multi(ra, nil): err = %v; want jose.ErrInvalidArgument", err)
+	}
+}
