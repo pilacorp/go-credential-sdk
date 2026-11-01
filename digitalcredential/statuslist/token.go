@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/uri"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
@@ -105,7 +106,9 @@ func (l *List) IssueToken(ctx context.Context, c TokenClaims, key issuerkey.Sign
 
 // payload checks c and returns the claims it writes, all but status_list.
 func (c TokenClaims) payload() (map[string]any, error) {
-	if err := checkListURI(c.Sub); err != nil {
+	// §5.1: sub is the uri of the Referenced Tokens, so it meets the rule of
+	// Ref.Validate.
+	if err := uri.Check(c.Sub); err != nil {
 		return nil, fmt.Errorf("%w: statuslist: Sub %v", jose.ErrInvalidArgument, err)
 	}
 	if c.IssuedAt.IsZero() {

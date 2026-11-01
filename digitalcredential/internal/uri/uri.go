@@ -1,9 +1,9 @@
-// The uri of a Status List Token, as its sub claim and as the uri of a
-// Referenced Token (draft-ietf-oauth-status-list-21 §5.1, §6.2): RFC 7519 §2
-// (a StringOrURI holding ":" MUST be a URI) and RFC 3986 §3, rule URI of
-// Appendix A.
-
-package statuslist
+// Package uri checks that a string taken from a token or a fetched document
+// is a URI by RFC 3986 §3, rule URI of Appendix A, as RFC 7519 §2 requires
+// of a StringOrURI holding ":", and that an http or https URI has a host
+// (RFC 9110 §4.2.1, §4.2.2). It checks the raw string and does no IDNA
+// mapping, so a host in Unicode is not a URI and a percent-encoded one is.
+package uri
 
 import (
 	"errors"
@@ -11,15 +11,13 @@ import (
 	"strings"
 )
 
-// checkListURI is the rule for the uri of a Status List Token, which the
-// token's sub and the Referenced Token's uri both meet (draft 21 §5.1: the
-// two are equal): a URI conforming to RFC 3986 (§6.2; RFC 7519 §2: a
-// StringOrURI holding ":" MUST be one), and with an http or https scheme a
-// host: RFC 9110 §4.2.1 and §4.2.2 forbid a sender to generate one with an
-// empty host and require a recipient to reject it as invalid. Any other
-// scheme is accepted.
-func checkListURI(s string) error {
-	if !isURI(s) {
+// Check reports whether s is a URI conforming to RFC 3986 and, with an
+// http or https scheme, has a host: RFC 9110 §4.2.1 and §4.2.2 forbid a
+// sender to generate one with an empty host and require a recipient to
+// reject it as invalid. Any other scheme is accepted. The error says which
+// rule s breaks and does not quote s.
+func Check(s string) error {
+	if !Valid(s) {
 		return errors.New("is not a URI (RFC 3986)")
 	}
 	// RFC 3986 §3.1: a scheme compares case-insensitively.
@@ -31,7 +29,7 @@ func checkListURI(s string) error {
 }
 
 // hasHost reports whether the part of a URI after "scheme:" starts with an
-// authority whose host is not empty; isURI has checked its syntax.
+// authority whose host is not empty; Valid has checked its syntax.
 func hasHost(rest string) bool {
 	rest, ok := strings.CutPrefix(rest, "//")
 	if !ok {
@@ -45,14 +43,14 @@ func hasHost(rest string) bool {
 		authority = hostport
 	}
 	host, _, _ := strings.Cut(authority, ":")
-	// An IP-literal starts with "[", which isURI checked is not empty.
+	// An IP-literal starts with "[", which Valid checked is not empty.
 	return host != "" || strings.HasPrefix(authority, "[")
 }
 
-// isURI reports whether s is a URI by RFC 3986 §3, checked per component on
+// Valid reports whether s is a URI by RFC 3986 §3, checked per component on
 // the raw string: url.Parse accepts characters RFC 3986 does not, and
 // url.URL.String writes RawQuery back verbatim.
-func isURI(s string) bool {
+func Valid(s string) bool {
 	s, fragment, ok := strings.Cut(s, "#")
 	if ok && !uriChars(fragment, ":@/?") { // §3.5
 		return false
