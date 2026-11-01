@@ -13,6 +13,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/sri"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/uri"
 	"github.com/pilacorp/go-credential-sdk/jose"
 )
@@ -68,8 +69,12 @@ func readDocument(raw []byte) (*document, error) {
 	if !optString(obj, "extends#integrity", &d.extendsIntegrity) {
 		return nil, invalid("extends#integrity is not a string (draft-ietf-oauth-sd-jwt-vc-19 §6)")
 	}
-	if d.hasExtendsIntegrity && d.extendsIntegrity == "" {
-		return nil, invalid("extends#integrity is present and empty, so no hash can check the parent document; write typemeta.Integrity of it or leave it out (draft-ietf-oauth-sd-jwt-vc-19 §6)")
+	if d.hasExtendsIntegrity && !sri.WellFormed(d.extendsIntegrity) {
+		return nil, invalid("extends#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §6)")
+	}
+	// Well formed, so all but its tokens is ASCII whitespace.
+	if d.hasExtendsIntegrity && strings.TrimSpace(d.extendsIntegrity) == "" {
+		return nil, invalid("extends#integrity is present and holds no hash, so none can check the parent document; write typemeta.Integrity of it or leave it out (draft-ietf-oauth-sd-jwt-vc-19 §6)")
 	}
 	if v, ok := obj["display"]; ok {
 		d.hasDisplay = true
@@ -190,6 +195,9 @@ func readImage(m map[string]any, name, at string) (*Image, error) {
 	if !optStringPtr(im, "uri#integrity", &img.URIIntegrity) {
 		return nil, invalid("%s.uri#integrity is not a string (draft-ietf-oauth-sd-jwt-vc-19 %s)", at, section)
 	}
+	if img.URIIntegrity != nil && !sri.WellFormed(*img.URIIntegrity) {
+		return nil, invalid("%s.uri#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §6)", at)
+	}
 	return img, nil
 }
 
@@ -205,6 +213,9 @@ func readSVGTemplate(v any, several bool, at string) (SVGTemplate, error) {
 	}
 	if !optStringPtr(m, "uri#integrity", &t.URIIntegrity) {
 		return SVGTemplate{}, invalid("%s.uri#integrity is not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.2)", at)
+	}
+	if t.URIIntegrity != nil && !sri.WellFormed(*t.URIIntegrity) {
+		return SVGTemplate{}, invalid("%s.uri#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §6)", at)
 	}
 	p, ok := m["properties"]
 	if !ok {

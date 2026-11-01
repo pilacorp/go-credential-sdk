@@ -1,9 +1,9 @@
 // Package sri reads an "integrity metadata" string, the value of vct#integrity,
 // extends#integrity and uri#integrity in draft-ietf-oauth-sd-jwt-vc-19 §6,
-// with the syntax of W3C Subresource Integrity (REC 2016-06-23) §3.5 and the
-// parsing of §3.3.3, and checks a document against it as §6 says. typemeta
-// checks documents with it; dc checks at issuance that vct#integrity is well
-// formed.
+// with the syntax of W3C Subresource Integrity (REC 2016-06-23) §3.5, and
+// checks a document against it as §6 says. typemeta checks documents with it
+// and that every #integrity it reads is well formed; dc checks that
+// vct#integrity is well formed when it issues and verifies.
 package sri
 
 import (
@@ -28,8 +28,10 @@ var algs = []struct {
 
 // WellFormed reports whether integrity is "integrity metadata" as SRI §3.5
 // writes it and draft 19 §5.3 requires of vct#integrity: every token
-// hash-algo "-" base64-value with options of VCHAR only. The ABNF allows no
-// token at all; Check refuses such a value, as §6 asks of a Consumer.
+// hash-algo "-" base64-value with options of VCHAR only. A token of another
+// algorithm makes the whole value malformed, since hash-algo is the closed
+// list of CSP Level 2 §4.2. The ABNF allows no token at all; Check refuses
+// such a value, as §6 asks of a Consumer.
 func WellFormed(integrity string) bool {
 	for tok := range strings.FieldsFuncSeq(integrity, isASCIISpace) {
 		if _, _, ok := parseToken(tok); !ok {
@@ -41,9 +43,13 @@ func WellFormed(integrity string) bool {
 
 // Check reports whether data matches integrity: draft 19 §6, the digest of
 // exactly data under the strongest algorithm integrity uses, compared octet
-// for octet with each digest of that algorithm. The error names which of the
-// two §6 failures it is and quotes nothing of integrity.
+// for octet with each digest of that algorithm. integrity must be
+// WellFormed, as draft 19 §5.3 and §6 require integrity metadata. The error
+// names which failure it is and quotes nothing of integrity.
 func Check(data []byte, integrity string) error {
+	if !WellFormed(integrity) {
+		return errors.New("integrity metadata is not well formed: each token is sha256-, sha384- or sha512- and base64, tokens separated by spaces (W3C SRI §3.5)")
+	}
 	alg, digests := strongest(integrity)
 	if alg < 0 {
 		return errors.New("integrity metadata holds no sha256, sha384 or sha512 hash expression")
@@ -57,20 +63,19 @@ func Check(data []byte, integrity string) error {
 	return errors.New("the document does not match its " + algs[alg].name + " integrity metadata")
 }
 
-// strongest parses integrity as SRI §3.3.3 does: split on ASCII whitespace,
-// skip a token that is not valid metadata (parseToken). It returns the index
-// in algs of the strongest algorithm left, -1 for none, and the decoded
-// digests that algorithm carries.
+// strongest reads integrity, which is WellFormed, split on ASCII whitespace.
+// It returns the index in algs of the strongest algorithm used, -1 for no
+// token, and the decoded digests that algorithm carries.
 func strongest(integrity string) (alg int, digests [][]byte) {
 	alg = -1
 	for tok := range strings.FieldsFuncSeq(integrity, isASCIISpace) {
-		i, value, ok := parseToken(tok)
-		if !ok || (alg >= 0 && i > alg) {
+		i, value, _ := parseToken(tok)
+		if alg >= 0 && i > alg {
 			continue
 		}
 		// base64-value allows any padding up to "==", so it is decoded
 		// unpadded. A value that does not decode, or decodes to the wrong
-		// length, is still a valid token of its algorithm (§3.3.3), and
+		// length, is still a well-formed token of its algorithm (§3.5), and
 		// matches no document. DecodeString returns the bytes before the
 		// fault with its error, so they are dropped rather than compared.
 		d, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(value, "="))
