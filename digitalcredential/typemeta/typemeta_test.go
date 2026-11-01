@@ -571,6 +571,10 @@ func TestMulti(t *testing.T) {
 			t.Errorf("%s = %s, %v; want its document", vct, got, err)
 		}
 	}
+	bCalls = 0
+	if _, err := m.Metadata(ctx, typemeta.Ref{VCT: a}); err != nil || bCalls != 0 {
+		t.Errorf("found by the first: err = %v, b called %d times; want b not called", err, bCalls)
+	}
 	if _, err := m.Metadata(ctx, typemeta.Ref{VCT: "https://c.example/t"}); !errors.Is(err, typemeta.ErrNotFound) {
 		t.Errorf("unknown vct: err = %v; want ErrNotFound", err)
 	}

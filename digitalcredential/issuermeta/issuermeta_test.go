@@ -193,6 +193,24 @@ func TestFigure14(t *testing.T) {
 	}
 }
 
+// A max-age past 24 hours is cut to 24 hours, so a key the issuer removes
+// stops verifying within a day.
+func TestCacheAtMost24Hours(t *testing.T) {
+	s := newMetaServer(t, map[string]response{"/.well-known/jwt-vc-issuer": {"application/json", "max-age=31536000", fig14}})
+	start := time.Unix(1_800_000_000, 0)
+	now := start
+	r := s.resolver(t, []string{"https://example.com"}, &now, false)
+	for _, at := range []time.Duration{0, 24*time.Hour - time.Second, 24 * time.Hour} {
+		now = start.Add(at)
+		if _, err := r.Keys(context.Background(), "https://example.com"); err != nil {
+			t.Fatalf("Keys at +%v: %v", at, err)
+		}
+	}
+	if n := s.hits.Load(); n != 2 {
+		t.Errorf("server got %d requests, want 2 (cached until +24h, fetched again at +24h)", n)
+	}
+}
+
 // Figure 15: jwks_uri, its JWK Set served as application/jwk-set+json with
 // max-age=60 against the metadata's 3600: the shorter one decides.
 func TestFigure15(t *testing.T) {

@@ -279,24 +279,27 @@ func TestCheckerCacheIsolatesIssuers(t *testing.T) {
 }
 
 // A cached list answers only until its lifetime ends, ttl from the fetch
-// (draft 21 §13.7) but never past exp (§5.1: exp ends the token's
-// validity); a stale list must not keep answering after a revocation.
+// (draft 21 §13.7) but at most 24 hours (§11.5) and never past exp (§5.1:
+// exp ends the token's validity); a stale list must not keep answering after
+// a revocation.
 func TestCheckerCacheLifetime(t *testing.T) {
 	signer, pub := newP256Signer(t)
 	const uri = "https://example.com/statuslists/1"
 	tests := []struct {
 		name string
+		ttl  int64         // seconds
 		exp  time.Duration // from draft21Now; 0: no exp
 		last time.Duration // the cache still answers here
 	}{
-		{"ttl", 0, 59 * time.Second},
-		{"exp before ttl ends", 30 * time.Second, 29 * time.Second},
+		{"ttl", 60, 0, 59 * time.Second},
+		{"exp before ttl ends", 60, 30 * time.Second, 29 * time.Second},
+		{"ttl past 24 hours", 365 * 24 * 3600, 0, 24*time.Hour - time.Second},
 	}
 	for _, tt := range tests {
 		claims := map[string]any{
 			"sub":         uri,
 			"iat":         draft21Now.Add(-time.Hour).Unix(),
-			"ttl":         60,
+			"ttl":         tt.ttl,
 			"status_list": map[string]any{"bits": 1, "lst": "eNrbuRgAAhcBXQ"},
 		}
 		if tt.exp != 0 {
