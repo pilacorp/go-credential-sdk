@@ -26,9 +26,38 @@ const mediaTypeMetadata = "application/json" // §5.3.1
 // Config.Redirects.
 var limits = safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, MaxBytes: maxDocumentBytes}
 
-// ErrRedirectNotAllowed: the resolver refused, before sending it, a
-// redirect of a vct or extends that Config.Redirects does not follow.
-var ErrRedirectNotAllowed = safehttp.ErrNotFollowed
+// The causes of a failed retrieval of a vct or extends that the resolver of
+// NewHTTPResolver itself finds. An error of Metadata wraps one when it
+// applies, and so does an error of Load or Verify through it. Package
+// issuermeta exports the same values.
+var (
+	// ErrRedirectNotAllowed: the resolver refused, before sending it, a
+	// redirect that Config.Redirects does not follow.
+	ErrRedirectNotAllowed = safehttp.ErrNotFollowed
+	// ErrRedirectTargetNotAllowed: the resolver refused, before sending it,
+	// a redirect to a URL that is not https with a host and no userinfo,
+	// whatever Config.Redirects allows. It is distinct from
+	// ErrRedirectNotAllowed.
+	ErrRedirectTargetNotAllowed = safehttp.ErrRedirectTargetNotAllowed
+	// ErrTooManyRedirects: a retrieval met more than 3 redirects.
+	ErrTooManyRedirects = safehttp.ErrTooManyRedirects
+	// ErrContentTypeNotAccepted: the final response is not application/json
+	// (§5.3.1).
+	ErrContentTypeNotAccepted = safehttp.ErrContentTypeNotAccepted
+	// ErrBodyTooLarge: the body of the final response is over 256 KiB.
+	ErrBodyTooLarge = safehttp.ErrBodyTooLarge
+	// ErrAddressBlocked: the default client refused to connect to an
+	// address that is not globally reachable (§7.1). A Config.HTTPClient
+	// has its own rules.
+	ErrAddressBlocked = safehttp.ErrBlockedAddress
+)
+
+// StatusError: the final response of a retrieval has a status that is not
+// 2xx, held in Code, other than 404, which is ErrNotFound and carries no
+// StatusError. An error of Metadata, Load or Verify gives it to errors.As.
+// It is the same type as issuermeta.StatusError, so one errors.As target
+// matches both.
+type StatusError = safehttp.StatusError
 
 // RedirectPolicy says where the resolver of NewHTTPResolver follows a
 // redirect of a vct or extends. The zero value follows one only within the
@@ -158,16 +187,22 @@ type httpResolver struct {
 // TrustedPublisherOrigins covers its origin. Otherwise it sends a GET to
 // exactly ref.VCT: https on every redirect, at most 3 redirects, each one
 // that Config.Redirects follows from ref.VCT, 5 seconds, a 2xx
-// application/json response of at most 256 KiB (§3); a 404 is ErrNotFound,
-// a refused redirect ErrRedirectNotAllowed, any other failure an error that
-// matches no sentinel of this package, its cause wrapped. The cache counts
+// application/json response of at most 256 KiB; §3 asks for these bounds,
+// the values are SDK policy. A 404 is ErrNotFound and carries no
+// StatusError. Any other failure wraps its cause: a StatusError,
+// ErrRedirectNotAllowed, ErrRedirectTargetNotAllowed, ErrTooManyRedirects,
+// ErrContentTypeNotAccepted, ErrBodyTooLarge, ErrAddressBlocked or an error
+// of the client. Printing a cause on its own prints its text, which for an
+// error of net/http may hold the URL or a redirect target. The cache counts
 // an estimated 4 MiB and is keyed by the Ref. With ref.Integrity, a
 // document is cached only when it passes CheckIntegrity, and then with no
 // expiry (§5.3.4); one that fails is returned uncached for Load to reject.
 // Without, it is reused as RFC 9111 §4.2 and §5.2 allow, for at most 24
 // hours. When the 4 MiB are full, expired entries go first, then those with
 // no expiry, oldest first. A failure is never cached. It is safe for
-// concurrent use. Error texts quote no vct or URL.
+// concurrent use. Error texts quote no vct or URL, except that a failed
+// connection's text, cut to 200 characters and quoted, can name the host or
+// address dialled.
 func NewHTTPResolver(cfg Config) (Resolver, error) {
 	for i, e := range cfg.TrustedPublisherOrigins {
 		if why := allowlist.Check(e, trustHints); why != "" {

@@ -116,6 +116,9 @@ case err != nil: // ctx ended: nothing is known about the token
 }
 ```
 
+An `*dc.Error` that a resolver or the `StatusChecker` led to wraps its error, and so does the ctx error, which wraps
+`ctx.Err()` too. `errors.Is` and `errors.As` reach the cause, such as an `issuermeta.StatusError`.
+
 With no option, `Verify` follows the standard's rule where it sets one, and otherwise the SDK default in the table, which never accepts what the standard rejects. The options set what the standards leave to the Verifier:
 
 | Option | Not passed |
@@ -164,14 +167,15 @@ res, err := cred.Verify(ctx, resolver, dc.WithTypeMetadata(types))
 
 `NewHTTPResolver` fetches a `vct` that is an https URL whose origin `TrustedPublisherOrigins` covers (§5.3.1), with the
 bounds of §3 and the address check of the issuer metadata resolver, and caches a document for its HTTP freshness, at
-most 24 hours; a document whose integrity was checked stays until evicted. An empty `TrustedPublisherOrigins`
-recognizes every https publisher; its entries are origins, read as for the issuer metadata resolver. `Redirects`
-judges each redirect of a `vct` or `extends` as it does for the issuer metadata, integrity or not; the refusal is
-`typemeta.ErrRedirectNotAllowed`, which `Verify` reports as `TYPE_METADATA_UNAVAILABLE` under `WithTypeMetadata`, and
-a `vct` served from a CDN on another origin needs `typemeta.RedirectTo`. Integrity does not lift the rule, because the
-issuer writes the hash as well as the URL, while the origin is what you recognize. `typemeta.Static(docs...)` serves
-documents you ship, and `typemeta.Multi(r1, r2, …)` asks resolvers in order, moving on only on
-`typemeta.ErrNotFound`.
+most 24 hours; a document whose integrity was checked stays until evicted. An empty `TrustedPublisherOrigins` recognizes
+every https publisher; its entries are origins, read as for the issuer metadata resolver. `Redirects` judges each
+redirect of a `vct` or `extends` as it does for the issuer metadata, integrity or not; the refusal is
+`typemeta.ErrRedirectNotAllowed`, which `Verify` reports as `TYPE_METADATA_UNAVAILABLE` under `WithTypeMetadata`, and a
+`vct` served from a CDN on another origin needs `typemeta.RedirectTo`. A 404 is `typemeta.ErrNotFound`; any other failed
+retrieval wraps its cause, with the sentinels and `StatusError` of the issuer metadata resolver under `typemeta` names.
+Integrity does not lift the rule, because the issuer writes the hash as well as the URL, while the origin is what you
+recognize. `typemeta.Static(docs...)` serves documents you ship, and `typemeta.Multi(r1, r2, …)` asks resolvers in
+order, moving on only on `typemeta.ErrNotFound`.
 
 `typemeta.Load` follows `extends` up to 8 documents, checks each `#integrity` (§6, W3C SRI), the structure and the
 `vct`, and merges display and claim metadata (§5.5.2, §5.6.5). `Verify` then checks the payload as issued against the
@@ -259,10 +263,12 @@ identical to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
 
   So does an issuer whose metadata redirects from `https://abc.com` to `https://www.abc.com`, with
   `RedirectTo("https://www.abc.com")`: they are one site but two origins (RFC 6454 §5).
-- An `iss` outside the list is `issuerkey.ErrIssuerNotSupported`, with no request made. Metadata or a JWK Set that
-  must not be used is `issuerkey.ErrNoUsableKey`. A refused redirect is `issuermeta.ErrRedirectNotAllowed`, which a
-  retry does not clear: `Verify` reports it as `ISSUER_KEY_UNAVAILABLE`, and `errors.Is(err,
-  issuermeta.ErrRedirectNotAllowed)` tells it apart. A failed retrieval is any other error, or one wrapping `ctx.Err()`.
+- An `iss` outside the list is `issuerkey.ErrIssuerNotSupported`, with no request made. Metadata or a JWK Set that must
+  not be used is `issuerkey.ErrNoUsableKey`. A failed retrieval is any other error, which `Verify` reports as
+  `ISSUER_KEY_UNAVAILABLE`, or as the ctx error once ctx is done. It wraps the cause: an `issuermeta.StatusError`,
+  `ErrRedirectNotAllowed` for a redirect `Redirects` refuses, `ErrRedirectTargetNotAllowed` for one that is not https
+  with a host and no userinfo, `ErrTooManyRedirects`, `ErrContentTypeNotAccepted`, `ErrBodyTooLarge`,
+  `ErrAddressBlocked`, or an error of the client.
 - Only P-256 and secp256k1 keys whose `use`, `alg` and `key_ops`, if present, allow verifying are returned.
 - Answers are cached as RFC 9111 allows, at most 24 hours. A key the issuer removes still verifies while its answer
   is cached; `DisableCache` retrieves every time. Share one `Resolver`.

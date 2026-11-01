@@ -304,6 +304,10 @@ func TestHTTPResolver(t *testing.T) {
 	var served atomic.Int32
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
+		if r.URL.Path == "/unavailable" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		if r.URL.Path != "/t" {
 			http.NotFound(w, r)
 			return
@@ -331,8 +335,12 @@ func TestHTTPResolver(t *testing.T) {
 	if n := requests.Load(); n != 0 {
 		t.Fatalf("%d requests for refused vcts", n)
 	}
-	if _, err := r.Metadata(ctx, typemeta.Ref{VCT: srv.URL + "/missing"}); !errors.Is(err, typemeta.ErrNotFound) {
-		t.Errorf("404: got %v, want ErrNotFound", err)
+	var se *typemeta.StatusError
+	if _, err := r.Metadata(ctx, typemeta.Ref{VCT: srv.URL + "/missing"}); !errors.Is(err, typemeta.ErrNotFound) || errors.As(err, &se) {
+		t.Errorf("404: got %v, want ErrNotFound without a StatusError", err)
+	}
+	if _, err := r.Metadata(ctx, typemeta.Ref{VCT: srv.URL + "/unavailable"}); !errors.As(err, &se) || se.Code != http.StatusServiceUnavailable || errors.Is(err, typemeta.ErrNotFound) {
+		t.Errorf("503: got %v, want a StatusError with code 503, not ErrNotFound", err)
 	}
 	ref := typemeta.Ref{VCT: vct, Integrity: typemeta.Integrity(good)}
 	if _, err := typemeta.Load(ctx, r, ref); !errors.Is(err, typemeta.ErrInvalid) {
@@ -383,6 +391,20 @@ func TestHTTPResolver(t *testing.T) {
 		if _, err := or.Metadata(t.Context(), typemeta.Ref{VCT: vct}); !errors.Is(err, typemeta.ErrNotFound) {
 			t.Errorf("Metadata(%q) = %v, want ErrNotFound", vct, err)
 		}
+	}
+}
+
+// draft 19 §7.1: the default client refuses the loopback address the
+// httptest server listens on.
+func TestDefaultClientRefusesLoopback(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	r, err := typemeta.NewHTTPResolver(typemeta.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Metadata(t.Context(), typemeta.Ref{VCT: srv.URL + "/t"}); !errors.Is(err, typemeta.ErrAddressBlocked) {
+		t.Fatalf("err = %v, want ErrAddressBlocked", err)
 	}
 }
 

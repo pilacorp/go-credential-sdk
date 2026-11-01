@@ -46,7 +46,8 @@ var ErrIssuerNotSupported = errors.New("issuerkey: issuer not supported")
 // ErrNoUsableKey is what a Resolver wraps when the issuer's key source
 // answered and the answer gives no usable key, for a reason the error states:
 // a document that is not valid for its standard, or one naming another
-// issuer. A later call gives the same until the issuer changes its document.
+// issuer. It is an answer about the issuer's document, not a failure to get
+// one.
 var ErrNoUsableKey = errors.New("issuerkey: no usable key")
 
 // Resolver returns the keys an issuer publishes for verifying its signatures.
@@ -66,8 +67,8 @@ type Resolver interface {
 	//     ctx. Wrap it only for such a mistake, never for anything iss or the
 	//     issuer's answer controls;
 	//   - any other error: the keys could not be found out (a network or
-	//     store failure), and a later call may succeed. Wrap the cause with
-	//     %w, so context.Canceled and context.DeadlineExceeded stay visible;
+	//     store failure). Wrap the cause with %w, so errors.Is and errors.As
+	//     reach it, context.Canceled and context.DeadlineExceeded included;
 	//   - otherwise the keys, possibly none.
 	//
 	// iss comes from a token whose signature is not verified yet, so anyone

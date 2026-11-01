@@ -338,3 +338,15 @@ type failingTypes struct{ err error }
 func (r failingTypes) Metadata(context.Context, typemeta.Ref) ([]byte, error) {
 	return nil, r.err
 }
+
+// cancellingTypes ends ctx while it runs, as a caller's deadline does during
+// a fetch, and then fails with err.
+type cancellingTypes struct {
+	cancel context.CancelFunc
+	err    error
+}
+
+func (r cancellingTypes) Metadata(context.Context, typemeta.Ref) ([]byte, error) {
+	r.cancel()
+	return nil, r.err
+}

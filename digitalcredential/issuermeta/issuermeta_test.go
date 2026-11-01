@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/jose"
 )
@@ -411,8 +410,8 @@ func TestDefaultClientRefusesLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Keys(context.Background(), s.srv.URL); !errors.Is(err, safehttp.ErrBlockedAddress) {
-		t.Fatalf("err = %v, want safehttp.ErrBlockedAddress", err)
+	if _, err := r.Keys(context.Background(), s.srv.URL); !errors.Is(err, ErrAddressBlocked) {
+		t.Fatalf("err = %v, want ErrAddressBlocked", err)
 	}
 	if n := s.hits.Load(); n != 0 {
 		t.Fatalf("hits = %d, want 0", n)
@@ -426,8 +425,34 @@ func TestBodyOverCap(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	r := s.resolver(t, []string{"https://example.com"}, &now, false)
 	_, err := r.Keys(context.Background(), "https://example.com")
-	if err == nil || errors.Is(err, issuerkey.ErrNoUsableKey) || errors.Is(err, issuerkey.ErrIssuerNotSupported) {
-		t.Fatalf("err = %v, want a retrieval error", err)
+	if !errors.Is(err, ErrBodyTooLarge) || errors.Is(err, issuerkey.ErrNoUsableKey) || errors.Is(err, issuerkey.ErrIssuerNotSupported) {
+		t.Fatalf("err = %v, want ErrBodyTooLarge, a retrieval error", err)
+	}
+}
+
+// A status that is not 2xx is a failed retrieval, not a document to judge,
+// and its code reaches the caller.
+func TestStatusNot2xx(t *testing.T) {
+	s := newMetaServer(t, nil)
+	now := time.Unix(1_800_000_000, 0)
+	r := s.resolver(t, []string{"https://example.com"}, &now, false)
+	_, err := r.Keys(context.Background(), "https://example.com")
+	var se *StatusError
+	if !errors.As(err, &se) || se.Code != http.StatusNotFound || errors.Is(err, issuerkey.ErrNoUsableKey) {
+		t.Fatalf("err = %v, want a StatusError with code 404, a retrieval error", err)
+	}
+}
+
+// draft 19 §3: a redirect to http is refused before Redirects is asked, so
+// the refusal is ErrRedirectTargetNotAllowed, not ErrRedirectNotAllowed.
+func TestRedirectToHTTP(t *testing.T) {
+	s := newMetaServer(t, map[string]response{"/moved": metadata("https://example.com", twoKeys)})
+	s.redirects = map[string]string{"/.well-known/jwt-vc-issuer": "http://example.com/moved"}
+	now := time.Unix(1_800_000_000, 0)
+	r := s.resolverFor(t, Config{}, &now)
+	_, err := r.Keys(context.Background(), "https://example.com")
+	if !errors.Is(err, ErrRedirectTargetNotAllowed) || errors.Is(err, ErrRedirectNotAllowed) {
+		t.Fatalf("err = %v, want ErrRedirectTargetNotAllowed only", err)
 	}
 }
 

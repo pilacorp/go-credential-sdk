@@ -69,9 +69,37 @@ var mediaTypesJWKSet = []string{"application/jwk-set+json", "application/json"}
 // limits of every retrieval; NewResolver adds the Follow of Config.Redirects.
 var limits = safehttp.Limits{Timeout: fetchTimeout, MaxRedirects: maxRedirects, MaxBytes: maxBodyBytes}
 
-// ErrRedirectNotAllowed: Keys refused, before sending it, a redirect of the
-// metadata or of jwks_uri that Config.Redirects does not follow.
-var ErrRedirectNotAllowed = safehttp.ErrNotFollowed
+// The causes of a failed retrieval of the metadata or of the JWK Set that
+// Keys itself finds. An error of Keys wraps one when it applies, and so does
+// an error of Verify through it. Package typemeta exports the same values.
+var (
+	// ErrRedirectNotAllowed: Keys refused, before sending it, a redirect
+	// that Config.Redirects does not follow.
+	ErrRedirectNotAllowed = safehttp.ErrNotFollowed
+	// ErrRedirectTargetNotAllowed: Keys refused, before sending it, a
+	// redirect to a URL that is not https with a host and no userinfo,
+	// whatever Config.Redirects allows. It is distinct from
+	// ErrRedirectNotAllowed.
+	ErrRedirectTargetNotAllowed = safehttp.ErrRedirectTargetNotAllowed
+	// ErrTooManyRedirects: a retrieval met more than 3 redirects.
+	ErrTooManyRedirects = safehttp.ErrTooManyRedirects
+	// ErrContentTypeNotAccepted: the final response is not application/json
+	// for the metadata (§4.2), nor application/jwk-set+json or
+	// application/json for the JWK Set.
+	ErrContentTypeNotAccepted = safehttp.ErrContentTypeNotAccepted
+	// ErrBodyTooLarge: the body of the final response is over 64 KiB.
+	ErrBodyTooLarge = safehttp.ErrBodyTooLarge
+	// ErrAddressBlocked: the default client refused to connect to an
+	// address that is not globally reachable (§7.1). A Config.HTTPClient
+	// has its own rules.
+	ErrAddressBlocked = safehttp.ErrBlockedAddress
+)
+
+// StatusError: the final response of a retrieval has a status that is not
+// 2xx, held in Code. An error of Keys or Verify gives it to errors.As. It
+// is the same type as typemeta.StatusError, so one errors.As target matches
+// both.
+type StatusError = safehttp.StatusError
 
 // RedirectPolicy says where Keys follows a redirect of the metadata or of
 // jwks_uri. The zero value follows one only within the origin of the URL
@@ -247,11 +275,13 @@ var _ issuerkey.Resolver = (*Resolver)(nil)
 //   - an error wrapping issuerkey.ErrNoUsableKey: the issuer's server
 //     answered, and the metadata or the JWK Set is not valid (§4.2, §4.3,
 //     RFC 7517 §4, §5), so it must not be used;
-//   - any other error: a retrieval failed (§3), and a later call may
-//     succeed. It wraps the cause, such as context.Canceled; an address the
-//     default client refuses (draft 19 §7.1) is such an error, and its text
-//     names a blocked address. A refused redirect wraps
-//     ErrRedirectNotAllowed; any other matches no exported sentinel.
+//   - any other error: a retrieval failed (§3). It wraps the cause: a
+//     StatusError, ErrRedirectNotAllowed, ErrRedirectTargetNotAllowed,
+//     ErrTooManyRedirects, ErrContentTypeNotAccepted, ErrBodyTooLarge,
+//     ErrAddressBlocked, whose text names the blocked address, or an error
+//     of the client, such as context.Canceled. Printing a cause on its own
+//     prints its text, which for an error of net/http may hold the URL or a
+//     redirect target.
 //
 // A hit in the cache makes no request and does not look at ctx. A key the
 // issuer removes may still verify for up to min(max-age − Age, 24 h) of the

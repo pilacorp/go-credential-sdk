@@ -73,8 +73,8 @@ func TestGetRefusesRedirect(t *testing.T) {
 	}))
 	t.Cleanup(s.Close)
 
-	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/downgrade", []string{"application/json"}, limits); err == nil {
-		t.Error("redirect to http: err = nil")
+	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/downgrade", []string{"application/json"}, limits); !errors.Is(err, ErrRedirectTargetNotAllowed) {
+		t.Errorf("redirect to http: err = %v, want ErrRedirectTargetNotAllowed", err)
 	}
 	if plainHits.Load() != 0 {
 		t.Errorf("http server got %d requests, want 0", plainHits.Load())
@@ -85,15 +85,15 @@ func TestGetRefusesRedirect(t *testing.T) {
 	// Get, not the TLS handshake, the check that refuses it.
 	c := s.Client()
 	c.Transport.(*http.Transport).TLSClientConfig.ServerName = "127.0.0.1"
-	if _, _, err := Get(context.Background(), c, s.URL+"/nohost", []string{"application/json"}, limits); err == nil {
-		t.Error("redirect to https without a host: err = nil")
+	if _, _, err := Get(context.Background(), c, s.URL+"/nohost", []string{"application/json"}, limits); !errors.Is(err, ErrRedirectTargetNotAllowed) {
+		t.Errorf("redirect to https without a host: err = %v, want ErrRedirectTargetNotAllowed", err)
 	}
 	if targetHits.Load() != 0 {
 		t.Errorf("local server got %d requests, want 0", targetHits.Load())
 	}
 
-	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/hop/0", []string{"application/json"}, limits); err == nil {
-		t.Error("too many redirects: err = nil")
+	if _, _, err := Get(context.Background(), s.Client(), s.URL+"/hop/0", []string{"application/json"}, limits); !errors.Is(err, ErrTooManyRedirects) {
+		t.Errorf("too many redirects: err = %v, want ErrTooManyRedirects", err)
 	}
 	if got, want := hops.Load(), int32(limits.MaxRedirects+1); got != want {
 		t.Errorf("server got %d requests, want %d", got, want)
@@ -207,7 +207,7 @@ func TestGetMediaTypes(t *testing.T) {
 		t.Errorf("Accept = %q", got)
 	}
 	_, _, err := Get(context.Background(), s.Client(), s.URL+"/text/html", types, limits)
-	if err == nil || err.Error() != "safehttp: content type is not application/jwk-set+json or application/json" {
+	if !errors.Is(err, ErrContentTypeNotAccepted) || err.Error() != "safehttp: content type is not application/jwk-set+json or application/json" {
 		t.Errorf("Content-Type text/html: err = %v", err)
 	}
 }
@@ -215,8 +215,8 @@ func TestGetMediaTypes(t *testing.T) {
 func TestGetRefusesBodyOverCap(t *testing.T) {
 	var hits atomic.Int32
 	s := jsonServer(t, true, strings.Repeat("a", int(limits.MaxBytes)+1), &hits)
-	if _, _, err := Get(context.Background(), s.Client(), s.URL, []string{"application/json"}, limits); err == nil {
-		t.Fatal("err = nil")
+	if _, _, err := Get(context.Background(), s.Client(), s.URL, []string{"application/json"}, limits); !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("err = %v, want ErrBodyTooLarge", err)
 	}
 }
 

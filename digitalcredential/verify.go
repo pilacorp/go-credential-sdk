@@ -53,7 +53,8 @@ const (
 // *statuslist.Checker is one. Verify reads an error of Status in this order:
 //   - one wrapping statuslist.ErrIndexOutOfBounds is MALFORMED (§8.3 step 6:
 //     MUST be rejected), whatever ctx says;
-//   - when ctx is done, Verify returns an error wrapping ctx.Err();
+//   - when ctx is done, Verify returns an error wrapping both ctx.Err() and
+//     the error of Status;
 //   - one wrapping jose.ErrInvalidArgument is ErrPolicy; a statuslist.Checker
 //     wraps it also when its resolver returned a key it cannot verify with;
 //   - any other is STATUS_UNAVAILABLE.
@@ -152,16 +153,23 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 // Errors fall in three classes; test them in this order:
 //   - *Error (errors.As): the token is rejected, and Code says why. One that
 //     an error of issuers, the typemeta.Resolver or the StatusChecker led
-//     to wraps that error, so errors.Is still reaches its sentinels, such
-//     as typemeta.ErrRedirectNotAllowed;
+//     to wraps that error, so errors.Is and errors.As still reach its
+//     causes, such as typemeta.ErrRedirectNotAllowed or an
+//     issuermeta.StatusError;
 //   - ErrPolicy (errors.Is): the caller's arguments, options or
 //     dependencies are at fault;
 //   - anything else: ctx ended while issuers, the typemeta.Resolver or the
-//     StatusChecker ran, and
-//     the error wraps ctx.Err(); nothing is known about the token.
-//     ErrIssuerNotSupported or ErrNoUsableKey from issuers, and
+//     StatusChecker ran; nothing is known about the token. The error wraps
+//     both ctx.Err() and the error of that dependency as it was returned,
+//     so errors.Is and errors.As reach either; Verify gives it no Code. A
+//     dependency's error that itself wraps an *Error or ErrPolicy, such as
+//     one from a dependency that calls Verify, matches the first two tests
+//     too. ErrIssuerNotSupported or ErrNoUsableKey from issuers, and
 //     statuslist.ErrIndexOutOfBounds from the StatusChecker, are definite
 //     answers and win over ctx.
+//
+// An *Error can wrap context.DeadlineExceeded too, from a timeout inside a
+// dependency while ctx is not done, so the order of the classes matters.
 //
 // Work is linear in the length of the credential, which sdjwt.Split caps at
 // 1 MiB. Before the issuer's signature is checked, Verify parses the header,
@@ -172,10 +180,9 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 // and concurrency.
 //
 // This package's own texts quote no token content except bounded values from
-// jose. ISSUER_NOT_SUPPORTED, ISSUER_KEY_NOT_FOUND from
-// issuerkey.ErrNoUsableKey, ISSUER_KEY_UNAVAILABLE, STATUS_UNAVAILABLE and
-// the errors that wrap ctx.Err() carry the error of issuers or the
-// StatusChecker as it was returned. Texts are for logs, not for the Holder.
+// jose. An *Error that an error of issuers, typemeta.Load or the
+// StatusChecker led to, and an error that wraps ctx.Err(), carries that
+// error's text as it was returned. Texts are for logs, not for the Holder.
 func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opts ...VerifyOption) (*Result, error) {
 	if c == nil || c.compact == "" {
 		return nil, policyErr("Verify of a nil or zero Credential; make one with Parse")
@@ -233,7 +240,7 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 	case errors.Is(err, issuerkey.ErrNoUsableKey):
 		return reject(CodeIssuerKeyNotFound, err)
 	case err != nil && ctx.Err() != nil:
-		return nil, fmt.Errorf("dc: resolving the issuer keys: %w (resolver: %v)", ctx.Err(), err)
+		return nil, fmt.Errorf("dc: resolving the issuer keys: %w (resolver: %w)", ctx.Err(), err)
 	// The resolver's wiring, such as a resolver not made by its constructor.
 	case errors.Is(err, jose.ErrInvalidArgument):
 		return nil, policyErr("the issuerkey.Resolver: %v", err)
@@ -467,7 +474,7 @@ func (cfg verifyConfig) checkTypeMetadata(ctx context.Context, r *sdjwt.Recreate
 	switch {
 	case err == nil:
 	case ctx.Err() != nil:
-		return fmt.Errorf("dc: processing the Type Metadata: %w (%v)", ctx.Err(), err)
+		return fmt.Errorf("dc: processing the Type Metadata: %w (%w)", ctx.Err(), err)
 	// The resolver's wiring, such as one not made by its constructor.
 	case errors.Is(err, jose.ErrInvalidArgument):
 		return policyErr("the typemeta.Resolver: %v", err)
@@ -577,7 +584,7 @@ func (cfg verifyConfig) checkStatus(ctx context.Context, st statusClaim, iss str
 	case errors.Is(err, statuslist.ErrIndexOutOfBounds):
 		return 0, &Error{Code: CodeMalformed, Err: err}
 	case ctx.Err() != nil:
-		return 0, fmt.Errorf("dc: checking the status: %w (StatusChecker: %v)", ctx.Err(), err)
+		return 0, fmt.Errorf("dc: checking the status: %w (StatusChecker: %w)", ctx.Err(), err)
 	// Verify validated the Ref, so this is the checker's wiring, such as a
 	// statuslist.Checker not made by NewChecker, or one whose resolver
 	// returned a key it cannot verify with.

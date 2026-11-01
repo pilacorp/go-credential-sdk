@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -212,9 +213,15 @@ func TestVerifyDraft19Example(t *testing.T) {
 
 // TC-19: draft 19 §2.5 and §4, Figure 8 verifies through an
 // issuermeta.Resolver, its key found in the jwks of Figure 14 published for
-// the Figure 8 iss at the location of §4.1.
+// the Figure 8 iss at the location of §4.1. A redirect of the metadata to
+// http is ISSUER_KEY_UNAVAILABLE, its cause reachable.
 func TestVerifyDraft19IssuerMetadata(t *testing.T) {
+	var downgrade atomic.Bool
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if downgrade.Load() {
+			http.Redirect(w, r, "http://example.com/moved", http.StatusFound)
+			return
+		}
 		if r.URL.Path != "/.well-known/jwt-vc-issuer/issuer" {
 			http.NotFound(w, r)
 			return
@@ -241,6 +248,15 @@ func TestVerifyDraft19IssuerMetadata(t *testing.T) {
 	s.issuers = r
 	if _, err := s.verify(t.Context(), draft19Fig8); err != nil {
 		t.Fatal(err)
+	}
+
+	downgrade.Store(true)
+	if s.issuers, err = issuermeta.NewResolver(issuermeta.Config{Redirects: issuermeta.RedirectAny(), HTTPClient: client}); err != nil {
+		t.Fatal(err)
+	}
+	var e *Error
+	if _, err := s.verify(t.Context(), draft19Fig8); !errors.As(err, &e) || e.Code != CodeIssuerKeyUnavailable || !errors.Is(err, issuermeta.ErrRedirectTargetNotAllowed) {
+		t.Fatalf("redirect to http: %v; want ISSUER_KEY_UNAVAILABLE wrapping issuermeta.ErrRedirectTargetNotAllowed", err)
 	}
 }
 
@@ -452,9 +468,9 @@ func TestVerifyContextEnded(t *testing.T) {
 	var e *Error
 
 	s := draft19Setting(t)
-	s.issuers = failingResolver{errors.New("resolver: request canceled")}
-	if _, err := s.verify(ended, draft19Fig8); !errors.Is(err, context.Canceled) || errors.As(err, &e) || errors.Is(err, ErrPolicy) {
-		t.Errorf("resolver failing: %v; want context.Canceled only", err)
+	s.issuers = failingResolver{fmt.Errorf("resolver: %w", errUnreachable)}
+	if _, err := s.verify(ended, draft19Fig8); !errors.Is(err, context.Canceled) || !errors.Is(err, errUnreachable) || errors.As(err, &e) || errors.Is(err, ErrPolicy) {
+		t.Errorf("resolver failing: %v; want context.Canceled and the resolver's error, no *Error", err)
 	}
 	s.issuers = failingResolver{fmt.Errorf("resolver: %w", issuerkey.ErrNoUsableKey)}
 	if _, err := s.verify(ended, draft19Fig8); !errors.As(err, &e) || e.Code != CodeIssuerKeyNotFound {
@@ -462,9 +478,9 @@ func TestVerifyContextEnded(t *testing.T) {
 	}
 
 	own.set(&s)
-	s.extra = []VerifyOption{WithStatus(fixedStatus{ref: ref, iss: "https://issuer.example", err: errors.New("list: request canceled")})}
-	if _, err := s.verify(ended, issued); !errors.Is(err, context.Canceled) || errors.As(err, &e) || errors.Is(err, ErrPolicy) {
-		t.Errorf("checker failing: %v; want context.Canceled only", err)
+	s.extra = []VerifyOption{WithStatus(fixedStatus{ref: ref, iss: "https://issuer.example", err: fmt.Errorf("list: %w", errUnreachable)})}
+	if _, err := s.verify(ended, issued); !errors.Is(err, context.Canceled) || !errors.Is(err, errUnreachable) || errors.As(err, &e) || errors.Is(err, ErrPolicy) {
+		t.Errorf("checker failing: %v; want context.Canceled and the checker's error, no *Error", err)
 	}
 	s.extra = []VerifyOption{WithStatus(fixedStatus{ref: ref, iss: "https://issuer.example", err: statuslist.ErrIndexOutOfBounds})}
 	if _, err := s.verify(ended, issued); !errors.As(err, &e) || e.Code != CodeMalformed {
@@ -472,7 +488,12 @@ func TestVerifyContextEnded(t *testing.T) {
 	}
 	s.extra = []VerifyOption{WithTypeMetadata(failingTypes{errors.New("types: request canceled")})}
 	if _, err := s.verify(ended, issued); !errors.Is(err, context.Canceled) || errors.As(err, &e) || errors.Is(err, ErrPolicy) {
-		t.Errorf("typemeta.Resolver failing: %v; want context.Canceled only", err)
+		t.Errorf("typemeta.Load with ctx ended: %v; want context.Canceled only", err)
+	}
+	ending, end := context.WithCancel(t.Context())
+	s.extra = []VerifyOption{WithTypeMetadata(cancellingTypes{end, fmt.Errorf("types: %w", errUnreachable)})}
+	if _, err := s.verify(ending, issued); !errors.Is(err, context.Canceled) || !errors.Is(err, errUnreachable) || errors.As(err, &e) || errors.Is(err, ErrPolicy) {
+		t.Errorf("typemeta.Resolver failing as ctx ends: %v; want context.Canceled and the resolver's error, no *Error", err)
 	}
 }
 
