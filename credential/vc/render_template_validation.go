@@ -52,6 +52,9 @@ func (m RenderMethod) validateSummaryTemplateContent() error {
 		if field.Label == "" {
 			return fmt.Errorf("summary template fields[%d].label is required", i)
 		}
+		if strings.HasPrefix(field.Label, "/") {
+			return fmt.Errorf("summary template fields[%d].label must be a literal string", i)
+		}
 		if field.Value == "" || validateJSONPointer(field.Value) != nil {
 			return fmt.Errorf("summary template fields[%d].value must be a valid JSON Pointer", i)
 		}
@@ -113,17 +116,14 @@ func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher Temp
 	return nil
 }
 
-// ValidateExternalRenderMethod fetches and verifies a remote render method
-// document identified by m.ID. The outer digest is required for this flow.
+// ValidateExternalRenderMethod fetches and validates a remote render method
+// document identified by m.ID. When supplied, the outer digest is verified.
 func (m RenderMethod) ValidateExternalRenderMethod(ctx context.Context, fetcher RenderMethodFetcher) error {
 	if err := m.Validate(); err != nil {
 		return err
 	}
 	if m.ID == "" {
 		return fmt.Errorf("renderMethod.id is required for external render method validation")
-	}
-	if m.DigestMultibase == "" {
-		return fmt.Errorf("renderMethod.digestMultibase is required for external render method validation")
 	}
 	if fetcher == nil {
 		return fmt.Errorf("render method fetcher is required")
@@ -132,8 +132,10 @@ func (m RenderMethod) ValidateExternalRenderMethod(ctx context.Context, fetcher 
 	if err != nil {
 		return fmt.Errorf("fetch external render method: %w", err)
 	}
-	if err := VerifyDigestMultibase(data, m.DigestMultibase); err != nil {
-		return fmt.Errorf("render method digest verification failed: %w", err)
+	if m.DigestMultibase != "" {
+		if err := VerifyDigestMultibase(data, m.DigestMultibase); err != nil {
+			return fmt.Errorf("render method digest verification failed: %w", err)
+		}
 	}
 	var fetched RenderMethod
 	if err := json.Unmarshal(data, &fetched); err != nil {

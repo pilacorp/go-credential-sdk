@@ -87,6 +87,13 @@ func TestRenderMethodRejectsInvalidURLs(t *testing.T) {
 	if _, err := serializeCredentialContents(&contents); err == nil {
 		t.Fatal("serializeCredentialContents() error = nil, want invalid template reference URL error")
 	}
+
+	for _, scheme := range []string{"file:///tmp/template.json", "ftp://example.com/template.json", "javascript:alert(1)"} {
+		contents = baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{ID: scheme}}}})
+		if _, err := serializeCredentialContents(&contents); err == nil {
+			t.Errorf("serializeCredentialContents() error = nil for %q, want unsupported URL scheme error", scheme)
+		}
+	}
 }
 
 func TestRenderMethodValidatesRenderProperties(t *testing.T) {
@@ -144,6 +151,21 @@ func TestRenderMethodValidatesEmbeddedSuiteTemplates(t *testing.T) {
 				t.Fatalf("Validate() error = %v, wantOK = %v", err, tt.wantOK)
 			}
 		})
+	}
+}
+
+func TestRenderMethodRejectsJSONPointerSummaryLabel(t *testing.T) {
+	method := RenderMethod{
+		Type:        "SuiteRenderMethod",
+		RenderSuite: "summary",
+		Template: &Template{Embedded: &EmbeddedTemplate{
+			MediaType: "application/json",
+			Bytes:     []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"/issuer/name","value":"/credentialSubject/name"}]}`),
+		}},
+	}
+
+	if err := method.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want JSON Pointer label error")
 	}
 }
 

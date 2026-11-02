@@ -23,6 +23,23 @@ func TestRenderSummaryResolvesPointers(t *testing.T) {
 	}
 }
 
+func TestRenderSummaryRejectsNonSummarySuite(t *testing.T) {
+	method := RenderMethod{
+		Type:        "SuiteRenderMethod",
+		RenderSuite: "html",
+		Template: &Template{Reference: &TemplateReference{
+			ID:        "https://example.com/template.html",
+			MediaType: "text/html",
+		}},
+	}
+
+	if _, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice"}}, method, SummaryOptions{
+		Fetcher: summaryFetcher{data: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)},
+	}); err == nil {
+		t.Fatal("RenderSummary() error = nil, want non-summary suite error")
+	}
+}
+
 func TestRenderSummaryRejectsMissingPointer(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"/credentialSubject/missing","description":"Degree","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)}}}
 	_, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice"}}, method, SummaryOptions{})

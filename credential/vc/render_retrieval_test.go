@@ -86,6 +86,18 @@ func TestValidateExternalRenderMethodVerifiesOuterDigest(t *testing.T) {
 	}
 }
 
+func TestValidateExternalRenderMethodAllowsMissingOuterDigest(t *testing.T) {
+	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary"}`)
+	method := RenderMethod{
+		ID:          "https://example.com/render-method.json",
+		Type:        "SuiteRenderMethod",
+		RenderSuite: "summary",
+	}
+	if err := method.ValidateExternalRenderMethod(context.Background(), testRenderMethodFetcher{data: data}); err != nil {
+		t.Fatalf("ValidateExternalRenderMethod() error = %v, want nil without digest", err)
+	}
+}
+
 func mustJSON(value any) []byte {
 	data, _ := json.Marshal(value)
 	return data

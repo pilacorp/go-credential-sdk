@@ -18,6 +18,9 @@ type SummaryOutput = SummaryTemplate
 // RenderSummary resolves and validates a summary render method without
 // executing any template code.
 func RenderSummary(ctx context.Context, credential CredentialData, method RenderMethod, opts SummaryOptions) (*SummaryOutput, error) {
+	if method.RenderSuite != "summary" {
+		return nil, fmt.Errorf("render method suite must be summary")
+	}
 	if err := method.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid summary render method: %w", err)
 	}

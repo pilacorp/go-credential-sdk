@@ -103,8 +103,8 @@ func (t *Template) validate() error {
 
 func validateURL(raw, field string) error {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || ((parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host == "") {
-		return fmt.Errorf("%s must be a valid URL", field)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("%s must be a valid HTTP or HTTPS URL", field)
 	}
 	return nil
 }
