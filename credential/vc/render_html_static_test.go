@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-func TestRenderHTMLFiltersNestedProperties(t *testing.T) {
+func TestWrapHTMLTemplateFiltersNestedProperties(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{"/credentialSubject/name"}, Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<div>hello</div>`)}}}
-	artifact, err := RenderHTML(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice", "secret": "x"}}, method, SummaryOptions{})
+	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice", "secret": "x"}}, method, SummaryOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,10 +16,10 @@ func TestRenderHTMLFiltersNestedProperties(t *testing.T) {
 	}
 }
 
-func TestRenderHTMLRejectsDocumentElements(t *testing.T) {
+func TestWrapHTMLTemplateRejectsDocumentElements(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<html>bad</html>`)}}}
-	if _, err := RenderHTML(context.Background(), CredentialData{}, method, SummaryOptions{}); err == nil {
-		t.Fatal("RenderHTML() error = nil")
+	if _, err := WrapHTMLTemplate(context.Background(), CredentialData{}, method, SummaryOptions{}); err == nil {
+		t.Fatal("WrapHTMLTemplate() error = nil")
 	}
 }
 

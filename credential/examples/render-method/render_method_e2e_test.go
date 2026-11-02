@@ -24,7 +24,7 @@ func TestRenderMethodsEndToEndExample(t *testing.T) {
 	if got, err := vc.RenderSummary(context.Background(), credential, methods[0], vc.SummaryOptions{}); err != nil || got.Fields[0].Value != "Alice" {
 		t.Fatalf("summary = %+v, err=%v", got, err)
 	}
-	if got, err := vc.RenderHTML(context.Background(), credential, methods[1], vc.SummaryOptions{}); err != nil || got.SrcDoc == "" {
+	if got, err := vc.WrapHTMLTemplate(context.Background(), credential, methods[1], vc.SummaryOptions{}); err != nil || got.SrcDoc == "" {
 		t.Fatalf("html = %+v, err=%v", got, err)
 	}
 	if got, err := vc.ResolveStatic(context.Background(), credential, methods[2], vc.SummaryOptions{}); err != nil || len(got.Bytes) != 3 {

@@ -24,7 +24,7 @@ cred, err := vc.NewJSONCredential(vc.CredentialContents{
 ```
 
 For consumers, use `credential/vc/render`. `RenderSummary` resolves JSON
-Pointers and validates the result. `RenderHTML` returns an isolated `SrcDoc`
+Pointers and validates the result. `WrapHTMLTemplate` returns an isolated `SrcDoc`
 without executing JavaScript. `ResolveStatic` returns verified bytes and
 delivery metadata. External templates require an injected `TemplateFetcher`;
 when `digestMultibase` is present, SHA-256 multihash verification is performed

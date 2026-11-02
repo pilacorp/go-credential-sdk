@@ -15,8 +15,8 @@ type HTMLRenderArtifact struct {
 	Height string
 }
 
-// RenderHTML validates an HTML render method and prepares an isolated srcdoc.
-func RenderHTML(ctx context.Context, credential CredentialData, method RenderMethod, opts SummaryOptions) (*HTMLRenderArtifact, error) {
+// WrapHTMLTemplate validates an HTML render method and prepares an isolated srcdoc.
+func WrapHTMLTemplate(ctx context.Context, credential CredentialData, method RenderMethod, opts SummaryOptions) (*HTMLRenderArtifact, error) {
 	if method.RenderSuite != "html" {
 		return nil, fmt.Errorf("render method suite must be html")
 	}
