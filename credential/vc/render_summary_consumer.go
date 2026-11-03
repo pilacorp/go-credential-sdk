@@ -7,8 +7,9 @@ import (
 	"strings"
 )
 
-// SummaryOptions controls summary template retrieval.
-type SummaryOptions struct {
+// RenderOptions controls template retrieval for summary, HTML, and static
+// render methods.
+type RenderOptions struct {
 	Fetcher TemplateFetcher
 }
 
@@ -17,7 +18,7 @@ type SummaryOutput = SummaryTemplate
 
 // RenderSummary resolves and validates a summary render method without
 // executing any template code.
-func RenderSummary(ctx context.Context, credential CredentialData, method RenderMethod, opts SummaryOptions) (*SummaryOutput, error) {
+func RenderSummary(ctx context.Context, credential CredentialData, method RenderMethod, opts RenderOptions) (*SummaryOutput, error) {
 	if method.RenderSuite != "summary" {
 		return nil, fmt.Errorf("render method suite must be summary")
 	}
@@ -53,7 +54,7 @@ func RenderSummary(ctx context.Context, credential CredentialData, method Render
 
 func templateBytes(ctx context.Context, method RenderMethod, fetcher TemplateFetcher) ([]byte, error) {
 	if method.Template == nil {
-		return nil, fmt.Errorf("summary template is required")
+		return nil, fmt.Errorf("%s template is required", method.RenderSuite)
 	}
 	if method.Template.Embedded != nil {
 		return method.Template.Embedded.Bytes, nil

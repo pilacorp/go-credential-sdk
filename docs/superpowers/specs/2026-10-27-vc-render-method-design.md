@@ -375,7 +375,7 @@ type TemplateFetcher interface {
 	Fetch(ctx context.Context, ref TemplateReference) ([]byte, error)
 }
 
-type SummaryOptions struct {
+type RenderOptions struct {
 	Fetcher          TemplateFetcher
 }
 
@@ -383,7 +383,7 @@ func RenderSummary(
 	ctx context.Context,
 	credential CredentialData,
 	method RenderMethod,
-	opts SummaryOptions,
+	opts RenderOptions,
 ) (*SummaryOutput, error)
 ```
 

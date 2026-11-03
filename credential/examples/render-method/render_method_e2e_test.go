@@ -21,13 +21,13 @@ func TestRenderMethodsEndToEndExample(t *testing.T) {
 		t.Fatal(err)
 	}
 	credential := vc.CredentialData(raw)
-	if got, err := vc.RenderSummary(context.Background(), credential, methods[0], vc.SummaryOptions{}); err != nil || got.Fields[0].Value != "Alice" {
+	if got, err := vc.RenderSummary(context.Background(), credential, methods[0], vc.RenderOptions{}); err != nil || got.Fields[0].Value != "Alice" {
 		t.Fatalf("summary = %+v, err=%v", got, err)
 	}
-	if got, err := vc.WrapHTMLTemplate(context.Background(), credential, methods[1], vc.SummaryOptions{}); err != nil || got.SrcDoc == "" {
+	if got, err := vc.WrapHTMLTemplate(context.Background(), credential, methods[1], vc.RenderOptions{}); err != nil || got.SrcDoc == "" {
 		t.Fatalf("html = %+v, err=%v", got, err)
 	}
-	if got, err := vc.ResolveStatic(context.Background(), credential, methods[2], vc.SummaryOptions{}); err != nil || len(got.Bytes) != 3 {
+	if got, err := vc.ResolveStatic(context.Background(), credential, methods[2], vc.RenderOptions{}); err != nil || len(got.Bytes) != 3 {
 		t.Fatalf("static = %+v, err=%v", got, err)
 	}
 }

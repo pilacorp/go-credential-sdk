@@ -330,6 +330,15 @@ func TestRenderMethodTemplatePercentEncodedDataURL(t *testing.T) {
 	}
 }
 
+func TestTemplateUnmarshalRejectsOversizedEmbeddedDataURL(t *testing.T) {
+	data := make([]byte, MaxEmbeddedTemplateSize+1)
+	encoded := base64.StdEncoding.EncodeToString(data)
+	var template Template
+	if err := json.Unmarshal([]byte(`"data:application/octet-stream;base64,`+encoded+`"`), &template); err == nil {
+		t.Fatal("json.Unmarshal() error = nil, want embedded template size error")
+	}
+}
+
 func TestTemplateUnmarshalReplacesPreviousRepresentation(t *testing.T) {
 	var template Template
 	if err := json.Unmarshal([]byte(`"data:application/json,%7B%7D"`), &template); err != nil {

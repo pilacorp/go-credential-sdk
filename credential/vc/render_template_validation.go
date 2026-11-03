@@ -69,13 +69,33 @@ func (m RenderMethod) validateHTMLTemplate() error {
 	if m.Template.Embedded.MediaType != "text/html" {
 		return fmt.Errorf("renderMethod.template media type for html must be text/html")
 	}
-	lower := strings.ToLower(string(m.Template.Embedded.Bytes))
-	for _, tag := range []string{"<html", "<head", "<body"} {
-		if strings.Contains(lower, tag) {
-			return fmt.Errorf("html template must be a fragment without %s element", tag[:len(tag)-1])
+	for _, tag := range []string{"html", "head", "body"} {
+		if containsHTMLElement(string(m.Template.Embedded.Bytes), tag) {
+			return fmt.Errorf("html template must be a fragment without <%s> element", tag)
 		}
 	}
 	return nil
+}
+
+func containsHTMLElement(source, element string) bool {
+	lower := strings.ToLower(source)
+	needle := "<" + element
+	for offset := 0; offset < len(lower); {
+		index := strings.Index(lower[offset:], needle)
+		if index < 0 {
+			return false
+		}
+		index += offset + len(needle)
+		if index == len(lower) {
+			return true
+		}
+		switch lower[index] {
+		case '>', '/', ' ', '\t', '\n', '\r', '\f':
+			return true
+		}
+		offset = index
+	}
+	return false
 }
 
 func (m RenderMethod) validateStaticTemplate() error {
@@ -140,6 +160,15 @@ func (m RenderMethod) ValidateExternalRenderMethod(ctx context.Context, fetcher 
 	var fetched RenderMethod
 	if err := json.Unmarshal(data, &fetched); err != nil {
 		return fmt.Errorf("decode external render method: %w", err)
+	}
+	if fetched.Type != m.Type {
+		return fmt.Errorf("external render method type %q does not match local type %q", fetched.Type, m.Type)
+	}
+	if fetched.RenderSuite != m.RenderSuite {
+		return fmt.Errorf("external render method suite %q does not match local suite %q", fetched.RenderSuite, m.RenderSuite)
+	}
+	if fetched.ID != "" && m.ID != "" && fetched.ID != m.ID {
+		return fmt.Errorf("external render method id %q does not match local id %q", fetched.ID, m.ID)
 	}
 	return fetched.Validate()
 }

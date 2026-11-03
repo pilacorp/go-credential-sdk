@@ -14,7 +14,7 @@ func (f summaryFetcher) Fetch(context.Context, TemplateReference) ([]byte, error
 func TestRenderSummaryResolvesPointers(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"/credentialSubject/name","description":"Degree","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)}}}
 	credential := CredentialData{"credentialSubject": map[string]any{"name": "Alice"}}
-	got, err := RenderSummary(context.Background(), credential, method, SummaryOptions{})
+	got, err := RenderSummary(context.Background(), credential, method, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestRenderSummaryRejectsNonSummarySuite(t *testing.T) {
 		}},
 	}
 
-	if _, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice"}}, method, SummaryOptions{
+	if _, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice"}}, method, RenderOptions{
 		Fetcher: summaryFetcher{data: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)},
 	}); err == nil {
 		t.Fatal("RenderSummary() error = nil, want non-summary suite error")
@@ -42,7 +42,7 @@ func TestRenderSummaryRejectsNonSummarySuite(t *testing.T) {
 
 func TestRenderSummaryRejectsMissingPointer(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"/credentialSubject/missing","description":"Degree","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)}}}
-	_, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice"}}, method, SummaryOptions{})
+	_, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice"}}, method, RenderOptions{})
 	if err == nil {
 		t.Fatal("RenderSummary() error = nil")
 	}
@@ -50,7 +50,7 @@ func TestRenderSummaryRejectsMissingPointer(t *testing.T) {
 
 func TestRenderSummaryResolvesScalarsAndOmitsOptionalPointers(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"/credentialSubject/name","description":"Degree","icon":"/credentialSubject/missing","fields":[{"label":"Age","value":"/credentialSubject/age"}]}`)}}}
-	got, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice", "age": 42}}, method, SummaryOptions{})
+	got, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice", "age": 42}}, method, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,11 +65,11 @@ func TestRenderSummaryVerifiesExternalDigest(t *testing.T) {
 	multihash := append([]byte{0x12, 0x20}, hash[:]...)
 	digest := "u" + base64.RawURLEncoding.EncodeToString(multihash)
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{ID: "https://example.com/summary.json", MediaType: "application/json", DigestMultibase: digest}}}
-	if _, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice"}}, method, SummaryOptions{Fetcher: summaryFetcher{data: data}}); err != nil {
+	if _, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice"}}, method, RenderOptions{Fetcher: summaryFetcher{data: data}}); err != nil {
 		t.Fatal(err)
 	}
 	method.Template.Reference.DigestMultibase = "uAQ"
-	if _, err := RenderSummary(context.Background(), CredentialData{}, method, SummaryOptions{Fetcher: summaryFetcher{data: data}}); err == nil {
+	if _, err := RenderSummary(context.Background(), CredentialData{}, method, RenderOptions{Fetcher: summaryFetcher{data: data}}); err == nil {
 		t.Fatal("RenderSummary() error = nil")
 	}
 }

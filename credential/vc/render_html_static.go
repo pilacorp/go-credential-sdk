@@ -20,7 +20,7 @@ type HTMLRenderArtifact struct {
 }
 
 // WrapHTMLTemplate validates an HTML render method and prepares an isolated srcdoc.
-func WrapHTMLTemplate(ctx context.Context, credential CredentialData, method RenderMethod, opts SummaryOptions) (*HTMLRenderArtifact, error) {
+func WrapHTMLTemplate(ctx context.Context, credential CredentialData, method RenderMethod, opts RenderOptions) (*HTMLRenderArtifact, error) {
 	if method.RenderSuite != "html" {
 		return nil, fmt.Errorf("render method suite must be html")
 	}
@@ -31,10 +31,9 @@ func WrapHTMLTemplate(ctx context.Context, credential CredentialData, method Ren
 	if err != nil {
 		return nil, err
 	}
-	lower := strings.ToLower(string(template))
-	for _, tag := range []string{"<html", "<head", "<body"} {
-		if strings.Contains(lower, tag) {
-			return nil, fmt.Errorf("html template must be a fragment without %s element", tag[:len(tag)-1])
+	for _, tag := range []string{"html", "head", "body"} {
+		if containsHTMLElement(string(template), tag) {
+			return nil, fmt.Errorf("html template must be a fragment without <%s> element", tag)
 		}
 	}
 	filtered, err := selectCredential(credential, method.RenderProperty)
@@ -46,9 +45,10 @@ func WrapHTMLTemplate(ctx context.Context, credential CredentialData, method Ren
 		return nil, fmt.Errorf("encode filtered credential: %w", err)
 	}
 	credentialJSON := escapeScriptData(string(data))
-	// The SDK deliberately does not inject ready/error messaging here. The
-	// client owns the iframe, MessageChannel, and render lifecycle; payload code
-	// can use the client's lifecycle bridge when it is available.
+	// This follows the TR wrapper shape: the data block is in <head> and the
+	// payload fragment is in <body>. The SDK deliberately does not inject
+	// ready/error messaging; the client owns the iframe, MessageChannel, and
+	// render lifecycle.
 	srcdoc := `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src data: 'unsafe-inline'"><script name="credential" type="application/vc">` + credentialJSON + `</script></head><body>` + string(template) + `</body></html>`
 	artifact := &HTMLRenderArtifact{SrcDoc: srcdoc}
 	if method.OutputPreference != nil && method.OutputPreference.Style != nil {
@@ -77,7 +77,7 @@ type StaticOutput struct {
 }
 
 // ResolveStatic resolves and verifies a static render method without interpreting its bytes.
-func ResolveStatic(ctx context.Context, credential CredentialData, method RenderMethod, opts SummaryOptions) (*StaticOutput, error) {
+func ResolveStatic(ctx context.Context, credential CredentialData, method RenderMethod, opts RenderOptions) (*StaticOutput, error) {
 	if method.RenderSuite != "static" {
 		return nil, fmt.Errorf("render method suite must be static")
 	}

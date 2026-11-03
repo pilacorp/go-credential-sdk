@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+// MaxEmbeddedTemplateSize is the maximum decoded size of an embedded data URL
+// template accepted by Template.UnmarshalJSON.
+const MaxEmbeddedTemplateSize = 1 << 20
+
 // RenderMethod represents a W3C SuiteRenderMethod entry.
 type RenderMethod struct {
 	ID               string            `json:"id,omitempty"`
@@ -170,14 +174,23 @@ func (t *Template) decodeJSON(data []byte) error {
 			var err error
 			if strings.HasSuffix(metadata, ";base64") {
 				mediaType = strings.TrimSuffix(metadata, ";base64")
+				if base64.StdEncoding.DecodedLen(len(payload)) > MaxEmbeddedTemplateSize {
+					return fmt.Errorf("embedded template exceeds %d bytes", MaxEmbeddedTemplateSize)
+				}
 				decoded, err = base64.StdEncoding.DecodeString(payload)
 			} else {
+				if len(payload) > MaxEmbeddedTemplateSize*3 {
+					return fmt.Errorf("embedded template data URL is too large")
+				}
 				decodedString, unescapeErr := url.PathUnescape(payload)
 				err = unescapeErr
 				decoded = []byte(decodedString)
 			}
 			if err != nil {
 				return fmt.Errorf("decode embedded template data URL: %w", err)
+			}
+			if len(decoded) > MaxEmbeddedTemplateSize {
+				return fmt.Errorf("embedded template exceeds %d bytes", MaxEmbeddedTemplateSize)
 			}
 			t.Embedded = &EmbeddedTemplate{MediaType: mediaType, Bytes: decoded}
 			return nil

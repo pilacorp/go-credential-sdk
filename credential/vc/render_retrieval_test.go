@@ -98,6 +98,18 @@ func TestValidateExternalRenderMethodAllowsMissingOuterDigest(t *testing.T) {
 	}
 }
 
+func TestValidateExternalRenderMethodRejectsSuiteMismatch(t *testing.T) {
+	method := RenderMethod{
+		ID:          "https://example.com/render-method.json",
+		Type:        "SuiteRenderMethod",
+		RenderSuite: "html",
+	}
+	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary"}`)
+	if err := method.ValidateExternalRenderMethod(context.Background(), testRenderMethodFetcher{data: data}); err == nil {
+		t.Fatal("ValidateExternalRenderMethod() error = nil, want suite mismatch error")
+	}
+}
+
 func mustJSON(value any) []byte {
 	data, _ := json.Marshal(value)
 	return data

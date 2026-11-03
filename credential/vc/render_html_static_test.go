@@ -9,7 +9,7 @@ import (
 
 func TestWrapHTMLTemplateFiltersNestedProperties(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{"/credentialSubject/name"}, Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<div>hello</div>`)}}}
-	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice", "secret": "x"}}, method, SummaryOptions{})
+	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice", "secret": "x"}}, method, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestWrapHTMLTemplateUsesJSONLDSelectionMetadata(t *testing.T) {
 			"name":   "Alice",
 			"secret": "hidden",
 		},
-	}, method, SummaryOptions{})
+	}, method, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestWrapHTMLTemplateUsesW3CCredentialDataBlock(t *testing.T) {
 		}},
 	}
 
-	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{"name": "Alice"}, method, SummaryOptions{})
+	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{"name": "Alice"}, method, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestWrapHTMLTemplateKeepsCredentialDataValidJSONInScript(t *testing.T) {
 	}
 	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{
 		"name": `Alice "The Engineer" </script><script>alert(1)</script>`,
-	}, method, SummaryOptions{})
+	}, method, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestWrapHTMLTemplatePreservesArraysWhenFilteringProperties(t *testing.T) {
 				map[string]any{"name": "Bob"},
 			},
 		},
-	}, method, SummaryOptions{})
+	}, method, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,14 +159,21 @@ func TestWrapHTMLTemplatePreservesArraysWhenFilteringProperties(t *testing.T) {
 
 func TestWrapHTMLTemplateRejectsDocumentElements(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<html>bad</html>`)}}}
-	if _, err := WrapHTMLTemplate(context.Background(), CredentialData{}, method, SummaryOptions{}); err == nil {
+	if _, err := WrapHTMLTemplate(context.Background(), CredentialData{}, method, RenderOptions{}); err == nil {
 		t.Fatal("WrapHTMLTemplate() error = nil")
+	}
+}
+
+func TestWrapHTMLTemplateAcceptsHeaderFragment(t *testing.T) {
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<header>ok</header>`)}}}
+	if _, err := WrapHTMLTemplate(context.Background(), CredentialData{}, method, RenderOptions{}); err != nil {
+		t.Fatalf("WrapHTMLTemplate() rejected header fragment: %v", err)
 	}
 }
 
 func TestResolveStaticReturnsPayloadAndMetadata(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", DeliveryMode: "nfc", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/octet-stream", Bytes: []byte{0, 1, 2}}}}
-	output, err := ResolveStatic(context.Background(), CredentialData{}, method, SummaryOptions{})
+	output, err := ResolveStatic(context.Background(), CredentialData{}, method, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
