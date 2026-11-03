@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 )
 
-// HTMLRenderArtifact is safe-to-hand-off HTML source. The SDK never executes it.
+// HTMLRenderArtifact is safe-to-hand-off HTML source. The SDK never executes it
+// or owns the browser host lifecycle. The client is responsible for sandboxing
+// the iframe and handling render completion or errors.
 type HTMLRenderArtifact struct {
 	SrcDoc string
 	Width  string
@@ -42,7 +46,10 @@ func WrapHTMLTemplate(ctx context.Context, credential CredentialData, method Ren
 		return nil, fmt.Errorf("encode filtered credential: %w", err)
 	}
 	credentialJSON := escapeScriptData(string(data))
-	srcdoc := `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><script>window.addEventListener('error',()=>parent.postMessage({type:'error'},'*'));window.parent.postMessage({type:'ready'},'*')</script><script name="credential" type="application/vc">` + credentialJSON + `</script>` + string(template)
+	// The SDK deliberately does not inject ready/error messaging here. The
+	// client owns the iframe, MessageChannel, and render lifecycle; payload code
+	// can use the client's lifecycle bridge when it is available.
+	srcdoc := `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src data: 'unsafe-inline'"><script name="credential" type="application/vc">` + credentialJSON + `</script></head><body>` + string(template) + `</body></html>`
 	artifact := &HTMLRenderArtifact{SrcDoc: srcdoc}
 	if method.OutputPreference != nil && method.OutputPreference.Style != nil {
 		artifact.Width = method.OutputPreference.Style.Width
@@ -100,17 +107,11 @@ func selectCredential(credential CredentialData, pointers []string) (CredentialD
 	if len(pointers) == 0 {
 		return credential, nil
 	}
-	out := CredentialData{}
-	for _, pointer := range pointers {
-		value, err := ResolveJSONPointer(map[string]any(credential), pointer)
-		if err != nil {
-			return nil, fmt.Errorf("renderProperty %q: %w", pointer, err)
-		}
-		if err := setPointer(out, pointer, value); err != nil {
-			return nil, err
-		}
+	selected, err := jsonmap.SelectJSONLD(map[string]interface{}(credential), pointers)
+	if err != nil {
+		return nil, fmt.Errorf("select render properties: %w", err)
 	}
-	return out, nil
+	return CredentialData(selected), nil
 }
 
 func setPointer(document CredentialData, pointer string, value any) error {

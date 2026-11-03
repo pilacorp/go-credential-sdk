@@ -25,7 +25,8 @@ cred, err := vc.NewJSONCredential(vc.CredentialContents{
 
 For consumers, use `credential/vc/render`. `RenderSummary` resolves JSON
 Pointers and validates the result. `WrapHTMLTemplate` returns an isolated `SrcDoc`
-without executing JavaScript. `ResolveStatic` returns verified bytes and
+without executing JavaScript or owning the browser render lifecycle; the client
+must provide the sandboxed iframe and ready/error handling. `ResolveStatic` returns verified bytes and
 delivery metadata. External templates require an injected `TemplateFetcher`;
 when `digestMultibase` is present, SHA-256 multihash verification is performed
 before the template is parsed. Unsupported suites are preserved in the VC and

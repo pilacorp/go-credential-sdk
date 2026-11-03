@@ -141,6 +141,18 @@ func (t Template) MarshalJSON() ([]byte, error) {
 }
 
 func (t *Template) UnmarshalJSON(data []byte) error {
+	var next Template
+	if err := next.decodeJSON(data); err != nil {
+		return err
+	}
+	if err := next.validate(); err != nil {
+		return err
+	}
+	*t = next
+	return nil
+}
+
+func (t *Template) decodeJSON(data []byte) error {
 	var raw string
 	if len(data) > 0 && data[0] == '"' {
 		if err := json.Unmarshal(data, &raw); err != nil {

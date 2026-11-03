@@ -329,3 +329,19 @@ func TestRenderMethodTemplatePercentEncodedDataURL(t *testing.T) {
 		t.Fatalf("embedded template = %#v", got.Embedded)
 	}
 }
+
+func TestTemplateUnmarshalReplacesPreviousRepresentation(t *testing.T) {
+	var template Template
+	if err := json.Unmarshal([]byte(`"data:application/json,%7B%7D"`), &template); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{"id":"https://example.com/template.json"}`), &template); err != nil {
+		t.Fatal(err)
+	}
+	if template.Embedded != nil || template.Reference == nil {
+		t.Fatalf("template = %+v, want only reference representation", template)
+	}
+	if _, err := json.Marshal(template); err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+}

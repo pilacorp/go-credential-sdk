@@ -462,8 +462,8 @@ The SDK must:
 - create the `application/vc` data block;
 - create wrapper code containing the filtered credential and HTML payload;
 - include the required CSP restrictions;
-- include the `sandbox="allow-scripts"` and `srcdoc` integration data;
-- include ready/error `MessageChannel` communication code;
+- return `srcdoc` integration data for the client-owned sandboxed iframe;
+- leave ready/error `MessageChannel` communication to the client host;
 - never evaluate template JavaScript or start a browser/WebView runtime.
 
 The client application is responsible for creating or selecting the actual iframe/WebView, assigning `srcdoc`, executing the artifact, handling the ready/error result, and controlling the user-facing lifecycle. The SDK returns code and data; it does not run them.

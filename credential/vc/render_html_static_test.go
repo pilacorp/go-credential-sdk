@@ -18,6 +18,40 @@ func TestWrapHTMLTemplateFiltersNestedProperties(t *testing.T) {
 	}
 }
 
+func TestWrapHTMLTemplateUsesJSONLDSelectionMetadata(t *testing.T) {
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{"/credentialSubject/name"}, Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<div>hello</div>`)}}}
+	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{
+		"@context": []any{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []any{"VerifiableCredential"},
+		"credentialSubject": map[string]any{
+			"id":     "did:example:subject",
+			"type":   []any{"Person"},
+			"name":   "Alice",
+			"secret": "hidden",
+		},
+	}, method, SummaryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const start = `<script name="credential" type="application/vc">`
+	startAt := strings.Index(artifact.SrcDoc, start) + len(start)
+	endAt := strings.Index(artifact.SrcDoc[startAt:], `</script>`)
+	var filtered map[string]any
+	if err := json.Unmarshal([]byte(artifact.SrcDoc[startAt:startAt+endAt]), &filtered); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := filtered["@context"]; !ok {
+		t.Fatalf("filtered credential lost @context: %#v", filtered)
+	}
+	subject := filtered["credentialSubject"].(map[string]any)
+	if subject["id"] != "did:example:subject" || subject["type"].([]any)[0] != "Person" || subject["name"] != "Alice" {
+		t.Fatalf("filtered JSON-LD metadata = %#v", subject)
+	}
+	if _, ok := subject["secret"]; ok {
+		t.Fatalf("filtered credential leaked secret: %#v", subject)
+	}
+}
+
 func TestWrapHTMLTemplateUsesW3CCredentialDataBlock(t *testing.T) {
 	method := RenderMethod{
 		Type:        "SuiteRenderMethod",
@@ -35,6 +69,18 @@ func TestWrapHTMLTemplateUsesW3CCredentialDataBlock(t *testing.T) {
 
 	if !contains(artifact.SrcDoc, `<script name="credential" type="application/vc">`) {
 		t.Fatalf("artifact does not contain the W3C credential data block: %s", artifact.SrcDoc)
+	}
+	if contains(artifact.SrcDoc, "postMessage") || contains(artifact.SrcDoc, "renderMethodReady") {
+		t.Fatalf("artifact must not own the client render lifecycle: %s", artifact.SrcDoc)
+	}
+	for _, want := range []string{
+		`<html><head>`,
+		`<meta http-equiv="Content-Security-Policy" content="default-src data: 'unsafe-inline'">`,
+		`</script></head><body><div>hello</div></body></html>`,
+	} {
+		if !contains(artifact.SrcDoc, want) {
+			t.Fatalf("artifact missing wrapper fragment %q: %s", want, artifact.SrcDoc)
+		}
 	}
 }
 
