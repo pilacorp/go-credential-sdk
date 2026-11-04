@@ -41,3 +41,17 @@ func TestCheck(t *testing.T) {
 		}
 	}
 }
+
+// RFC 7519 §2: a StringOrURI is any string, and one holding ":" MUST be a URI.
+func TestStringOrURI(t *testing.T) {
+	for _, s := range []string{"", "plain issuer", "urn:example:a", "https://issuer.example/t/1"} {
+		if !StringOrURI(s) {
+			t.Errorf("StringOrURI(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"a:b c", "1:x", "https://bücher.example"} {
+		if StringOrURI(s) {
+			t.Errorf("StringOrURI(%q) = true, want false", s)
+		}
+	}
+}

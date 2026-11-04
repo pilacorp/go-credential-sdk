@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/sri"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/uri"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/typemeta"
@@ -42,16 +44,20 @@ var requestClaims = []struct {
 
 // IssueRequest is the content of one SD-JWT VC. Issue writes the values as
 // given and checks only what the standard requires of the Issuer: VCT set,
-// aka_vcts (draft 19 §2.2.2.2), vct#integrity as integrity metadata (§6),
-// iat, nbf and exp as NumericDate (RFC 7519 §4.1.4-4.1.6), Status as
-// statuslist.Ref.Validate checks it, iss or sub beside cnf (RFC 7800 §3),
-// the claim metadata of TypeMetadata (§5.6), and the structure it
-// builds itself: the eight claims draft 19 §2.2.2.3 never conceals and the
-// claims the fields below set.
+// Issuer as a StringOrURI (RFC 7519 §2), aka_vcts (draft 19 §2.2.2.2),
+// vct#integrity as integrity metadata (§6), iat, nbf and exp as NumericDate
+// (RFC 7519 §4.1.4-4.1.6), Status as statuslist.Ref.Validate checks it, iss or
+// sub beside cnf (RFC 7800 §3), the claim metadata of TypeMetadata (§5.6), and
+// the structure it builds itself: the eight claims draft 19 §2.2.2.3 never
+// conceals and the claims the fields below set. Issuer and VCT must also be
+// valid UTF-8: the Message is UTF-8 (RFC 7519 §7.1 step 2, RFC 8259 §8.1), and
+// the encoder would meet that by signing U+FFFD in place of the caller's bytes.
 type IssueRequest struct {
-	// Issuer is iss (draft 19 §2.2.2.3: OPTIONAL); "" writes none. It is not
-	// checked as a URL: only an issuer that publishes Issuer Metadata needs
-	// an https iss (draft 19 §4).
+	// Issuer is iss (draft 19 §2.2.2.3: OPTIONAL); "" writes none. One
+	// holding ":" must be a URI (RFC 7519 §2). It need not be a URL: only an
+	// issuer that publishes Issuer Metadata needs an https iss (draft 19 §4),
+	// and that one keeps dot-segments out of its path
+	// (draft-ietf-oauth-sd-jwt-vc-20 §4), as issuermeta refuses them.
 	Issuer string
 	// VCT is vct, required (draft 19 §2.2.2.3); its value rules (§2.2.2.1)
 	// are the Issuer's to keep.
@@ -285,6 +291,19 @@ func copyClaims(c map[string]any) (map[string]any, error) {
 func (req IssueRequest) check(claims map[string]any) error {
 	if req.VCT == "" {
 		return fmt.Errorf("%w: dc: VCT is required (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3)", jose.ErrInvalidArgument)
+	}
+	// The Message is UTF-8 (RFC 7519 §7.1 step 2, RFC 8259 §8.1), and the
+	// encoder would sign U+FFFD in place of the caller's bytes.
+	if !utf8.ValidString(req.VCT) {
+		return fmt.Errorf("%w: dc: VCT is not valid UTF-8 (RFC 7519 §7.1, RFC 8259 §8.1)", jose.ErrInvalidArgument)
+	}
+	if !utf8.ValidString(req.Issuer) {
+		return fmt.Errorf("%w: dc: Issuer is not valid UTF-8 (RFC 7519 §7.1, RFC 8259 §8.1)", jose.ErrInvalidArgument)
+	}
+	// RFC 7519 §2: an iss holding ":" MUST be a URI, so Issue never writes one
+	// that is not.
+	if !uri.StringOrURI(req.Issuer) {
+		return fmt.Errorf("%w: dc: Issuer holds \":\" and is not a URI (RFC 7519 §2, RFC 3986); use a URI, or a name with no \":\"", jose.ErrInvalidArgument)
 	}
 	for _, c := range requestClaims {
 		if _, ok := claims[c.name]; !ok {

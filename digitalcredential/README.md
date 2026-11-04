@@ -84,6 +84,9 @@ issued := cred.Serialize()
   `statuslist.Ref.Validate`. Another status mechanism goes in `Claims`, with `Status` nil.
 - `aka_vcts` must be a non-empty array of strings without the value of `vct` (§2.2.2.2). A credential with `cnf`
   needs `iss` or `sub` (RFC 7800 §3). Decoys (`MinDigests`) need at least one `Disclose` path (§2.2.2.5).
+- `Issuer` holding `:` must be a URI (RFC 7519 §2). `Issuer` and `VCT` must be valid UTF-8: the Message is UTF-8
+  (RFC 7519 §7.1 step 2, RFC 8259 §8.1), and the JSON encoder would meet that by signing U+FFFD in place of the caller's
+  bytes. A value in `Claims` that is not valid UTF-8 is signed that way, unchecked.
 - `Issue` caps no size. `sdjwt.Conceal` refuses work that is too large for one call; Holders and Verifiers built on
   this SDK refuse a credential over 1 MiB, with more than 1000 disclosures or nested deeper than 32 levels.
 - `TypeMetadata`, from `typemeta.Load`, makes `Issue` check the payload against the claim metadata before signing

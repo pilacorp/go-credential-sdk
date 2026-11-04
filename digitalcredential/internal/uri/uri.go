@@ -47,6 +47,12 @@ func hasHost(rest string) bool {
 	return host != "" || strings.HasPrefix(authority, "[")
 }
 
+// StringOrURI reports whether s is a StringOrURI: RFC 7519 §2 takes any
+// string, and one holding ":" MUST be a URI.
+func StringOrURI(s string) bool {
+	return !strings.Contains(s, ":") || Valid(s)
+}
+
 // Valid reports whether s is a URI by RFC 3986 §3, checked per component on
 // the raw string: url.Parse accepts characters RFC 3986 does not, and
 // url.URL.String writes RawQuery back verbatim.

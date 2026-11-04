@@ -62,6 +62,12 @@ func TestIssueRefusesRequest(t *testing.T) {
 		},
 		// RFC 7800 §3: iss or sub MUST be present beside cnf.
 		"cnf without iss or sub": func(r *IssueRequest) { r.Issuer = ""; delete(r.Claims, "sub") },
+		// RFC 7519 §2: an iss holding ":" MUST be a URI.
+		"Issuer with a space":        func(r *IssueRequest) { r.Issuer = "a:b c" },
+		"Issuer with a digit scheme": func(r *IssueRequest) { r.Issuer = "1:x" },
+		// RFC 7519 §7.1 step 2: the encoder would sign U+FFFD in place of these bytes.
+		"Issuer not UTF-8": func(r *IssueRequest) { r.Issuer = "issuer\xff" },
+		"VCT not UTF-8":    func(r *IssueRequest) { r.VCT = "urn:example:\xff" },
 		// RFC 9901 §4.1: _sd is reserved, in the eight claims too.
 		"cnf in Claims with _sd": func(r *IssueRequest) {
 			r.HolderKey = nil
