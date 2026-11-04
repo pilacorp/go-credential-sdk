@@ -315,8 +315,10 @@ identical to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
   `https://host/tenant/`. The origin's server decides which resource a path names (RFC 3986 §3.2), and the metadata
   of every `iss` sits under `/.well-known/` at the root of its origin (§4, §4.1, RFC 8615 §3), so that server answers
   for every issuer it hosts. To trust some issuers of a shared origin, list the origin and pass those issuers to
-  `Verify` with `WithAcceptedIssuers`, as below. An issuer writes the host of its `iss` the same way, as A-labels: a
-  host in Unicode is not a URI (RFC 7519 §2, RFC 3986 §3.2.2).
+  `Verify` with `WithAcceptedIssuers`, as below. Do the same for an origin where others can publish files: whoever signs
+  a credential chooses the path of its `iss`, and a server may resolve a path to one of those files in ways this resolver
+  cannot see. An issuer writes the host of its `iss` the same way, as A-labels: a host in Unicode is not a URI (RFC 7519
+  §2, RFC 3986 §3.2.2).
 - `Redirects` says where a redirect of the metadata or of `jwks_uri` may lead, and the trust list does not. By default
   each one must stay on the origin of the URL requested, or the retrieval fails before it is sent: the credential
   chooses the path of `iss`, and an open redirect on the issuer's server could otherwise hand its keys to another
@@ -338,9 +340,13 @@ identical to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
 
   So does an issuer whose metadata redirects from `https://abc.com` to `https://www.abc.com`, with
   `RedirectTo("https://www.abc.com")`: they are one site but two origins (RFC 6454 §5).
-- An `iss` outside the list, or one that is not a URI (RFC 3986), is `issuerkey.ErrIssuerNotSupported`, with no request
-  made. Metadata or a JWK Set that must not be used, a `jwks_uri` that is not a URI or not an https URL included, is
-  `issuerkey.ErrNoUsableKey`. A failed retrieval is any other error, which `Verify` reports as
+- An `iss` outside the list, one that is not a URI (RFC 3986), or one whose path has a dot-segment, is
+  `issuerkey.ErrIssuerNotSupported`, with no request made. A dot-segment is `.` or `..`, raw or as `%2e`
+  (draft-ietf-oauth-sd-jwt-vc-20 §4, RFC 3986 §2.3). As its own policy the SDK also reads `%2F` and `%5C` as separators
+  and cuts a segment at `;`, so these forms stay inside `/.well-known/` on a server that decodes a path once. A front
+  that decodes twice can still reach another file, so on an origin where others publish files pass the issuers to
+  `WithAcceptedIssuers`. Metadata or a JWK Set that must not be used, a `jwks_uri` that is not a URI or not an https URL
+  included, is `issuerkey.ErrNoUsableKey`. A failed retrieval is any other error, which `Verify` reports as
   `ISSUER_KEY_UNAVAILABLE`, or as the ctx error once ctx is done. It wraps the cause: an `issuermeta.StatusError`,
   `ErrRedirectNotAllowed` for a redirect `Redirects` refuses, `ErrRedirectTargetNotAllowed` for one that is not https
   with a host and no userinfo, `ErrTooManyRedirects`, `ErrContentTypeNotAccepted`, `ErrBodyTooLarge`,
