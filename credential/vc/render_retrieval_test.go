@@ -114,3 +114,19 @@ func mustJSON(value any) []byte {
 	data, _ := json.Marshal(value)
 	return data
 }
+
+func TestResolveJSONPointerAcceptsOnlyRFC6901ArrayIndexes(t *testing.T) {
+	document := map[string]any{"list": []any{"first", "second"}, "object": map[string]any{"2024": "year"}}
+	valid := map[string]any{"/list/0": "first", "/list/1": "second", "/object/2024": "year"}
+	for pointer, want := range valid {
+		got, err := ResolveJSONPointer(document, pointer)
+		if err != nil || got != want {
+			t.Errorf("ResolveJSONPointer(%q) = %v, %v; want %v", pointer, got, err, want)
+		}
+	}
+	for _, pointer := range []string{"/list/null", "/list/ 1", "/list/-0", "/list/01", "/list/+1", "/list/2", "/list/9223372036854775808"} {
+		if got, err := ResolveJSONPointer(document, pointer); err == nil {
+			t.Errorf("ResolveJSONPointer(%q) = %v, want an error", pointer, got)
+		}
+	}
+}

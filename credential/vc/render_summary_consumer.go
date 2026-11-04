@@ -13,19 +13,17 @@ type RenderOptions struct {
 	Fetcher TemplateFetcher
 }
 
-// SummaryOutput is the resolved summary object returned to a client.
-type SummaryOutput = SummaryTemplate
-
 // RenderSummary resolves and validates a summary render method without
-// executing any template code.
-func RenderSummary(ctx context.Context, credential CredentialData, method RenderMethod, opts RenderOptions) (*SummaryOutput, error) {
-	if method.RenderSuite != "summary" {
+// executing any template code. It returns the summary template with every JSON
+// Pointer replaced by the value it selects from the credential.
+func (m RenderMethod) RenderSummary(ctx context.Context, credential CredentialData, opts RenderOptions) (*SummaryTemplate, error) {
+	if m.RenderSuite != "summary" {
 		return nil, fmt.Errorf("render method suite must be summary")
 	}
-	if err := method.Validate(); err != nil {
+	if err := m.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid summary render method: %w", err)
 	}
-	data, err := templateBytes(ctx, method, opts.Fetcher)
+	data, err := templateBytes(ctx, m, opts.Fetcher)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +113,15 @@ func resolveNode(value any, credential CredentialData, literal, required bool) (
 				return nil, nil
 			}
 			return nil, err
+		}
+		// A pointer that lands on JSON null has no value to show: treat it like a
+		// missing pointer, so an optional member is omitted and a required one
+		// fails, instead of rendering the word "null".
+		if resolved == nil {
+			if !required {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("JSON Pointer %q resolves to null", v)
 		}
 		if s, ok := resolved.(string); ok {
 			return s, nil

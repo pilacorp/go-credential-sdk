@@ -24,11 +24,11 @@
       "template": {
         "id": "https://example.com/templates/name.html",
         "mediaType": "text/html",
-        "digestMultibase": "uEiD7Q2J9m9g9Y4sQ4KJ8n3Q5x2n5p8q7w6v4t3r2s1"
+        "digestMultibase": "uEiA9i4bw70H2NRxrqtBkYyyifJbX3RC9Y1SD9g3UgNlazA"
       },
       "outputPreference": {
         "accessMode": ["visual"],
-        "mediaType": "application/html",
+        "mediaType": "text/html",
         "style": {
           "width": "800px",
           "height": "600px"
@@ -49,7 +49,7 @@
         "template": {
           "id": "https://example.com/templates/name.png",
           "mediaType": "image/png",
-          "digestMultibase": "uEiD7Q2J9m9g9Y4sQ4KJ8n3Q5x2n5p8q7w6v4t3r2s1"
+          "digestMultibase": "uEiA9i4bw70H2NRxrqtBkYyyifJbX3RC9Y1SD9g3UgNlazA"
         },
         "deliveryMode": "nfc"
       },

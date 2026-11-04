@@ -7,9 +7,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"strings"
 )
 
+// TemplateFetcher retrieves the template a credential references. ref.ID comes
+// from the credential, so the implementation owns the scheme and address policy,
+// the read limit, the timeout, and the comparison with ref.MediaType.
 type TemplateFetcher interface {
 	Fetch(context.Context, TemplateReference) ([]byte, error)
 }
@@ -34,11 +38,19 @@ func (m RenderMethod) validateTemplateContent() error {
 	}
 }
 
+// isMediaType reports whether got names the media type want. Media types are
+// compared after parsing, so parameters and letter case do not matter (RFC 6838
+// §4.2): "Application/JSON; charset=utf-8" is application/json.
+func isMediaType(got, want string) bool {
+	parsed, _, err := mime.ParseMediaType(got)
+	return err == nil && parsed == want
+}
+
 func (m RenderMethod) validateSummaryTemplateContent() error {
 	if m.Template == nil || m.Template.Reference != nil {
 		return nil
 	}
-	if m.Template.Embedded.MediaType != "application/json" {
+	if !isMediaType(m.Template.Embedded.MediaType, "application/json") {
 		return fmt.Errorf("renderMethod.template media type for summary must be application/json")
 	}
 	var summary SummaryTemplate
@@ -99,7 +111,7 @@ func (m RenderMethod) validateHTMLTemplate() error {
 	if m.Template == nil || m.Template.Reference != nil {
 		return nil
 	}
-	if m.Template.Embedded.MediaType != "text/html" {
+	if !isMediaType(m.Template.Embedded.MediaType, "text/html") {
 		return fmt.Errorf("renderMethod.template media type for html must be text/html")
 	}
 	for _, tag := range []string{"html", "head", "body"} {
@@ -138,23 +150,10 @@ func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher Temp
 	if m.Template == nil || m.Template.Reference == nil {
 		return nil
 	}
-	if fetcher == nil {
-		return fmt.Errorf("template fetcher is required for external template validation")
-	}
-	ref := *m.Template.Reference
-	data, err := fetcher.Fetch(ctx, ref)
-	if err != nil {
-		return fmt.Errorf("fetch external template: %w", err)
-	}
-	if ref.DigestMultibase != "" {
-		if err := VerifyDigestMultibase(data, ref.DigestMultibase); err != nil {
-			return fmt.Errorf("template digest verification failed: %w", err)
-		}
-	}
-	if err := m.validateFetchedTemplate(ref, data); err != nil {
-		return fmt.Errorf("external template validation: %w", err)
-	}
-	return nil
+	// templateBytes owns fetch, digest and content checks, so validation and
+	// rendering accept exactly the same templates.
+	_, err := templateBytes(ctx, m, fetcher)
+	return err
 }
 
 // validateFetchedTemplate applies the content rules for embedded templates to

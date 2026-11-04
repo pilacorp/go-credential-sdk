@@ -39,7 +39,9 @@ func ParseECDSASDCredential(rawJSON []byte, opts ...CredentialOpt) (*ECDSASDCred
 // AddProofByProvider signs the credential into an ecdsa-sd-2023 base proof.
 // mandatoryPaths are always disclosed; all other claims become selectively
 // disclosable. Each path is either a JSON Pointer ("/credentialSubject/name",
-// as in the W3C spec) or a dot path ("credentialSubject.name").
+// as in the W3C spec) or a dot path ("credentialSubject.name"). Include
+// "/renderMethod" when the credential has render methods: otherwise a holder
+// can drop or trim them in Derive and the derived proof still verifies.
 //
 // The proof is bound to the VM WithVerificationMethodKey pins, or by default
 // the issuer's only VM / latest active assertionMethod VM; it must hold a P-256

@@ -9,7 +9,7 @@ import (
 
 func TestWrapHTMLTemplateFiltersNestedProperties(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{"/credentialSubject/name"}, Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<div>hello</div>`)}}}
-	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice", "secret": "x"}}, method, RenderOptions{})
+	artifact, err := method.WrapHTMLTemplate(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice", "secret": "x"}}, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestWrapHTMLTemplateFiltersNestedProperties(t *testing.T) {
 
 func TestWrapHTMLTemplateUsesJSONLDSelectionMetadata(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{"/credentialSubject/name"}, Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<div>hello</div>`)}}}
-	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{
+	artifact, err := method.WrapHTMLTemplate(context.Background(), CredentialData{
 		"@context": []any{"https://www.w3.org/ns/credentials/v2"},
 		"type":     []any{"VerifiableCredential"},
 		"credentialSubject": map[string]any{
@@ -29,7 +29,7 @@ func TestWrapHTMLTemplateUsesJSONLDSelectionMetadata(t *testing.T) {
 			"name":   "Alice",
 			"secret": "hidden",
 		},
-	}, method, RenderOptions{})
+	}, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestWrapHTMLTemplateUsesW3CCredentialDataBlock(t *testing.T) {
 		}},
 	}
 
-	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{"name": "Alice"}, method, RenderOptions{})
+	artifact, err := method.WrapHTMLTemplate(context.Background(), CredentialData{"name": "Alice"}, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,8 +70,19 @@ func TestWrapHTMLTemplateUsesW3CCredentialDataBlock(t *testing.T) {
 	if !contains(artifact.SrcDoc, `<script name="credential" type="application/vc">`) {
 		t.Fatalf("artifact does not contain the W3C credential data block: %s", artifact.SrcDoc)
 	}
-	if contains(artifact.SrcDoc, "postMessage") || contains(artifact.SrcDoc, "renderMethodReady") {
-		t.Fatalf("artifact must not own the client render lifecycle: %s", artifact.SrcDoc)
+	// WD-20261013 §2.2.2.2.2: the wrapper receives the port and provides
+	// window.renderMethodReady, after the data block and before the template.
+	setup := `<script>` + renderMethodReadySetup + `</script>`
+	dataBlock := strings.Index(artifact.SrcDoc, `<script name="credential" type="application/vc">`)
+	ready := strings.Index(artifact.SrcDoc, setup)
+	body := strings.Index(artifact.SrcDoc, `<body>`)
+	if ready < 0 || !(dataBlock < ready && ready < body) {
+		t.Fatalf("artifact must carry the wrapper script between the data block and <body>: %s", artifact.SrcDoc)
+	}
+	for _, want := range []string{"window.renderMethodReady = function(err)", "event.data === 'start'", "port.postMessage("} {
+		if !contains(artifact.SrcDoc, want) {
+			t.Fatalf("wrapper script missing %q", want)
+		}
 	}
 	for _, want := range []string{
 		`<html><head>`,
@@ -93,9 +104,9 @@ func TestWrapHTMLTemplateKeepsCredentialDataValidJSONInScript(t *testing.T) {
 			Bytes:     []byte(`<div>hello</div>`),
 		}},
 	}
-	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{
+	artifact, err := method.WrapHTMLTemplate(context.Background(), CredentialData{
 		"name": `Alice "The Engineer" </script><script>alert(1)</script>`,
-	}, method, RenderOptions{})
+	}, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,14 +141,14 @@ func TestWrapHTMLTemplatePreservesArraysWhenFilteringProperties(t *testing.T) {
 			Bytes:     []byte(`<div>hello</div>`),
 		}},
 	}
-	artifact, err := WrapHTMLTemplate(context.Background(), CredentialData{
+	artifact, err := method.WrapHTMLTemplate(context.Background(), CredentialData{
 		"credentialSubject": map[string]any{
 			"items": []any{
 				map[string]any{"name": "Alice"},
 				map[string]any{"name": "Bob"},
 			},
 		},
-	}, method, RenderOptions{})
+	}, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,21 +170,21 @@ func TestWrapHTMLTemplatePreservesArraysWhenFilteringProperties(t *testing.T) {
 
 func TestWrapHTMLTemplateRejectsDocumentElements(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<html>bad</html>`)}}}
-	if _, err := WrapHTMLTemplate(context.Background(), CredentialData{}, method, RenderOptions{}); err == nil {
+	if _, err := method.WrapHTMLTemplate(context.Background(), CredentialData{}, RenderOptions{}); err == nil {
 		t.Fatal("WrapHTMLTemplate() error = nil")
 	}
 }
 
 func TestWrapHTMLTemplateAcceptsHeaderFragment(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<header>ok</header>`)}}}
-	if _, err := WrapHTMLTemplate(context.Background(), CredentialData{}, method, RenderOptions{}); err != nil {
+	if _, err := method.WrapHTMLTemplate(context.Background(), CredentialData{}, RenderOptions{}); err != nil {
 		t.Fatalf("WrapHTMLTemplate() rejected header fragment: %v", err)
 	}
 }
 
 func TestResolveStaticReturnsPayloadAndMetadata(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", DeliveryMode: "nfc", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/octet-stream", Bytes: []byte{0, 1, 2}}}}
-	output, err := ResolveStatic(context.Background(), CredentialData{}, method, RenderOptions{})
+	output, err := method.ResolveStatic(context.Background(), CredentialData{}, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,11 +207,11 @@ func TestWrapHTMLTemplateValidatesExternalMediaType(t *testing.T) {
 		ID: "https://example.com/template.html", MediaType: "application/json",
 	}}}
 	opts := RenderOptions{Fetcher: summaryFetcher{data: []byte(`<div>Hello</div>`)}}
-	if _, err := WrapHTMLTemplate(context.Background(), CredentialData{}, method, opts); err == nil {
+	if _, err := method.WrapHTMLTemplate(context.Background(), CredentialData{}, opts); err == nil {
 		t.Fatal("WrapHTMLTemplate() error = nil, want media type error")
 	}
 	method.Template.Reference.MediaType = ""
-	if _, err := WrapHTMLTemplate(context.Background(), CredentialData{}, method, opts); err != nil {
+	if _, err := method.WrapHTMLTemplate(context.Background(), CredentialData{}, opts); err != nil {
 		t.Fatalf("WrapHTMLTemplate() without mediaType error = %v", err)
 	}
 }
@@ -217,7 +228,7 @@ func TestResolveStaticAllowsMissingDeliveryMode(t *testing.T) {
 	}
 	for name, method := range methods {
 		t.Run(name, func(t *testing.T) {
-			output, err := ResolveStatic(context.Background(), CredentialData{}, method, RenderOptions{Fetcher: summaryFetcher{data: payload}})
+			output, err := method.ResolveStatic(context.Background(), CredentialData{}, RenderOptions{Fetcher: summaryFetcher{data: payload}})
 			if err != nil {
 				t.Fatalf("ResolveStatic() error = %v", err)
 			}
@@ -225,5 +236,19 @@ func TestResolveStaticAllowsMissingDeliveryMode(t *testing.T) {
 				t.Fatalf("output = %+v", output)
 			}
 		})
+	}
+}
+
+// A fetched template goes through the same fragment rule as an embedded one, in
+// templateBytes, so WrapHTMLTemplate needs no check of its own.
+func TestWrapHTMLTemplateRejectsFetchedDocument(t *testing.T) {
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Reference: &TemplateReference{
+		ID: "https://example.com/template.html", MediaType: "text/html",
+	}}}
+	for _, doc := range []string{`<html>bad</html>`, `<head></head>`, `<body>bad</body>`} {
+		opts := RenderOptions{Fetcher: summaryFetcher{data: []byte(doc)}}
+		if _, err := method.WrapHTMLTemplate(context.Background(), CredentialData{}, opts); err == nil {
+			t.Errorf("WrapHTMLTemplate() with fetched %q error = nil, want fragment error", doc)
+		}
 	}
 }

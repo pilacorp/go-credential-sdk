@@ -69,3 +69,39 @@ func TestDotPathsToPointers_DoesNotMutateInput(t *testing.T) {
 		t.Errorf("input mutated: %q, want %q", in, orig)
 	}
 }
+
+// credentialWithoutRenderMethod is a credential issued before render methods
+// existed. Its Hash() is the anchor key authen-service stores.
+const credentialWithoutRenderMethod = `{
+	"@context": ["https://www.w3.org/ns/credentials/v2"],
+	"id": "urn:uuid:3978344f-8596-4c3a-a978-8fcaba3903c5",
+	"type": ["VerifiableCredential"],
+	"issuer": "did:example:issuer",
+	"validFrom": "2026-01-01T00:00:00Z",
+	"credentialSubject": {"id": "did:example:subject"},
+	"proof": {
+		"type": "DataIntegrityProof",
+		"cryptosuite": "ecdsa-rdfc-2019",
+		"created": "2026-01-01T00:00:00Z",
+		"verificationMethod": "did:example:issuer#key-1",
+		"proofPurpose": "assertionMethod",
+		"proofValue": "z5xcgdyb8ZFV7tN9A8MdkkAjbcZQkDWqgxuxzuq5WtxrGNaTsGdTKw27Uod1Zfaj3SijwkD4HhU1rGWbyGBomZXuR"
+	}
+}`
+
+// TestHashOfCredentialWithoutRenderMethodIsStable pins Hash() to a fixed value.
+// If it fails, a change to serialization or canonicalization has moved every
+// stored anchor key; that is a breaking change, not a test to update.
+func TestHashOfCredentialWithoutRenderMethodIsStable(t *testing.T) {
+	cred, err := ParseJSONCredential([]byte(credentialWithoutRenderMethod))
+	if err != nil {
+		t.Fatalf("ParseJSONCredential() error = %v", err)
+	}
+	h, err := cred.Hash()
+	if err != nil {
+		t.Fatalf("Hash() error = %v", err)
+	}
+	if want := "b9cc154f79789ba3ba4c06d98e9c8b28230cebfc4b082c4309b17d90a8afe5d6"; h != want {
+		t.Errorf("Hash() = %s, want %s", h, want)
+	}
+}

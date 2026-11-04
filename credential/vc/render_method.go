@@ -7,13 +7,16 @@ import (
 	"mime"
 	"net/url"
 	"strings"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
-// MaxEmbeddedTemplateSize is the maximum decoded size of an embedded data URL
-// template accepted by Template.UnmarshalJSON.
-const MaxEmbeddedTemplateSize = 1 << 20
-
-// RenderMethod represents a W3C SuiteRenderMethod entry.
+// RenderMethod is a SuiteRenderMethod entry of W3C VC Rendering Methods,
+// Working Draft 2026-10-13, §2.2:
+// https://www.w3.org/TR/2026/WD-vc-render-method-20261013/
+//
+// The JSON member names are part of the signed credential and follow that
+// draft. Experimental: the draft can change, and this API changes with it.
 type RenderMethod struct {
 	ID               string            `json:"id,omitempty"`
 	Type             string            `json:"type"`
@@ -27,33 +30,128 @@ type RenderMethod struct {
 	DeliveryMode     string            `json:"deliveryMode,omitempty"`
 }
 
+// ParseRenderMethods reads the renderMethod member of a credential, given as
+// one object or an array, and returns the entries this SDK can render, in
+// document order. Call it after Verify and after validating @context against
+// the contexts the application accepts (VC Data Integrity 1.0 §2.4.1, §4.6):
+// it checks neither the proof nor the contexts.
+//
+// Entries whose type is not SuiteRenderMethod, whose renderSuite is not
+// summary, html or static, or that have no template (remote render methods,
+// which this SDK does not retrieve) are skipped, as WD-20261013 §2.2 requires
+// for suites a consumer does not support. A supported entry that fails to
+// decode or validate is an error, reported with its index.
+//
+// When the credential embeds a proof, its JSON-LD is expanded first: only terms
+// the @context defines are covered by a Data Integrity proof, so a credential
+// whose render-method terms the @context does not define is refused. A
+// credential secured outside the document, such as JOSE, has no proof member
+// and skips that step.
+func ParseRenderMethods(data CredentialData) ([]RenderMethod, error) {
+	raw, ok := data["renderMethod"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	if _, embeddedProof := data["proof"]; embeddedProof {
+		// SafeMode refuses a term the @context does not define.
+		if _, err := processor.ExpandJSONLD(normalizeCredentialData(data)); err != nil {
+			return nil, fmt.Errorf("expand credential with renderMethod: %w", err)
+		}
+	}
+	entries, ok := raw.([]any)
+	if !ok {
+		entries = []any{raw}
+	}
+	var methods []RenderMethod
+	for i, entry := range entries {
+		object, ok := entry.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("renderMethod[%d] must be an object", i)
+		}
+		if !isSupportedRenderMethod(object) {
+			continue
+		}
+		encoded, err := json.Marshal(object)
+		if err != nil {
+			return nil, fmt.Errorf("renderMethod[%d]: %w", i, err)
+		}
+		var method RenderMethod
+		if err := json.Unmarshal(encoded, &method); err != nil {
+			return nil, fmt.Errorf("renderMethod[%d]: %w", i, err)
+		}
+		if err := method.Validate(); err != nil {
+			return nil, fmt.Errorf("renderMethod[%d]: %w", i, err)
+		}
+		methods = append(methods, method)
+	}
+	return methods, nil
+}
+
+// isSupportedRenderMethod skips what WD-20261013 §2.2 tells a consumer to
+// ignore, and remote render methods, which this SDK does not retrieve.
+func isSupportedRenderMethod(entry map[string]any) bool {
+	if entry["type"] != "SuiteRenderMethod" {
+		return false
+	}
+	switch entry["renderSuite"] {
+	case "summary", "html", "static":
+		_, hasTemplate := entry["template"]
+		return hasTemplate
+	default:
+		return false
+	}
+}
+
+// Template is the template member of a render method (WD-20261013 §2.2): a
+// data: URL decoded into Embedded, or an object referencing an external
+// template in Reference. Exactly one of the two is set.
+//
+// The SDK sets no size limit on templates. A decoded data: template is never
+// larger than its encoded form in the credential, so the application bounds
+// embedded templates by limiting the credential size it accepts, and bounds
+// fetched templates in its TemplateFetcher.
 type Template struct {
 	Embedded  *EmbeddedTemplate
 	Reference *TemplateReference
 }
 
+// EmbeddedTemplate is a template carried in the credential as a data: URL,
+// decoded into its media type and bytes. It is covered by the credential proof.
 type EmbeddedTemplate struct {
 	MediaType string
 	Bytes     []byte
 }
 
+// TemplateReference points to a template outside the credential
+// (WD-20261013 §2.2). ID is an http or https URL; MediaType and
+// DigestMultibase are optional. When DigestMultibase is set, the fetched bytes
+// must match it.
 type TemplateReference struct {
 	ID              string `json:"id"`
 	MediaType       string `json:"mediaType,omitempty"`
 	DigestMultibase string `json:"digestMultibase,omitempty"`
 }
 
+// OutputPreference is the outputPreference member of a render method
+// (WD-20261013 §2.2.2.3): the access modes, media type and style the issuer
+// suggests for the rendered output.
 type OutputPreference struct {
 	AccessMode []string     `json:"accessMode,omitempty"`
 	MediaType  string       `json:"mediaType,omitempty"`
 	Style      *RenderStyle `json:"style,omitempty"`
 }
 
+// RenderStyle is the style member of an outputPreference (WD-20261013
+// §2.2.2.3): CSS-compatible width and height preferences for the iframe.
 type RenderStyle struct {
 	Width  string `json:"width,omitempty"`
 	Height string `json:"height,omitempty"`
 }
 
+// Validate checks a render method against WD-20261013 §2.2: required members,
+// the render suite, template URLs and media types, outputPreference, and the
+// content of an embedded template. It does not fetch a referenced template;
+// ValidateExternalTemplate checks one after retrieval.
 func (m RenderMethod) Validate() error {
 	if m.Type == "" {
 		return fmt.Errorf("renderMethod.type is required")
@@ -92,6 +190,9 @@ func (m RenderMethod) Validate() error {
 			return err
 		}
 	}
+	if err := m.OutputPreference.validate(); err != nil {
+		return fmt.Errorf("renderMethod.outputPreference: %w", err)
+	}
 	return nil
 }
 
@@ -106,18 +207,55 @@ func (t *Template) validate() error {
 		if err := validateURL(t.Reference.ID, "template reference id"); err != nil {
 			return err
 		}
+		if err := validateMediaType(t.Reference.MediaType); err != nil {
+			return fmt.Errorf("template reference %w", err)
+		}
 	}
-	if t.Embedded != nil && t.Embedded.MediaType != "" {
-		if _, _, err := mime.ParseMediaType(t.Embedded.MediaType); err != nil || strings.Contains(t.Embedded.MediaType, ",") {
+	if t.Embedded != nil {
+		// A comma would end the media type early in the data: URL MarshalJSON writes.
+		if err := validateMediaType(t.Embedded.MediaType); err != nil || strings.Contains(t.Embedded.MediaType, ",") {
 			return fmt.Errorf("embedded template mediaType %q is not a valid media type", t.Embedded.MediaType)
 		}
 	}
 	return nil
 }
 
+// validate checks outputPreference against WD-20261013 §2.2.2.3: accessMode lists
+// one or more of auditory, tactile, textual and visual, and mediaType is a
+// valid media type.
+func (p *OutputPreference) validate() error {
+	if p == nil {
+		return nil
+	}
+	if p.AccessMode != nil && len(p.AccessMode) == 0 {
+		return fmt.Errorf("accessMode must list at least one value")
+	}
+	for i, mode := range p.AccessMode {
+		switch mode {
+		case "auditory", "tactile", "textual", "visual":
+		default:
+			return fmt.Errorf("accessMode[%d] %q is not auditory, tactile, textual or visual", i, mode)
+		}
+	}
+	return validateMediaType(p.MediaType)
+}
+
+// validateMediaType checks the syntax of an optional media type: empty is
+// allowed, anything else must parse as type/subtype with optional parameters.
+func validateMediaType(mediaType string) error {
+	if mediaType == "" {
+		return nil
+	}
+	if _, _, err := mime.ParseMediaType(mediaType); err != nil {
+		return fmt.Errorf("mediaType %q is not a valid media type", mediaType)
+	}
+	return nil
+}
+
 func validateURL(raw, field string) error {
 	parsed, err := url.Parse(raw)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+	// Hostname, not Host: for "http://:8080/x" Host is ":8080" but there is no host.
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
 		return fmt.Errorf("%s must be a valid HTTP or HTTPS URL", field)
 	}
 	return nil
@@ -166,43 +304,46 @@ func (t *Template) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// isDataURL reports whether raw uses the data: scheme. URI schemes are
+// case-insensitive (RFC 3986 §3.1), so "DATA:" is a data URL too.
+func isDataURL(raw string) bool {
+	return len(raw) >= 5 && strings.EqualFold(raw[:5], "data:")
+}
+
+// decodeDataURL decodes an RFC 2397 data URL: the media type may be empty, the
+// ";base64" marker is matched case-insensitively, and percent-escapes are
+// decoded before base64, so "%3D" stands for "=".
+func decodeDataURL(raw string) (*EmbeddedTemplate, error) {
+	metadata, payload, ok := strings.Cut(raw[5:], ",")
+	if !ok {
+		return nil, fmt.Errorf("embedded template must use a valid data URL")
+	}
+	unescaped, err := url.PathUnescape(payload)
+	if err != nil {
+		return nil, fmt.Errorf("decode embedded template data URL: %w", err)
+	}
+	mediaType, decoded := metadata, []byte(unescaped)
+	if n := len(metadata) - len(";base64"); n >= 0 && strings.EqualFold(metadata[n:], ";base64") {
+		mediaType = metadata[:n]
+		if decoded, err = base64.StdEncoding.DecodeString(unescaped); err != nil {
+			return nil, fmt.Errorf("decode embedded template data URL: %w", err)
+		}
+	}
+	return &EmbeddedTemplate{MediaType: mediaType, Bytes: decoded}, nil
+}
+
 func (t *Template) decodeJSON(data []byte) error {
 	var raw string
 	if len(data) > 0 && data[0] == '"' {
 		if err := json.Unmarshal(data, &raw); err != nil {
 			return err
 		}
-		if strings.HasPrefix(raw, "data:") {
-			parts := strings.SplitN(strings.TrimPrefix(raw, "data:"), ",", 2)
-			if len(parts) != 2 || parts[0] == "" {
-				return fmt.Errorf("embedded template must use a valid data URL")
-			}
-			metadata := parts[0]
-			payload := parts[1]
-			mediaType := metadata
-			var decoded []byte
-			var err error
-			if strings.HasSuffix(metadata, ";base64") {
-				mediaType = strings.TrimSuffix(metadata, ";base64")
-				if base64.StdEncoding.DecodedLen(len(payload)) > MaxEmbeddedTemplateSize {
-					return fmt.Errorf("embedded template exceeds %d bytes", MaxEmbeddedTemplateSize)
-				}
-				decoded, err = base64.StdEncoding.DecodeString(payload)
-			} else {
-				if len(payload) > MaxEmbeddedTemplateSize*3 {
-					return fmt.Errorf("embedded template data URL is too large")
-				}
-				decodedString, unescapeErr := url.PathUnescape(payload)
-				err = unescapeErr
-				decoded = []byte(decodedString)
-			}
+		if isDataURL(raw) {
+			embedded, err := decodeDataURL(raw)
 			if err != nil {
-				return fmt.Errorf("decode embedded template data URL: %w", err)
+				return err
 			}
-			if len(decoded) > MaxEmbeddedTemplateSize {
-				return fmt.Errorf("embedded template exceeds %d bytes", MaxEmbeddedTemplateSize)
-			}
-			t.Embedded = &EmbeddedTemplate{MediaType: mediaType, Bytes: decoded}
+			t.Embedded = embedded
 			return nil
 		}
 		t.Reference = &TemplateReference{ID: raw}

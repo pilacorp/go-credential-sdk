@@ -1,5 +1,8 @@
 package vc
 
+// SummaryTemplate is the summary object of WD-20261013 §2.2.1.2. It is both the
+// template a summary render method carries and, with its JSON Pointers
+// resolved, the output RenderSummary returns.
 type SummaryTemplate struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`

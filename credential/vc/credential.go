@@ -64,6 +64,10 @@ type Credential interface {
 type CredentialData jsonmap.JSONMap
 
 // CredentialContents represents the structured contents of a Credential.
+//
+// RenderMethods is signed with the rest of the credential. With ecdsa-sd-2023,
+// pass "/renderMethod" as a mandatory pointer, or the holder can drop or trim
+// methods and the derived proof still verifies.
 type CredentialContents struct {
 	Context          []interface{}  `json:"context,omitempty"`          // JSON-LD contexts
 	ID               string         `json:"id,omitempty"`               // Credential identifier

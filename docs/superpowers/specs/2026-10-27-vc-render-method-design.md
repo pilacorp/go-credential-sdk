@@ -46,7 +46,7 @@ The W3C Render Method extension lets an issuer attach signed rendering instructi
 8. Validate summary templates before and after pointer substitution.
 9. Support `data:` templates and fetched templates through an injectable fetcher.
 10. Generate and verify SHA-256 multihash digests when requested.
-11. Provide validated HTML/static metadata and payloads for client-side rendering; for `html`, the SDK prepares the filtered credential, wrapper, CSP, sandbox, `srcdoc`, and lifecycle communication code but does not execute it.
+11. Provide validated HTML/static metadata and payloads for client-side rendering; for `html`, the SDK prepares the filtered credential and the `srcdoc` wrapper (CSP, data block, and the wrapper-side lifecycle script) but does not execute it; the host page owns the sandboxed iframe, its CSP, and the `MessageChannel`.
 12. Document the experimental status, security boundaries, and compatibility behavior.
 
 ### 3.2 Non-goals
@@ -464,7 +464,7 @@ The SDK must:
 - create wrapper code containing the filtered credential and HTML payload;
 - include the required CSP restrictions;
 - return `srcdoc` integration data for the client-owned sandboxed iframe;
-- leave ready/error `MessageChannel` communication to the client host;
+- include the wrapper script of WD-20261013 §3.2, which receives the `MessageChannel` port and defines `window.renderMethodReady`; the host page creates the `MessageChannel` and waits for the ready or error message;
 - never evaluate template JavaScript or start a browser/WebView runtime.
 
 The client application is responsible for creating or selecting the actual iframe/WebView, assigning `srcdoc`, executing the artifact, handling the ready/error result, and controlling the user-facing lifecycle. The SDK returns code and data; it does not run them.
@@ -586,7 +586,7 @@ This phase implements the complete Go-side `summary` renderer. It does not mean 
 - Fetch and verify the external HTML payload.
 - Apply `renderProperty` using the W3C `selectJsonLd` algorithm.
 - Generate the filtered `application/vc` data block.
-- Generate wrapper code with CSP, sandbox, `srcdoc`, and ready/error `MessageChannel` code.
+- Generate the `srcdoc` wrapper with CSP, the data block, and the wrapper-side ready/error script; the iframe sandbox and host-side `MessageChannel` stay with the host page.
 - Return the complete HTML artifact and output preferences.
 - Do not execute JavaScript or start the client browser/WebView runtime.
 

@@ -2,10 +2,10 @@ package vc
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -94,8 +94,8 @@ func ResolveJSONPointer(document any, pointer string) (any, error) {
 				return nil, fmt.Errorf("JSON Pointer segment %q not found", token)
 			}
 		case []any:
-			var index int
-			if err := json.Unmarshal([]byte(token), &index); err != nil || index < 0 || index >= len(value) {
+			index, ok := jsonPointerArrayIndex(token, len(value))
+			if !ok {
 				return nil, fmt.Errorf("JSON Pointer array index %q is invalid", token)
 			}
 			current = value[index]
@@ -104,4 +104,21 @@ func ResolveJSONPointer(document any, pointer string) (any, error) {
 		}
 	}
 	return current, nil
+}
+
+// jsonPointerArrayIndex parses an RFC 6901 §4 array index: "0" or digits with
+// no leading zero, below length. It accepts the same tokens as the selectJsonLd
+// implementation in jsonmap, so a pointer resolves the same way for summary and
+// html.
+func jsonPointerArrayIndex(token string, length int) (int, bool) {
+	if token == "" || (len(token) > 1 && token[0] == '0') {
+		return 0, false
+	}
+	for i := 0; i < len(token); i++ {
+		if token[i] < '0' || token[i] > '9' {
+			return 0, false
+		}
+	}
+	index, err := strconv.Atoi(token)
+	return index, err == nil && index < length
 }

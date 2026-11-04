@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,7 +89,7 @@ func TestRenderMethodRejectsInvalidURLs(t *testing.T) {
 		t.Fatal("serializeCredentialContents() error = nil, want invalid template reference URL error")
 	}
 
-	for _, scheme := range []string{"file:///tmp/template.json", "ftp://example.com/template.json", "javascript:alert(1)"} {
+	for _, scheme := range []string{"file:///tmp/template.json", "ftp://example.com/template.json", "javascript:alert(1)", "http://:8080/template.json", "https://:443"} {
 		contents = baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{ID: scheme}}}})
 		if _, err := serializeCredentialContents(&contents); err == nil {
 			t.Errorf("serializeCredentialContents() error = nil for %q, want unsupported URL scheme error", scheme)
@@ -207,7 +208,7 @@ func TestRenderMethodCanonicalizationPreservesPhase15Fields(t *testing.T) {
 			}},
 			DigestMultibase: testDigest([]byte("render method")),
 			OutputPreference: &OutputPreference{
-				AccessMode: []string{"online"},
+				AccessMode: []string{"visual"},
 				MediaType:  "text/html",
 				Style:      &RenderStyle{Width: "100px", Height: "50px"},
 			},
@@ -330,12 +331,30 @@ func TestRenderMethodTemplatePercentEncodedDataURL(t *testing.T) {
 	}
 }
 
-func TestTemplateUnmarshalRejectsOversizedEmbeddedDataURL(t *testing.T) {
-	data := make([]byte, MaxEmbeddedTemplateSize+1)
-	encoded := base64.StdEncoding.EncodeToString(data)
-	var template Template
-	if err := json.Unmarshal([]byte(`"data:application/octet-stream;base64,`+encoded+`"`), &template); err == nil {
-		t.Fatal("json.Unmarshal() error = nil, want embedded template size error")
+func TestTemplateLargerThanOneMiBRoundTrips(t *testing.T) {
+	// The SDK sets no template size limit: what an issuer signs, a consumer reads.
+	big := `{"name":"N","description":"` + strings.Repeat("x", 2<<20) + `","fields":[{"label":"L","value":"/id"}]}`
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{
+		MediaType: "application/json", Bytes: []byte(big),
+	}}}
+	created, err := NewJSONCredential(baseRenderContents([]RenderMethod{method}))
+	if err != nil {
+		t.Fatalf("NewJSONCredential() error = %v", err)
+	}
+	raw, err := created.GetContents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data CredentialData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatal(err)
+	}
+	methods, err := ParseRenderMethods(data)
+	if err != nil {
+		t.Fatalf("ParseRenderMethods() error = %v", err)
+	}
+	if len(methods) != 1 || string(methods[0].Template.Embedded.Bytes) != big {
+		t.Fatal("embedded template changed after the round trip")
 	}
 }
 
@@ -407,5 +426,242 @@ func TestRenderMethodValidatesDigestMultibaseSyntax(t *testing.T) {
 	contents := baseRenderContents([]RenderMethod{reference("uInner")})
 	if _, err := NewJSONCredential(contents); err == nil {
 		t.Fatal("NewJSONCredential() error = nil, want digestMultibase syntax error")
+	}
+}
+
+func parseRenderMethodsInput(t *testing.T, document string) CredentialData {
+	t.Helper()
+	var data CredentialData
+	if err := json.Unmarshal([]byte(document), &data); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+const testSummaryTemplateDataURL = `data:application/json,%7B%22name%22%3A%22Degree%22%2C%22description%22%3A%22Example%22%2C%22fields%22%3A%5B%5D%7D`
+
+func TestParseRenderMethodsAcceptsSingleObject(t *testing.T) {
+	data := parseRenderMethodsInput(t, `{"renderMethod": {"type": "SuiteRenderMethod", "renderSuite": "summary", "template": "`+testSummaryTemplateDataURL+`"}}`)
+	methods, err := ParseRenderMethods(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(methods) != 1 || methods[0].RenderSuite != "summary" || methods[0].Template == nil || methods[0].Template.Embedded == nil {
+		t.Fatalf("methods = %+v", methods)
+	}
+}
+
+func TestParseRenderMethodsKeepsDocumentOrder(t *testing.T) {
+	data := parseRenderMethodsInput(t, `{"renderMethod": [
+		{"type": "SuiteRenderMethod", "renderSuite": "static", "template": "data:application/octet-stream;base64,AA=="},
+		{"type": "SuiteRenderMethod", "renderSuite": "summary", "template": "`+testSummaryTemplateDataURL+`"},
+		{"type": "SuiteRenderMethod", "renderSuite": "html", "template": "data:text/html,%3Cp%3Ehi%3C%2Fp%3E"}
+	]}`)
+	methods, err := ParseRenderMethods(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suites []string
+	for _, method := range methods {
+		suites = append(suites, method.RenderSuite)
+	}
+	if !reflect.DeepEqual(suites, []string{"static", "summary", "html"}) {
+		t.Fatalf("suites = %v, want document order", suites)
+	}
+}
+
+func TestParseRenderMethodsSkipsEntriesTheSDKMustIgnore(t *testing.T) {
+	// The unknown suite carries a template no supported suite would accept, so
+	// decoding it would fail: it must be skipped before the typed decode.
+	data := parseRenderMethodsInput(t, `{"renderMethod": [
+		{"type": "SuiteRenderMethod", "renderSuite": "audio", "template": 42},
+		{"type": "TemplateRenderMethod", "renderSuite": "summary", "template": "`+testSummaryTemplateDataURL+`"},
+		{"type": "SuiteRenderMethod", "renderSuite": "html", "id": "https://example.com/render-method.json"},
+		{"type": "SuiteRenderMethod", "renderSuite": "summary", "template": "`+testSummaryTemplateDataURL+`"}
+	]}`)
+	methods, err := ParseRenderMethods(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(methods) != 1 || methods[0].RenderSuite != "summary" {
+		t.Fatalf("methods = %+v, want only the supported summary entry", methods)
+	}
+}
+
+func TestParseRenderMethodsWithoutRenderMethod(t *testing.T) {
+	methods, err := ParseRenderMethods(parseRenderMethodsInput(t, `{"type": ["VerifiableCredential"]}`))
+	if err != nil || methods != nil {
+		t.Fatalf("ParseRenderMethods() = %v, %v; want nil, nil", methods, err)
+	}
+}
+
+func TestParseRenderMethodsReportsInvalidSupportedEntry(t *testing.T) {
+	cases := map[string]string{
+		"not an object":          `{"renderMethod": [{"type": "SuiteRenderMethod", "renderSuite": "summary", "template": "` + testSummaryTemplateDataURL + `"}, "summary"]}`,
+		"invalid template":       `{"renderMethod": [{"type": "SuiteRenderMethod", "renderSuite": "summary", "template": "` + testSummaryTemplateDataURL + `"}, {"type": "SuiteRenderMethod", "renderSuite": "summary", "template": "not a url"}]}`,
+		"invalid renderProperty": `{"renderMethod": [{"type": "SuiteRenderMethod", "renderSuite": "summary", "template": "` + testSummaryTemplateDataURL + `"}, {"type": "SuiteRenderMethod", "renderSuite": "html", "renderProperty": ["credentialSubject"], "template": "data:text/html,%3Cp%3Ehi%3C%2Fp%3E"}]}`,
+	}
+	for name, document := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseRenderMethods(parseRenderMethodsInput(t, document))
+			if err == nil || !strings.Contains(err.Error(), "renderMethod[1]") {
+				t.Fatalf("ParseRenderMethods() error = %v, want an error for renderMethod[1]", err)
+			}
+		})
+	}
+}
+
+func TestParseRenderMethodsRefusesUndefinedTermsWithEmbeddedProof(t *testing.T) {
+	const credential = `{
+		"@context": CONTEXT,
+		"type": ["VerifiableCredential"],
+		"issuer": "did:example:issuer",
+		"credentialSubject": {"id": "did:example:subject"},
+		"renderMethod": {"type": "SuiteRenderMethod", "renderSuite": "summary", "template": "` + testSummaryTemplateDataURL + `"},
+		"proof": {
+			"type": "DataIntegrityProof",
+			"cryptosuite": "ecdsa-rdfc-2019",
+			"proofPurpose": "assertionMethod",
+			"verificationMethod": "did:example:issuer#key-1",
+			"proofValue": "z5xcgdyb8ZFV7tN9A8MdkkAjbcZQkDWqgxuxzuq5WtxrGNaTsGdTKw27Uod1Zfaj3SijwkD4HhU1rGWbyGBomZXuR"
+		}
+	}`
+
+	// The VC 2.0 context defines renderMethod but not renderSuite or template,
+	// so those terms would be dropped from what the proof signs.
+	undefined := parseRenderMethodsInput(t, strings.Replace(credential, "CONTEXT", `["https://www.w3.org/ns/credentials/v2"]`, 1))
+	if _, err := ParseRenderMethods(undefined); err == nil {
+		t.Fatal("ParseRenderMethods() error = nil, want undefined-term error")
+	}
+
+	// A context that defines the terms makes the same credential readable.
+	defined := parseRenderMethodsInput(t, strings.Replace(credential, "CONTEXT", `["https://www.w3.org/ns/credentials/v2", {"@vocab": "https://example.com/vocab#"}]`, 1))
+	methods, err := ParseRenderMethods(defined)
+	if err != nil {
+		t.Fatalf("ParseRenderMethods() error = %v", err)
+	}
+	if len(methods) != 1 {
+		t.Fatalf("methods = %+v", methods)
+	}
+
+	// Without an embedded proof (for example a JOSE payload) the expansion is
+	// skipped, because the signature covers the bytes rather than the terms.
+	delete(undefined, "proof")
+	if _, err := ParseRenderMethods(undefined); err != nil {
+		t.Fatalf("ParseRenderMethods() without proof error = %v", err)
+	}
+}
+
+func TestTemplateDecodesEveryValidDataURL(t *testing.T) {
+	cases := []struct {
+		raw       string
+		mediaType string
+		bytes     string
+	}{
+		{`data:,A%20brief%20note`, "", "A brief note"}, // RFC 2397 §4 example
+		{`DATA:text/plain,hello`, "text/plain", "hello"},
+		{`data:text/plain;BASE64,aGVsbG8=`, "text/plain", "hello"},
+		{`data:text/plain;base64,aGVsbG8%3D`, "text/plain", "hello"},
+		{`data:text/plain;base64,aGVsbG8=`, "text/plain", "hello"},
+		{`data:application/json,%7B%22a%22%3A1%7D`, "application/json", `{"a":1}`},
+	}
+	for _, tc := range cases {
+		var template Template
+		if err := json.Unmarshal([]byte(`"`+tc.raw+`"`), &template); err != nil {
+			t.Errorf("%s: json.Unmarshal() error = %v", tc.raw, err)
+			continue
+		}
+		if template.Embedded == nil || template.Embedded.MediaType != tc.mediaType || string(template.Embedded.Bytes) != tc.bytes {
+			t.Errorf("%s: got %+v, want media type %q and bytes %q", tc.raw, template, tc.mediaType, tc.bytes)
+		}
+	}
+	for _, raw := range []string{`data:text/plain`, `data:text/plain;base64,!!!`, `data:text/plain,%zz`} {
+		var template Template
+		if err := json.Unmarshal([]byte(`"`+raw+`"`), &template); err == nil {
+			t.Errorf("%s: json.Unmarshal() error = nil, want an invalid data URL error", raw)
+		}
+	}
+}
+
+func TestRenderMethodComparesParsedTemplateMediaType(t *testing.T) {
+	summary := []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)
+	cases := []struct {
+		suite, mediaType string
+		bytes            []byte
+		wantOK           bool
+	}{
+		{"summary", "application/json", summary, true},
+		{"summary", "application/json;charset=utf-8", summary, true},
+		{"summary", "Application/JSON; charset=UTF-8", summary, true},
+		{"summary", "text/plain", summary, false},
+		{"summary", "", summary, false},
+		{"html", "text/html", []byte("<p>hi</p>"), true},
+		{"html", "text/html; charset=utf-8", []byte("<p>hi</p>"), true},
+		{"html", "TEXT/HTML", []byte("<p>hi</p>"), true},
+		{"html", "application/xhtml+xml", []byte("<p>hi</p>"), false},
+	}
+	for _, tc := range cases {
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: tc.suite, Template: &Template{Embedded: &EmbeddedTemplate{MediaType: tc.mediaType, Bytes: tc.bytes}}}
+		if err := method.Validate(); (err == nil) != tc.wantOK {
+			t.Errorf("%s with %q: Validate() error = %v, wantOK = %v", tc.suite, tc.mediaType, err, tc.wantOK)
+		}
+	}
+}
+
+func TestRenderMethodValidatesEveryMediaType(t *testing.T) {
+	summary := []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)
+	reference := func(mediaType string) RenderMethod {
+		return RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{
+			ID: "https://example.com/template.json", MediaType: mediaType,
+		}}}
+	}
+	output := func(mediaType string) RenderMethod {
+		return RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary",
+			Template:         &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: summary}},
+			OutputPreference: &OutputPreference{MediaType: mediaType},
+		}
+	}
+	for _, build := range []func(string) RenderMethod{reference, output} {
+		for _, mediaType := range []string{"", "application/json", "text/html; charset=utf-8"} {
+			if err := build(mediaType).Validate(); err != nil {
+				t.Errorf("Validate() with mediaType %q error = %v", mediaType, err)
+			}
+		}
+		for _, mediaType := range []string{"not a type", "text/", "/html", "text/html;charset"} {
+			if err := build(mediaType).Validate(); err == nil {
+				t.Errorf("Validate() with mediaType %q error = nil, want invalid media type", mediaType)
+			}
+		}
+	}
+	contents := baseRenderContents([]RenderMethod{reference("not a type")})
+	if _, err := NewJSONCredential(contents); err == nil {
+		t.Fatal("NewJSONCredential() error = nil, want invalid media type")
+	}
+}
+
+func TestRenderMethodValidatesOutputPreferenceAccessMode(t *testing.T) {
+	summary := []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)
+	method := func(accessMode []string) RenderMethod {
+		return RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary",
+			Template:         &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: summary}},
+			OutputPreference: &OutputPreference{AccessMode: accessMode},
+		}
+	}
+	for _, valid := range [][]string{nil, {"visual"}, {"auditory", "tactile", "textual", "visual"}} {
+		if err := method(valid).Validate(); err != nil {
+			t.Errorf("Validate() with accessMode %v error = %v", valid, err)
+		}
+	}
+	for _, invalid := range [][]string{{}, {"smell"}, {"online"}, {"visual", "Visual"}} {
+		if err := method(invalid).Validate(); err == nil {
+			t.Errorf("Validate() with accessMode %q error = nil, want invalid accessMode", invalid)
+		}
+	}
+	var decoded RenderMethod
+	if err := json.Unmarshal([]byte(`{"type":"SuiteRenderMethod","renderSuite":"summary","outputPreference":{"accessMode":[]}}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoded.Validate(); err == nil {
+		t.Fatal("Validate() of a decoded empty accessMode error = nil, want an error")
 	}
 }
