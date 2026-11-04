@@ -47,13 +47,14 @@ func splitNQuads(s string) []string {
 }
 
 // newProcessor returns a processor + options pre-wired with the shared caching
-// document loader (so embedded W3C contexts resolve offline) and URDNA2015
+// document loader (so embedded W3C contexts resolve offline), its per-call
+// budget, and URDNA2015
 // (RDFC-1.0) as the canonicalization algorithm.
 func newProcessor() (*ld.JsonLdProcessor, *ld.JsonLdOptions) {
 	proc := ld.NewJsonLdProcessor()
 	opts := ld.NewJsonLdOptions("")
 	opts.Algorithm = ld.AlgorithmURDNA2015
-	opts.DocumentLoader = defaultDocumentLoader
+	opts.DocumentLoader = newContextBudget()
 	// Lossless processing: fail (don't silently drop) on terms that don't
 	// expand to an absolute IRI or keyword (W3C VC-DI DATA_LOSS_DETECTION).
 	opts.SafeMode = true
