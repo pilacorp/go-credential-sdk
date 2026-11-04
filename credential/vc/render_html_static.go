@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -112,62 +111,4 @@ func selectCredential(credential CredentialData, pointers []string) (CredentialD
 		return nil, fmt.Errorf("select render properties: %w", err)
 	}
 	return CredentialData(selected), nil
-}
-
-func setPointer(document CredentialData, pointer string, value any) error {
-	if pointer == "" {
-		return fmt.Errorf("root renderProperty cannot be inserted into a filtered credential")
-	}
-	parts := strings.Split(pointer[1:], "/")
-	_, err := setPointerValue(map[string]any(document), parts, value)
-	return err
-}
-
-func setPointerValue(current any, parts []string, value any) (any, error) {
-	if len(parts) == 0 {
-		return value, nil
-	}
-
-	token := strings.ReplaceAll(strings.ReplaceAll(parts[0], "~1", "/"), "~0", "~")
-	switch node := current.(type) {
-	case map[string]any:
-		child, ok := node[token]
-		if !ok || child == nil {
-			child = newPointerContainer(parts[1:])
-		}
-		updated, err := setPointerValue(child, parts[1:], value)
-		if err != nil {
-			return nil, err
-		}
-		node[token] = updated
-		return node, nil
-	case []any:
-		index, err := strconv.Atoi(token)
-		if err != nil || index < 0 {
-			return nil, fmt.Errorf("invalid array index %q in renderProperty", token)
-		}
-		for len(node) <= index {
-			node = append(node, nil)
-		}
-		if node[index] == nil {
-			node[index] = newPointerContainer(parts[1:])
-		}
-		updated, err := setPointerValue(node[index], parts[1:], value)
-		if err != nil {
-			return nil, err
-		}
-		node[index] = updated
-		return node, nil
-	default:
-		return nil, fmt.Errorf("cannot insert renderProperty segment %q into %T", token, current)
-	}
-}
-
-func newPointerContainer(remaining []string) any {
-	if len(remaining) > 0 {
-		if _, err := strconv.Atoi(strings.ReplaceAll(strings.ReplaceAll(remaining[0], "~1", "/"), "~0", "~")); err == nil {
-			return []any{}
-		}
-	}
-	return map[string]any{}
 }

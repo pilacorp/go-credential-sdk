@@ -80,7 +80,7 @@ func TestValidateExternalRenderMethodVerifiesOuterDigest(t *testing.T) {
 	if err := method.ValidateExternalRenderMethod(context.Background(), testRenderMethodFetcher{data: data}); err != nil {
 		t.Fatalf("ValidateExternalRenderMethod() error = %v", err)
 	}
-	method.DigestMultibase = "uAQ"
+	method.DigestMultibase = testDigest([]byte("other bytes"))
 	if err := method.ValidateExternalRenderMethod(context.Background(), testRenderMethodFetcher{data: data}); err == nil {
 		t.Fatal("ValidateExternalRenderMethod() error = nil, want digest error")
 	}

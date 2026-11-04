@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
+	"os"
 	"testing"
 )
 
@@ -68,8 +70,124 @@ func TestRenderSummaryVerifiesExternalDigest(t *testing.T) {
 	if _, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": "Alice"}}, method, RenderOptions{Fetcher: summaryFetcher{data: data}}); err != nil {
 		t.Fatal(err)
 	}
-	method.Template.Reference.DigestMultibase = "uAQ"
+	method.Template.Reference.DigestMultibase = testDigest([]byte("other bytes"))
 	if _, err := RenderSummary(context.Background(), CredentialData{}, method, RenderOptions{Fetcher: summaryFetcher{data: data}}); err == nil {
 		t.Fatal("RenderSummary() error = nil")
+	}
+}
+
+func externalSummaryMethod(mediaType string) RenderMethod {
+	return RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{
+		ID: "https://example.com/summary.json", MediaType: mediaType,
+	}}}
+}
+
+func TestRenderSummaryValidatesExternalTemplateLikeEmbedded(t *testing.T) {
+	credential := CredentialData{"credentialSubject": map[string]any{"name": "Alice", "degree": "BSc"}}
+	cases := map[string]struct {
+		mediaType string
+		template  string
+	}{
+		"literal field value": {"application/json", `{"name":"Degree","description":"Summary","fields":[{"label":"Degree","value":"PhD, summa cum laude"}]}`},
+		"pointer field label": {"application/json", `{"name":"Degree","description":"Summary","fields":[{"label":"/credentialSubject/degree","value":"/credentialSubject/degree"}]}`},
+		"empty field value":   {"application/json", `{"name":"Degree","description":"Summary","fields":[{"label":"Degree","value":""}]}`},
+		"missing fields":      {"application/json", `{"name":"Degree","description":"Summary"}`},
+		"missing description": {"application/json", `{"name":"Degree","fields":[{"label":"Degree","value":"/credentialSubject/degree"}]}`},
+		"null name":           {"application/json", `{"name":null,"description":"Summary","fields":[{"label":"Degree","value":"/credentialSubject/degree"}]}`},
+		"missing field label": {"application/json", `{"name":"Degree","description":"Summary","fields":[{"value":"/credentialSubject/degree"}]}`},
+		"unknown member":      {"application/json", `{"name":"Degree","description":"Summary","fields":[{"label":"Degree","value":"/credentialSubject/degree"}],"extra":true}`},
+		"wrong media type":    {"text/plain", `{"name":"Degree","description":"Summary","fields":[{"label":"Degree","value":"/credentialSubject/degree"}]}`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			opts := RenderOptions{Fetcher: summaryFetcher{data: []byte(tc.template)}}
+			if got, err := RenderSummary(context.Background(), credential, externalSummaryMethod(tc.mediaType), opts); err == nil {
+				t.Fatalf("RenderSummary() = %+v, want validation error", got)
+			}
+		})
+	}
+}
+
+func TestRenderSummaryAcceptsExternalTemplateWithoutMediaType(t *testing.T) {
+	credential := CredentialData{"credentialSubject": map[string]any{"degree": "BSc"}}
+	data := []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Degree","value":"/credentialSubject/degree"}]}`)
+	got, err := RenderSummary(context.Background(), credential, externalSummaryMethod(""), RenderOptions{Fetcher: summaryFetcher{data: data}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fields[0].Value != "BSc" {
+		t.Fatalf("output = %+v", got)
+	}
+}
+
+func TestRenderSummaryAllowsEmptyRequiredMembers(t *testing.T) {
+	// The W3C summary object requires name, description, and fields to be
+	// present; it does not require them to be non-empty.
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{
+		MediaType: "application/json",
+		Bytes:     []byte(`{"name":"Degree","description":"","fields":[{"label":"","value":"/credentialSubject/degree"}]}`),
+	}}}
+	if err := method.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	got, err := RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"degree": "BSc"}}, method, RenderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Description != "" || got.Fields[0].Label != "" || got.Fields[0].Value != "BSc" {
+		t.Fatalf("output = %+v", got)
+	}
+
+	method.Template.Embedded.Bytes = []byte(`{"name":"Degree","description":"Summary","fields":[]}`)
+	got, err = RenderSummary(context.Background(), CredentialData{}, method, RenderOptions{})
+	if err != nil {
+		t.Fatalf("RenderSummary() with empty fields error = %v", err)
+	}
+	if got.Fields == nil || len(got.Fields) != 0 {
+		t.Fatalf("output fields = %#v, want empty slice", got.Fields)
+	}
+}
+
+func TestRenderMethodPhase0FixtureConformsToTR(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/superpowers/fixtures/vc-render-method-phase0.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	single := map[string]any{}
+	for key, value := range fixture["singleObject"] {
+		var decoded any
+		if err := json.Unmarshal(value, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		single[key] = decoded
+	}
+	credential := CredentialData(single)
+
+	var methods []RenderMethod
+	if err := json.Unmarshal(fixture["multipleArray"]["renderMethod"], &methods); err != nil {
+		t.Fatal(err)
+	}
+	for i, method := range methods {
+		if err := method.Validate(); err != nil {
+			t.Fatalf("multipleArray.renderMethod[%d].Validate() error = %v", i, err)
+		}
+		if method.RenderSuite != "summary" {
+			continue
+		}
+		if _, err := RenderSummary(context.Background(), credential, method, RenderOptions{}); err != nil {
+			t.Fatalf("RenderSummary(multipleArray.renderMethod[%d]) error = %v", i, err)
+		}
+	}
+
+	var unsupported RenderMethod
+	if err := json.Unmarshal(fixture["unsupportedSuite"]["renderMethod"], &unsupported); err != nil {
+		t.Fatal(err)
+	}
+	if err := unsupported.Validate(); err != nil {
+		t.Fatalf("unsupportedSuite.Validate() error = %v", err)
 	}
 }

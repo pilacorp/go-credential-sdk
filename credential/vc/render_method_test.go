@@ -63,7 +63,7 @@ func TestSerializeCredentialContentsRejectsIncompleteRenderMethod(t *testing.T) 
 }
 
 func TestRenderMethodTemplateReferenceRoundTripsBothDigests(t *testing.T) {
-	method := RenderMethod{ID: "https://example.com/render-method.jsonld", Type: "SuiteRenderMethod", RenderSuite: "summary", DigestMultibase: "uOuter", Template: &Template{Reference: &TemplateReference{ID: "https://example.com/template.json", MediaType: "application/json", DigestMultibase: "uInner"}}}
+	method := RenderMethod{ID: "https://example.com/render-method.jsonld", Type: "SuiteRenderMethod", RenderSuite: "summary", DigestMultibase: testDigest([]byte("render method")), Template: &Template{Reference: &TemplateReference{ID: "https://example.com/template.json", MediaType: "application/json", DigestMultibase: testDigest([]byte("template"))}}}
 	b, err := json.Marshal(method)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
@@ -72,7 +72,7 @@ func TestRenderMethodTemplateReferenceRoundTripsBothDigests(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	if got.ID != method.ID || got.DigestMultibase != method.DigestMultibase || got.Template == nil || got.Template.Reference == nil || got.Template.Reference.DigestMultibase != "uInner" {
+	if got.ID != method.ID || got.DigestMultibase != method.DigestMultibase || got.Template == nil || got.Template.Reference == nil || got.Template.Reference.DigestMultibase != method.Template.Reference.DigestMultibase {
 		t.Fatalf("round trip = %#v, want both digest layers preserved", got)
 	}
 }
@@ -136,12 +136,12 @@ func TestRenderMethodValidatesEmbeddedSuiteTemplates(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name: "static requires delivery mode",
+			name: "static without delivery mode",
 			method: RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", Template: &Template{Embedded: &EmbeddedTemplate{
 				MediaType: "application/octet-stream",
 				Bytes:     []byte("payload"),
 			}}},
-			wantOK: false,
+			wantOK: true,
 		},
 	}
 	for _, tt := range tests {
@@ -181,7 +181,7 @@ func TestRenderMethodValidatesExternalTemplateOnRequest(t *testing.T) {
 		t.Fatalf("ValidateExternalTemplate() error = %v", err)
 	}
 
-	method.Template.Reference.DigestMultibase = "uAQ"
+	method.Template.Reference.DigestMultibase = testDigest([]byte("other bytes"))
 	if err := method.ValidateExternalTemplate(context.Background(), testTemplateFetcher{data: data}); err == nil {
 		t.Fatal("ValidateExternalTemplate() error = nil, want digest verification error")
 	}
@@ -205,7 +205,7 @@ func TestRenderMethodCanonicalizationPreservesPhase15Fields(t *testing.T) {
 				MediaType: "text/html",
 				Bytes:     []byte("<p>{{name}}</p>"),
 			}},
-			DigestMultibase: "z6Mkouter",
+			DigestMultibase: testDigest([]byte("render method")),
 			OutputPreference: &OutputPreference{
 				AccessMode: []string{"online"},
 				MediaType:  "text/html",
@@ -352,5 +352,60 @@ func TestTemplateUnmarshalReplacesPreviousRepresentation(t *testing.T) {
 	}
 	if _, err := json.Marshal(template); err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
+	}
+}
+
+func TestValidateExternalTemplateDefaultsMissingMediaType(t *testing.T) {
+	data := []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{
+		ID: "https://example.com/template.json",
+	}}}
+	if err := method.ValidateExternalTemplate(context.Background(), testTemplateFetcher{data: data}); err != nil {
+		t.Fatalf("ValidateExternalTemplate() error = %v", err)
+	}
+	literal := []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"Alice"}]}`)
+	if err := method.ValidateExternalTemplate(context.Background(), testTemplateFetcher{data: literal}); err == nil {
+		t.Fatal("ValidateExternalTemplate() error = nil, want literal value error")
+	}
+}
+
+func testDigest(data []byte) string {
+	hash := sha256.Sum256(data)
+	return "u" + base64.RawURLEncoding.EncodeToString(append([]byte{0x12, 0x20}, hash[:]...))
+}
+
+func TestRenderMethodValidatesDigestMultibaseSyntax(t *testing.T) {
+	valid := testDigest([]byte("template"))
+	invalid := map[string]string{
+		"base58btc prefix":   "z" + valid[1:],
+		"no multibase":       valid[1:],
+		"not base64url":      "u!!!",
+		"short hash":         "u" + base64.RawURLEncoding.EncodeToString(append([]byte{0x12, 0x20}, make([]byte, 31)...)),
+		"not sha2-256":       "u" + base64.RawURLEncoding.EncodeToString(append([]byte{0x13, 0x20}, make([]byte, 32)...)),
+		"padded base64url":   valid + "=",
+		"placeholder suffix": "uInner",
+	}
+	reference := func(digest string) RenderMethod {
+		return RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{
+			ID: "https://example.com/template.json", MediaType: "application/json", DigestMultibase: digest,
+		}}}
+	}
+	outer := func(digest string) RenderMethod {
+		return RenderMethod{ID: "https://example.com/render-method.json", Type: "SuiteRenderMethod", RenderSuite: "summary", DigestMultibase: digest}
+	}
+	for _, build := range []func(string) RenderMethod{reference, outer} {
+		if err := build(valid).Validate(); err != nil {
+			t.Fatalf("Validate() with valid digest error = %v", err)
+		}
+		for name, digest := range invalid {
+			if err := build(digest).Validate(); err == nil {
+				t.Errorf("%s: Validate() error = nil, want digestMultibase syntax error", name)
+			}
+		}
+	}
+
+	contents := baseRenderContents([]RenderMethod{reference("uInner")})
+	if _, err := NewJSONCredential(contents); err == nil {
+		t.Fatal("NewJSONCredential() error = nil, want digestMultibase syntax error")
 	}
 }

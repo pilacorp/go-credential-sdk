@@ -2,6 +2,7 @@ package jsonmap
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -105,7 +106,7 @@ func getJSONChild(parent interface{}, path string) (interface{}, bool) {
 		return child, ok
 	case []interface{}:
 		index, ok := arrayIndex(path)
-		if !ok || index >= len(value) {
+		if !ok || index < 0 || index >= len(value) {
 			return nil, false
 		}
 		return value[index], true
@@ -134,16 +135,22 @@ func setJSONChild(parent interface{}, path string, value interface{}) interface{
 	}
 }
 
+// arrayIndex parses an RFC 6901 array-index token: "0" or a decimal number
+// without leading zeros. Tokens that overflow int are rejected rather than
+// wrapping to a negative index.
 func arrayIndex(token string) (int, bool) {
 	if token == "" || (len(token) > 1 && token[0] == '0') {
 		return 0, false
 	}
-	index := 0
-	for _, char := range token {
-		if char < '0' || char > '9' {
+	for i := 0; i < len(token); i++ {
+		if token[i] < '0' || token[i] > '9' {
 			return 0, false
 		}
-		index = index*10 + int(char-'0')
+	}
+	// The digit check above excludes signs, so Atoi only fails on overflow.
+	index, err := strconv.Atoi(token)
+	if err != nil || index < 0 {
+		return 0, false
 	}
 	return index, true
 }

@@ -26,7 +26,9 @@ func (m RenderMethod) validateTemplateContent() error {
 	case "html":
 		return m.validateHTMLTemplate()
 	case "static":
-		return m.validateStaticTemplate()
+		// deliveryMode is optional in the W3C TR, and static payload bytes are
+		// opaque to the SDK, so there are no static content rules to apply.
+		return nil
 	default:
 		return nil
 	}
@@ -45,13 +47,10 @@ func (m RenderMethod) validateSummaryTemplateContent() error {
 	if err := decoder.Decode(&summary); err != nil {
 		return fmt.Errorf("invalid summary template: %w", err)
 	}
-	if summary.Name == "" || summary.Description == "" || len(summary.Fields) == 0 {
-		return fmt.Errorf("summary template requires name, description, and at least one field")
+	if err := requireSummaryMembers(m.Template.Embedded.Bytes); err != nil {
+		return fmt.Errorf("summary template: %w", err)
 	}
 	for i, field := range summary.Fields {
-		if field.Label == "" {
-			return fmt.Errorf("summary template fields[%d].label is required", i)
-		}
 		if strings.HasPrefix(field.Label, "/") {
 			return fmt.Errorf("summary template fields[%d].label must be a literal string", i)
 		}
@@ -60,6 +59,40 @@ func (m RenderMethod) validateSummaryTemplateContent() error {
 		}
 	}
 	return nil
+}
+
+// requireSummaryMembers checks that the members the W3C summary object marks
+// REQUIRED are present: name, description, fields, and each field's label and
+// value. REQUIRED means present and not null; an empty string or an empty
+// fields array is allowed. Decoding into SummaryTemplate alone cannot tell an
+// absent member from an empty one, so the raw JSON is inspected.
+func requireSummaryMembers(data []byte) error {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		return fmt.Errorf("decode summary object: %w", err)
+	}
+	for _, key := range []string{"name", "description", "fields"} {
+		if !jsonMemberPresent(members[key]) {
+			return fmt.Errorf("%s is required", key)
+		}
+	}
+	var fields []map[string]json.RawMessage
+	if err := json.Unmarshal(members["fields"], &fields); err != nil {
+		return fmt.Errorf("fields must be an array of objects: %w", err)
+	}
+	for i, field := range fields {
+		for _, key := range []string{"label", "value"} {
+			if !jsonMemberPresent(field[key]) {
+				return fmt.Errorf("fields[%d].%s is required", i, key)
+			}
+		}
+	}
+	return nil
+}
+
+func jsonMemberPresent(value json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(value)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
 }
 
 func (m RenderMethod) validateHTMLTemplate() error {
@@ -98,16 +131,6 @@ func containsHTMLElement(source, element string) bool {
 	return false
 }
 
-func (m RenderMethod) validateStaticTemplate() error {
-	if m.Template == nil || m.Template.Reference != nil {
-		return nil
-	}
-	if m.DeliveryMode == "" {
-		return fmt.Errorf("static render method requires deliveryMode")
-	}
-	return nil
-}
-
 func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher TemplateFetcher) error {
 	if err := m.Validate(); err != nil {
 		return err
@@ -128,12 +151,36 @@ func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher Temp
 			return fmt.Errorf("template digest verification failed: %w", err)
 		}
 	}
-	copy := m
-	copy.Template = &Template{Embedded: &EmbeddedTemplate{MediaType: ref.MediaType, Bytes: data}}
-	if err := copy.Validate(); err != nil {
+	if err := m.validateFetchedTemplate(ref, data); err != nil {
 		return fmt.Errorf("external template validation: %w", err)
 	}
 	return nil
+}
+
+// validateFetchedTemplate applies the content rules for embedded templates to
+// bytes retrieved for a template reference. When the reference omits
+// mediaType, the suite's expected media type is assumed so the content checks
+// still run; a mediaType that is present must match as it does for embedded
+// templates.
+func (m RenderMethod) validateFetchedTemplate(ref TemplateReference, data []byte) error {
+	mediaType := ref.MediaType
+	if mediaType == "" {
+		mediaType = defaultTemplateMediaType(m.RenderSuite)
+	}
+	fetched := m
+	fetched.Template = &Template{Embedded: &EmbeddedTemplate{MediaType: mediaType, Bytes: data}}
+	return fetched.validateTemplateContent()
+}
+
+func defaultTemplateMediaType(suite string) string {
+	switch suite {
+	case "summary":
+		return "application/json"
+	case "html":
+		return "text/html"
+	default:
+		return ""
+	}
 }
 
 // ValidateExternalRenderMethod fetches and validates a remote render method
@@ -175,16 +222,27 @@ func (m RenderMethod) ValidateExternalRenderMethod(ctx context.Context, fetcher 
 
 // VerifyDigestMultibase verifies a base64url multibase SHA-256 multihash.
 func VerifyDigestMultibase(data []byte, encoded string) error {
-	if !strings.HasPrefix(encoded, "u") {
-		return fmt.Errorf("digest must use base64url-no-padding multibase")
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(encoded, "u"))
-	if err != nil || len(raw) != 34 || raw[0] != 0x12 || raw[1] != 0x20 {
-		return fmt.Errorf("digest must contain a SHA-256 multihash")
+	expected, err := decodeDigestMultibase(encoded)
+	if err != nil {
+		return err
 	}
 	hash := sha256.Sum256(data)
-	if !bytes.Equal(raw[2:], hash[:]) {
+	if !bytes.Equal(expected, hash[:]) {
 		return fmt.Errorf("digest does not match template bytes")
 	}
 	return nil
+}
+
+// decodeDigestMultibase checks the digestMultibase syntax the W3C TR
+// requires -- multibase "u" (base64url-nopad) wrapping a SHA-2-256 multihash
+// (0x12, length 0x20) -- and returns the 32-byte hash.
+func decodeDigestMultibase(encoded string) ([]byte, error) {
+	if !strings.HasPrefix(encoded, "u") {
+		return nil, fmt.Errorf("digest must use base64url-no-padding multibase (\"u\" prefix)")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(encoded, "u"))
+	if err != nil || len(raw) != 34 || raw[0] != 0x12 || raw[1] != 0x20 {
+		return nil, fmt.Errorf("digest must contain a SHA-256 multihash")
+	}
+	return raw[2:], nil
 }

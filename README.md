@@ -84,6 +84,8 @@ owning the browser lifecycle, and `ResolveStatic` returns verified bytes.
 All three accept `vc.RenderOptions` for template retrieval. External templates
 require an injected `TemplateFetcher`; when `digestMultibase` is present,
 SHA-256 multihash verification is performed before the template is parsed.
+Referenced templates are then validated with the same rules as embedded ones;
+when `mediaType` is omitted, the suite's default media type is assumed.
 Unsupported suites are preserved in the VC and ignored by these renderers.
 
 ```go

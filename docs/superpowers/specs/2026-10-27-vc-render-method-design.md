@@ -206,7 +206,7 @@ For `html`:
 For `static`:
 
 - `template` provides a static binary payload, commonly through a `data:` URL or a referenced object.
-- `deliveryMode` identifies the intended delivery mechanism, such as `nfc`.
+- `deliveryMode` identifies the intended delivery mechanism, such as `nfc`. It is optional, as in the W3C TR; the SDK does not require it and returns it unchanged in `StaticOutput`.
 - `renderProperty` MAY identify the VC properties represented by the static payload.
 - `outputPreference` is generally not used.
 - The SDK returns verified payload bytes and metadata; interpretation and delivery belong to the application layer.
@@ -227,8 +227,11 @@ When creating a credential through structured contents:
 - every `renderProperty` must be a valid JSON Pointer;
 - `template`, when present, must match the wire shape required by its suite;
 - external template references MAY include `digestMultibase`;
+- every `digestMultibase` that is present (on the render method or on its template reference) is syntax-checked by `Validate()`: it MUST be multibase `u` (base64url-nopad) wrapping a SHA-2-256 multihash (`0x12`, 32-byte hash), as the W3C TR requires. Values using other multibase encodings, such as base58btc `z` seen in the TR's non-normative examples, are rejected;
 - embedded templates MUST NOT require or receive an automatically generated digest;
-- digest strings are syntax-checked and verified before an external template is processed.
+- digest strings are syntax-checked and verified before an external template is processed;
+- after retrieval and digest verification, an external template MUST pass the same suite-specific content validation as an embedded template, because its content is not covered by the credential signature;
+- when an external template reference omits `mediaType`, the suite's expected media type is assumed for that validation (`application/json` for `summary`, `text/html` for `html`); a `mediaType` that is present must match as it does for embedded templates.
 
 Unknown `renderSuite` values are not rejected by credential parsing. They are retained but ignored by suite-specific renderers.
 
@@ -236,10 +239,8 @@ Unknown `renderSuite` values are not rejected by credential parsing. They are re
 
 The summary validator requires:
 
-- `name`;
-- `description`;
-- `fields` with at least one item;
-- each field has `label` and `value`;
+- `name`, `description`, and `fields` are present and not null (as in the W3C TR, REQUIRED means present: an empty string or an empty `fields` array is allowed);
+- each field has `label` and `value`, present and not null;
 - each `label` is a literal string;
 - each `value` starts with `/` and is a valid JSON Pointer;
 - optional `theme`, language, direction, and validity properties have the expected types;

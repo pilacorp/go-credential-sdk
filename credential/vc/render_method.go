@@ -69,6 +69,16 @@ func (m RenderMethod) Validate() error {
 			return err
 		}
 	}
+	if m.DigestMultibase != "" {
+		if _, err := decodeDigestMultibase(m.DigestMultibase); err != nil {
+			return fmt.Errorf("renderMethod.digestMultibase: %w", err)
+		}
+	}
+	if m.Template != nil && m.Template.Reference != nil && m.Template.Reference.DigestMultibase != "" {
+		if _, err := decodeDigestMultibase(m.Template.Reference.DigestMultibase); err != nil {
+			return fmt.Errorf("renderMethod.template.digestMultibase: %w", err)
+		}
+	}
 	for i, pointer := range m.RenderProperty {
 		if err := validateJSONPointer(pointer); err != nil {
 			return fmt.Errorf("renderMethod.renderProperty[%d]: %w", i, err)

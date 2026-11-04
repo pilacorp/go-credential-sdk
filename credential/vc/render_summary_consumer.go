@@ -46,8 +46,8 @@ func RenderSummary(ctx context.Context, credential CredentialData, method Render
 	if err := dec.Decode(&output); err != nil {
 		return nil, fmt.Errorf("invalid resolved summary output: %w", err)
 	}
-	if output.Name == "" || output.Description == "" || len(output.Fields) == 0 {
-		return nil, fmt.Errorf("summary output requires name, description, and at least one field")
+	if err := requireSummaryMembers(resolved); err != nil {
+		return nil, fmt.Errorf("invalid resolved summary output: %w", err)
 	}
 	return &output, nil
 }
@@ -60,16 +60,22 @@ func templateBytes(ctx context.Context, method RenderMethod, fetcher TemplateFet
 		return method.Template.Embedded.Bytes, nil
 	}
 	if fetcher == nil {
-		return nil, fmt.Errorf("template fetcher is required for external summary template")
+		return nil, fmt.Errorf("template fetcher is required for external %s template", method.RenderSuite)
 	}
-	data, err := fetcher.Fetch(ctx, *method.Template.Reference)
+	ref := *method.Template.Reference
+	data, err := fetcher.Fetch(ctx, ref)
 	if err != nil {
-		return nil, fmt.Errorf("fetch summary template: %w", err)
+		return nil, fmt.Errorf("fetch %s template: %w", method.RenderSuite, err)
 	}
-	if method.Template.Reference.DigestMultibase != "" {
-		if err := VerifyDigestMultibase(data, method.Template.Reference.DigestMultibase); err != nil {
-			return nil, fmt.Errorf("verify summary template digest: %w", err)
+	if ref.DigestMultibase != "" {
+		if err := VerifyDigestMultibase(data, ref.DigestMultibase); err != nil {
+			return nil, fmt.Errorf("verify %s template digest: %w", method.RenderSuite, err)
 		}
+	}
+	// A referenced template is not covered by the credential signature, so it
+	// must pass the same content rules as an embedded one before use.
+	if err := method.validateFetchedTemplate(ref, data); err != nil {
+		return nil, fmt.Errorf("invalid external %s template: %w", method.RenderSuite, err)
 	}
 	return data, nil
 }

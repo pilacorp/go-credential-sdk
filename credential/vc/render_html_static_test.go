@@ -190,3 +190,40 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestWrapHTMLTemplateValidatesExternalMediaType(t *testing.T) {
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Reference: &TemplateReference{
+		ID: "https://example.com/template.html", MediaType: "application/json",
+	}}}
+	opts := RenderOptions{Fetcher: summaryFetcher{data: []byte(`<div>Hello</div>`)}}
+	if _, err := WrapHTMLTemplate(context.Background(), CredentialData{}, method, opts); err == nil {
+		t.Fatal("WrapHTMLTemplate() error = nil, want media type error")
+	}
+	method.Template.Reference.MediaType = ""
+	if _, err := WrapHTMLTemplate(context.Background(), CredentialData{}, method, opts); err != nil {
+		t.Fatalf("WrapHTMLTemplate() without mediaType error = %v", err)
+	}
+}
+
+func TestResolveStaticAllowsMissingDeliveryMode(t *testing.T) {
+	payload := []byte{0x89, 'P', 'N', 'G'}
+	methods := map[string]RenderMethod{
+		"embedded": {Type: "SuiteRenderMethod", RenderSuite: "static", Template: &Template{Embedded: &EmbeddedTemplate{
+			MediaType: "image/png", Bytes: payload,
+		}}},
+		"reference": {Type: "SuiteRenderMethod", RenderSuite: "static", Template: &Template{Reference: &TemplateReference{
+			ID: "https://example.com/card.png", MediaType: "image/png",
+		}}},
+	}
+	for name, method := range methods {
+		t.Run(name, func(t *testing.T) {
+			output, err := ResolveStatic(context.Background(), CredentialData{}, method, RenderOptions{Fetcher: summaryFetcher{data: payload}})
+			if err != nil {
+				t.Fatalf("ResolveStatic() error = %v", err)
+			}
+			if output.DeliveryMode != "" || len(output.Bytes) != len(payload) {
+				t.Fatalf("output = %+v", output)
+			}
+		})
+	}
+}
