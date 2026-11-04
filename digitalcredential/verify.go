@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/sri"
@@ -240,7 +239,7 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 	// the reaction to the application, and Verify refuses it. Neither the
 	// scheme nor the host is checked: §2.5 lets a key come from other
 	// mechanisms, and RFC 9110 §4.2.1, §4.2.2 bind the resolver that fetches iss.
-	if strings.Contains(iss, ":") && !uri.Valid(iss) {
+	if !uri.StringOrURI(iss) {
 		return reject(CodeMalformed, errors.New("the Issuer-signed JWT payload's iss is not a URI (RFC 3986)"))
 	}
 	if cfg.acceptedIssuers != nil && !slices.Contains(cfg.acceptedIssuers, iss) {

@@ -272,7 +272,8 @@ var _ issuerkey.Resolver = (*Resolver)(nil)
 //   - an error wrapping issuerkey.ErrIssuerNotSupported, before any request:
 //     iss is not a URI (§4, RFC 3986), or not an https URL with a
 //     host and no query or fragment (§2.5, §4) and no userinfo (RFC 9110
-//     §4.2.4), or TrustedIssuerOrigins does not cover its origin;
+//     §4.2.4), or its path has a dot-segment (draft 20 §4) or a form a server
+//     may resolve as one, or TrustedIssuerOrigins does not cover its origin;
 //   - an error wrapping issuerkey.ErrNoUsableKey: the issuer's server
 //     answered, and the metadata or the JWK Set is not valid (§4.2, §4.3,
 //     RFC 7517 §4, §5), so it must not be used;
@@ -331,7 +332,9 @@ func (r *Resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 //
 // It applies no allowed-issuer check and no verifier policy. An error wraps
 // issuerkey.ErrIssuerNotSupported: iss is not a URI (RFC 3986), or not an
-// https URL with a host and no userinfo, query or fragment.
+// https URL with a host and no userinfo, query or fragment, or its path has a
+// dot-segment (draft-ietf-oauth-sd-jwt-vc-20 §4) or a form a server may resolve
+// as one.
 func MetadataURL(iss string) (string, error) {
 	_, s, err := metadataURL(iss)
 	return s, err
@@ -352,6 +355,9 @@ func metadataURL(iss string) (*url.URL, string, error) {
 	if strings.ContainsAny(iss, "?#") {
 		return nil, "", fmt.Errorf("%w: issuermeta: iss has a query or fragment, which draft-ietf-oauth-sd-jwt-vc-19 §4 forbids", issuerkey.ErrIssuerNotSupported)
 	}
+	if hasDotSegment(u.Path) {
+		return nil, "", fmt.Errorf("%w: issuermeta: the path of iss has a dot-segment (draft-ietf-oauth-sd-jwt-vc-20 §4) or a form a server may resolve as one, which this SDK refuses; the issuer must name itself without one", issuerkey.ErrIssuerNotSupported)
+	}
 	// Split the raw iss, not u.Path, so the path reaches the server as the
 	// issuer wrote it (u.Path would turn %3A into ":").
 	rest := iss[strings.Index(iss, "://")+len("://"):]
@@ -360,6 +366,26 @@ func metadataURL(iss string) (*url.URL, string, error) {
 		authority, path = rest[:i], rest[i:]
 	}
 	return u, "https://" + authority + wellKnown + strings.TrimRight(path, "/"), nil
+}
+
+// hasDotSegment reports whether path, decoded once by url.Parse, has a "." or
+// ".." segment. A server that resolves one answers from outside /.well-known/,
+// the path RFC 8615 §4.1 asks operators to guard, so whoever can publish a file
+// on the origin could serve metadata for an iss there.
+//
+// Beyond the pin: draft 19 §4 allows dot-segments in iss.
+// draft-ietf-oauth-sd-jwt-vc-20 §4, unchanged to -23, forbids them to the
+// Issuer, and the Resolver refuses them as recipient policy (draft 19 §2.5).
+// RFC 3986 §2.3 makes %2e the same. Decoded %2F and %5C separators and ";"
+// parameters are SDK policy, for servers that resolve those too (nginx a
+// decoded %2F, Jetty in UNSAFE mode ";"); no issuer needs them.
+func hasDotSegment(path string) bool {
+	for s := range strings.FieldsFuncSeq(path, func(c rune) bool { return c == '/' || c == '\\' }) {
+		if s, _, _ = strings.Cut(s, ";"); s == "." || s == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // fetch retrieves the metadata of iss, requested at sent, and its JWK Set,

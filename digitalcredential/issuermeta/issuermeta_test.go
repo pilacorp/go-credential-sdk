@@ -150,10 +150,47 @@ func TestMetadataURL(t *testing.T) {
 		"https://example.com":             "https://example.com/.well-known/jwt-vc-issuer",
 		"https://example.com/tenant/1234": "https://example.com/.well-known/jwt-vc-issuer/tenant/1234",
 		"https://example.com/":            "https://example.com/.well-known/jwt-vc-issuer",
+		// Not dot-segments, and kept as written.
+		"https://example.com/a..b/.c/d.": "https://example.com/.well-known/jwt-vc-issuer/a..b/.c/d.",
+		"https://example.com/.../-/*":    "https://example.com/.well-known/jwt-vc-issuer/.../-/*",
+		"https://example.com/a%2Fb":      "https://example.com/.well-known/jwt-vc-issuer/a%2Fb",
+		"https://example.com/a;b":        "https://example.com/.well-known/jwt-vc-issuer/a;b",
+		"https://example.com/100%25":     "https://example.com/.well-known/jwt-vc-issuer/100%25",
+		"https://example.com/tenant:1":   "https://example.com/.well-known/jwt-vc-issuer/tenant:1",
+		// One decode gives "%2e%2e", a plain segment: RFC 3986 §2.4 forbids a
+		// second, and README sends a double-decoding front to WithAcceptedIssuers.
+		"https://example.com/%252e%252e": "https://example.com/.well-known/jwt-vc-issuer/%252e%252e",
 	} {
 		if got, err := MetadataURL(iss); err != nil || got != want {
 			t.Errorf("MetadataURL(%q) = %q, %v; want %q", iss, got, err, want)
 		}
+	}
+}
+
+// draft-ietf-oauth-sd-jwt-vc-20 §4: no dot-segment in the path of iss, raw or
+// percent-encoded (RFC 3986 §2.3, §6.2.2.3). Separators in %2F and %5C and a
+// ";" parameter are forms servers resolve the same way. Each would reach a
+// file outside /.well-known/; each is refused before any request.
+func TestDotSegmentsRefused(t *testing.T) {
+	s := newMetaServer(t, nil)
+	now := time.Unix(1_800_000_000, 0)
+	r := s.resolver(t, nil, &now, false)
+	for _, path := range []string{
+		"/..", "/.", "/a/..", "/./x", "/../../uploads/keys.json",
+		"/%2e%2e/%2E%2E/uploads/keys.json", "/.%2E/%2e./uploads/keys.json",
+		"/..%2f..%2fuploads%2fkeys.json", "/%2e%2e%2F%2e%2e%2Fuploads%2Fkeys.json",
+		"/..%5c..%5cuploads%5ckeys.json", "/..;/..;/uploads/keys.json", "/..;x/uploads/keys.json",
+	} {
+		iss := "https://example.com" + path
+		if got, err := MetadataURL(iss); !errors.Is(err, issuerkey.ErrIssuerNotSupported) {
+			t.Errorf("MetadataURL(%q) = %q, %v; want ErrIssuerNotSupported", iss, got, err)
+		}
+		if _, err := r.Keys(context.Background(), iss); !errors.Is(err, issuerkey.ErrIssuerNotSupported) {
+			t.Errorf("Keys(%q) = %v, want ErrIssuerNotSupported", iss, err)
+		}
+	}
+	if n := s.hits.Load(); n != 0 {
+		t.Fatalf("server got %d requests, want 0", n)
 	}
 }
 
