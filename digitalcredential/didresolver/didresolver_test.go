@@ -165,6 +165,13 @@ func document(methods []any, assertion any) map[string]any {
 // keysOf runs Keys on the JSON of v at a fixed time.
 func keysOf(t *testing.T, v any, now time.Time) ([]issuerkey.PublicKey, error) {
 	t.Helper()
+	return keysAt(t, v, now, nil)
+}
+
+// keysAt runs Keys on v, JSON bytes or a value to marshal, at now, with accept
+// as Config.AcceptKey.
+func keysAt(t *testing.T, v any, now time.Time, accept AcceptKeyFunc) ([]issuerkey.PublicKey, error) {
+	t.Helper()
 	body, ok := v.([]byte)
 	if !ok {
 		var err error
@@ -172,7 +179,7 @@ func keysOf(t *testing.T, v any, now time.Time) ([]issuerkey.PublicKey, error) {
 			t.Fatal(err)
 		}
 	}
-	r, err := New(Config{Resolver: resolverFunc(func(context.Context, string) ([]byte, error) { return body, nil })})
+	r, err := New(Config{Resolver: resolverFunc(func(context.Context, string) ([]byte, error) { return body, nil }), AcceptKey: accept})
 	if err != nil {
 		t.Fatal(err)
 	}

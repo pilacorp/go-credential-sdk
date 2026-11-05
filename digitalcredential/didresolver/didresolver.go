@@ -11,8 +11,8 @@
 // document is read by the same rules: its id equal to the DID (DID Resolution
 // §4), not deactivated (DID Resolution §4.3), and only the verification
 // methods its assertionMethod lists (W3C Controlled Identifiers v1.0, CID,
-// §2.3.2), each belonging to this document (CID §3.3) and neither revoked nor
-// expired (CID §2.2).
+// §2.3.2), each belonging to this document (CID §3.3) and accepted by
+// DefaultAcceptKey or Config.AcceptKey.
 //
 // Every Keys makes one Resolve: nothing is cached, so a revocation is seen on
 // the next call. A deployment that wants a cache puts it in a DIDResolver of
@@ -57,13 +57,70 @@ type Config struct {
 	// that refuses addresses that are not globally reachable, so a resolver
 	// inside the deployment's own network needs a client of the deployment.
 	HTTPClient *http.Client
+	// AcceptKey decides which keys of the document verify tokens, in place of
+	// DefaultAcceptKey; nil uses DefaultAcceptKey. It is called once for each
+	// method of assertionMethod that belongs to this document and holds a
+	// key this SDK reads. A method whose revoked or expires time cannot be
+	// read is dropped without a call. It is trusted code, called from several
+	// goroutines at once.
+	AcceptKey AcceptKeyFunc
+}
+
+// KeyInfo is what a DID document says about a verification method, as given
+// to an AcceptKeyFunc.
+type KeyInfo struct {
+	// ID is the absolute URL of the verification method, the KID of its key.
+	ID string
+	// Revoked and Expires are the times the document gives, zero when it
+	// gives none.
+	Revoked, Expires time.Time
+	// RevocationReason is the revocationReason the document gives, such as
+	// "superseded" or "keyCompromise" (RFC 5280 §5.3.1), "" when it gives
+	// none or not as a string. W3C CID defines no such property.
+	RevocationReason string
+	// At is the time Keys judges the method by.
+	At time.Time
+}
+
+// AcceptKeyFunc reports whether a key of a DID document may verify tokens.
+type AcceptKeyFunc func(KeyInfo) bool
+
+// reasonKeyCompromise is the revocationReason of a key that leaked or may have.
+const reasonKeyCompromise = "keyCompromise"
+
+// DefaultAcceptKey is the rule of W3C CID with one exception. A key verifies
+// until its revoked or expires time, and not at or after it (CID §2.2), but a
+// key revoked for a stated reason other than keyCompromise verifies until it
+// expires: its issuer retired it and did not lose it, and refusing it would
+// end every credential it signed.
+//
+// The exception goes beyond CID, which expects no proof to verify at or after
+// the revoked time. Keys does not see when a token was signed and compares no
+// iat, which an issuer may conceal and the key's holder may write, so such a
+// key also verifies tokens signed after it was revoked. A key revoked as
+// keyCompromise, or with no reason, fails for every token, those signed before
+// it was revoked included: without a reliable time of signing, CID §5.5.1
+// leaves only the present moment to judge by. The reason is compared as
+// written, so another spelling of keyCompromise counts as another reason.
+//
+// An AcceptKeyFunc of the caller's may decide otherwise. To apply CID with no
+// exception, clear RevocationReason and call DefaultAcceptKey.
+func DefaultAcceptKey(k KeyInfo) bool {
+	if !k.Expires.IsZero() && !k.At.Before(k.Expires) {
+		return false
+	}
+	if k.Revoked.IsZero() || k.At.Before(k.Revoked) {
+		return true
+	}
+	return k.RevocationReason != "" && k.RevocationReason != reasonKeyCompromise
 }
 
 // Resolver returns the signing keys the DID document of an issuer lists.
 // Construct it with New. It is safe for concurrent use.
 type Resolver struct {
-	did DIDResolver
-	now func() time.Time
+	did    DIDResolver
+	now    func() time.Time
+	accept AcceptKeyFunc
 }
 
 var _ issuerkey.Resolver = (*Resolver)(nil)
@@ -83,17 +140,23 @@ func New(cfg Config) (*Resolver, error) {
 		}
 		did = h
 	}
-	return &Resolver{did: did, now: time.Now}, nil
+	accept := cfg.AcceptKey
+	if accept == nil {
+		accept = DefaultAcceptKey
+	}
+	return &Resolver{did: did, now: time.Now, accept: accept}, nil
 }
 
 // Keys returns the keys the DID document of iss lists under assertionMethod,
 // each with the absolute URL of its verification method as KID. Its outcomes
 // are those of issuerkey.Resolver:
 //   - the keys, possibly none. A verification method is skipped when it does
-//     not belong to this document, is revoked or expired, or holds no single
-//     key this SDK reads: Multikey on P-256, a JWK on P-256 or secp256k1, or
-//     publicKeyHex on EcdsaSecp256k1VerificationKey2019, a type older than
-//     W3C Controlled Identifiers;
+//     not belong to this document, is not accepted by Config.AcceptKey
+//     (DefaultAcceptKey: expired, or revoked as keyCompromise or with no
+//     reason), or holds no single key this SDK reads:
+//     Multikey on P-256, a JWK on P-256 or secp256k1, or publicKeyHex on
+//     EcdsaSecp256k1VerificationKey2019, a type older than W3C Controlled
+//     Identifiers;
 //   - an error wrapping issuerkey.ErrIssuerNotSupported: before any request,
 //     iss is not a conformant DID (DID Core 1.0 §3.1); or the DID resolver
 //     refuses the DID or its method (400, 501);
@@ -105,10 +168,7 @@ func New(cfg Config) (*Resolver, error) {
 //     ErrContentTypeNotAccepted, ErrBodyTooLarge, ErrAddressBlocked, or an
 //     error of the client, such as context.Canceled.
 //
-// A key whose revoked time is still ahead verifies until that time; Keys does
-// not see when a token was signed, so a key past its revoked time is dropped
-// for every token, those signed before it included. Error texts quote no iss
-// and nothing of the document.
+// Error texts quote no iss and nothing of the document.
 func (r *Resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey, error) {
 	if r == nil || r.did == nil {
 		return nil, fmt.Errorf("%w: didresolver: Resolver not made by New", jose.ErrInvalidArgument)
@@ -133,7 +193,7 @@ func (r *Resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 	if err != nil {
 		return nil, err
 	}
-	return assertionKeys(doc, iss, r.now())
+	return assertionKeys(doc, iss, r.now(), r.accept)
 }
 
 // conformantDID reports whether s matches the did rule of DID Core 1.0 §3.1.
