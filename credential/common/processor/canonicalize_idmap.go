@@ -130,17 +130,27 @@ func normalizeDataset(dataset *ld.RDFDataset) (string, error) {
 	if blankNodeWork(dataset) > maxBlankNodeWork {
 		return "", fmt.Errorf("normalize: %w", ErrBlankNodeWork)
 	}
-	opts := sdOptions()
-	opts.Format = "application/n-quads"
-	res, err := ld.NewNormalisationAlgorithm(ld.AlgorithmURDNA2015).Main(dataset, opts)
-	if err != nil {
-		return "", fmt.Errorf("normalize: %w", err)
+	return canonicalNQuads(dataset)
+}
+
+// canonicalNQuads is what Main returns. Main joins its lines with +=, which is
+// quadratic and scores nothing in blankNodeWork, so this writes them itself.
+func canonicalNQuads(dataset *ld.RDFDataset) (string, error) {
+	na := ld.NewNormalisationAlgorithm(ld.AlgorithmURDNA2015)
+	na.Normalize(dataset)
+	var b strings.Builder
+	serializer := &ld.NQuadRDFSerializer{}
+	for _, q := range na.Quads() {
+		name := "@default"
+		if q.Graph != nil {
+			name = q.Graph.GetValue()
+		}
+		one := &ld.RDFDataset{Graphs: map[string][]*ld.Quad{name: {q}}}
+		if err := serializer.SerializeTo(&b, one); err != nil {
+			return "", fmt.Errorf("normalize: %w", err)
+		}
 	}
-	nquads, ok := res.(string)
-	if !ok {
-		return "", fmt.Errorf("unexpected normalize type %T", res)
-	}
-	return nquads, nil
+	return b.String(), nil
 }
 
 // ErrBlankNodeWork is a dataset refused for the search it would take.
