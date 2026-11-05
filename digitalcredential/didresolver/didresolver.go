@@ -130,7 +130,7 @@ var _ issuerkey.Resolver = (*Resolver)(nil)
 // is jose.ErrInvalidArgument.
 func New(cfg Config) (*Resolver, error) {
 	if (cfg.URL == "") == (cfg.Resolver == nil) {
-		return nil, fmt.Errorf("%w: didresolver: Config needs exactly one of URL, the endpoint of a DID resolver, and Resolver, a DIDResolver of your own", jose.ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: didresolver: set exactly one of Config.URL and Config.Resolver", jose.ErrInvalidArgument)
 	}
 	did := cfg.Resolver
 	if cfg.URL != "" {
@@ -153,18 +153,23 @@ func New(cfg Config) (*Resolver, error) {
 //   - the keys, possibly none. A verification method is skipped when it does
 //     not belong to this document, is not accepted by Config.AcceptKey
 //     (DefaultAcceptKey: expired, or revoked as keyCompromise or with no
-//     reason), or holds no single key this SDK reads:
-//     Multikey on P-256, a JWK on P-256 or secp256k1, or publicKeyHex on
-//     EcdsaSecp256k1VerificationKey2019, a type older than W3C Controlled
-//     Identifiers;
+//     reason), or holds no single key this SDK reads. The key is read from
+//     its material property, whatever the method's type: publicKeyMultibase
+//     holding a P-256 Multikey, publicKeyJwk holding a P-256 or secp256k1
+//     public JWK, or publicKeyHex, read only when the type is
+//     EcdsaSecp256k1VerificationKey2019, since hex names no curve;
 //   - an error wrapping issuerkey.ErrIssuerNotSupported: before any request,
 //     iss is not a conformant DID (DID Core 1.0 §3.1); or the DID resolver
-//     refuses the DID or its method (400, 501);
+//     refuses the DID or its method: status 400 or 501, or an error type in
+//     the result that §9.1 gives one of those (INVALID_DID, INVALID_DID_URL,
+//     INVALID_OPTIONS, METHOD_NOT_SUPPORTED, FEATURE_NOT_SUPPORTED);
 //   - an error wrapping issuerkey.ErrNoUsableKey: the DID does not exist or
-//     is deactivated (404, 410, DID Resolution §4.4), or its document is not valid;
+//     is deactivated (status 404 or 410, NOT_FOUND or deactivated in the
+//     result, DID Resolution §4.4), or its document is not valid;
 //   - any other error: the document could not be found out, wrapping the
-//     cause. With Config.URL that is a StatusError, ErrRedirectNotAllowed,
-//     ErrRedirectTargetNotAllowed, ErrTooManyRedirects,
+//     cause; an error type in the result other than those above is one, such
+//     as INTERNAL_ERROR. With Config.URL that is a StatusError,
+//     ErrRedirectNotAllowed, ErrRedirectTargetNotAllowed, ErrTooManyRedirects,
 //     ErrContentTypeNotAccepted, ErrBodyTooLarge, ErrAddressBlocked, or an
 //     error of the client, such as context.Canceled.
 //
@@ -177,13 +182,13 @@ func (r *Resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 		return nil, fmt.Errorf("%w: didresolver: nil context", jose.ErrInvalidArgument)
 	}
 	if iss == "" {
-		return nil, fmt.Errorf("%w: didresolver: the credential has no iss, and this resolver reads only DIDs", issuerkey.ErrIssuerNotSupported)
+		return nil, fmt.Errorf("%w: didresolver: credential has no iss", issuerkey.ErrIssuerNotSupported)
 	}
 	if !strings.HasPrefix(iss, "did:") {
-		return nil, fmt.Errorf("%w: didresolver: iss is not a DID, and this resolver reads only DIDs; an https issuer is read by issuermeta.NewResolver. To accept both kinds, join them with issuerkey.Multi", issuerkey.ErrIssuerNotSupported)
+		return nil, fmt.Errorf("%w: didresolver: iss is not a DID; use issuermeta for an https iss", issuerkey.ErrIssuerNotSupported)
 	}
 	if !conformantDID(iss) {
-		return nil, fmt.Errorf("%w: didresolver: iss starts with did: but is not a conformant DID (DID Core 1.0 §3.1); the issuer must fix it", issuerkey.ErrIssuerNotSupported)
+		return nil, fmt.Errorf("%w: didresolver: iss is not a valid DID", issuerkey.ErrIssuerNotSupported)
 	}
 	body, err := r.did.Resolve(ctx, iss)
 	if err != nil {

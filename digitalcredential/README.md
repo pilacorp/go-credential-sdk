@@ -388,8 +388,9 @@ if err != nil {
   so a token's `kid` is that URL. It may be absent only while one key of the document is accepted, and a retired key
   that `AcceptKey` keeps counts, so an issuer that rotates keys sets `kid`. A method is left out when it belongs to
   another document or controller (CID §3.3), when `Config.AcceptKey` refuses it (a `revoked` or `expires` time that
-  cannot be read refuses it before), or when it holds no single key this SDK reads: `Multikey` on P-256, `JsonWebKey`
-  on P-256 or secp256k1, `publicKeyHex` on `EcdsaSecp256k1VerificationKey2019`.
+  cannot be read refuses it before), or when it holds no single key this SDK reads. The key comes from the material
+  property, whatever `type` says: `publicKeyMultibase` holding a P-256 Multikey, `publicKeyJwk` holding a P-256 or
+  secp256k1 public JWK, or `publicKeyHex`, read only on `EcdsaSecp256k1VerificationKey2019` since hex names no curve.
 - `AcceptKey` decides which keys verify. It is called once for each method left after those checks, with a `KeyInfo`
   (`ID`, `Revoked`, `Expires`, `RevocationReason`, `At`). nil uses `DefaultAcceptKey`: a key verifies until its `revoked`
   or `expires` time (CID §2.2), except that a key revoked with a `revocationReason` other than `keyCompromise`, such as
@@ -404,11 +405,12 @@ if err != nil {
 - Every DID the resolver answers for is accepted, as an empty trust list is. Pass the DIDs you accept to
   `WithAcceptedIssuers`.
 - An `iss` that is not a conformant DID (DID Core 1.0 §3.1) is `ErrIssuerNotSupported` with no request made, and an
-  https `iss` gets text that names `issuermeta`. A resolver that refuses the DID or its method (400, 501) is
-  `ErrIssuerNotSupported`. A DID that does not exist or is deactivated (404, 410, or `deactivated` in the metadata) and
-  a document that must not be used are `ErrNoUsableKey`. A failed retrieval is any other error, wrapping the cause as
-  in `issuermeta`: `didresolver.StatusError`, `ErrRedirectNotAllowed` for a redirect off the origin of `URL`, and the
-  others the godoc of `Keys` lists.
+  https `iss` gets text that names `issuermeta`. A resolver that refuses the DID or its method (400, 501, or in a
+  resolution result an error type §9.1 gives those) is `ErrIssuerNotSupported`. A DID that does not exist or is
+  deactivated (404, 410, `NOT_FOUND`, or `deactivated` in the metadata) and a document that must not be used are
+  `ErrNoUsableKey`. A failed retrieval is any other error, an error type such as `INTERNAL_ERROR` in a result included,
+  so an outage never reads as a missing key. It wraps the cause as in `issuermeta`: `didresolver.StatusError`,
+  `ErrRedirectNotAllowed` for a redirect off the origin of `URL`, and the others the godoc of `Keys` lists.
 - Nothing is cached, so a removed key stops verifying on the next call, and each `Keys` is one request. A `Verify` that
   also checks status asks twice unless the Status List Token is cached. To cache, wrap a `DIDResolver` or pass an
   `HTTPClient` that caches.

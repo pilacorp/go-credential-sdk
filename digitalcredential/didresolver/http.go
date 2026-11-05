@@ -14,7 +14,6 @@ import (
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/allowlist"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/uri"
-	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
@@ -76,7 +75,8 @@ type httpResolver struct {
 func newHTTPResolver(endpoint string, client *http.Client) (*httpResolver, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil || !uri.Valid(endpoint) || !safehttp.HTTPSURL(u) || strings.ContainsAny(endpoint, "?#") {
-		return nil, fmt.Errorf("%w: didresolver: Config.URL is not an https URL with a host and no userinfo, query or fragment (DID Resolution §9.1 requires TLS); a resolver reached another way goes in Config.Resolver", jose.ErrInvalidArgument)
+		// DID Resolution §9.1: every HTTPS binding MUST use TLS.
+		return nil, fmt.Errorf("%w: didresolver: Config.URL must be https, without userinfo, query or fragment", jose.ErrInvalidArgument)
 	}
 	if client == nil {
 		client = safehttp.NewClient()
@@ -94,14 +94,9 @@ func (h *httpResolver) Resolve(ctx context.Context, did string) ([]byte, error) 
 	}
 	var status *safehttp.StatusError
 	if errors.As(err, &status) {
-		switch status.Code {
-		case http.StatusBadRequest, http.StatusNotImplemented:
-			return nil, fmt.Errorf("%w: didresolver: the DID resolver refuses this DID or its method (status %d, DID Resolution §9.1)", issuerkey.ErrIssuerNotSupported, status.Code)
-		case http.StatusNotFound:
-			return nil, fault("the DID resolver found no such DID (status 404, DID Resolution §9.1)")
-		case http.StatusGone:
-			return nil, fault("the DID is deactivated (status 410, DID Resolution §9.1)")
+		if a := answer(status.Code, fmt.Sprintf("status %d", status.Code)); a != nil {
+			return nil, a
 		}
 	}
-	return nil, fmt.Errorf("didresolver: requesting the DID resolver: %w", err)
+	return nil, fmt.Errorf("didresolver: resolver request failed: %w", err)
 }
