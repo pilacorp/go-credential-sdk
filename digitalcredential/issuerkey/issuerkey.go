@@ -109,7 +109,7 @@ func Select(keys []PublicKey, h jws.Header) (crypto.PublicKey, error) {
 		}
 	} else {
 		if len(keys) != 1 {
-			return nil, fmt.Errorf("issuerkey: no header kid and %d keys, want 1", len(keys))
+			return nil, fmt.Errorf("issuerkey: the token has no kid and the resolver returned %d keys; the issuer must set kid when it signs", len(keys))
 		}
 		key = keys[0].Public
 	}

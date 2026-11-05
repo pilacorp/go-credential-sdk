@@ -6,6 +6,7 @@
 package dc
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"time"
@@ -57,6 +58,8 @@ type verifyConfig struct {
 	audience, nonce   string
 	credAudience      string
 	maxKBAge, skew    time.Duration
+	rejectFutureIAT   bool
+	verifyIAT         func(ctx context.Context, iat *time.Time) error
 	status            StatusChecker
 	skipStatus        bool
 	accepted          []uint8
@@ -101,7 +104,8 @@ func newVerifyConfig(opts []VerifyOption) (verifyConfig, error) {
 		return verifyConfig{}, policyErr("WithExtendedVCTMatch needs WithAcceptedVCTs, the types it matches, and WithTypeMetadata or WithOptionalTypeMetadata, the extends chain it matches them on")
 	}
 	if c.keyBinding == KeyBindingRequired && (c.audience == "" || c.nonce == "") {
-		return verifyConfig{}, policyErr("WithKeyBinding(KeyBindingRequired) needs WithAudience and WithNonce, which every Key Binding JWT is checked against (RFC 9901 §7.3 step 5f)")
+		// RFC 9901 §7.3 step 5f: a Key Binding JWT is validated by nonce and aud.
+		return verifyConfig{}, policyErr("WithKeyBinding(KeyBindingRequired) needs WithAudience and WithNonce, which every Key Binding JWT is checked against")
 	}
 	if c.now.IsZero() {
 		c.now = time.Now()
@@ -206,15 +210,47 @@ func WithMaxKBAge(d time.Duration) VerifyOption {
 }
 
 // WithClockSkew is the leeway on exp and nbf of the credential and the Key
-// Binding JWT (RFC 7519 §4.1.4, §4.1.5: a small leeway MAY be allowed) and on
-// the Key Binding JWT iat; not passed, 1 minute. 0 allows no skew; a negative
-// value is ErrPolicy.
+// Binding JWT (RFC 7519 §4.1.4, §4.1.5: a small leeway MAY be allowed), on
+// the Key Binding JWT iat and on the check of WithRejectFutureIAT; not passed,
+// 1 minute. 0 allows no skew; a negative value is ErrPolicy.
 func WithClockSkew(d time.Duration) VerifyOption {
 	return option{"WithClockSkew", func(c *verifyConfig) error {
 		if d < 0 {
 			return policyErr("WithClockSkew(%v) is negative", d)
 		}
 		c.skew = d
+		return nil
+	}}
+}
+
+// WithRejectFutureIAT refuses a credential whose iat is later than the time of
+// the check plus the clock skew: NOT_YET_VALID. RFC 7519 §4.1.6 sets no rule on
+// a future iat and only says it can give the age of the token, so the choice is
+// the Verifier's; not passed, a future iat verifies (RFC 7519 EID 7720, Reported
+// and not Verified, would forbid refusing one). An issuer that wants a token
+// refused before a time writes nbf. An absent iat, or one the Holder left
+// concealed, passes: nothing is compared. Any other rule on iat goes in
+// WithIATCheck.
+func WithRejectFutureIAT() VerifyOption {
+	return option{"WithRejectFutureIAT", func(c *verifyConfig) error {
+		c.rejectFutureIAT = true
+		return nil
+	}}
+}
+
+// WithIATCheck adds the caller's own check of iat, such as one against a time
+// read from a chain; RFC 7519 §4.1.6 sets no rule on it. verify gets the iat
+// of the credential, and nil when the credential shows none: absent, or
+// concealed and not disclosed. It runs after every check but status, under
+// ctx, so it may call out. A nil error passes. An *Error refuses the credential
+// with the Code it holds. Any other error means iat could not be checked:
+// IAT_CHECK_FAILED, wrapping that error. nil is ErrPolicy.
+func WithIATCheck(verify func(ctx context.Context, iat *time.Time) error) VerifyOption {
+	return option{"WithIATCheck", func(c *verifyConfig) error {
+		if verify == nil {
+			return policyErr("WithIATCheck(nil); pass the function that checks iat")
+		}
+		c.verifyIAT = verify
 		return nil
 	}}
 }
@@ -297,7 +333,7 @@ func WithAcceptedVCTs(vcts ...string) VerifyOption {
 			return policyErr("WithAcceptedVCTs needs at least one type")
 		}
 		if i := slices.Index(vcts, ""); i >= 0 {
-			return policyErr("WithAcceptedVCTs type %d is empty, which identifies no type (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.1)", i)
+			return policyErr("WithAcceptedVCTs type %d is empty, which identifies no type", i)
 		}
 		c.acceptedVCTs = vcts
 		return nil

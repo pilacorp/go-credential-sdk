@@ -301,7 +301,7 @@ func (r *Resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 		return nil, fmt.Errorf("%w: issuermeta: nil context", jose.ErrInvalidArgument)
 	}
 	if iss == "" {
-		return nil, fmt.Errorf("%w: issuermeta: the credential has no iss; issuermeta resolves only https issuers (draft-ietf-oauth-sd-jwt-vc-19 §2.5)", issuerkey.ErrIssuerNotSupported)
+		return nil, fmt.Errorf("%w: issuermeta: the credential has no iss; issuermeta resolves only https issuers", issuerkey.ErrIssuerNotSupported)
 	}
 	u, metaURL, err := metadataURL(iss)
 	if err != nil {
@@ -341,22 +341,28 @@ func MetadataURL(iss string) (string, error) {
 }
 
 func metadataURL(iss string) (*url.URL, string, error) {
+	// A DID is a valid iss for another resolver, so the text says which one
+	// to supply rather than call the iss wrong.
+	if strings.HasPrefix(iss, "did:") {
+		return nil, "", fmt.Errorf("%w: issuermeta: iss is a DID; use didresolver for a DID iss", issuerkey.ErrIssuerNotSupported)
+	}
 	// draft-ietf-oauth-sd-jwt-vc-19 §4: iss MUST be an https URL as defined
 	// in RFC 3986; url.Parse accepts more, such as a host in Unicode.
 	if !uri.Valid(iss) {
-		return nil, "", fmt.Errorf("%w: issuermeta: iss is not a URI (RFC 3986)", issuerkey.ErrIssuerNotSupported)
+		return nil, "", fmt.Errorf("%w: issuermeta: iss is not a URI", issuerkey.ErrIssuerNotSupported)
 	}
 	u, err := url.Parse(iss)
 	if err != nil || !safehttp.HTTPSURL(u) {
-		return nil, "", fmt.Errorf("%w: issuermeta: iss is not an https URL with a host (draft-ietf-oauth-sd-jwt-vc-19 §4) and no userinfo (RFC 9110 §4.2.4)", issuerkey.ErrIssuerNotSupported)
+		// RFC 9110 §4.2.4: a sender MUST NOT put userinfo in an https URI.
+		return nil, "", fmt.Errorf("%w: issuermeta: iss is not an https URL with a host and no userinfo", issuerkey.ErrIssuerNotSupported)
 	}
 	// RFC 3986 §3: neither character appears raw in the authority or path,
 	// so either one starts a query or fragment, even an empty one.
 	if strings.ContainsAny(iss, "?#") {
-		return nil, "", fmt.Errorf("%w: issuermeta: iss has a query or fragment, which draft-ietf-oauth-sd-jwt-vc-19 §4 forbids", issuerkey.ErrIssuerNotSupported)
+		return nil, "", fmt.Errorf("%w: issuermeta: iss has a query or fragment, which is not allowed", issuerkey.ErrIssuerNotSupported)
 	}
 	if hasDotSegment(u.Path) {
-		return nil, "", fmt.Errorf("%w: issuermeta: the path of iss has a dot-segment (draft-ietf-oauth-sd-jwt-vc-20 §4) or a form a server may resolve as one, which this SDK refuses; the issuer must name itself without one", issuerkey.ErrIssuerNotSupported)
+		return nil, "", fmt.Errorf("%w: issuermeta: the path of iss has a dot-segment or a form a server may resolve as one, which this SDK refuses; the issuer must name itself without one", issuerkey.ErrIssuerNotSupported)
 	}
 	// Split the raw iss, not u.Path, so the path reaches the server as the
 	// issuer wrote it (u.Path would turn %3A into ":").
@@ -401,9 +407,10 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 		return nil, time.Time{}, contentFault("the issuer metadata is not a JSON object: %w; the issuer must fix it", err)
 	}
 	if v, ok := meta["issuer"].(string); !ok {
-		return nil, time.Time{}, contentFault("the issuer metadata has no string issuer (draft-ietf-oauth-sd-jwt-vc-19 §4.2)")
+		return nil, time.Time{}, contentFault("the issuer metadata has no string issuer")
 	} else if v != iss {
-		return nil, time.Time{}, contentFault("the issuer metadata names another issuer than the credential's iss; draft-ietf-oauth-sd-jwt-vc-19 §4.3 forbids using it")
+		// draft-ietf-oauth-sd-jwt-vc-19 §4.3: such metadata MUST NOT be used.
+		return nil, time.Time{}, contentFault("the issuer metadata names another issuer than the credential's iss; it cannot be used")
 	}
 	// A member present as null counts as present.
 	jwks, hasJWKS := meta["jwks"]
@@ -411,12 +418,12 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 	var set map[string]any
 	switch {
 	case hasJWKS && hasURI:
-		return nil, time.Time{}, contentFault("the issuer metadata has both jwks and jwks_uri (draft-ietf-oauth-sd-jwt-vc-19 §4.2 allows exactly one)")
+		return nil, time.Time{}, contentFault("the issuer metadata has both jwks and jwks_uri; it must have exactly one")
 	case !hasJWKS && !hasURI:
-		return nil, time.Time{}, contentFault("the issuer metadata has neither jwks nor jwks_uri (draft-ietf-oauth-sd-jwt-vc-19 §4.2 requires one)")
+		return nil, time.Time{}, contentFault("the issuer metadata has neither jwks nor jwks_uri; it must have exactly one")
 	case hasJWKS:
 		if set, _ = jwks.(map[string]any); set == nil {
-			return nil, time.Time{}, contentFault("jwks is not a JSON object (draft-ietf-oauth-sd-jwt-vc-19 §4.2)")
+			return nil, time.Time{}, contentFault("jwks is not a JSON object")
 		}
 	default:
 		// Checked here rather than by safehttp, whose refusal would read as a
@@ -425,10 +432,12 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 		// §4.2: jwks_uri is a URL string, so a URI (RFC 3986 §1.1.3), which
 		// url.Parse does not check.
 		if ok && !uri.Valid(s) {
-			return nil, time.Time{}, contentFault("jwks_uri is not a URI (RFC 3986)")
+			return nil, time.Time{}, contentFault("jwks_uri is not a URI")
 		}
 		if u, err := url.Parse(s); err != nil || !safehttp.HTTPSURL(u) {
-			return nil, time.Time{}, contentFault("jwks_uri is not an https URL with a host (draft-ietf-oauth-sd-jwt-vc-19 §3, §4.2) and no userinfo (RFC 9110 §4.2.4)")
+			// draft-ietf-oauth-sd-jwt-vc-19 §3: every URL dereferenced uses HTTPS.
+			// RFC 9110 §4.2.4: a sender MUST NOT put userinfo in an https URI.
+			return nil, time.Time{}, contentFault("jwks_uri is not an https URL with a host and no userinfo")
 		}
 		sent := r.now()
 		body, fresh, err := httpcache.Get(ctx, r.client, s, mediaTypesJWKSet, r.limits, maxCacheLifetime)
@@ -455,13 +464,13 @@ func (r *Resolver) fetch(ctx context.Context, iss, metaURL string, sent time.Tim
 func signingKeys(set map[string]any) ([]issuerkey.PublicKey, error) {
 	elems, ok := set["keys"].([]any)
 	if !ok {
-		return nil, contentFault("the JWK Set has no keys array (RFC 7517 §5)")
+		return nil, contentFault("the JWK Set has no keys array")
 	}
 	keys := []issuerkey.PublicKey{}
 	for _, e := range elems {
 		m, ok := e.(map[string]any)
 		if !ok {
-			return nil, contentFault("the JWK Set holds an element that is not a JWK object (RFC 7517 §4)")
+			return nil, contentFault("the JWK Set holds an element that is not a JWK object")
 		}
 		var kid string
 		if v, ok := m["kid"]; ok {

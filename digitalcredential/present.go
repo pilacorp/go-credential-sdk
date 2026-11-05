@@ -118,7 +118,7 @@ func (c *Credential) Present(ctx context.Context, req PresentRequest) (*Credenti
 		return nil, fmt.Errorf("dc: %w", err)
 	}
 	if kbJWT != "" {
-		return nil, fmt.Errorf("%w: dc: Present takes an SD-JWT, not an SD-JWT+KB (RFC 9901 §7.2)", jose.ErrMalformed)
+		return nil, fmt.Errorf("%w: dc: Present takes an SD-JWT, not an SD-JWT+KB", jose.ErrMalformed)
 	}
 	raw, err := jws.UnverifiedPayload(issuerJWT)
 	if err != nil {
@@ -208,7 +208,7 @@ type selected struct {
 // fault, never a claim value.
 func selectClaims(claims map[string]any, p sdjwt.Path) ([]sdjwt.Path, error) {
 	if len(p) == 0 {
-		return nil, errors.New("is empty; a claims path pointer has at least one component (OpenID4VP 1.0 §7)")
+		return nil, errors.New("is empty; a claims path pointer has at least one component")
 	}
 	sel := []selected{{value: claims, path: sdjwt.Path{}}}
 	for i, comp := range p {

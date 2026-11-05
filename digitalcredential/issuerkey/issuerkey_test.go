@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -134,4 +135,38 @@ func newKey(t *testing.T) *ecdsa.PublicKey {
 		t.Fatal(err)
 	}
 	return &priv.PublicKey
+}
+
+type refusingResolver string
+
+func (r refusingResolver) Keys(context.Context, string) ([]PublicKey, error) {
+	return nil, fmt.Errorf("%w: %s", ErrIssuerNotSupported, string(r))
+}
+
+// A caller that gets no key must learn why, so each resolver's own reason
+// stays in the text; its text is the only place that says what to do.
+func TestMultiKeepsEachReason(t *testing.T) {
+	m, err := Multi(
+		prefixResolver{prefix: "y", err: errors.New("unused")},
+		refusingResolver("first reason"),
+		refusingResolver("second reason"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.Keys(context.Background(), "x")
+	want := "issuerkey: issuer not supported: issuerkey: no resolver accepts this issuer: first reason; second reason"
+	if !errors.Is(err, ErrIssuerNotSupported) || err.Error() != want {
+		t.Errorf("err = %v; want %q", err, want)
+	}
+}
+
+// Without kid the verifier cannot tell which of several keys signed, and only
+// the issuer can fix that, so the text has to say so.
+func TestSelectNoKidManyKeysNamesTheFix(t *testing.T) {
+	two := []PublicKey{{KID: "a", Public: "a"}, {KID: "b", Public: "b"}}
+	_, err := Select(two, jws.Header{})
+	if err == nil || !strings.Contains(err.Error(), "the issuer must set kid") {
+		t.Fatalf("Select = %v; want a text telling the issuer to set kid", err)
+	}
 }

@@ -620,3 +620,24 @@ func TestRedirects(t *testing.T) {
 		})
 	}
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A did: iss is valid, only not this resolver's: the text must say what to
+// supply, and the refusal comes before any request.
+func TestKeysNamesTheDIDResolverForADID(t *testing.T) {
+	r, err := NewResolver(Config{HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("no request is sent for a did: iss")
+		return nil, nil
+	})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Keys(context.Background(), "did:example:123")
+	want := "issuerkey: issuer not supported: issuermeta: iss is a DID; use didresolver for a DID iss"
+	if !errors.Is(err, issuerkey.ErrIssuerNotSupported) || err.Error() != want {
+		t.Errorf("err = %v; want %q", err, want)
+	}
+}

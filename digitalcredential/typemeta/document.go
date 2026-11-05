@@ -165,10 +165,12 @@ func parseEncoded(b []byte) (*Encoded, error) {
 		return nil, err
 	}
 	if d.vct == "" {
-		return nil, fmt.Errorf("%w: typemeta: vct is empty; it names the type the document describes (draft-ietf-oauth-sd-jwt-vc-19 §5.2)", ErrInvalid)
+		// draft-ietf-oauth-sd-jwt-vc-19 §5.2: vct is the type described.
+		return nil, fmt.Errorf("%w: typemeta: vct is empty; it names the type the document describes", ErrInvalid)
 	}
 	if !d.hasExtends && d.hasExtendsIntegrity {
-		return nil, fmt.Errorf("%w: typemeta: extends#integrity without extends (draft-ietf-oauth-sd-jwt-vc-19 §6)", ErrInvalid)
+		// draft-ietf-oauth-sd-jwt-vc-19 §6: extends#integrity goes with extends.
+		return nil, fmt.Errorf("%w: typemeta: extends#integrity without extends", ErrInvalid)
 	}
 	claims, err := d.readClaims()
 	if err != nil {

@@ -48,7 +48,7 @@ func WellFormed(integrity string) bool {
 // names which failure it is and quotes nothing of integrity.
 func Check(data []byte, integrity string) error {
 	if !WellFormed(integrity) {
-		return errors.New("integrity metadata is not well formed: each token is sha256-, sha384- or sha512- and base64, tokens separated by spaces (W3C SRI §3.5)")
+		return errors.New("integrity metadata is not well formed: each token is sha256-, sha384- or sha512- and base64, tokens separated by spaces")
 	}
 	alg, digests := strongest(integrity)
 	if alg < 0 {

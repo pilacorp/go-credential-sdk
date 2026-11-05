@@ -290,20 +290,21 @@ func copyClaims(c map[string]any) (map[string]any, error) {
 // copyClaims returns them, in the order of REQ-21.
 func (req IssueRequest) check(claims map[string]any) error {
 	if req.VCT == "" {
-		return fmt.Errorf("%w: dc: VCT is required (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3)", jose.ErrInvalidArgument)
+		// draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3: vct is REQUIRED.
+		return fmt.Errorf("%w: dc: VCT is required", jose.ErrInvalidArgument)
 	}
 	// The Message is UTF-8 (RFC 7519 §7.1 step 2, RFC 8259 §8.1), and the
 	// encoder would sign U+FFFD in place of the caller's bytes.
 	if !utf8.ValidString(req.VCT) {
-		return fmt.Errorf("%w: dc: VCT is not valid UTF-8 (RFC 7519 §7.1, RFC 8259 §8.1)", jose.ErrInvalidArgument)
+		return fmt.Errorf("%w: dc: VCT is not valid UTF-8", jose.ErrInvalidArgument)
 	}
 	if !utf8.ValidString(req.Issuer) {
-		return fmt.Errorf("%w: dc: Issuer is not valid UTF-8 (RFC 7519 §7.1, RFC 8259 §8.1)", jose.ErrInvalidArgument)
+		return fmt.Errorf("%w: dc: Issuer is not valid UTF-8", jose.ErrInvalidArgument)
 	}
-	// RFC 7519 §2: an iss holding ":" MUST be a URI, so Issue never writes one
-	// that is not.
+	// RFC 7519 §2: an iss holding ":" MUST be a URI (RFC 3986), so Issue never
+	// writes one that is not.
 	if !uri.StringOrURI(req.Issuer) {
-		return fmt.Errorf("%w: dc: Issuer holds \":\" and is not a URI (RFC 7519 §2, RFC 3986); use a URI, or a name with no \":\"", jose.ErrInvalidArgument)
+		return fmt.Errorf("%w: dc: Issuer holds \":\" and is not a URI; use a URI, or a name with no \":\"", jose.ErrInvalidArgument)
 	}
 	for _, c := range requestClaims {
 		if _, ok := claims[c.name]; !ok {
@@ -321,18 +322,22 @@ func (req IssueRequest) check(claims map[string]any) error {
 	for _, name := range []string{"iat", "nbf", "exp"} {
 		if v, ok := claims[name]; ok {
 			if _, err := jwt.NumericDate(v); err != nil {
-				return fmt.Errorf("%w: dc: Claims %q is not a NumericDate (RFC 7519 §2); give a number of seconds, or set the field", jose.ErrInvalidArgument, name)
+				return fmt.Errorf("%w: dc: Claims %q is not a NumericDate; give a number of seconds, or set the field", jose.ErrInvalidArgument, name)
 			}
 		}
 	}
 	if v, ok := claims["aka_vcts"]; ok {
 		if err := checkAkaVCTs(v, req.VCT); err != nil {
-			return fmt.Errorf("%w: dc: Claims aka_vcts %v (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.2)", jose.ErrInvalidArgument, err)
+			// draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.2: a non-empty array of strings
+			// without the value of vct.
+			return fmt.Errorf("%w: dc: Claims aka_vcts %v", jose.ErrInvalidArgument, err)
 		}
 	}
 	if v, ok := claims["vct#integrity"]; ok {
 		if s, ok := v.(string); !ok || !sri.WellFormed(s) {
-			return fmt.Errorf("%w: dc: Claims vct#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §5.3); take it from typemeta.Encoded.Integrity", jose.ErrInvalidArgument)
+			// draft-ietf-oauth-sd-jwt-vc-19 §5.3: the value is integrity metadata,
+			// by W3C SRI §3.5.
+			return fmt.Errorf("%w: dc: Claims vct#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces); take it from typemeta.Encoded.Integrity", jose.ErrInvalidArgument)
 		}
 	}
 	// A status, aud or cnf given in Claims is read by the readers Verify
@@ -349,7 +354,8 @@ func (req IssueRequest) check(claims map[string]any) error {
 		}
 	}
 	if err := jwt.CheckAud(claims, ""); errors.Is(err, jose.ErrMalformed) {
-		return fmt.Errorf("%w: dc: Claims aud is not a string or an array of strings (RFC 7519 §4.1.3)", jose.ErrInvalidArgument)
+		// RFC 7519 §4.1.3: aud is a string or an array of strings.
+		return fmt.Errorf("%w: dc: Claims aud is not a string or an array of strings", jose.ErrInvalidArgument)
 	}
 	if v, ok := claims["cnf"]; ok {
 		if _, err := cnfKey(v); errors.Is(err, jose.ErrMalformed) {
@@ -367,13 +373,13 @@ func (req IssueRequest) check(claims map[string]any) error {
 			continue
 		}
 		if name, _ := p[0].(string); neverDisclosable[name] {
-			return fmt.Errorf("%w: dc: Disclose[%d] %s: draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids concealing %s", jose.ErrInvalidArgument, i, p, name)
+			return fmt.Errorf("%w: dc: Disclose[%d] %s: %s cannot be concealed", jose.ErrInvalidArgument, i, p, name)
 		}
 	}
 	// draft 19 §2.2.2.5: with no selectively disclosable claim the credential
 	// MUST NOT contain _sd, and decoys alone would add one.
 	if len(req.Disclose) == 0 && req.MinDigests > 0 {
-		return fmt.Errorf("%w: dc: MinDigests %d with no Disclose path: draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.5 forbids _sd when no claim is selectively disclosable", jose.ErrInvalidArgument, req.MinDigests)
+		return fmt.Errorf("%w: dc: MinDigests %d with no Disclose path: _sd is not allowed when no claim is selectively disclosable", jose.ErrInvalidArgument, req.MinDigests)
 	}
 	if m := req.TypeMetadata; m != nil {
 		// The zero Metadata has VCT() "" and VCT is not empty here.
@@ -382,7 +388,8 @@ func (req IssueRequest) check(claims map[string]any) error {
 		}
 		if s, ok := claims["vct#integrity"].(string); ok {
 			if err := typemeta.CheckIntegrity(m.Documents()[0], s); err != nil {
-				return fmt.Errorf("%w: dc: Claims vct#integrity does not match the document TypeMetadata was loaded from (draft-ietf-oauth-sd-jwt-vc-19 §6): %v", jose.ErrInvalidArgument, err)
+				// draft-ietf-oauth-sd-jwt-vc-19 §6: the document must match the value.
+				return fmt.Errorf("%w: dc: Claims vct#integrity does not match the document TypeMetadata was loaded from: %v", jose.ErrInvalidArgument, err)
 			}
 		}
 	}
@@ -391,7 +398,7 @@ func (req IssueRequest) check(claims map[string]any) error {
 	// check when the pin moves past draft 19.
 	if _, hasCnf := claims["cnf"]; hasCnf || req.HolderKey != nil {
 		if _, hasSub := claims["sub"]; !hasSub && req.Issuer == "" {
-			return fmt.Errorf("%w: dc: a credential with cnf needs iss or sub (RFC 7800 §3); set Issuer, or sub in Claims", jose.ErrInvalidArgument)
+			return fmt.Errorf("%w: dc: a credential with cnf needs iss or sub; set Issuer, or sub in Claims", jose.ErrInvalidArgument)
 		}
 	}
 	return nil

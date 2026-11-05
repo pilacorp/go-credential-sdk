@@ -845,3 +845,198 @@ func ownCredentials(t *testing.T) (string, ownTokens) {
 		noStatus:     issue(map[string]any{"iss": req.Issuer, "vct": req.VCT}, nil),
 	}
 }
+
+// RFC 7519 §4.1.6: the value of iat MUST be a number holding a NumericDate.
+// WithRejectFutureIAT is not passed: the type is checked either way.
+func TestVerifyIATNotANumericDate(t *testing.T) {
+	_, own := ownCredentials(t)
+	for name, iat := range map[string]any{"string": "1700000000", "bool": true, "null": nil, "object": map[string]any{}} {
+		var s setting
+		own.set(&s)
+		token := own.issue(map[string]any{"iss": "https://issuer.example", "vct": "urn:example:pid", "iat": iat}, nil)
+		var e *Error
+		if _, err := s.verify(t.Context(), token); !errors.As(err, &e) || e.Code != CodeMalformed {
+			t.Errorf("iat %s: err = %v; want MALFORMED", name, err)
+		}
+	}
+}
+
+// RFC 7519 §4.1.6 sets no rule on a future iat, so it passes unless the
+// Verifier asks to refuse one. now is 1700000500, the skew 1 minute by default.
+func TestVerifyFutureIAT(t *testing.T) {
+	_, own := ownCredentials(t)
+	claims := func(iat int64) map[string]any {
+		return map[string]any{"iss": "https://issuer.example", "vct": "urn:example:pid", "iat": iat}
+	}
+	reject := []VerifyOption{WithRejectFutureIAT()}
+	noSkew := []VerifyOption{WithRejectFutureIAT(), WithClockSkew(0)}
+	tests := []struct {
+		name string
+		iat  int64
+		opts []VerifyOption
+		want Code
+	}{
+		{"option off, a year ahead", 1700000500 + 31536000, nil, ""},
+		{"long ago", 1600000000, reject, ""},
+		{"now", 1700000500, reject, ""},
+		{"on the skew edge", 1700000560, reject, ""},
+		{"one second past the skew", 1700000561, reject, CodeNotYetValid},
+		{"a year ahead", 1700000500 + 31536000, reject, CodeNotYetValid},
+		{"now, no skew", 1700000500, noSkew, ""},
+		{"one second ahead, no skew", 1700000501, noSkew, CodeNotYetValid},
+	}
+	for _, tt := range tests {
+		s := setting{extra: tt.opts}
+		own.set(&s)
+		_, err := s.verify(t.Context(), own.issue(claims(tt.iat), nil))
+		if tt.want == "" {
+			if err != nil {
+				t.Errorf("%s: %v; want it to verify", tt.name, err)
+			}
+			continue
+		}
+		var e *Error
+		if !errors.As(err, &e) || e.Code != tt.want {
+			t.Errorf("%s: err = %v; want %s", tt.name, err, tt.want)
+		}
+	}
+
+	// A disclosed iat counts; a concealed one that stays hidden has nothing to
+	// compare (draft 19 §2.2.2.3 allows concealing iat).
+	concealed := own.issue(claims(1700000561), []sdjwt.Path{{"iat"}})
+	hidden, _, _ := strings.Cut(concealed, "~")
+	s := setting{extra: reject}
+	own.set(&s)
+	var e *Error
+	if _, err := s.verify(t.Context(), concealed); !errors.As(err, &e) || e.Code != CodeNotYetValid {
+		t.Errorf("iat disclosed: err = %v; want NOT_YET_VALID", err)
+	}
+	if _, err := s.verify(t.Context(), hidden+"~"); err != nil {
+		t.Errorf("iat concealed: %v; want it to verify", err)
+	}
+}
+
+// WithIATCheck gets the iat Verify read, and nil when the credential shows
+// none, so that a Holder who leaves it concealed cannot skip the check unseen.
+func TestVerifyIATCheckGetsIAT(t *testing.T) {
+	_, own := ownCredentials(t)
+	issuedAt := time.Unix(1700000000, 0)
+	withIAT := map[string]any{"iss": "https://issuer.example", "vct": "urn:example:pid", "iat": int64(1700000000)}
+	noIAT := map[string]any{"iss": "https://issuer.example", "vct": "urn:example:pid"}
+	concealed := own.issue(withIAT, []sdjwt.Path{{"iat"}})
+	hidden, _, _ := strings.Cut(concealed, "~")
+
+	tests := []struct {
+		name  string
+		token string
+		want  *time.Time
+	}{
+		{"in the payload", own.issue(withIAT, nil), &issuedAt},
+		{"absent", own.issue(noIAT, nil), nil},
+		{"concealed and disclosed", concealed, &issuedAt},
+		{"concealed and hidden", hidden + "~", nil},
+	}
+	for _, tt := range tests {
+		calls := 0
+		var got *time.Time
+		s := setting{extra: []VerifyOption{WithIATCheck(func(_ context.Context, iat *time.Time) error {
+			calls++
+			got = iat
+			return nil
+		})}}
+		own.set(&s)
+		if _, err := s.verify(t.Context(), tt.token); err != nil {
+			t.Errorf("%s: %v", tt.name, err)
+			continue
+		}
+		if calls != 1 {
+			t.Errorf("%s: called %d times; want once", tt.name, calls)
+		}
+		if (got == nil) != (tt.want == nil) || (got != nil && !got.Equal(*tt.want)) {
+			t.Errorf("%s: iat = %v; want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// What the function returns decides the class of the error, as for a
+// StatusChecker: an *Error refuses, ctx ended says nothing about the token,
+// and any other error means iat could not be checked.
+func TestVerifyIATCheckErrors(t *testing.T) {
+	_, own := ownCredentials(t)
+	token := own.issue(map[string]any{"iss": "https://issuer.example", "vct": "urn:example:pid", "iat": int64(1700000000)}, nil)
+	errChain := errors.New("the chain did not answer")
+	const refused Code = "ISSUED_AFTER_ANCHOR"
+
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	tests := []struct {
+		name  string
+		ctx   context.Context
+		err   error
+		want  Code
+		cause error
+	}{
+		{"passes", t.Context(), nil, "", nil},
+		{"refused", t.Context(), &Error{Code: refused, Err: errors.New("no")}, refused, nil},
+		{"refused, wrapped", t.Context(), fmt.Errorf("rule: %w", &Error{Code: refused}), refused, nil},
+		{"could not check", t.Context(), fmt.Errorf("read: %w", errChain), CodeIATCheckFailed, errChain},
+		{"refused beats ctx ended", canceled, &Error{Code: refused}, refused, nil},
+		{"ctx ended", canceled, errChain, "", errChain},
+	}
+	for _, tt := range tests {
+		s := setting{extra: []VerifyOption{WithIATCheck(func(context.Context, *time.Time) error { return tt.err })}}
+		own.set(&s)
+		_, err := s.verify(tt.ctx, token)
+		var e *Error
+		isRejected := errors.As(err, &e)
+		switch {
+		case tt.err == nil:
+			if err != nil {
+				t.Errorf("%s: %v; want it to verify", tt.name, err)
+			}
+		case tt.want == "":
+			if err == nil || isRejected || !errors.Is(err, context.Canceled) || !errors.Is(err, tt.cause) {
+				t.Errorf("%s: err = %v; want no Code, wrapping ctx.Err() and the cause", tt.name, err)
+			}
+		case !isRejected || e.Code != tt.want || errors.Is(err, context.Canceled):
+			t.Errorf("%s: err = %v; want %s, not wrapping ctx.Err()", tt.name, err, tt.want)
+		case tt.cause != nil && !errors.Is(err, tt.cause):
+			t.Errorf("%s: err = %v; want it to wrap the cause", tt.name, err)
+		}
+	}
+
+	var s setting
+	own.set(&s)
+	s.extra = []VerifyOption{WithIATCheck(nil)}
+	if _, err := s.verify(t.Context(), token); !errors.Is(err, ErrPolicy) {
+		t.Errorf("WithIATCheck(nil): err = %v; want ErrPolicy", err)
+	}
+}
+
+// The function may call out, so nothing the token settles reaches it, and a
+// refusal costs no status fetch.
+func TestVerifyIATCheckOrder(t *testing.T) {
+	_, own := ownCredentials(t)
+	iss := "https://issuer.example"
+	ref := map[string]any{"status_list": map[string]any{"idx": 0, "uri": "https://status.example/1"}}
+	const refused Code = "ISSUED_AFTER_ANCHOR"
+
+	var calls int
+	check := WithIATCheck(func(context.Context, *time.Time) error {
+		calls++
+		return &Error{Code: refused}
+	})
+	status := &recordingStatus{}
+	s := setting{extra: []VerifyOption{check, WithStatus(status)}}
+	own.set(&s)
+
+	var e *Error
+	expired := own.issue(map[string]any{"iss": iss, "vct": "urn:example:pid", "exp": 1700000000}, nil)
+	if _, err := s.verify(t.Context(), expired); !errors.As(err, &e) || e.Code != CodeExpired || calls != 0 {
+		t.Errorf("expired: err = %v, %d calls; want EXPIRED and no call", err, calls)
+	}
+	_, err := s.verify(t.Context(), own.issue(map[string]any{"iss": iss, "vct": "urn:example:pid", "status": ref}, nil))
+	if !errors.As(err, &e) || e.Code != refused || calls != 1 || len(status.refs) != 0 {
+		t.Errorf("status: err = %v, %d calls, %d fetches; want the refusal and no fetch", err, calls, len(status.refs))
+	}
+}

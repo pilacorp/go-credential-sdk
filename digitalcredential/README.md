@@ -16,7 +16,7 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 |---|---|---|
 | Issuer | Signs a credential for a Holder | `dc.Issue(ctx, req, key)`, `req.Validate()` |
 | Holder | Stores the credential, then presents only the claims it chooses, with a Key Binding JWT when the Verifier asks for one | `dc.Parse(s)`, `cred.Present(ctx, req)` |
-| Verifier | Checks a presented credential and reads its claims | `dc.Parse(s)`, `cred.Verify(ctx, issuers, opts...)`, `issuermeta.NewResolver(cfg)`, `statuslist.NewChecker(cfg)` |
+| Verifier | Checks a presented credential and reads its claims | `dc.Parse(s)`, `cred.Verify(ctx, issuers, opts...)`, `issuermeta.NewResolver(cfg)`, `didresolver.New(cfg)`, `statuslist.NewChecker(cfg)` |
 | Status Issuer | Publishes the status of the credentials it issued | `statuslist.New(size, bits)`, `list.Set(i, v)`, `list.IssueToken(ctx, claims, key)` |
 | Any | Names a credential, for example to record or anchor it | `cred.Hash()` |
 
@@ -29,6 +29,7 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 | Selects the disclosures of the claims in `Reveal` by OpenID4VP 1.0 §7.1.1 claims path pointers, with their concealed ancestors (RFC 9901 §4.2.6) | Asks the user which claims to present; RFC 9901 §7.2 leaves consent out of scope |
 | Writes the Key Binding JWT with `sd_hash` over exactly the SD-JWT sent (RFC 9901 §4.3.1), signed by the key of `cnf.jwk` | Sets `KeyBinding` when the Verifier requires Key Binding, with the Verifier's `aud` and `nonce` |
 | Retrieves JWT VC Issuer Metadata with the bounds of draft 19 §3 and refuses addresses that are not globally reachable (§7.1) | Lists the issuers it trusts (`Config.TrustedIssuerOrigins`, §2.5), blocks hosts of its own network with its egress policy |
+| Reads the keys of an `iss` that is a DID from its DID document (W3C DID Resolution v1.0, W3C Controlled Identifiers v1.0) | Names the DID resolver it trusts (`didresolver.Config.URL`), or brings one of its own (`Config.Resolver`) |
 | Verifies the signature, the Disclosures, the times, Key Binding and status (draft 19 §2.4, RFC 9901 §7.1, §7.3) | Sets `aud` and a fresh `nonce` per transaction and accepts each nonce once; checks that the issuer may issue this `vct` (§7.7) and the claims a protocol adds to the KB-JWT |
 | Retrieves, checks, merges and caches Type Metadata, and checks the payload against its claim metadata (draft 19 §5, §6) | Decides whether Type Metadata is processed and required, and which publishers it trusts (`typemeta.Config.TrustedPublisherOrigins`, §5.7, §7.8); renders the credential |
 | Fetches, verifies and caches Status List Tokens (draft-ietf-oauth-status-list-21 §8) | Chooses the issuers whose status keys it trusts (`statuslist.Config.Issuers`) and how old a list may be (`MaxAge`) |
@@ -47,11 +48,13 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 | `SigningKey` | `issuerkey` | The Issuer's `jws.Signer`, its public key and `kid` |
 | `PublicKey` | `issuerkey` | A key an Issuer publishes for verifying, with its `kid` (RFC 7517 §4.5) |
 | `Config` | `issuermeta` | The configuration of a `Resolver`, copied at construction; an empty `TrustedIssuerOrigins` trusts every https issuer, and any other zero field gives a safe default |
+| `Config` | `didresolver` | The source of DID documents: `URL`, a DID resolver endpoint, or `Resolver`, a `DIDResolver` of your own |
 
 | Interface | Does | In the SDK | Written by the caller, for example |
 |---|---|---|---|
 | `jws.Signer` | Declares `alg` and signs the JWS Signing Input | `jws.PrivateKeySigner`, `jws.DigestSigner` | KMS, HSM, wallet key store |
-| `issuerkey.Resolver` | Returns the keys an `iss` currently publishes | `issuermeta.Resolver` (draft 19 §4); `issuerkey.Multi` combines resolvers | DID-based resolver, fixed key table |
+| `issuerkey.Resolver` | Returns the keys an `iss` currently publishes | `issuermeta.Resolver` (draft 19 §4), `didresolver.Resolver` (DID issuers); `issuerkey.Multi` combines resolvers | Fixed key table |
+| `didresolver.DIDResolver` | Resolves a DID to its resolution result or DID document, over any transport | The HTTP(S) binding, through `Config.URL` | gRPC client of a DID service, local registry |
 | `dc.StatusChecker` | Returns the raw status of the entry a credential points to | `*statuslist.Checker` | Another status mechanism, a local mirror of the lists |
 
 ## Issue
@@ -160,8 +163,8 @@ if err != nil {
 }
 ```
 
-An `*dc.Error` that a resolver or the `StatusChecker` led to wraps its error, and so does the ctx error, which wraps
-`ctx.Err()` too. `errors.Is` and `errors.As` reach the cause, such as an `issuermeta.StatusError`.
+An `*dc.Error` that a resolver, the `WithIATCheck` function or the `StatusChecker` led to wraps its error, and so does
+the ctx error, which wraps `ctx.Err()` too. `errors.Is` and `errors.As` reach the cause, such as an `issuermeta.StatusError`.
 
 With no option, `Verify` follows the standard's rule where it sets one, and otherwise the SDK default in the table, which never accepts what the standard rejects. The options set what the standards leave to the Verifier:
 
@@ -173,7 +176,9 @@ With no option, `Verify` follows the standard's rule where it sets one, and othe
 | `WithAudience(aud)`, `WithNonce(n)` | Needed whenever a KB-JWT is checked, compared byte for byte (§7.3 step 5f) |
 | `WithCredentialAudience(aud)` | A credential with `aud` is `AUDIENCE_MISMATCH` (RFC 7519 §4.1.3) |
 | `WithMaxKBAge(d)` | 5 minutes for the KB-JWT `iat` (§7.3 step 5e) |
-| `WithClockSkew(d)` | 1 minute on `exp`, `nbf` and the KB-JWT `iat` |
+| `WithClockSkew(d)` | 1 minute on `exp`, `nbf`, the KB-JWT `iat` and the check of `WithRejectFutureIAT` |
+| `WithRejectFutureIAT()` | A future `iat` verifies: RFC 7519 §4.1.6 sets no rule on it. Passed, an `iat` later than now plus the skew is `NOT_YET_VALID`; an absent or concealed `iat` passes. With or without it, an `iat` that is not a NumericDate is `MALFORMED` |
+| `WithIATCheck(verify)` | No check of the caller's. Passed, `verify` gets `iat`, or `nil` when the credential shows none, after every check but status. An `*dc.Error` it returns refuses with that `Code`; any other error is `IAT_CHECK_FAILED` |
 | `WithStatus(checker)` | A credential with `status_list` is `ErrPolicy`, so a forgotten checker never accepts a revoked credential |
 | `WithoutStatusCheck()` | Status is checked, as -19 §2.4 says it SHOULD be; with this option it is not, and `Result.StatusSkipped` says so |
 | `WithAcceptedStatus(v...)` | Only `0x00`, VALID (draft 21 §7.1) |
@@ -364,8 +369,77 @@ identical to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
   Metadata. A status list on an internal host is the Relying Party's choice (draft 21 §6.2): pass
   `statuslist.Config.HTTPClient` or a `StatusChecker` of your own.
 
+An `iss` that is a DID is none of this: draft 19 §2.5 leaves such key discovery to other specifications, so
+`issuermeta` refuses it with `ErrIssuerNotSupported` and the error text names `didresolver`, the package that reads it.
+
+```go
+dids, err := didresolver.New(didresolver.Config{URL: "https://resolver.example/1.0/identifiers/"})
+if err != nil {
+	return err
+}
+res, err := cred.Verify(ctx, dids)
+if err != nil {
+	return err
+}
+```
+
+- `URL` is the endpoint of the HTTP(S) binding of DID Resolution §9.1, the DID resolver you trust to answer for every
+  DID. It must be https. For another transport set `Resolver` instead, to a `DIDResolver` that returns the JSON of a
+  resolution result or of the document alone; the same rules then read it. Exactly one of the two is set.
+- Keys are the verification methods `assertionMethod` lists (CID §2.3.2), with the absolute URL of the method as `kid`,
+  so a token's `kid` is that URL. It may be absent only while one key of the document is accepted, and a retired key
+  that `AcceptKey` keeps counts, so an issuer that rotates keys sets `kid`. A method is left out when it belongs to
+  another document or controller (CID §3.3), when `Config.AcceptKey` refuses it (a `revoked` or `expires` time that
+  cannot be read refuses it before), or when it holds no single key this SDK reads. The key comes from the material
+  property, whatever `type` says: `publicKeyMultibase` holding a P-256 Multikey, `publicKeyJwk` holding a P-256 or
+  secp256k1 public JWK, or `publicKeyHex`, read only on `EcdsaSecp256k1VerificationKey2019` since hex names no curve.
+- `AcceptKey` decides which keys verify. It is called once for each method left after those checks, with a `KeyInfo`
+  (`ID`, `Revoked`, `Expires`, `RevocationReason`, `At`). nil uses `DefaultAcceptKey`: a key verifies until its `revoked`
+  or `expires` time (CID §2.2), except that a key revoked with a `revocationReason` other than `keyCompromise`, such as
+  `superseded`, verifies until it expires. Its issuer retired it and did not lose it, and refusing it would end every
+  credential it signed.
+- That exception goes beyond CID, which defines no reason and expects no proof to verify at or after the `revoked` time.
+  `Keys` does not see when a token was signed, and no `iat` is compared with the `revoked` time: an issuer may conceal
+  it, and whoever holds the key can write any value. So such a key also verifies tokens signed after it was revoked. A
+  key revoked with `keyCompromise` or with no reason fails for every token, those signed before that time included (CID
+  §5.5.1: without a reliable time of signing, only the present moment counts). The reason is compared as written.
+- The document's `id` must equal `iss` as a string (DID Resolution §4), case included.
+- Every DID the resolver answers for is accepted, as an empty trust list is. Pass the DIDs you accept to
+  `WithAcceptedIssuers`.
+- An `iss` that is not a conformant DID (DID Core 1.0 §3.1) is `ErrIssuerNotSupported` with no request made, and an
+  https `iss` gets text that names `issuermeta`. A resolver that refuses the DID or its method (400, 501, or in a
+  resolution result an error type §9.1 gives those) is `ErrIssuerNotSupported`. A DID that does not exist or is
+  deactivated (404, 410, `NOT_FOUND`, or `deactivated` in the metadata) and a document that must not be used are
+  `ErrNoUsableKey`. A failed retrieval is any other error, an error type such as `INTERNAL_ERROR` in a result included,
+  so an outage never reads as a missing key. It wraps the cause as in `issuermeta`: `didresolver.StatusError`,
+  `ErrRedirectNotAllowed` for a redirect off the origin of `URL`, and the others the godoc of `Keys` lists.
+- Nothing is cached, so a removed key stops verifying on the next call, and each `Keys` is one request. A `Verify` that
+  also checks status asks twice unless the Status List Token is cached. To cache, wrap a `DIDResolver` or pass an
+  `HTTPClient` that caches.
+- The default client refuses addresses that are not globally reachable. A DID resolver inside your network needs
+  `HTTPClient`, which is trusted code as above.
+
+To apply CID with no exception, so that a key revoked for any reason stops at its `revoked` time:
+
+```go
+dids, err := didresolver.New(didresolver.Config{
+	URL: "https://resolver.example/1.0/identifiers/",
+	AcceptKey: func(k didresolver.KeyInfo) bool {
+		k.RevocationReason = ""
+		return didresolver.DefaultAcceptKey(k)
+	},
+})
+if err != nil {
+	return err
+}
+```
+
+To read both kinds of issuer, join the two resolvers with `Multi`. A Verifier that meets only one kind needs only that
+one.
+
 `issuerkey.Multi(r1, r2, …)` asks resolvers in order and moves to the next only on `ErrIssuerNotSupported`, so a
-failed retrieval never sends an issuer to another key source. `issuerkey.Select(keys, header)` picks the key the JWS
+failed retrieval never sends an issuer to another key source. When no resolver accepts the `iss`, the error keeps what
+each one said. `issuerkey.Select(keys, header)` picks the key the JWS
 header names: a `kid` must match exactly one key, and a token without `kid` needs exactly one key; keys are never
 tried in turn.
 
