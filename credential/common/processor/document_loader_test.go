@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -144,13 +145,48 @@ func TestLoadDocument_CachesACopyPerCaller(t *testing.T) {
 func TestLoadDocument_CacheIsBounded(t *testing.T) {
 	srv := contextServer(t, func(w http.ResponseWriter, _ *http.Request) { writeContext(w, "term") })
 	loader := newCachingDocumentLoader(srv.Client())
-	for i := 0; i < maxCachedContexts+10; i++ {
+	if held := maxCachedContexts * maxContextBytes; held > 64<<20 {
+		t.Fatalf("the cache can hold %d bytes", held)
+	}
+	load := func(i int) {
+		t.Helper()
 		if _, err := loader.LoadDocument(fmt.Sprintf("%s/%d", srv.URL, i)); err != nil {
 			t.Fatal(err)
 		}
 	}
+	for i := 0; i < maxCachedContexts; i++ {
+		load(i)
+	}
 	if len(loader.docs) != maxCachedContexts {
-		t.Fatalf("cache holds %d entries", len(loader.docs))
+		t.Fatalf("at the limit the cache holds %d entries", len(loader.docs))
+	}
+	load(maxCachedContexts)
+	if len(loader.docs) != maxCachedContexts {
+		t.Fatalf("one past the limit the cache holds %d entries", len(loader.docs))
+	}
+}
+
+// One MiB of empty objects decodes to about 21 MiB, so the cache must hold the
+// bytes. Each caller decodes its own tree, which must be the one fetched.
+func TestLoadDocument_CacheHoldsBytes(t *testing.T) {
+	body := `{"@context":{"<a>":"https://example.org/é\u2028&"},"n":[1,1.0,1e2,-0.5,12345678901234567890],"x":[` +
+		strings.Repeat(`{},`, 1000) + `{}]}`
+	srv := contextServer(t, func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, body) })
+	loader := newCachingDocumentLoader(srv.Client())
+
+	fetched, err := loader.LoadDocument(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cached, err := loader.LoadDocument(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held := len(loader.docs[srv.URL].raw); held > len(body)+1 {
+		t.Fatalf("the cache holds %d bytes of a %d byte body", held, len(body))
+	}
+	if !reflect.DeepEqual(fetched, cached) {
+		t.Fatalf("fetched %v\ncached  %v", fetched, cached)
 	}
 }
 

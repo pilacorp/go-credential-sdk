@@ -1,7 +1,9 @@
 package processor
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -26,8 +28,10 @@ const (
 	// a client timeout nor the redirect limit sees. schema.org needs one hop.
 	maxContextRequests = 16
 	// maxCachedContexts bounds the cache: an attacker can name any number of
-	// URLs on a server of their own. A deployment uses tens of contexts.
-	maxCachedContexts = 256
+	// URLs on a server of their own. A deployment uses tens of contexts. With
+	// maxContextBytes this holds the cache to 64 MiB: an entry is the bytes,
+	// because 1 MiB of JSON can decode to 21 MiB.
+	maxCachedContexts = 64
 	// maxContextLoads bounds the remote context loads of one JSON-LD operation,
 	// cached ones included. json-gold's check for a context including itself
 	// never fires (it hands the nested parse an empty list), so a context that
@@ -79,30 +83,49 @@ type cachingDocumentLoader struct {
 	client *http.Client
 
 	mu   sync.RWMutex
-	docs map[string]*ld.RemoteDocument
+	docs map[string]*cachedContext
 }
 
 func newCachingDocumentLoader(client *http.Client) *cachingDocumentLoader {
-	return &cachingDocumentLoader{client: client, docs: make(map[string]*ld.RemoteDocument)}
+	return &cachingDocumentLoader{client: client, docs: make(map[string]*cachedContext)}
 }
 
-// LoadDocument implements ld.DocumentLoader. Every caller gets its own copy:
-// json-gold can mutate a context it is given, which is what the bundled
+// cachedContext is a fetched document as bytes. Every caller decodes its own
+// copy: json-gold can mutate a context it is given, which is what the bundled
 // contexts are re-parsed on each call to avoid.
+type cachedContext struct {
+	raw                     []byte
+	documentURL, contextURL string
+}
+
+func (c *cachedContext) decode() (*ld.RemoteDocument, error) {
+	d, err := ld.DocumentFromReader(bytes.NewReader(c.raw))
+	if err != nil {
+		return nil, err
+	}
+	return &ld.RemoteDocument{DocumentURL: c.documentURL, ContextURL: c.contextURL, Document: d}, nil
+}
+
+// LoadDocument implements ld.DocumentLoader.
 func (l *cachingDocumentLoader) LoadDocument(rawURL string) (*ld.RemoteDocument, error) {
 	l.mu.RLock()
-	doc, cached := l.docs[rawURL]
+	entry, cached := l.docs[rawURL]
 	l.mu.RUnlock()
 	if cached {
-		return cloneRemoteDocument(doc), nil
+		return entry.decode()
 	}
 
 	doc, err := l.fetch(rawURL)
 	if err != nil {
 		return nil, &contextLoadError{cause: err}
 	}
-
-	entry := cloneRemoteDocument(doc)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(doc.Document); err != nil {
+		return nil, &contextLoadError{cause: err}
+	}
+	entry = &cachedContext{raw: buf.Bytes(), documentURL: doc.DocumentURL, contextURL: doc.ContextURL}
 	l.mu.Lock()
 	if len(l.docs) >= maxCachedContexts {
 		// Evict rather than stop caching, so filling the cache once does not
@@ -115,12 +138,6 @@ func (l *cachingDocumentLoader) LoadDocument(rawURL string) (*ld.RemoteDocument,
 	l.docs[rawURL] = entry
 	l.mu.Unlock()
 	return doc, nil
-}
-
-func cloneRemoteDocument(doc *ld.RemoteDocument) *ld.RemoteDocument {
-	clone := *doc
-	clone.Document = ld.CloneDocument(doc.Document)
-	return &clone
 }
 
 func (l *cachingDocumentLoader) fetch(rawURL string) (*ld.RemoteDocument, error) {
