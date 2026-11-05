@@ -157,12 +157,12 @@ func canonicalNQuads(dataset *ld.RDFDataset) (string, error) {
 // ErrBlankNodeWork is a dataset refused for the search it would take.
 var ErrBlankNodeWork = errors.New("too many interchangeable blank nodes")
 
-// maxBlankNodeWork admits every document in this SDK's tests, which score 0, or 4 per pair
-// of interchangeable proofs, and refuses anything shaped like the known attacks
-// (a clique of 4 scores over 10^7). A cap on the number of blank nodes cannot
-// do this: a 1.4 KB clique of 9 takes URDNA2015 half a minute, and a credential
-// with 9 anonymous objects is ordinary.
-const maxBlankNodeWork = 10000
+// maxBlankNodeWork admits every document in this SDK's tests, which score 0, or
+// 8 per pair of interchangeable proofs, and a list of 102 equal values, and
+// refuses anything shaped like the known attacks (a clique of 4 scores 46656).
+// A cap on the number of blank nodes cannot do this: a 1.4 KB clique of 9 takes
+// URDNA2015 half a minute, and a credential with 9 anonymous objects is ordinary.
+const maxBlankNodeWork = 20000
 
 // blankNodeWork scores the search URDNA2015 will do. json-gold has no limit,
 // and it cannot be stopped from outside.
@@ -172,7 +172,10 @@ const maxBlankNodeWork = 10000
 // N-Degree Quads tries every ordering of each list of nodes related to one the
 // same way, and recurses into the unlabelled ones. So a group of interchangeable
 // nodes joined by shared quads scores the product of those orderings over its
-// members, times its size squared for the walk each member makes through it.
+// members, times its size for the walk that starts from each member, times its
+// edges to blank nodes for the hashing each walk does. A quad with no other
+// blank node is left out: it costs a step of a loop, so a node heavy in literals
+// costs what its bytes do. A group of one node with one ordering has no search.
 func blankNodeWork(dataset *ld.RDFDataset) int {
 	type relation struct{ how, id string }
 	lines := make(map[string][]string)
@@ -227,7 +230,9 @@ func blankNodeWork(dataset *ld.RDFDataset) int {
 		seen[start] = true
 		group := []string{start}
 		orderings := 1
+		edges := 0
 		for i := 0; i < len(group); i++ {
+			edges += len(related[group[i]])
 			// Lists can repeat a node, and json-gold's permutator then yields
 			// the distinct orderings: the running multinomial of each list.
 			counts := make(map[string]int)
@@ -245,8 +250,8 @@ func blankNodeWork(dataset *ld.RDFDataset) int {
 				}
 			}
 		}
-		if cost := orderings * len(group) * len(group); cost > 1 {
-			if work += cost; work > maxBlankNodeWork {
+		if search := orderings * len(group); search > 1 {
+			if work += search * edges; work > maxBlankNodeWork {
 				return work
 			}
 		}

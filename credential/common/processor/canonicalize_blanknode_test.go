@@ -286,3 +286,65 @@ func TestBlankNodeWork_AllocatesLinearly(t *testing.T) {
 		t.Fatalf("allocated %d MiB", allocated>>20)
 	}
 }
+
+// Each step of the search walks the edges of the node it visits, so a group of
+// few nodes with many edges costs what its size does not show. 100 nodes of 96
+// predicates scored exactly the old limit and took 7 s.
+func TestCanonicalize_RefusesManyEdges(t *testing.T) {
+	nodes := make([]interface{}, 100)
+	for i := range nodes {
+		node := map[string]interface{}{"@id": fmt.Sprintf("_:b%d", i)}
+		for p := 0; p < 96; p++ {
+			node[fmt.Sprintf("p%d", p)] = map[string]interface{}{"@id": fmt.Sprintf("_:b%d", (i+p+1)%len(nodes))}
+		}
+		nodes[i] = node
+	}
+	doc := map[string]interface{}{"@context": map[string]interface{}{"@vocab": "https://example.org/"}, "@graph": nodes}
+
+	start := time.Now()
+	if _, err := Canonicalize(doc); !errors.Is(err, ErrBlankNodeWork) {
+		t.Fatalf("got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("refusal took %v", elapsed)
+	}
+}
+
+// A list of one repeated value is the real document nearest the limit.
+func TestCanonicalize_BlankNodeWorkLimit(t *testing.T) {
+	list := func(n int) map[string]interface{} {
+		return map[string]interface{}{
+			"@context": map[string]interface{}{"values": map[string]interface{}{"@id": "https://example.org/values", "@container": "@list"}},
+			"values":   repeated("x", n),
+		}
+	}
+	at, err := toRDFDataset(list(102))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work := blankNodeWork(at); work != maxBlankNodeWork {
+		t.Fatalf("a list of 102 scored %d", work)
+	}
+	if _, err := Canonicalize(list(102)); err != nil {
+		t.Fatalf("at the limit: %v", err)
+	}
+	if _, err := Canonicalize(list(103)); !errors.Is(err, ErrBlankNodeWork) {
+		t.Fatalf("one past the limit: %v", err)
+	}
+}
+
+// Nodes with nothing to order cost one pass, whatever their edges.
+func TestBlankNodeWork_IgnoresGroupsWithNoSearch(t *testing.T) {
+	children := make([]interface{}, 2000)
+	for i := range children {
+		// Each child differs from its neighbour only through the object it holds.
+		children[i] = map[string]interface{}{"name": "same", "knows": map[string]interface{}{"name": fmt.Sprint(i)}}
+	}
+	dataset, err := toRDFDataset(map[string]interface{}{"@context": linkContext, "knows": map[string]interface{}{"knows": children}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work := blankNodeWork(dataset); work != 0 {
+		t.Fatalf("scored %d", work)
+	}
+}
