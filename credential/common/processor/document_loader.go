@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/netip"
@@ -41,15 +42,22 @@ const (
 // It is a var so tests can shorten it.
 var contextFetchTimeout = 10 * time.Second
 
-// errContextLoad is every failed fetch.
-var errContextLoad = ld.NewJsonLdError(ld.LoadingDocumentFailed, "remote context could not be loaded")
+// Failures of a remote @context load. ErrContextLoad is every failed fetch, and
+// the others name a refusal of this SDK.
+var (
+	ErrContextLoad     = ld.NewJsonLdError(ld.LoadingDocumentFailed, "remote context could not be loaded")
+	ErrContextAddress  = errors.New("context address is not public")
+	ErrContextScheme   = errors.New("context URL is not http or https")
+	ErrContextRequests = errors.New("context fetch made too many requests")
+	ErrContextOverflow = ld.NewJsonLdError(ld.ErrorCode("context overflow"), "the operation's context budget is used up")
+)
 
 // contextLoadError keeps the cause of a failed fetch off the text, which would
 // tell the caller whether an address or port answered, and on the chain.
 type contextLoadError struct{ cause error }
 
-func (e *contextLoadError) Error() string   { return errContextLoad.Error() }
-func (e *contextLoadError) Unwrap() []error { return []error{errContextLoad, e.cause} }
+func (e *contextLoadError) Error() string   { return ErrContextLoad.Error() }
+func (e *contextLoadError) Unwrap() []error { return []error{ErrContextLoad, e.cause} }
 
 // SetDocumentLoaderHTTPClient replaces the HTTP client that fetches remote
 // @context documents and empties the context cache. It is a test hook, for
@@ -118,7 +126,7 @@ func cloneRemoteDocument(doc *ld.RemoteDocument) *ld.RemoteDocument {
 func (l *cachingDocumentLoader) fetch(rawURL string) (*ld.RemoteDocument, error) {
 	// ld.DefaultDocumentLoader opens anything else as a local file.
 	if !isHTTPURL(rawURL) {
-		return nil, errContextLoad
+		return nil, ErrContextScheme
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), contextFetchTimeout)
@@ -150,7 +158,7 @@ type boundedTransport struct {
 // RoundTrip implements http.RoundTripper.
 func (t *boundedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.requests++; t.requests > maxContextRequests {
-		return nil, errContextLoad
+		return nil, ErrContextRequests
 	}
 	res, err := t.next.RoundTrip(req.WithContext(t.ctx))
 	if err != nil {
@@ -160,7 +168,7 @@ func (t *boundedTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	for _, link := range ld.ParseLinkHeader(res.Header.Get("Link"))["alternate"] {
 		if link["type"] == ld.ApplicationJSONLDType && !isHTTPURL(ld.Resolve(req.URL.String(), link["target"])) {
 			res.Body.Close()
-			return nil, errContextLoad
+			return nil, ErrContextScheme
 		}
 	}
 	res.Body = http.MaxBytesReader(nil, res.Body, maxContextBytes)
@@ -183,7 +191,7 @@ func newContextBudget() *contextBudget {
 func (b *contextBudget) LoadDocument(rawURL string) (*ld.RemoteDocument, error) {
 	if _, bundled := wellKnownContexts[rawURL]; !bundled {
 		if b.loads++; b.loads > maxContextLoads || time.Now().After(b.deadline) {
-			return nil, errContextLoad
+			return nil, ErrContextOverflow
 		}
 	}
 	return defaultDocumentLoader.LoadDocument(rawURL)
@@ -214,7 +222,7 @@ func refuseNonPublic(_, address string, _ syscall.RawConn) error {
 	// host unresolved, and dialing ":443" reaches the local host.
 	ap, err := netip.ParseAddrPort(address)
 	if err != nil || !isPublicAddr(ap.Addr()) {
-		return errContextLoad
+		return ErrContextAddress
 	}
 	return nil
 }

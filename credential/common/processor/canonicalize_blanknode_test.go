@@ -1,8 +1,8 @@
 package processor
 
 import (
+	"errors"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -80,7 +80,7 @@ func TestCanonicalize_RefusesExpensiveBlankNodes(t *testing.T) {
 			t.Run(name+"/"+fn, func(t *testing.T) {
 				start := time.Now()
 				err := canonicalize(doc)
-				if err == nil || !strings.Contains(err.Error(), "blank nodes") {
+				if !errors.Is(err, ErrBlankNodeWork) {
 					t.Fatalf("expected a refusal, got %v", err)
 				}
 				if elapsed := time.Since(start); elapsed > time.Second {
