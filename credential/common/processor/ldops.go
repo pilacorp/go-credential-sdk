@@ -15,6 +15,9 @@ import (
 func ToNQuads(input interface{}) ([]string, error) {
 	proc, opts := newProcessor()
 	opts.Format = "application/n-quads"
+	if err := limitInlineContexts(opts, input); err != nil {
+		return nil, fmt.Errorf("to nquads: %w", err)
+	}
 	rdf, err := proc.ToRDF(input, opts)
 	if err != nil {
 		return nil, fmt.Errorf("to nquads: %w", err)

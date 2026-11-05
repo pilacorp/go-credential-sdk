@@ -169,6 +169,9 @@ func CanonicalizeDocument(doc map[string]interface{}) (out []byte, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to standardize to JSON-LD: %w", err)
 	}
+	if err := limitInlineContexts(jsonldOptions, standardizedDoc); err != nil {
+		return nil, fmt.Errorf("failed to normalize document: %w", err)
+	}
 
 	dataset, err := processor.ToRDF(standardizedDoc, jsonldOptions)
 	if err != nil {
