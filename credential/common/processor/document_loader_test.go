@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/piprate/json-gold/ld"
 )
 
 func contextServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
@@ -508,4 +510,57 @@ func TestContextErrors_AreReachable(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
+}
+
+// One operation may parse maxContextBytesPerOperation and no more: a context
+// that includes itself is parsed again on each load. Bundled contexts count.
+func TestContextBudget_BytesPerOperation(t *testing.T) {
+	srv := contextServer(t, func(w http.ResponseWriter, _ *http.Request) { writeContext(w, "term") })
+	useTestClient(t, srv)
+	doc, err := defaultDocumentLoader.LoadDocument(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := len(defaultDocumentLoader.fallback.Load().docs[doc.DocumentURL].raw)
+	const bundled = "https://www.w3.org/ns/credentials/v2"
+
+	for name, tc := range map[string]struct {
+		url  string
+		size int
+	}{
+		"remote":  {srv.URL, remote},
+		"bundled": {bundled, len(wellKnownContexts[bundled])},
+	} {
+		t.Run(name, func(t *testing.T) {
+			budget := newContextBudget()
+			budget.bytes = maxContextBytesPerOperation - tc.size
+			if _, err := budget.LoadDocument(tc.url); err != nil {
+				t.Fatalf("at the limit: %v", err)
+			}
+			budget = newContextBudget()
+			budget.bytes = maxContextBytesPerOperation - tc.size + 1
+			if _, err := budget.LoadDocument(tc.url); !errors.Is(err, ErrContextOverflow) {
+				t.Fatalf("one past the limit: %v", err)
+			}
+		})
+	}
+}
+
+func TestCanonicalize_ContextIncludingItselfStopsAtTheByteLimit(t *testing.T) {
+	var body string
+	srv := contextServer(t, func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, body) })
+	useTestClient(t, srv)
+	const pad = 64 << 10
+	body = fmt.Sprintf(`{"@context":["%s/"%s]}`, srv.URL, strings.Repeat(",{}", pad/3))
+
+	budget := newContextBudget()
+	opts := sdOptions()
+	opts.DocumentLoader = budget
+	_, err := ld.NewJsonLdProcessor().Expand(docUsing(srv.URL+"/", "term"), opts)
+	if !errors.Is(err, ErrContextOverflow) {
+		t.Fatalf("got %v", err)
+	}
+	if want := maxContextBytesPerOperation/pad + 1; budget.loads > want {
+		t.Fatalf("%d loads, the limit allows %d", budget.loads, want)
+	}
 }
