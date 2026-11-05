@@ -95,13 +95,15 @@ type contextLoadError struct{ cause error }
 func (e *contextLoadError) Error() string   { return ErrContextLoad.Error() }
 func (e *contextLoadError) Unwrap() []error { return []error{ErrContextLoad, e.cause} }
 
-// SetDocumentLoaderHTTPClient replaces the HTTP client that fetches remote
-// @context documents and empties the context cache. It is a test hook, for
-// suites that serve custom contexts from an httptest server on 127.0.0.1:
-// client's own transport decides what it may reach, so the refusal of
-// non-public addresses does not apply to it. The time, size and scheme limits
-// still do. nil restores the default client, which production code never needs
-// to set.
+// SetDocumentLoaderHTTPClient replaces the process-wide HTTP client that fetches
+// remote @context documents and empties the context cache. Tests use it to reach
+// an httptest server. A service behind an egress proxy must use it too, because
+// the default client ignores HTTP_PROXY.
+//
+// The refusal of non-public addresses lives in the default client, so a client
+// set here drops it for every fetch in the process, and whatever that client
+// connects through must do the filtering. The time, size and scheme limits still
+// apply. nil restores the default client.
 func SetDocumentLoaderHTTPClient(client *http.Client) {
 	if client == nil {
 		client = publicOnlyClient
