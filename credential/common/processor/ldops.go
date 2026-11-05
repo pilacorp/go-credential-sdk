@@ -12,7 +12,8 @@ import (
 // of canonical N-Quad statements. When the document contains no blank nodes the
 // sorted N-Quads are already canonical per RDFC-1.0; callers that may have blank
 // nodes should canonicalize with an id map instead (see CanonicalizeWithIdMap).
-func ToNQuads(input interface{}) ([]string, error) {
+func ToNQuads(input interface{}) (result []string, err error) {
+	defer recoverJSONLD(&err, "to nquads")
 	proc, opts := newProcessor()
 	opts.Format = "application/n-quads"
 	if err := limitInlineContexts(opts, input); err != nil {
