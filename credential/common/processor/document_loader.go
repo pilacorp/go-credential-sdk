@@ -440,7 +440,8 @@ func refuseNonPublic(_, address string, _ syscall.RawConn) error {
 
 // nonPublicPrefixes is the table of digitalcredential/internal/safehttp, which
 // this module cannot import: the IANA special-purpose registries' entries that
-// are not globally reachable, plus multicast and deprecated site-local.
+// are not globally reachable, plus multicast and deprecated site-local. Change
+// the two tables together: no build or test compares them.
 var nonPublicPrefixes = func() []netip.Prefix {
 	var prefixes []netip.Prefix
 	for _, p := range []string{
