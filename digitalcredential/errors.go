@@ -18,7 +18,7 @@ const (
 	// the string is not an SD-JWT in compact form (RFC 9901 §4): see
 	// sdjwt.Split for the structural rules and the size limits. From Verify
 	// also: a JWS or JSON this SDK does not read, a header with crit or b64,
-	// an iss, exp, nbf or aud of the wrong type, a vct, aka_vcts or
+	// an iss, exp, nbf, iat or aud of the wrong type, a vct, aka_vcts or
 	// vct#integrity of the wrong shape (draft-ietf-oauth-sd-jwt-vc-19
 	// §2.2.2.1-2.2.2.3, §5.3), or a status claim of the wrong shape
 	// (draft-ietf-oauth-status-list-21 §6.2). When Key Binding is required,
@@ -77,7 +77,8 @@ const (
 	// skew (RFC 7519 §4.1.4).
 	CodeExpired Code = "EXPIRED"
 	// CodeNotYetValid: the time of the check is before nbf minus the clock
-	// skew (RFC 7519 §4.1.5).
+	// skew (RFC 7519 §4.1.5) or, with WithRejectFutureIAT, before iat minus
+	// the clock skew.
 	CodeNotYetValid Code = "NOT_YET_VALID"
 	// CodeAudienceMismatch: the Issuer-signed JWT has aud and it does not
 	// list the value of WithCredentialAudience, or that option is not passed
@@ -142,6 +143,10 @@ const (
 	// Type Metadata (draft 19 §5.6, typemeta.ErrViolated): a path error, a
 	// mandatory claim certainly missing, or a claim against its sd.
 	CodeTypeMetadataViolated Code = "TYPE_METADATA_VIOLATED"
+	// CodeIATCheckFailed: the WithIATCheck function failed with an error other
+	// than *Error while ctx was still live, so iat is unchecked. Err wraps that
+	// error.
+	CodeIATCheckFailed Code = "IAT_CHECK_FAILED"
 	// CodeRevoked: the status is 0x01, INVALID in
 	// draft-ietf-oauth-status-list-21 §7.1, and not in WithAcceptedStatus.
 	CodeRevoked Code = "REVOKED"

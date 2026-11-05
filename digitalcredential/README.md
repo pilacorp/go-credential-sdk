@@ -163,8 +163,8 @@ if err != nil {
 }
 ```
 
-An `*dc.Error` that a resolver or the `StatusChecker` led to wraps its error, and so does the ctx error, which wraps
-`ctx.Err()` too. `errors.Is` and `errors.As` reach the cause, such as an `issuermeta.StatusError`.
+An `*dc.Error` that a resolver, the `WithIATCheck` function or the `StatusChecker` led to wraps its error, and so does
+the ctx error, which wraps `ctx.Err()` too. `errors.Is` and `errors.As` reach the cause, such as an `issuermeta.StatusError`.
 
 With no option, `Verify` follows the standard's rule where it sets one, and otherwise the SDK default in the table, which never accepts what the standard rejects. The options set what the standards leave to the Verifier:
 
@@ -176,7 +176,9 @@ With no option, `Verify` follows the standard's rule where it sets one, and othe
 | `WithAudience(aud)`, `WithNonce(n)` | Needed whenever a KB-JWT is checked, compared byte for byte (§7.3 step 5f) |
 | `WithCredentialAudience(aud)` | A credential with `aud` is `AUDIENCE_MISMATCH` (RFC 7519 §4.1.3) |
 | `WithMaxKBAge(d)` | 5 minutes for the KB-JWT `iat` (§7.3 step 5e) |
-| `WithClockSkew(d)` | 1 minute on `exp`, `nbf` and the KB-JWT `iat` |
+| `WithClockSkew(d)` | 1 minute on `exp`, `nbf`, the KB-JWT `iat` and the check of `WithRejectFutureIAT` |
+| `WithRejectFutureIAT()` | A future `iat` verifies: RFC 7519 §4.1.6 sets no rule on it. Passed, an `iat` later than now plus the skew is `NOT_YET_VALID`; an absent or concealed `iat` passes. With or without it, an `iat` that is not a NumericDate is `MALFORMED` |
+| `WithIATCheck(verify)` | No check of the caller's. Passed, `verify` gets `iat`, or `nil` when the credential shows none, after every check but status. An `*dc.Error` it returns refuses with that `Code`; any other error is `IAT_CHECK_FAILED` |
 | `WithStatus(checker)` | A credential with `status_list` is `ErrPolicy`, so a forgotten checker never accepts a revoked credential |
 | `WithoutStatusCheck()` | Status is checked, as -19 §2.4 says it SHOULD be; with this option it is not, and `Result.StatusSkipped` says so |
 | `WithAcceptedStatus(v...)` | Only `0x00`, VALID (draft 21 §7.1) |
@@ -397,10 +399,10 @@ if err != nil {
   `superseded`, verifies until it expires. Its issuer retired it and did not lose it, and refusing it would end every
   credential it signed.
 - That exception goes beyond CID, which defines no reason and expects no proof to verify at or after the `revoked` time.
-  `Keys` does not see when a token was signed and the SDK compares no `iat`: an issuer may conceal it, and whoever holds
-  the key can write any value. So such a key also verifies tokens signed after it was revoked. A key revoked with
-  `keyCompromise` or with no reason fails for every token, those signed before that time included (CID §5.5.1: without a
-  reliable time of signing, only the present moment counts). The reason is compared as written.
+  `Keys` does not see when a token was signed, and no `iat` is compared with the `revoked` time: an issuer may conceal
+  it, and whoever holds the key can write any value. So such a key also verifies tokens signed after it was revoked. A
+  key revoked with `keyCompromise` or with no reason fails for every token, those signed before that time included (CID
+  §5.5.1: without a reliable time of signing, only the present moment counts). The reason is compared as written.
 - The document's `id` must equal `iss` as a string (DID Resolution §4), case included.
 - Every DID the resolver answers for is accepted, as an empty trust list is. Pass the DIDs you accept to
   `WithAcceptedIssuers`.
