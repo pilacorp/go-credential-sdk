@@ -1,7 +1,7 @@
 // Verifying an SD-JWT VC on the Verifier side: draft-ietf-oauth-sd-jwt-vc-19
 // §2.4 (verification), §2.2.2.1-2.2.2.3 (claims) and §2.5 (issuer key); RFC
 // 9901 §4, §7.1 (the SD-JWT), §7.3 (Key Binding) and §9.5; RFC 7519
-// §4.1.3-4.1.5; draft-ietf-oauth-status-list-21 §6.2, §7.1 and §8.3 (status).
+// §4.1.3-4.1.6; draft-ietf-oauth-status-list-21 §6.2, §7.1 and §8.3 (status).
 
 package dc
 
@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/jsonint"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/internal/sri"
@@ -135,8 +136,10 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 //     signature is bad too;
 //  5. the Disclosures (RFC 9901 §7.1 steps 3-5), and none of a claim §2.2.2.3
 //     keeps out of them: DISCLOSURE_INVALID;
-//  6. exp, nbf (RFC 7519 §4.1.4, §4.1.5) and aud (§4.1.3): EXPIRED,
-//     NOT_YET_VALID, AUDIENCE_MISMATCH;
+//  6. exp, nbf (RFC 7519 §4.1.4, §4.1.5), iat (§4.1.6) and aud (§4.1.3):
+//     EXPIRED, NOT_YET_VALID, AUDIENCE_MISMATCH. An iat that is not a
+//     NumericDate is MALFORMED; a future one is NOT_YET_VALID only with
+//     WithRejectFutureIAT;
 //  7. vct, aka_vcts, vct#integrity as integrity metadata (§2.2.2.1-2.2.2.3,
 //     §5.3) and the shape of status (draft-ietf-oauth-status-list-21 §6.2):
 //     MALFORMED. idx is read by its value (RFC 8259 §6), so 1.0, 1e3 and -0
@@ -148,7 +151,9 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 //     issued against its claim metadata (§5.6): the TYPE_METADATA_ codes.
 //     With WithExtendedVCTMatch, the types, the extends chain included:
 //     VCT_NOT_ACCEPTED;
-//  10. status last (draft-ietf-oauth-status-list-21 §8.3), unless
+//  10. with WithIATCheck, the caller's function: the Code of the *Error it
+//     returns, IAT_CHECK_FAILED for any other error;
+//  11. status last (draft-ietf-oauth-status-list-21 §8.3), unless
 //     WithoutStatusCheck: the status codes, MALFORMED for an idx outside the
 //     list.
 //
@@ -158,21 +163,22 @@ var neverDisclosableSorted = slices.Sorted(maps.Keys(neverDisclosable))
 //
 // Errors fall in three classes; test them in this order:
 //   - *Error (errors.As): the token is rejected, and Code says why. One that
-//     an error of issuers, the typemeta.Resolver or the StatusChecker led
-//     to wraps that error, so errors.Is and errors.As still reach its
-//     causes, such as typemeta.ErrRedirectNotAllowed or an
-//     issuermeta.StatusError;
+//     an error of issuers, the typemeta.Resolver, the WithIATCheck function
+//     or the StatusChecker led to wraps that error, so errors.Is and
+//     errors.As still reach its causes, such as
+//     typemeta.ErrRedirectNotAllowed or an issuermeta.StatusError;
 //   - ErrPolicy (errors.Is): the caller's arguments, options or
 //     dependencies are at fault;
-//   - anything else: ctx ended while issuers, the typemeta.Resolver or the
-//     StatusChecker ran; nothing is known about the token. The error wraps
-//     both ctx.Err() and the error of that dependency as it was returned,
-//     so errors.Is and errors.As reach either; Verify gives it no Code. A
-//     dependency's error that itself wraps an *Error or ErrPolicy, such as
-//     one from a dependency that calls Verify, matches the first two tests
-//     too. ErrIssuerNotSupported or ErrNoUsableKey from issuers, and
-//     statuslist.ErrIndexOutOfBounds from the StatusChecker, are definite
-//     answers and win over ctx.
+//   - anything else: ctx ended while issuers, the typemeta.Resolver, the
+//     WithIATCheck function or the StatusChecker ran; nothing is known about
+//     the token. The error wraps both ctx.Err() and the error of that
+//     dependency as it was returned, so errors.Is and errors.As reach
+//     either; Verify gives it no Code. A dependency's error that itself
+//     wraps an *Error or ErrPolicy, such as one from a dependency that calls
+//     Verify, matches the first two tests too. ErrIssuerNotSupported or
+//     ErrNoUsableKey from issuers, statuslist.ErrIndexOutOfBounds from the
+//     StatusChecker and an *Error from the WithIATCheck function are
+//     definite answers and win over ctx.
 //
 // An *Error can wrap context.DeadlineExceeded too, from a timeout inside a
 // dependency while ctx is not done, so the order of the classes matters.
@@ -318,6 +324,16 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 			return reject(CodeMalformed, err)
 		}
 	}
+	// RFC 7519 §4.1.6: iat MUST be a NumericDate. An absent or concealed iat
+	// is no fault: the claim is OPTIONAL and may be concealed (draft 19 §2.2.2.3).
+	iat, hasIat, err := jwt.DateClaim(claims, "iat")
+	if err != nil {
+		return reject(CodeMalformed, err)
+	}
+	// Shifting now, not the claim, keeps a far-off date from overflowing.
+	if cfg.rejectFutureIAT && hasIat && cfg.now.Add(cfg.skew).Before(iat) {
+		return reject(CodeNotYetValid, fmt.Errorf("iat %s is later than the time of the check plus the clock skew", iat.UTC()))
+	}
 	if err := jwt.CheckAud(claims, cfg.credAudience); err != nil {
 		if errors.Is(err, jwt.ErrAudience) {
 			return reject(CodeAudienceMismatch, fmt.Errorf("WithCredentialAudience: %w", err))
@@ -346,6 +362,10 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 	}
 	if cfg.extendedVCT && !cfg.typeAccepted(res) {
 		return reject(CodeVCTNotAccepted, errors.New("neither vct, aka_vcts nor a type its Type Metadata extends is a type in WithAcceptedVCTs"))
+	}
+
+	if err := cfg.checkIAT(ctx, iat, hasIat); err != nil {
+		return nil, err
 	}
 
 	if !st.present {
@@ -590,6 +610,31 @@ func readStatus(claims map[string]any) (statusClaim, error) {
 		return statusClaim{}, fmt.Errorf("status.status_list: %v", err)
 	}
 	return st, nil
+}
+
+// checkIAT asks the WithIATCheck function about iat, nil to it when the
+// credential does not show one. Its errors are *Error or wrap ctx.Err().
+func (cfg verifyConfig) checkIAT(ctx context.Context, iat time.Time, shown bool) error {
+	if cfg.verifyIAT == nil {
+		return nil
+	}
+	var read *time.Time
+	if shown {
+		read = &iat
+	}
+	err := cfg.verifyIAT(ctx, read)
+	var refused *Error
+	switch {
+	case err == nil:
+		return nil
+	// A definite answer, whatever ctx says.
+	case errors.As(err, &refused):
+		return err
+	case ctx.Err() != nil:
+		return fmt.Errorf("dc: checking iat: %w (WithIATCheck: %w)", ctx.Err(), err)
+	default:
+		return &Error{Code: CodeIATCheckFailed, Err: fmt.Errorf("WithIATCheck: %w", err)}
+	}
 }
 
 // checkStatus asks the StatusChecker for the status st refers to. Its errors
