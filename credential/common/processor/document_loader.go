@@ -41,9 +41,15 @@ const (
 // It is a var so tests can shorten it.
 var contextFetchTimeout = 10 * time.Second
 
-// errContextLoad is every failed fetch. The cause stays out of the text: it
-// would tell the caller whether an address or port answered.
+// errContextLoad is every failed fetch.
 var errContextLoad = ld.NewJsonLdError(ld.LoadingDocumentFailed, "remote context could not be loaded")
+
+// contextLoadError keeps the cause of a failed fetch off the text, which would
+// tell the caller whether an address or port answered, and on the chain.
+type contextLoadError struct{ cause error }
+
+func (e *contextLoadError) Error() string   { return errContextLoad.Error() }
+func (e *contextLoadError) Unwrap() []error { return []error{errContextLoad, e.cause} }
 
 // SetDocumentLoaderHTTPClient replaces the HTTP client that fetches remote
 // @context documents and empties the context cache. It is a test hook, for
@@ -85,7 +91,7 @@ func (l *cachingDocumentLoader) LoadDocument(rawURL string) (*ld.RemoteDocument,
 
 	doc, err := l.fetch(rawURL)
 	if err != nil {
-		return nil, errContextLoad
+		return nil, &contextLoadError{cause: err}
 	}
 
 	entry := cloneRemoteDocument(doc)

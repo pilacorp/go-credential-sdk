@@ -384,3 +384,33 @@ func TestCustomContext_LoadsThroughHookOnly(t *testing.T) {
 		t.Fatalf("the server was reached %d times", hits.Load())
 	}
 }
+
+// A log wants the cause and a caller must not see it: the text stays one, and
+// the chain holds what went wrong.
+func TestLoadDocument_CauseIsOnTheChainOnly(t *testing.T) {
+	srv := contextServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/big":
+			fmt.Fprintf(w, `{"@context":{"pad":"%s"}}`, strings.Repeat("x", maxContextBytes))
+		case "/notjson":
+			fmt.Fprint(w, `<html>`)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	})
+	useTestClient(t, srv)
+
+	_, big := defaultDocumentLoader.LoadDocument(srv.URL + "/big")
+	var tooBig *http.MaxBytesError
+	if !errors.As(big, &tooBig) {
+		t.Fatalf("the cause is gone: %v", big)
+	}
+	if !errors.Is(big, errContextLoad) {
+		t.Fatalf("got %v", big)
+	}
+	for _, path := range []string{"/notjson", "/500"} {
+		if _, err := defaultDocumentLoader.LoadDocument(srv.URL + path); err == nil || err.Error() != big.Error() {
+			t.Fatalf("%s reads differently: %v", path, err)
+		}
+	}
+}
