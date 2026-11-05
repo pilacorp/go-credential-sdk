@@ -40,6 +40,11 @@ const (
 	// maxContextLoadTime bounds one JSON-LD operation's remote loads taken
 	// together, for a chain of contexts each answering just under the timeout.
 	maxContextLoadTime = 30 * time.Second
+	// maxContextBytesPerOperation bounds the context bytes one JSON-LD operation
+	// parses, because maxContextLoads alone lets it parse one context 1024 times.
+	// All the bundled contexts are about 30 KB, and one context at
+	// maxContextBytes still fits.
+	maxContextBytesPerOperation = 4 << 20
 )
 
 // contextFetchTimeout bounds one fetch: all its requests, each body included.
@@ -108,22 +113,29 @@ func (c *cachedContext) decode() (*ld.RemoteDocument, error) {
 
 // LoadDocument implements ld.DocumentLoader.
 func (l *cachingDocumentLoader) LoadDocument(rawURL string) (*ld.RemoteDocument, error) {
+	doc, _, err := l.load(rawURL)
+	return doc, err
+}
+
+// load is LoadDocument and the size of what it cached, for contextBudget.
+func (l *cachingDocumentLoader) load(rawURL string) (*ld.RemoteDocument, int, error) {
 	l.mu.RLock()
 	entry, cached := l.docs[rawURL]
 	l.mu.RUnlock()
 	if cached {
-		return entry.decode()
+		doc, err := entry.decode()
+		return doc, len(entry.raw), err
 	}
 
 	doc, err := l.fetch(rawURL)
 	if err != nil {
-		return nil, &contextLoadError{cause: err}
+		return nil, 0, &contextLoadError{cause: err}
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(doc.Document); err != nil {
-		return nil, &contextLoadError{cause: err}
+		return nil, 0, &contextLoadError{cause: err}
 	}
 	entry = &cachedContext{raw: buf.Bytes(), documentURL: doc.DocumentURL, contextURL: doc.ContextURL}
 	l.mu.Lock()
@@ -137,7 +149,7 @@ func (l *cachingDocumentLoader) LoadDocument(rawURL string) (*ld.RemoteDocument,
 	}
 	l.docs[rawURL] = entry
 	l.mu.Unlock()
-	return doc, nil
+	return doc, len(entry.raw), nil
 }
 
 func (l *cachingDocumentLoader) fetch(rawURL string) (*ld.RemoteDocument, error) {
@@ -193,10 +205,12 @@ func (t *boundedTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 // contextBudget is the loader of one JSON-LD operation: it stops the recursion
-// and the chains described at maxContextLoads and maxContextLoadTime. Bundled
-// contexts are free: they are local and include no remote context.
+// and the chains described at maxContextLoads, maxContextLoadTime and
+// maxContextBytesPerOperation. Bundled contexts include no remote context and
+// spend no load, only bytes.
 type contextBudget struct {
 	loads    int
+	bytes    int
 	deadline time.Time
 }
 
@@ -206,12 +220,23 @@ func newContextBudget() *contextBudget {
 
 // LoadDocument implements ld.DocumentLoader.
 func (b *contextBudget) LoadDocument(rawURL string) (*ld.RemoteDocument, error) {
-	if _, bundled := wellKnownContexts[rawURL]; !bundled {
-		if b.loads++; b.loads > maxContextLoads || time.Now().After(b.deadline) {
+	if data, bundled := wellKnownContexts[rawURL]; bundled {
+		if b.bytes += len(data); b.bytes > maxContextBytesPerOperation {
 			return nil, ErrContextOverflow
 		}
+		return defaultDocumentLoader.LoadDocument(rawURL)
 	}
-	return defaultDocumentLoader.LoadDocument(rawURL)
+	if b.loads++; b.loads > maxContextLoads || time.Now().After(b.deadline) {
+		return nil, ErrContextOverflow
+	}
+	doc, size, err := defaultDocumentLoader.fallback.Load().load(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if b.bytes += size; b.bytes > maxContextBytesPerOperation {
+		return nil, ErrContextOverflow
+	}
+	return doc, nil
 }
 
 // publicOnlyClient is the client of every context fetch unless a test replaced
