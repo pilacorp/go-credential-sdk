@@ -29,6 +29,12 @@ const issuerDID = "did:example:issuer"
 // resolverFor serves a document with one assertion key over the HTTPS binding.
 func resolverFor(t *testing.T, vm map[string]any) *didresolver.Resolver {
 	t.Helper()
+	return resolverWith(t, vm, nil)
+}
+
+// resolverWith is resolverFor with an AcceptKey.
+func resolverWith(t *testing.T, vm map[string]any, accept didresolver.AcceptKeyFunc) *didresolver.Resolver {
+	t.Helper()
 	vm["id"], vm["controller"] = issuerDID+"#key-1", issuerDID
 	body, err := json.Marshal(map[string]any{
 		"id":                 issuerDID,
@@ -47,7 +53,7 @@ func resolverFor(t *testing.T, vm map[string]any) *didresolver.Resolver {
 		w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
-	r, err := didresolver.New(didresolver.Config{URL: srv.URL + "/did/", HTTPClient: srv.Client()})
+	r, err := didresolver.New(didresolver.Config{URL: srv.URL + "/did/", HTTPClient: srv.Client(), AcceptKey: accept})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,5 +178,48 @@ func TestMultiReadsBothKindsOfIssuer(t *testing.T) {
 	}
 	if _, err = verify(t, r, compact); err != nil {
 		t.Error(err)
+	}
+}
+
+// A key rotated out is revoked in the document with the reason superseded. By
+// default its tokens still verify and those of a compromise do not; an AcceptKey
+// that drops the reason keeps CID alone, and one that says no refuses even a
+// key in force.
+func TestVerifyWithAcceptKey(t *testing.T) {
+	revoked := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	cidOnly := func(k didresolver.KeyInfo) bool {
+		k.RevocationReason = ""
+		return didresolver.DefaultAcceptKey(k)
+	}
+	no := func(didresolver.KeyInfo) bool { return false }
+	for name, tc := range map[string]struct {
+		revoked bool
+		reason  string
+		accept  didresolver.AcceptKeyFunc
+		want    dc.Code
+	}{
+		"rotated, default":            {true, "superseded", nil, ""},
+		"rotated, CID alone":          {true, "superseded", cidOnly, dc.CodeIssuerKeyNotFound},
+		"retired, default":            {true, "cessationOfOperation", nil, ""},
+		"compromise, default":         {true, "keyCompromise", nil, dc.CodeIssuerKeyNotFound},
+		"no reason, default":          {true, "", nil, dc.CodeIssuerKeyNotFound},
+		"in force, default":           {false, "", nil, ""},
+		"in force, AcceptKey says no": {false, "", no, dc.CodeIssuerKeyNotFound},
+	} {
+		compact, vm := p256Issuer(t)
+		if tc.revoked {
+			vm["revoked"] = revoked
+		}
+		if tc.reason != "" {
+			vm["revocationReason"] = tc.reason
+		}
+		_, err := verify(t, resolverWith(t, vm, tc.accept), compact)
+		var e *dc.Error
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%s: %v", name, err)
+		case tc.want != "" && (!errors.As(err, &e) || e.Code != tc.want):
+			t.Errorf("%s: err = %v; want %s", name, err, tc.want)
+		}
 	}
 }

@@ -45,7 +45,7 @@ func parseResolution(body []byte, did string) (map[string]any, error) {
 // assertionKeys walks assertionMethod in its order. As RFC 7517 §5 does for a
 // JWK, a method this SDK cannot use is skipped so the others still verify,
 // and a document whose structure is wrong is not used at all.
-func assertionKeys(doc map[string]any, did string, now time.Time) ([]issuerkey.PublicKey, error) {
+func assertionKeys(doc map[string]any, did string, now time.Time, accept AcceptKeyFunc) ([]issuerkey.PublicKey, error) {
 	methods, err := methodsByID(doc, did)
 	if err != nil {
 		return nil, err
@@ -74,11 +74,21 @@ func assertionKeys(doc map[string]any, did string, now time.Time) ([]issuerkey.P
 		default:
 			return nil, fault("assertionMethod holds an element that is neither a reference nor a verification method (CID §2.3.2)")
 		}
-		if vm == nil || seen[id] || !belongs(vm, id, did) || !inForce(vm, now) {
+		// A method is judged once, and only one this SDK can use reaches
+		// accept, so Config.AcceptKey is asked once and only about a key it
+		// could accept.
+		if vm == nil || seen[id] {
 			continue
 		}
 		seen[id] = true
-		if pub := publicKey(vm); pub != nil {
+		if !belongs(vm, id, did) {
+			continue
+		}
+		pub := publicKey(vm)
+		if pub == nil {
+			continue
+		}
+		if info, ok := keyInfo(vm, id, now); ok && accept(info) {
 			keys = append(keys, issuerkey.PublicKey{KID: id, Public: pub})
 		}
 	}
@@ -132,20 +142,28 @@ func belongs(vm map[string]any, id, did string) bool {
 	return ok && fragment != "" && controller == did
 }
 
-// inForce applies revoked and expires (CID §2.2): systems "are expected to not
-// verify any proofs associated with the verification method at or after" those
-// times. Both MUST be a dateTimeStamp, so one this reader cannot read might
-// mean the key is gone, and the key is dropped.
-func inForce(vm map[string]any, now time.Time) bool {
-	for _, name := range []string{"revoked", "expires"} {
-		v, ok := vm[name]
-		if !ok {
+// keyInfo reads what vm says of its key's lifetime (CID §2.2). revoked and
+// expires MUST be a dateTimeStamp, so one this reader cannot read might mean
+// the key is gone: ok is false and the key is dropped before any AcceptKeyFunc
+// sees it. So is the zero time, which KeyInfo would show as no time at all and
+// turn a key revoked long ago into one in force.
+func keyInfo(vm map[string]any, id string, now time.Time) (info KeyInfo, ok bool) {
+	info = KeyInfo{ID: id, At: now}
+	for _, f := range []struct {
+		name string
+		at   *time.Time
+	}{{"revoked", &info.Revoked}, {"expires", &info.Expires}} {
+		v, present := vm[f.name]
+		if !present {
 			continue
 		}
 		s, _ := v.(string)
-		if t, err := time.Parse(time.RFC3339, s); err != nil || !now.Before(t) {
-			return false
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil || t.IsZero() {
+			return KeyInfo{}, false
 		}
+		*f.at = t
 	}
-	return true
+	info.RevocationReason, _ = vm["revocationReason"].(string)
+	return info, true
 }

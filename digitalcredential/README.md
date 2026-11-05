@@ -385,11 +385,21 @@ if err != nil {
   DID. It must be https. For another transport set `Resolver` instead, to a `DIDResolver` that returns the JSON of a
   resolution result or of the document alone; the same rules then read it. Exactly one of the two is set.
 - Keys are the verification methods `assertionMethod` lists (CID §2.3.2), with the absolute URL of the method as `kid`,
-  so a token's `kid` is that URL, or absent when the document lists one key. A method is left out when it belongs to
-  another document or controller (CID §3.3), when `revoked` or `expires` has passed (CID §2.2; a time that cannot be
-  read counts as passed), or when it holds no single key this SDK reads: `Multikey` on P-256, `JsonWebKey` on P-256 or
-  secp256k1, `publicKeyHex` on `EcdsaSecp256k1VerificationKey2019`. `Keys` does not see when a token was signed, so a
-  key past its `revoked` time fails for every token, those signed before that time included.
+  so a token's `kid` is that URL. It may be absent only while one key of the document is accepted, and a retired key
+  that `AcceptKey` keeps counts, so an issuer that rotates keys sets `kid`. A method is left out when it belongs to
+  another document or controller (CID §3.3), when `Config.AcceptKey` refuses it (a `revoked` or `expires` time that
+  cannot be read refuses it before), or when it holds no single key this SDK reads: `Multikey` on P-256, `JsonWebKey`
+  on P-256 or secp256k1, `publicKeyHex` on `EcdsaSecp256k1VerificationKey2019`.
+- `AcceptKey` decides which keys verify. It is called once for each method left after those checks, with a `KeyInfo`
+  (`ID`, `Revoked`, `Expires`, `RevocationReason`, `At`). nil uses `DefaultAcceptKey`: a key verifies until its `revoked`
+  or `expires` time (CID §2.2), except that a key revoked with a `revocationReason` other than `keyCompromise`, such as
+  `superseded`, verifies until it expires. Its issuer retired it and did not lose it, and refusing it would end every
+  credential it signed.
+- That exception goes beyond CID, which defines no reason and expects no proof to verify at or after the `revoked` time.
+  `Keys` does not see when a token was signed and the SDK compares no `iat`: an issuer may conceal it, and whoever holds
+  the key can write any value. So such a key also verifies tokens signed after it was revoked. A key revoked with
+  `keyCompromise` or with no reason fails for every token, those signed before that time included (CID §5.5.1: without a
+  reliable time of signing, only the present moment counts). The reason is compared as written.
 - The document's `id` must equal `iss` as a string (DID Resolution §4), case included.
 - Every DID the resolver answers for is accepted, as an empty trust list is. Pass the DIDs you accept to
   `WithAcceptedIssuers`.
@@ -404,6 +414,21 @@ if err != nil {
   `HTTPClient` that caches.
 - The default client refuses addresses that are not globally reachable. A DID resolver inside your network needs
   `HTTPClient`, which is trusted code as above.
+
+To apply CID with no exception, so that a key revoked for any reason stops at its `revoked` time:
+
+```go
+dids, err := didresolver.New(didresolver.Config{
+	URL: "https://resolver.example/1.0/identifiers/",
+	AcceptKey: func(k didresolver.KeyInfo) bool {
+		k.RevocationReason = ""
+		return didresolver.DefaultAcceptKey(k)
+	},
+})
+if err != nil {
+	return err
+}
+```
 
 To read both kinds of issuer, join the two resolvers with `Multi`. A Verifier that meets only one kind needs only that
 one.
