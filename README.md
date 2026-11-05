@@ -81,11 +81,15 @@ Create methods with the common `vc.RenderMethod` model and attach them before
 signing. With ecdsa-sd-2023, pass `/renderMethod` as a mandatory pointer, or the
 holder can drop or trim methods and the derived proof still verifies.
 
-Consumers call `Verify` first, then validate `@context` against the contexts
-their application accepts (VC Data Integrity 1.0 §2.4.1, §4.6), then read the
-methods with `vc.ParseRenderMethods`. `RenderSummary` resolves JSON Pointers,
-`WrapHTMLTemplate` returns a `SrcDoc` that the host must load in a sandboxed
-iframe, and `ResolveStatic` returns the static bytes, checked against
+Consumers call `Verify` first, then run the context validation of VC Data
+Integrity 1.0 §4.6: `@context` deeply equals a known value, no subtree of the
+credential contains `@context`, and every context URL resolves to a known file
+or hash. Then read the methods with `vc.ParseRenderMethods`.
+`RenderSummary` resolves JSON Pointers,
+`WrapHTMLTemplate` returns a `SrcDoc` that the host must load in an iframe with
+`sandbox="allow-scripts"`, never `allow-same-origin`, on a page whose CSP
+includes `frame-src 'none'` (WD-20261013 §2.2.2.2),
+and `ResolveStatic` returns the static bytes, checked against
 `digestMultibase` when the template has one. All three accept
 `vc.RenderOptions` for template retrieval. External templates require an
 injected `TemplateFetcher`; when `digestMultibase` is present, SHA-256 multihash

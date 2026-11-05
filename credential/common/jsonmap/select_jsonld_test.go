@@ -159,3 +159,17 @@ func TestSelectJSONLDRejectsOverflowingArrayIndex(t *testing.T) {
 		}()
 	}
 }
+
+func TestSelectJSONLDRejectsPointerWithoutLeadingSlash(t *testing.T) {
+	document := map[string]interface{}{
+		"name": "top-level",
+		"credentialSubject": map[string]interface{}{
+			"name": "nested",
+		},
+	}
+	for _, pointer := range []string{"name", "credentialSubject/name"} {
+		if got, err := SelectJSONLD(document, []string{pointer}); err == nil {
+			t.Fatalf("SelectJSONLD(%q) = %v, want error", pointer, got)
+		}
+	}
+}

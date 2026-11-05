@@ -32,9 +32,12 @@ type RenderMethod struct {
 
 // ParseRenderMethods reads the renderMethod member of a credential, given as
 // one object or an array, and returns the entries this SDK can render, in
-// document order. Call it after Verify and after validating @context against
-// the contexts the application accepts (VC Data Integrity 1.0 §2.4.1, §4.6):
-// it checks neither the proof nor the contexts.
+// document order. That order is not the issuer's preference: the VC context does
+// not declare renderMethod as @list, so a Data Integrity proof does not cover it.
+// Call it after Verify and after the context validation of VC Data Integrity
+// 1.0 §4.6 (@context deeply equals a known value, no subtree contains @context,
+// and every context URL resolves to a known file or hash): it checks neither
+// the proof nor the contexts.
 //
 // Entries whose type is not SuiteRenderMethod, whose renderSuite is not
 // summary, html or static, or that have no template (remote render methods,
@@ -42,11 +45,12 @@ type RenderMethod struct {
 // for suites a consumer does not support. A supported entry that fails to
 // decode or validate is an error, reported with its index.
 //
-// When the credential embeds a proof, its JSON-LD is expanded first: only terms
-// the @context defines are covered by a Data Integrity proof, so a credential
-// whose render-method terms the @context does not define is refused. A
-// credential secured outside the document, such as JOSE, has no proof member
-// and skips that step.
+// When the credential embeds a proof, its JSON-LD is expanded first, and a
+// credential with a term the @context does not define is refused. This is not
+// a coverage check: a context with @vocab defines every term, and the result
+// still relies on the VC Data Integrity 1.0 §4.6 check above. A credential
+// secured outside the document, such as JOSE, has no proof member and skips
+// that step.
 func ParseRenderMethods(data CredentialData) ([]RenderMethod, error) {
 	raw, ok := data["renderMethod"]
 	if !ok || raw == nil {
@@ -93,10 +97,16 @@ func isSupportedRenderMethod(entry map[string]any) bool {
 	if entry["type"] != "SuiteRenderMethod" {
 		return false
 	}
-	switch entry["renderSuite"] {
+	suite, _ := entry["renderSuite"].(string)
+	// A null template is no template: indexing covers absent and null alike.
+	return isSupportedRenderSuite(suite) && entry["template"] != nil
+}
+
+// isSupportedRenderSuite reports whether this SDK renders suite.
+func isSupportedRenderSuite(suite string) bool {
+	switch suite {
 	case "summary", "html", "static":
-		_, hasTemplate := entry["template"]
-		return hasTemplate
+		return true
 	default:
 		return false
 	}
@@ -122,10 +132,10 @@ type EmbeddedTemplate struct {
 	Bytes     []byte
 }
 
-// TemplateReference points to a template outside the credential
-// (WD-20261013 §2.2). ID is an http or https URL; MediaType and
-// DigestMultibase are optional. When DigestMultibase is set, the fetched bytes
-// must match it.
+// TemplateReference points to a template outside the credential. WD-20261013
+// §2.2 requires id, recommends mediaType and makes digestMultibase optional.
+// This SDK accepts only http and https for ID and treats MediaType as optional.
+// When DigestMultibase is set, the fetched bytes must match it.
 type TemplateReference struct {
 	ID              string `json:"id"`
 	MediaType       string `json:"mediaType,omitempty"`
@@ -152,6 +162,10 @@ type RenderStyle struct {
 // the render suite, template URLs and media types, outputPreference, and the
 // content of an embedded template. It does not fetch a referenced template;
 // ValidateExternalTemplate checks one after retrieval.
+//
+// WD-20261013 §2.2 makes both id and template optional. This SDK also requires
+// a supported suite to have at least one of them, because a method with neither
+// cannot be rendered and a signed credential cannot be corrected.
 func (m RenderMethod) Validate() error {
 	if m.Type == "" {
 		return fmt.Errorf("renderMethod.type is required")
@@ -161,6 +175,9 @@ func (m RenderMethod) Validate() error {
 	}
 	if m.RenderSuite == "" {
 		return fmt.Errorf("renderMethod.renderSuite is required")
+	}
+	if isSupportedRenderSuite(m.RenderSuite) && m.Template == nil && m.ID == "" {
+		return fmt.Errorf("renderMethod requires template or id")
 	}
 	if m.ID != "" {
 		if err := validateURL(m.ID, "renderMethod.id"); err != nil {
@@ -242,11 +259,15 @@ func (p *OutputPreference) validate() error {
 
 // validateMediaType checks the syntax of an optional media type: empty is
 // allowed, anything else must parse as type/subtype with optional parameters.
+// mime.ParseMediaType also accepts a bare token such as "png" and wildcards such
+// as "text/*", neither of which names a media type (RFC 6838 §4.2), so both are
+// rejected here: the value is signed and cannot be corrected after issuance.
 func validateMediaType(mediaType string) error {
 	if mediaType == "" {
 		return nil
 	}
-	if _, _, err := mime.ParseMediaType(mediaType); err != nil {
+	parsed, _, err := mime.ParseMediaType(mediaType)
+	if err != nil || !strings.Contains(parsed, "/") || strings.Contains(parsed, "*") {
 		return fmt.Errorf("mediaType %q is not a valid media type", mediaType)
 	}
 	return nil
@@ -287,7 +308,8 @@ func (t Template) MarshalJSON() ([]byte, error) {
 	if t.Reference != nil {
 		return json.Marshal(t.Reference)
 	}
-	mediaType := t.Embedded.MediaType
+	// Whitespace is valid around media type parameters but not in a URL (RFC 3986).
+	mediaType := strings.Join(strings.Fields(t.Embedded.MediaType), "")
 	encoded := base64.StdEncoding.EncodeToString(t.Embedded.Bytes)
 	return json.Marshal("data:" + mediaType + ";base64," + encoded)
 }
@@ -310,9 +332,9 @@ func isDataURL(raw string) bool {
 	return len(raw) >= 5 && strings.EqualFold(raw[:5], "data:")
 }
 
-// decodeDataURL decodes an RFC 2397 data URL: the media type may be empty, the
-// ";base64" marker is matched case-insensitively, and percent-escapes are
-// decoded before base64, so "%3D" stands for "=".
+// decodeDataURL decodes a data URL. RFC 2397 lets the media type be empty. Like
+// the WHATWG Fetch data: URL processor, it matches ";base64" case-insensitively
+// and percent-decodes before base64.
 func decodeDataURL(raw string) (*EmbeddedTemplate, error) {
 	metadata, payload, ok := strings.Cut(raw[5:], ",")
 	if !ok {

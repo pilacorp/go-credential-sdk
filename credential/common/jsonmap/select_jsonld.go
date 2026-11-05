@@ -20,6 +20,9 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 	initJSONLDSelection(selection, document)
 
 	for _, pointer := range pointers {
+		if pointer != "" && !strings.HasPrefix(pointer, "/") {
+			return nil, fmt.Errorf("pointer %q must start with /", pointer)
+		}
 		path := parseJSONPointer(pointer)
 		if len(path) == 0 {
 			return deepCopyJSON(document).(map[string]interface{}), nil

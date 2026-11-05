@@ -70,7 +70,7 @@ func TestWrapHTMLTemplateUsesW3CCredentialDataBlock(t *testing.T) {
 	if !contains(artifact.SrcDoc, `<script name="credential" type="application/vc">`) {
 		t.Fatalf("artifact does not contain the W3C credential data block: %s", artifact.SrcDoc)
 	}
-	// WD-20261013 §2.2.2.2.2: the wrapper receives the port and provides
+	// WD-20261013 §2.2.2.2.3: the wrapper receives the port and provides
 	// window.renderMethodReady, after the data block and before the template.
 	setup := `<script>` + renderMethodReadySetup + `</script>`
 	dataBlock := strings.Index(artifact.SrcDoc, `<script name="credential" type="application/vc">`)

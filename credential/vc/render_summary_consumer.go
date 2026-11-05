@@ -66,7 +66,7 @@ func templateBytes(ctx context.Context, method RenderMethod, fetcher TemplateFet
 		return nil, fmt.Errorf("fetch %s template: %w", method.RenderSuite, err)
 	}
 	if ref.DigestMultibase != "" {
-		if err := VerifyDigestMultibase(data, ref.DigestMultibase); err != nil {
+		if err := verifyDigestMultibase(data, ref.DigestMultibase); err != nil {
 			return nil, fmt.Errorf("verify %s template digest: %w", method.RenderSuite, err)
 		}
 	}

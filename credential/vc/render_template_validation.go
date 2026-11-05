@@ -38,9 +38,10 @@ func (m RenderMethod) validateTemplateContent() error {
 	}
 }
 
-// isMediaType reports whether got names the media type want. Media types are
-// compared after parsing, so parameters and letter case do not matter (RFC 6838
-// §4.2): "Application/JSON; charset=utf-8" is application/json.
+// isMediaType reports whether got names the media type want, comparing after
+// parsing. Type and subtype are compared case-insensitively (RFC 6838 §4.2); this
+// SDK ignores parameters by its own choice: "Application/JSON; charset=utf-8" is
+// application/json.
 func isMediaType(got, want string) bool {
 	parsed, _, err := mime.ParseMediaType(got)
 	return err == nil && parsed == want
@@ -199,7 +200,7 @@ func (m RenderMethod) ValidateExternalRenderMethod(ctx context.Context, fetcher 
 		return fmt.Errorf("fetch external render method: %w", err)
 	}
 	if m.DigestMultibase != "" {
-		if err := VerifyDigestMultibase(data, m.DigestMultibase); err != nil {
+		if err := verifyDigestMultibase(data, m.DigestMultibase); err != nil {
 			return fmt.Errorf("render method digest verification failed: %w", err)
 		}
 	}
@@ -219,8 +220,8 @@ func (m RenderMethod) ValidateExternalRenderMethod(ctx context.Context, fetcher 
 	return fetched.Validate()
 }
 
-// VerifyDigestMultibase verifies a base64url multibase SHA-256 multihash.
-func VerifyDigestMultibase(data []byte, encoded string) error {
+// verifyDigestMultibase verifies a base64url multibase SHA-256 multihash.
+func verifyDigestMultibase(data []byte, encoded string) error {
 	expected, err := decodeDigestMultibase(encoded)
 	if err != nil {
 		return err

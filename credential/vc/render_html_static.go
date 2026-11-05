@@ -10,17 +10,21 @@ import (
 
 // HTMLRenderArtifact is the wrapper document for an HTML render method. The SDK
 // never executes it. SrcDoc already contains the wrapper side of WD-20261013
-// §2.2.2.2.2 (the port listener and window.renderMethodReady); the host page owns the
+// §2.2.2.2.3 (the port listener and window.renderMethodReady); the host page owns the
 // rest: the sandboxed iframe, its own CSP, the MessageChannel, and waiting for
 // the ready or error message.
 type HTMLRenderArtifact struct {
 	SrcDoc string
+	// Width and Height are raw credential values: assign them through
+	// element.style, never into HTML or a style attribute string.
 	Width  string
 	Height string
 }
 
 // WrapHTMLTemplate validates an HTML render method and returns its srcdoc. The
-// SDK does not isolate it: the host must load SrcDoc in a sandboxed iframe.
+// SDK does not isolate it: the host must load SrcDoc in an iframe with
+// sandbox="allow-scripts", never allow-same-origin, on a page whose CSP includes
+// frame-src 'none' (WD-20261013 §2.2.2.2).
 func (m RenderMethod) WrapHTMLTemplate(ctx context.Context, credential CredentialData, opts RenderOptions) (*HTMLRenderArtifact, error) {
 	if m.RenderSuite != "html" {
 		return nil, fmt.Errorf("render method suite must be html")
@@ -55,10 +59,11 @@ func (m RenderMethod) WrapHTMLTemplate(ctx context.Context, credential Credentia
 	return artifact, nil
 }
 
-// renderMethodReadySetup is the wrapper script of WD-20261013 §2.2.2.2.2. It receives
-// the MessageChannel port the host page sends with a "start" message and
-// defines window.renderMethodReady, which the template calls with no argument
-// when rendering is complete, or with an Error when it fails.
+// renderMethodReadySetup is the wrapper script of WD-20261013 §2.2.2.2.3
+// Example 12, which §3.2.2 requires. It receives the MessageChannel port the
+// host page sends with a "start" message and defines window.renderMethodReady,
+// which the template calls with no argument when rendering is complete, or with
+// an Error when it fails.
 const renderMethodReadySetup = `const portPromise = new Promise(resolve => {
   window.addEventListener('message', function start(event) {
     if(event.data === 'start' && event.ports?.[0]) {

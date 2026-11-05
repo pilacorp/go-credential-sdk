@@ -72,7 +72,7 @@ func TestHTTPTemplateFetcherLimitsAndMediaType(t *testing.T) {
 }
 
 func TestValidateExternalRenderMethodVerifiesOuterDigest(t *testing.T) {
-	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary"}`)
+	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary","template":"` + testSummaryTemplateDataURL + `"}`)
 	hash := sha256.Sum256(data)
 	multihash := append([]byte{0x12, 0x20}, hash[:]...)
 	digest := "u" + base64.RawURLEncoding.EncodeToString(multihash)
@@ -87,7 +87,7 @@ func TestValidateExternalRenderMethodVerifiesOuterDigest(t *testing.T) {
 }
 
 func TestValidateExternalRenderMethodAllowsMissingOuterDigest(t *testing.T) {
-	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary"}`)
+	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary","template":"` + testSummaryTemplateDataURL + `"}`)
 	method := RenderMethod{
 		ID:          "https://example.com/render-method.json",
 		Type:        "SuiteRenderMethod",
@@ -104,7 +104,7 @@ func TestValidateExternalRenderMethodRejectsSuiteMismatch(t *testing.T) {
 		Type:        "SuiteRenderMethod",
 		RenderSuite: "html",
 	}
-	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary"}`)
+	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary","template":"` + testSummaryTemplateDataURL + `"}`)
 	if err := method.ValidateExternalRenderMethod(context.Background(), testRenderMethodFetcher{data: data}); err == nil {
 		t.Fatal("ValidateExternalRenderMethod() error = nil, want suite mismatch error")
 	}

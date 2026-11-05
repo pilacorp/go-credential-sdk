@@ -26,7 +26,7 @@ func baseRenderContents(methods []RenderMethod) CredentialContents {
 }
 
 func TestSerializeCredentialContentsRenderMethodDoesNotInjectContext(t *testing.T) {
-	cred, err := NewJSONCredential(baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary"}}))
+	cred, err := NewJSONCredential(baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary", ID: "https://example.com/summary.json"}}))
 	if err != nil {
 		t.Fatalf("NewJSONCredential() error = %v", err)
 	}
@@ -45,7 +45,7 @@ func TestSerializeCredentialContentsRenderMethodDoesNotInjectContext(t *testing.
 }
 
 func TestSerializeCredentialContentsRenderMethodArray(t *testing.T) {
-	contents := baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary"}, {Type: "SuiteRenderMethod", RenderSuite: "html"}})
+	contents := baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary", ID: "https://example.com/summary.json"}, {Type: "SuiteRenderMethod", RenderSuite: "html", ID: "https://example.com/html.json"}})
 	doc, err := serializeCredentialContents(&contents)
 	if err != nil {
 		t.Fatalf("serializeCredentialContents() error = %v", err)
@@ -53,6 +53,27 @@ func TestSerializeCredentialContentsRenderMethodArray(t *testing.T) {
 	methods, ok := doc["renderMethod"].([]interface{})
 	if !ok || len(methods) != 2 {
 		t.Fatalf("renderMethod = %#v, want an array of two methods", doc["renderMethod"])
+	}
+}
+
+func TestRenderMethodRequiresTemplateOrID(t *testing.T) {
+	for _, suite := range []string{"summary", "html", "static"} {
+		neither := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: suite}
+		if err := neither.Validate(); err == nil {
+			t.Errorf("%s: Validate() error = nil, want template or id required", suite)
+		}
+		if _, err := NewJSONCredential(baseRenderContents([]RenderMethod{neither})); err == nil {
+			t.Errorf("%s: NewJSONCredential() error = nil, want template or id required", suite)
+		}
+		idOnly := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: suite, ID: "https://example.com/render-method.json"}
+		if err := idOnly.Validate(); err != nil {
+			t.Errorf("%s: Validate() with id error = %v", suite, err)
+		}
+	}
+	// A suite this SDK does not support may define its own rules.
+	unknown := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "audio"}
+	if err := unknown.Validate(); err != nil {
+		t.Errorf("unsupported suite: Validate() error = %v", err)
 	}
 }
 
@@ -100,14 +121,14 @@ func TestRenderMethodRejectsInvalidURLs(t *testing.T) {
 func TestRenderMethodValidatesRenderProperties(t *testing.T) {
 	valid := []string{"", "/credentialSubject/name", "/a~1b/~0key"}
 	for _, pointer := range valid {
-		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{pointer}}
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", ID: "https://example.com/html.json", RenderProperty: []string{pointer}}
 		if err := method.Validate(); err != nil {
 			t.Errorf("Validate() for pointer %q error = %v", pointer, err)
 		}
 	}
 
 	for _, pointer := range []string{"credentialSubject/name", "/a~2b", "/a~"} {
-		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{pointer}}
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", ID: "https://example.com/html.json", RenderProperty: []string{pointer}}
 		if err := method.Validate(); err == nil {
 			t.Errorf("Validate() for pointer %q error = nil, want invalid JSON Pointer error", pointer)
 		}
@@ -229,6 +250,7 @@ func TestRenderMethodCanonicalizationRejectsMissingRenderContext(t *testing.T) {
 	contents := baseRenderContents([]RenderMethod{{
 		Type:        "SuiteRenderMethod",
 		RenderSuite: "summary",
+		ID:          "https://example.com/summary.json",
 	}})
 
 	credential, err := NewJSONCredential(contents)
@@ -291,7 +313,7 @@ func TestConstructedRenderMethodUsesJSONNativeSnapshot(t *testing.T) {
 }
 
 func TestRenderMethodCredentialRoundTripsObjectAndArray(t *testing.T) {
-	for _, methods := range [][]RenderMethod{{{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)}}}}, {{Type: "SuiteRenderMethod", RenderSuite: "summary"}, {Type: "SuiteRenderMethod", RenderSuite: "html"}}} {
+	for _, methods := range [][]RenderMethod{{{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)}}}}, {{Type: "SuiteRenderMethod", RenderSuite: "summary", ID: "https://example.com/summary.json"}, {Type: "SuiteRenderMethod", RenderSuite: "html", ID: "https://example.com/html.json"}}} {
 		created, err := NewJSONCredential(baseRenderContents(methods))
 		if err != nil {
 			t.Fatal(err)
@@ -477,6 +499,8 @@ func TestParseRenderMethodsSkipsEntriesTheSDKMustIgnore(t *testing.T) {
 		{"type": "SuiteRenderMethod", "renderSuite": "audio", "template": 42},
 		{"type": "TemplateRenderMethod", "renderSuite": "summary", "template": "`+testSummaryTemplateDataURL+`"},
 		{"type": "SuiteRenderMethod", "renderSuite": "html", "id": "https://example.com/render-method.json"},
+		{"type": "SuiteRenderMethod", "renderSuite": "summary", "template": null},
+		{"type": "SuiteRenderMethod", "renderSuite": "html"},
 		{"type": "SuiteRenderMethod", "renderSuite": "summary", "template": "`+testSummaryTemplateDataURL+`"}
 	]}`)
 	methods, err := ParseRenderMethods(data)
@@ -583,6 +607,32 @@ func TestTemplateDecodesEveryValidDataURL(t *testing.T) {
 	}
 }
 
+func TestTemplateWritesDataURLWithoutWhitespace(t *testing.T) {
+	cases := map[string]string{
+		"text/html":                 "data:text/html;base64,eA==",
+		"text/html;charset=utf-8":   "data:text/html;charset=utf-8;base64,eA==",
+		"text/html; charset=utf-8":  "data:text/html;charset=utf-8;base64,eA==",
+		"text/html ; charset=utf-8": "data:text/html;charset=utf-8;base64,eA==",
+		"text/html;  charset=utf-8": "data:text/html;charset=utf-8;base64,eA==",
+		"text/html;\tcharset=utf-8": "data:text/html;charset=utf-8;base64,eA==",
+		" text/html ":               "data:text/html;base64,eA==",
+	}
+	for mediaType, want := range cases {
+		encoded, err := json.Marshal(Template{Embedded: &EmbeddedTemplate{MediaType: mediaType, Bytes: []byte("x")}})
+		if err != nil {
+			t.Errorf("%q: json.Marshal() error = %v", mediaType, err)
+			continue
+		}
+		var got string
+		if err := json.Unmarshal(encoded, &got); err != nil {
+			t.Fatalf("%q: json.Unmarshal() error = %v", mediaType, err)
+		}
+		if got != want {
+			t.Errorf("%q: data URL = %q, want %q", mediaType, got, want)
+		}
+	}
+}
+
 func TestRenderMethodComparesParsedTemplateMediaType(t *testing.T) {
 	summary := []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`)
 	cases := []struct {
@@ -621,13 +671,20 @@ func TestRenderMethodValidatesEveryMediaType(t *testing.T) {
 			OutputPreference: &OutputPreference{MediaType: mediaType},
 		}
 	}
-	for _, build := range []func(string) RenderMethod{reference, output} {
+	// The static suite has no expected media type, so validateMediaType is the
+	// only check an embedded static template gets.
+	embeddedStatic := func(mediaType string) RenderMethod {
+		return RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static",
+			Template: &Template{Embedded: &EmbeddedTemplate{MediaType: mediaType, Bytes: []byte{0x01}}},
+		}
+	}
+	for _, build := range []func(string) RenderMethod{reference, output, embeddedStatic} {
 		for _, mediaType := range []string{"", "application/json", "text/html; charset=utf-8"} {
 			if err := build(mediaType).Validate(); err != nil {
 				t.Errorf("Validate() with mediaType %q error = %v", mediaType, err)
 			}
 		}
-		for _, mediaType := range []string{"not a type", "text/", "/html", "text/html;charset"} {
+		for _, mediaType := range []string{"not a type", "text/", "/html", "text/html;charset", "text", "html", "png", "*/*", "text/*", "*/html"} {
 			if err := build(mediaType).Validate(); err == nil {
 				t.Errorf("Validate() with mediaType %q error = nil, want invalid media type", mediaType)
 			}
