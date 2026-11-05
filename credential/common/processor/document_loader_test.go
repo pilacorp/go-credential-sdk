@@ -564,3 +564,44 @@ func TestCanonicalize_ContextIncludingItselfStopsAtTheByteLimit(t *testing.T) {
 		t.Fatalf("%d loads, the limit allows %d", budget.loads, want)
 	}
 }
+
+func TestAlternateIsHTTP(t *testing.T) {
+	const base = "https://example.org/context"
+	for target, want := range map[string]bool{
+		"/other":                      true,
+		"https://example.org/other":   true,
+		"ftp://example.org/other":     false,
+		"ftp:context.json":            false,
+		"%zz":                         false,
+		"https://example.org:bad/ctx": false,
+	} {
+		if got := alternateIsHTTP(base, target); got != want {
+			t.Errorf("%q: got %v", target, got)
+		}
+	}
+}
+
+// ld.Resolve dereferences nil on a target it cannot parse, and the server is
+// one the document chose.
+func TestLoadDocument_RefusesUnparsableAlternate(t *testing.T) {
+	srv := contextServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Link", `<%zz>; rel="alternate"; type="application/ld+json"`)
+		writeContext(w, "term")
+	})
+	useTestClient(t, srv)
+	if _, err := ToNQuads(docUsing(srv.URL, "term")); !errors.Is(err, ErrContextScheme) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// The same nil dereference with no server: every other entry already recovers.
+func TestToNQuads_RecoversFromPanic(t *testing.T) {
+	doc := map[string]interface{}{
+		"@context": []interface{}{map[string]interface{}{"@base": "http://example.org/", "p": "https://example.org/p"}, "%zz"},
+		"@id":      "urn:x",
+		"p":        "v",
+	}
+	if _, err := ToNQuads(doc); err == nil || !strings.Contains(err.Error(), "malformed JSON-LD input") {
+		t.Fatalf("got %v", err)
+	}
+}

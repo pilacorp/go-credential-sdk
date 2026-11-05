@@ -202,6 +202,12 @@ func isHTTPURL(rawURL string) bool {
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https")
 }
 
+// alternateIsHTTP parses target first: ld.Resolve dereferences nil on a bad one.
+func alternateIsHTTP(base, target string) bool {
+	_, err := url.Parse(target)
+	return err == nil && isHTTPURL(ld.Resolve(base, target))
+}
+
 // boundedTransport applies the limits of one fetch to each of its requests.
 // json-gold builds its requests without a context and recurses on Link
 // rel=alternate, so the transport is the one place every hop passes through.
@@ -222,7 +228,7 @@ func (t *boundedTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	// json-gold loads an alternate itself, past the scheme check in fetch.
 	for _, link := range ld.ParseLinkHeader(res.Header.Get("Link"))["alternate"] {
-		if link["type"] == ld.ApplicationJSONLDType && !isHTTPURL(ld.Resolve(req.URL.String(), link["target"])) {
+		if link["type"] == ld.ApplicationJSONLDType && !alternateIsHTTP(req.URL.String(), link["target"]) {
 			res.Body.Close()
 			return nil, ErrContextScheme
 		}
