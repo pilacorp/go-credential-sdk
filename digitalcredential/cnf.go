@@ -35,7 +35,7 @@ func holderKey(payload map[string]any, r *sdjwt.Recreated) (crypto.PublicKey, er
 	// in a Disclosure. Checked on what was recreated, so a disclosed member
 	// such as jku cannot join a cnf.jwk the Issuer signed in plain.
 	if r.Disclosed(sdjwt.Path{"cnf"}) {
-		return nil, fmt.Errorf("%w: dc: the credential's cnf, or a claim inside it, is in a disclosure, which draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids; the Issuer must reissue it with all of cnf in the Issuer-signed JWT", jose.ErrMalformed)
+		return nil, fmt.Errorf("%w: dc: the credential's cnf, or a claim inside it, is in a disclosure, which is not allowed; the Issuer must reissue it with all of cnf in the Issuer-signed JWT", jose.ErrMalformed)
 	}
 	cnf, ok := payload["cnf"]
 	if !ok {
@@ -65,7 +65,7 @@ func cnfKey(cnf any) (crypto.PublicKey, error) {
 			}
 		}
 		if n > 1 {
-			return nil, fmt.Errorf("%w: dc: cnf has more than one of jwk, jwe and jku, and RFC 7800 §3.1 allows one", jose.ErrMalformed)
+			return nil, fmt.Errorf("%w: dc: cnf has more than one of jwk, jwe and jku, and only one is allowed", jose.ErrMalformed)
 		}
 		if _, ok := obj["jwk"]; !ok {
 			return nil, fmt.Errorf("%w: its cnf has no jwk member, and this SDK binds only to cnf.jwk holding an EC P-256 or secp256k1 key", ErrKeyBindingUnsupported)
@@ -73,12 +73,13 @@ func cnfKey(cnf any) (crypto.PublicKey, error) {
 	}
 	m, ok := obj["jwk"].(map[string]any) // obj is nil when cnf is not an object
 	if !ok {
-		return nil, fmt.Errorf("%w: dc: cnf or cnf.jwk is not a JSON object (RFC 7800 §3, §3.2): %w", jose.ErrMalformed, jwk.ErrBadKey)
+		// RFC 7800 §3: cnf is a JSON object. §3.2: jwk holds a JSON Web Key.
+		return nil, fmt.Errorf("%w: dc: cnf or cnf.jwk is not a JSON object: %w", jose.ErrMalformed, jwk.ErrBadKey)
 	}
 	// RFC 7800 §3.2: a symmetric key goes in jwk only when the JWT is
 	// encrypted, and the Issuer-signed JWT of an SD-JWT is a JWS.
 	if kty, _ := m["kty"].(string); kty == "oct" {
-		return nil, fmt.Errorf("%w: dc: cnf.jwk is a symmetric key in a JWT that is not encrypted (RFC 7800 §3.2): %w", jose.ErrMalformed, jwk.ErrBadKey)
+		return nil, fmt.Errorf("%w: dc: cnf.jwk is a symmetric key in a JWT that is not encrypted: %w", jose.ErrMalformed, jwk.ErrBadKey)
 	}
 	key, err := jwk.ToPublicKey(m)
 	if errors.Is(err, jose.ErrUnsupportedKey) {

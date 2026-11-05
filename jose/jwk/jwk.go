@@ -146,16 +146,17 @@ func coordinate(m map[string]any, name string) ([32]byte, error) {
 func checkES256KMembers(m map[string]any) error {
 	if v, ok := m["alg"]; ok {
 		if alg, _ := v.(string); alg != algES256K {
-			return fmt.Errorf("%w: alg of a secp256k1 key must be ES256K (RFC 8812 §3.2)", ErrBadKey)
+			return fmt.Errorf("%w: alg of a secp256k1 key must be ES256K", ErrBadKey)
 		}
 	}
 	if v, ok := m["use"]; ok {
 		if use, _ := v.(string); use != "sig" {
-			return fmt.Errorf("%w: use of a secp256k1 key must be sig (RFC 8812 §3.2)", ErrBadKey)
+			return fmt.Errorf("%w: use of a secp256k1 key must be sig", ErrBadKey)
 		}
 	}
 	if v, ok := m["key_ops"]; ok && !includesVerify(v) {
-		return fmt.Errorf("%w: key_ops of a secp256k1 key must be a JSON array including verify (RFC 7517 §4.3, RFC 8812 §3.2)", ErrBadKey)
+		// RFC 7517 §4.3: key_ops is an array of operation values.
+		return fmt.Errorf("%w: key_ops of a secp256k1 key must be a JSON array including verify", ErrBadKey)
 	}
 	return nil
 }

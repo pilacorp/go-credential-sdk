@@ -210,16 +210,20 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 	}
 	header, err := jws.UnverifiedHeader(issuerJWT)
 	if errors.Is(err, jws.ErrUnsupportedHeader) {
-		return reject(CodeMalformed, fmt.Errorf("%w: the Issuer-signed JWT header uses crit or b64, which this SDK does not implement (RFC 7515 §4.1.11, RFC 7797 §3, §6)", jws.ErrUnsupportedHeader))
+		// RFC 7515 §4.1.11: a JWS whose crit lists a parameter the recipient does
+		// not support is invalid. RFC 7797 §3, §6: b64 changes the signing input
+		// and comes with crit.
+		return reject(CodeMalformed, fmt.Errorf("%w: the Issuer-signed JWT header uses crit or b64, which this SDK does not implement", jws.ErrUnsupportedHeader))
 	}
 	if err != nil {
 		return reject(CodeMalformed, err)
 	}
 	if !header.TypIs(typDCSDJWT) {
 		if header.TypIs("vc+sd-jwt") {
-			return reject(CodeTypInvalid, errors.New("typ is vc+sd-jwt, not dc+sd-jwt: a W3C VC secured with SD-JWT (verify it with credential/vc), or an SD-JWT VC from a draft before dc+sd-jwt, which draft-ietf-oauth-sd-jwt-vc-19 §2.2.1 no longer allows (the issuer reissues it as dc+sd-jwt)"))
+			// draft-ietf-oauth-sd-jwt-vc-19 §2.2.1 no longer allows vc+sd-jwt.
+			return reject(CodeTypInvalid, errors.New("typ is vc+sd-jwt, not dc+sd-jwt: a Verifiable Credential secured with SD-JWT (verify it with credential/vc), or an SD-JWT VC under the old typ, which is no longer allowed (the issuer reissues it as dc+sd-jwt)"))
 		}
-		return reject(CodeTypInvalid, errors.New("typ is not dc+sd-jwt (draft-ietf-oauth-sd-jwt-vc-19 §2.2.1)"))
+		return reject(CodeTypInvalid, errors.New("typ is not dc+sd-jwt"))
 	}
 
 	// draft 19 §2.5 leaves to the Verifier how the key is found. This SDK
@@ -240,7 +244,7 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 	// scheme nor the host is checked: §2.5 lets a key come from other
 	// mechanisms, and RFC 9110 §4.2.1, §4.2.2 bind the resolver that fetches iss.
 	if !uri.StringOrURI(iss) {
-		return reject(CodeMalformed, errors.New("the Issuer-signed JWT payload's iss is not a URI (RFC 3986)"))
+		return reject(CodeMalformed, errors.New("the Issuer-signed JWT payload's iss is not a URI"))
 	}
 	if cfg.acceptedIssuers != nil && !slices.Contains(cfg.acceptedIssuers, iss) {
 		return reject(CodeIssuerNotAccepted, errors.New("iss is not an issuer in WithAcceptedIssuers"))
@@ -299,7 +303,7 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 	// MUST NOT be included in Disclosures. Checked before any is read.
 	for _, name := range neverDisclosableSorted {
 		if r.Disclosed(sdjwt.Path{name}) {
-			return reject(CodeDisclosureInvalid, fmt.Errorf("claim %q, or a sub-claim of it, came in a Disclosure, which draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids", name))
+			return reject(CodeDisclosureInvalid, fmt.Errorf("claim %q, or a sub-claim of it, came in a Disclosure, which is not allowed", name))
 		}
 	}
 	claims := r.Claims
@@ -374,12 +378,15 @@ func (c *Credential) Verify(ctx context.Context, issuers issuerkey.Resolver, opt
 // checks that vct#integrity is integrity metadata (draft 19 §2.2.2.1-2.2.2.3,
 // §5.3), as Issue does. An error is a claim of the wrong shape.
 func readTypes(claims map[string]any) (vct string, akaVCTs []string, err error) {
+	// draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3: vct is REQUIRED.
 	if vct, _ = claims["vct"].(string); vct == "" {
-		return "", nil, errors.New("vct is absent, which draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids, or not a non-empty string as §2.2.2.1 requires")
+		return "", nil, errors.New("vct is absent or not a non-empty string")
 	}
 	if v, ok := claims["aka_vcts"]; ok {
 		if err := checkAkaVCTs(v, vct); err != nil {
-			return "", nil, fmt.Errorf("aka_vcts %v (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.2)", err)
+			// draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.2: a non-empty array of strings
+			// without the value of vct.
+			return "", nil, fmt.Errorf("aka_vcts %v", err)
 		}
 		for _, e := range v.([]any) {
 			akaVCTs = append(akaVCTs, e.(string))
@@ -387,7 +394,9 @@ func readTypes(claims map[string]any) (vct string, akaVCTs []string, err error) 
 	}
 	if v, ok := claims["vct#integrity"]; ok {
 		if s, ok := v.(string); !ok || !sri.WellFormed(s) {
-			return "", nil, errors.New("vct#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §5.3)")
+			// draft-ietf-oauth-sd-jwt-vc-19 §5.3: the value is integrity metadata,
+			// by W3C SRI §3.5.
+			return "", nil, errors.New("vct#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces)")
 		}
 	}
 	return vct, akaVCTs, nil
@@ -411,14 +420,18 @@ func (cfg verifyConfig) checkKeyBinding(compact, kbJWT string, payload map[strin
 			return nil, nil
 		}
 		if cfg.keyBinding == KeyBindingNotRequired {
-			return nil, &Error{Code: CodeKBUnexpected, Err: errors.New("a Key Binding JWT came under KeyBindingNotRequired: a Holder (RFC 9901 §7.2) or a verifier expecting an SD-JWT (§4) MUST reject it; add WithIgnoreUncheckedKBJWT if this verifier only does not need it")}
+			// RFC 9901 §7.2: a Holder rejects an SD-JWT+KB. §4: a Verifier that
+			// expects an SD-JWT checks that the last component is empty.
+			return nil, &Error{Code: CodeKBUnexpected, Err: errors.New("a Key Binding JWT came under KeyBindingNotRequired: a Holder or a verifier expecting an SD-JWT must reject it; add WithIgnoreUncheckedKBJWT if this verifier only does not need it")}
 		}
-		return nil, &Error{Code: CodeKBUnexpected, Err: errors.New("a Key Binding JWT came with a credential that has no cnf claim, so no key checks it (draft-ietf-oauth-sd-jwt-vc-19 §2.4); add WithIgnoreUncheckedKBJWT to ignore it")}
+		// draft-ietf-oauth-sd-jwt-vc-19 §2.4: a KB-JWT is verified with cnf.
+		return nil, &Error{Code: CodeKBUnexpected, Err: errors.New("a Key Binding JWT came with a credential that has no cnf claim, so no key checks it; add WithIgnoreUncheckedKBJWT to ignore it")}
 	}
 	// The credential first: when its cnf gives no key, no presentation of it
 	// passes, so asking the holder for a Key Binding JWT would not help.
+	// draft-ietf-oauth-sd-jwt-vc-19 §2.4: a KB-JWT is verified with cnf.
 	if !hasCnf {
-		return nil, &Error{Code: CodeKBUnsupported, Err: errors.New("Key Binding is required (KeyBindingRequired) and the credential has no cnf claim, the key a Key Binding JWT is checked with (draft-ietf-oauth-sd-jwt-vc-19 §2.4)")}
+		return nil, &Error{Code: CodeKBUnsupported, Err: errors.New("Key Binding is required (KeyBindingRequired) and the credential has no cnf claim, the key a Key Binding JWT is checked with")}
 	}
 	holder, err := holderKey(payload, r)
 	if errors.Is(err, ErrKeyBindingUnsupported) {
@@ -428,13 +441,16 @@ func (cfg verifyConfig) checkKeyBinding(compact, kbJWT string, payload map[strin
 		return nil, &Error{Code: CodeMalformed, Err: err}
 	}
 	if kbJWT == "" {
+		// RFC 9901 §7.3 step 2: without Key Binding, a presentation that needs it
+		// is rejected. §9.5: whether it does never depends on what the Holder sent.
 		if cfg.keyBinding == KeyBindingRequired {
-			return nil, &Error{Code: CodeKBMissing, Err: errors.New("Key Binding is required (KeyBindingRequired) and no Key Binding JWT came: the holder must send an SD-JWT+KB (RFC 9901 §7.3 step 2)")}
+			return nil, &Error{Code: CodeKBMissing, Err: errors.New("Key Binding is required (KeyBindingRequired) and no Key Binding JWT came: the holder must send an SD-JWT+KB")}
 		}
-		return nil, &Error{Code: CodeKBMissing, Err: errors.New("the credential binds a holder key and no Key Binding JWT came: the holder must send an SD-JWT+KB, or pass WithKeyBinding(KeyBindingNotRequired) if this verifier does not require Key Binding (RFC 9901 §7.3 step 2, §9.5)")}
+		return nil, &Error{Code: CodeKBMissing, Err: errors.New("the credential binds a holder key and no Key Binding JWT came: the holder must send an SD-JWT+KB, or pass WithKeyBinding(KeyBindingNotRequired) if this verifier does not require Key Binding")}
 	}
 	if cfg.audience == "" || cfg.nonce == "" {
-		return nil, policyErr("this presentation has a Key Binding JWT: pass WithAudience and WithNonce, or WithKeyBinding(KeyBindingNotRequired) with WithIgnoreUncheckedKBJWT if this verifier does not check Key Binding (RFC 9901 §7.3 step 5f)")
+		// RFC 9901 §7.3 step 5f: a Key Binding JWT is validated by nonce and aud.
+		return nil, policyErr("this presentation has a Key Binding JWT: pass WithAudience and WithNonce, or WithKeyBinding(KeyBindingNotRequired) with WithIgnoreUncheckedKBJWT if this verifier does not check Key Binding")
 	}
 	kbClaims, err := sdjwt.VerifyKBJWT(kbJWT, holder, sdjwt.KBVerifyParams{
 		Audience: cfg.audience,
@@ -472,7 +488,7 @@ func (cfg verifyConfig) checkTypeMetadata(ctx context.Context, r *sdjwt.Recreate
 		return nil
 	}
 	if cfg.allDisclosures && kbJWT != "" {
-		return policyErr("WithAllDisclosures with a presentation that has a Key Binding JWT: a Verifier is never sure to hold every Disclosure (draft-ietf-oauth-sd-jwt-vc-19 §5.6); drop WithAllDisclosures")
+		return policyErr("WithAllDisclosures with a presentation that has a Key Binding JWT: a Verifier is never sure to hold every Disclosure; drop WithAllDisclosures")
 	}
 	integrity, present := res.Claims["vct#integrity"].(string) // step 7 checked its type
 	var m *typemeta.Metadata
@@ -480,7 +496,7 @@ func (cfg verifyConfig) checkTypeMetadata(ctx context.Context, r *sdjwt.Recreate
 	if present && integrity == "" {
 		// §6: an integrity property that is present must be verified, and
 		// an empty one names no hash, so the document cannot be accepted.
-		err = fmt.Errorf("%w: dc: vct#integrity is present and empty, so no hash can check the Type Metadata document; the issuer writes typemeta.Integrity(doc) or leaves it out (draft-ietf-oauth-sd-jwt-vc-19 §6)", typemeta.ErrInvalid)
+		err = fmt.Errorf("%w: dc: vct#integrity is present and empty, so no hash can check the Type Metadata document; the issuer writes typemeta.Integrity(doc) or leaves it out", typemeta.ErrInvalid)
 	} else {
 		m, err = typemeta.Load(ctx, cfg.types, typemeta.Ref{VCT: res.VCT, Integrity: integrity})
 	}
@@ -545,7 +561,7 @@ func readStatus(claims map[string]any) (statusClaim, error) {
 	// §6.2: a JSON object with at least one status mechanism.
 	obj, ok := v.(map[string]any)
 	if !ok || len(obj) == 0 {
-		return statusClaim{}, errors.New("status is not a JSON object holding a status mechanism (draft-ietf-oauth-status-list-21 §6.2)")
+		return statusClaim{}, errors.New("status is not a JSON object holding a status mechanism")
 	}
 	sl, ok := obj["status_list"]
 	if !ok {
@@ -554,7 +570,7 @@ func readStatus(claims map[string]any) (statusClaim, error) {
 	list, _ := sl.(map[string]any) // nil, so no uri, when not an object
 	uri, ok := list["uri"].(string)
 	if !ok {
-		return statusClaim{}, errors.New("status.status_list is not a JSON object with a string uri (draft-ietf-oauth-status-list-21 §6.2)")
+		return statusClaim{}, errors.New("status.status_list is not a JSON object with a string uri")
 	}
 	// §6.2: idx is a non-negative Integer, a value, so every RFC 8259 §6
 	// form of it counts: 1.0, 1e3 and -0 too. jsonint reads it exactly.
@@ -565,7 +581,7 @@ func readStatus(claims map[string]any) (statusClaim, error) {
 	case errors.Is(err, jsonint.ErrTooLarge):
 		st.pastInt, idx = true, 0
 	case err != nil:
-		return statusClaim{}, errors.New("status.status_list.idx is absent or not a non-negative integer (draft-ietf-oauth-status-list-21 §6.2)")
+		return statusClaim{}, errors.New("status.status_list.idx is absent or not a non-negative integer")
 	}
 	st.ref = statuslist.Ref{URI: uri, Index: idx}
 	// %v: the cause is the token's, so it must not match
@@ -580,7 +596,8 @@ func readStatus(claims map[string]any) (statusClaim, error) {
 // are *Error, ErrPolicy, or wrap ctx.Err().
 func (cfg verifyConfig) checkStatus(ctx context.Context, st statusClaim, iss string) (uint8, error) {
 	if !st.list {
-		return 0, &Error{Code: CodeStatusUnavailable, Err: errors.New("status has no status_list, the one mechanism this SDK checks (draft-ietf-oauth-status-list-21 §8.3 step 1); WithoutStatusCheck accepts it unchecked")}
+		// draft-ietf-oauth-status-list-21 §8.3 step 1: the check needs a status_list.
+		return 0, &Error{Code: CodeStatusUnavailable, Err: errors.New("status has no status_list, the one mechanism this SDK checks; WithoutStatusCheck accepts it unchecked")}
 	}
 	// No list holds more entries than an int counts.
 	if st.pastInt {

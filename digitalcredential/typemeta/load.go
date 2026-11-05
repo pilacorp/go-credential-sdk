@@ -61,7 +61,7 @@ func Load(ctx context.Context, r Resolver, ref Ref) (*Metadata, error) {
 		switch {
 		case err != nil && len(docs) > 0 && errors.Is(err, ErrNotFound):
 			// A missing parent leaves the type unprocessable, not unknown.
-			return nil, invalid("document %d of the extends chain is not found; the type cannot be processed without it (draft-ietf-oauth-sd-jwt-vc-19 §5.4)", len(docs))
+			return nil, invalid("document %d of the extends chain is not found; the type cannot be processed without it", len(docs))
 		case err != nil:
 			return nil, fmt.Errorf("typemeta: document %d of the chain: %w", len(docs), err)
 		}
@@ -78,7 +78,7 @@ func Load(ctx context.Context, r Resolver, ref Ref) (*Metadata, error) {
 			return nil, fmt.Errorf("document %d of the chain: %w", len(docs), err)
 		}
 		if d.vct != next.VCT {
-			return nil, invalid("document %d of the chain has a vct other than the type that led to it (draft-ietf-oauth-sd-jwt-vc-19 §5.3)", len(docs))
+			return nil, invalid("document %d of the chain has a vct other than the type that led to it", len(docs))
 		}
 		docs, raws = append(docs, d), append(raws, slices.Clone(raw))
 		seen[d.vct] = true
@@ -86,7 +86,7 @@ func Load(ctx context.Context, r Resolver, ref Ref) (*Metadata, error) {
 			break
 		}
 		if seen[d.extends] {
-			return nil, fmt.Errorf("%w: typemeta: document %d of the chain extends a type already in it (draft-ietf-oauth-sd-jwt-vc-19 §7.4)", ErrCycle, len(docs)-1)
+			return nil, fmt.Errorf("%w: typemeta: document %d of the chain extends a type already in it", ErrCycle, len(docs)-1)
 		}
 		if len(docs) == maxChain {
 			return nil, invalid("the extends chain is over %d documents, the SDK's limit", maxChain)
@@ -118,7 +118,7 @@ func Load(ctx context.Context, r Resolver, ref Ref) (*Metadata, error) {
 		// the claims merged up to each level keep svg_ids unique, as Load of
 		// that level does; a child must not hide a fault of a level between.
 		if checkSVGIDs(merged) != nil {
-			return nil, claimsErr("document %d of the chain gives a claim an svg_id that a claim it inherits already has; draft-ietf-oauth-sd-jwt-vc-19 §5.6 requires it unique", i)
+			return nil, claimsErr("document %d of the chain gives a claim an svg_id that a claim it inherits already has; svg_id must be unique", i)
 		}
 	}
 	slices.Reverse(m.chain)
@@ -151,13 +151,13 @@ func mergeClaims(inherited, child []claimMeta) ([]claimMeta, error) {
 				// §5.6.5.1: always and never cannot be changed; allowed, or no
 				// sd, can.
 				if p.hasSD && p.SD != sdAllowed && c.SD != p.SD {
-					return nil, claimsErr("claims[%d] changes an inherited sd of %s (draft-ietf-oauth-sd-jwt-vc-19 §5.6.5.1)", i, p.SD)
+					return nil, claimsErr("claims[%d] changes an inherited sd of %s", i, p.SD)
 				}
 				p.SD, p.hasSD = c.SD, true
 			}
 			if c.hasMandatory {
 				if p.Mandatory && !c.Mandatory {
-					return nil, claimsErr("claims[%d] changes an inherited mandatory true to false (draft-ietf-oauth-sd-jwt-vc-19 §5.6.5.1)", i)
+					return nil, claimsErr("claims[%d] changes an inherited mandatory true to false", i)
 				}
 				p.Mandatory, p.hasMandatory = c.Mandatory, true
 			}

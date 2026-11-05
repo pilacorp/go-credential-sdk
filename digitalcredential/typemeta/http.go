@@ -237,11 +237,11 @@ func (r *httpResolver) Metadata(ctx context.Context, ref Ref) ([]byte, error) {
 	// §5.3.1: the document is retrieved from a vct that is an https URL, so
 	// a URI (RFC 3986 §1.1.3), which url.Parse does not check.
 	if !uri.Valid(ref.VCT) {
-		return nil, fmt.Errorf("%w: typemeta: vct is not a URI (RFC 3986)", ErrNotFound)
+		return nil, fmt.Errorf("%w: typemeta: vct is not a URI", ErrNotFound)
 	}
 	u, err := url.Parse(ref.VCT)
 	if err != nil || !safehttp.HTTPSURL(u) || strings.Contains(ref.VCT, "#") {
-		return nil, fmt.Errorf("%w: typemeta: vct is not an https URL with a host, without userinfo or fragment (draft-ietf-oauth-sd-jwt-vc-19 §5.3.1)", ErrNotFound)
+		return nil, fmt.Errorf("%w: typemeta: vct is not an https URL with a host, without userinfo or fragment", ErrNotFound)
 	}
 	if !r.trusted.Covers(u) {
 		return nil, fmt.Errorf("%w: typemeta: the origin of vct is not covered by Config.TrustedPublisherOrigins; list it there to trust it", ErrNotFound)

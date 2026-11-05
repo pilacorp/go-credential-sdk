@@ -64,10 +64,10 @@ func (m *Metadata) ValidateClaims(issued *sdjwt.Node, opts ValidateOptions) erro
 	for i, c := range m.claims {
 		err := c.check(issued, opts.AllDisclosures, &budget)
 		if errors.Is(err, errBudget) {
-			return fmt.Errorf("%w: typemeta: checking the payload against the claim metadata needs over %d units (one per value read, one more per 64 bytes of a key), the SDK's limit; smaller arrays, fewer claims over them or shorter keys in the claim metadata fit (draft-ietf-oauth-sd-jwt-vc-19 §5.7)", ErrClaims, maxClaimVisits)
+			return fmt.Errorf("%w: typemeta: checking the payload against the claim metadata needs over %d units (one per value read, one more per 64 bytes of a key), the SDK's limit; smaller arrays, fewer claims over them or shorter keys in the claim metadata fit", ErrClaims, maxClaimVisits)
 		}
 		if err != nil {
-			return fmt.Errorf("%w: typemeta: claims[%d] with path %s: %v (draft-ietf-oauth-sd-jwt-vc-19 §5.6)", ErrViolated, i, formatPath(c.Path), err)
+			return fmt.Errorf("%w: typemeta: claims[%d] with path %s: %v", ErrViolated, i, formatPath(c.Path), err)
 		}
 	}
 	return nil
@@ -110,11 +110,12 @@ func (m *Metadata) ValidateIssuance(payload map[string]any, disclose []sdjwt.Pat
 // errBudget is returned by check when the values it reads exceed budget.
 var errBudget = errors.New("over the budget")
 
-// check processes the path of c over root and applies mandatory and sd to
-// what it selects. Each step is charged to budget for what it reads before
-// it reads it: a key one per selected value plus one per 64 bytes, since a
-// lookup hashes the whole key; null and, with all, an index the whole array
-// (elems copies it); an index without all one.
+// check processes the path of c over root (§5.6.1.2: a component that does
+// not fit a selected value is an error) and applies mandatory (§5.6.3) and sd
+// (§5.6.4) to what it selects. Each step is charged to budget for what it
+// reads before it reads it: a key one per selected value plus one per 64
+// bytes, since a lookup hashes the whole key; null and, with all, an index the
+// whole array (elems copies it); an index without all one.
 func (c Claim) check(root *sdjwt.Node, all bool, budget *int) error {
 	spend := func(n int) bool {
 		*budget -= n
@@ -138,29 +139,29 @@ func (c Claim) check(root *sdjwt.Node, all bool, budget *int) error {
 			switch el := el.(type) {
 			case string:
 				if n.Fields == nil {
-					return errors.New("a key is selected in a value that is not an object (§5.6.1.2)")
+					return errors.New("a key is selected in a value that is not an object")
 				}
 				f, ok := n.Fields[el]
 				if !ok {
 					if c.Mandatory && (all || n.HiddenFields == 0) {
-						return errors.New("a mandatory claim is not in the credential (§5.6.3)")
+						return errors.New("a mandatory claim is not in the credential")
 					}
 					continue
 				}
 				next = append(next, f)
 			case nil:
 				if n.Elems == nil {
-					return errors.New("every element is selected in a value that is not an array (§5.6.1.2)")
+					return errors.New("every element is selected in a value that is not an array")
 				}
 				next = append(next, elems(n, all)...)
 			case int:
 				if n.Elems == nil {
-					return errors.New("an index is selected in a value that is not an array (§5.6.1.2)")
+					return errors.New("an index is selected in a value that is not an array")
 				}
 				es := elems(n, all)
 				if el >= len(es) {
 					if c.Mandatory {
-						return errors.New("a mandatory claim is not in the credential (§5.6.3)")
+						return errors.New("a mandatory claim is not in the credential")
 					}
 					continue
 				}
@@ -173,9 +174,9 @@ func (c Claim) check(root *sdjwt.Node, all bool, budget *int) error {
 		sd := n.Disclosed || n.Hidden
 		switch {
 		case c.SD == sdAlways && !sd:
-			return errors.New("a selected claim is not selectively disclosable, and sd is always (§5.6.4)")
+			return errors.New("a selected claim is not selectively disclosable, and sd is always")
 		case c.SD == sdNever && sd:
-			return errors.New("a selected claim is selectively disclosable, and sd is never (§5.6.4)")
+			return errors.New("a selected claim is selectively disclosable, and sd is never")
 		}
 	}
 	return nil

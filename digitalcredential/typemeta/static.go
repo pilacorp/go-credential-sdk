@@ -27,7 +27,8 @@ func Static(docs ...[]byte) (Resolver, error) {
 	for i, d := range docs {
 		vct, _, err := jose.DecodeJSONStringMember(d, "vct")
 		if err != nil || vct == "" {
-			return nil, fmt.Errorf("%w: typemeta: Static document %d is not a JSON object with a non-empty string vct (draft-ietf-oauth-sd-jwt-vc-19 §5.2)", jose.ErrInvalidArgument, i)
+			// draft-ietf-oauth-sd-jwt-vc-19 §5.2: a JSON object with a vct.
+			return nil, fmt.Errorf("%w: typemeta: Static document %d is not a JSON object with a non-empty string vct", jose.ErrInvalidArgument, i)
 		}
 		if _, dup := s[vct]; dup {
 			return nil, fmt.Errorf("%w: typemeta: Static document %d has the vct of an earlier one", jose.ErrInvalidArgument, i)

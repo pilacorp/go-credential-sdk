@@ -101,7 +101,8 @@ func newVerifyConfig(opts []VerifyOption) (verifyConfig, error) {
 		return verifyConfig{}, policyErr("WithExtendedVCTMatch needs WithAcceptedVCTs, the types it matches, and WithTypeMetadata or WithOptionalTypeMetadata, the extends chain it matches them on")
 	}
 	if c.keyBinding == KeyBindingRequired && (c.audience == "" || c.nonce == "") {
-		return verifyConfig{}, policyErr("WithKeyBinding(KeyBindingRequired) needs WithAudience and WithNonce, which every Key Binding JWT is checked against (RFC 9901 §7.3 step 5f)")
+		// RFC 9901 §7.3 step 5f: a Key Binding JWT is validated by nonce and aud.
+		return verifyConfig{}, policyErr("WithKeyBinding(KeyBindingRequired) needs WithAudience and WithNonce, which every Key Binding JWT is checked against")
 	}
 	if c.now.IsZero() {
 		c.now = time.Now()
@@ -297,7 +298,7 @@ func WithAcceptedVCTs(vcts ...string) VerifyOption {
 			return policyErr("WithAcceptedVCTs needs at least one type")
 		}
 		if i := slices.Index(vcts, ""); i >= 0 {
-			return policyErr("WithAcceptedVCTs type %d is empty, which identifies no type (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.1)", i)
+			return policyErr("WithAcceptedVCTs type %d is empty, which identifies no type", i)
 		}
 		c.acceptedVCTs = vcts
 		return nil

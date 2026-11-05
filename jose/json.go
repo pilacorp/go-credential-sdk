@@ -303,7 +303,7 @@ func EncodeJSON(v any) ([]byte, error) {
 	}
 	out := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	if !utf8.Valid(out) {
-		return nil, fmt.Errorf("%w: encode JSON: a json.Marshaler or json.RawMessage in the value gave bytes that are not UTF-8, and JSON must be UTF-8 (RFC 8259 §8.1); make it write UTF-8", ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: encode JSON: a json.Marshaler or json.RawMessage in the value gave bytes that are not UTF-8, and JSON must be UTF-8; make it write UTF-8", ErrInvalidArgument)
 	}
 	return out, nil
 }
