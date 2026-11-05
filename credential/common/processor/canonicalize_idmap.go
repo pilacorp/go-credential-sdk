@@ -128,7 +128,7 @@ func canonicalizeDatasetWithIdMap(dataset *ld.RDFDataset) ([]string, map[string]
 // would take it factorial time. json-gold has no limit of its own.
 func normalizeDataset(dataset *ld.RDFDataset) (string, error) {
 	if blankNodeWork(dataset) > maxBlankNodeWork {
-		return "", errors.New("normalize: too many interchangeable blank nodes")
+		return "", fmt.Errorf("normalize: %w", ErrBlankNodeWork)
 	}
 	opts := sdOptions()
 	opts.Format = "application/n-quads"
@@ -142,6 +142,9 @@ func normalizeDataset(dataset *ld.RDFDataset) (string, error) {
 	}
 	return nquads, nil
 }
+
+// ErrBlankNodeWork is a dataset refused for the search it would take.
+var ErrBlankNodeWork = errors.New("too many interchangeable blank nodes")
 
 // maxBlankNodeWork admits every document in this SDK's tests, which score 0, or 4 per pair
 // of interchangeable proofs, and refuses anything shaped like the known attacks

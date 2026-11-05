@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -339,7 +340,7 @@ func TestCanonicalize_ContextIncludingItself(t *testing.T) {
 func TestContextBudget_StopsAtDeadline(t *testing.T) {
 	budget := newContextBudget()
 	budget.deadline = time.Now().Add(-time.Second)
-	if _, err := budget.LoadDocument("https://example.org/context"); !errors.Is(err, errContextLoad) {
+	if _, err := budget.LoadDocument("https://example.org/context"); !errors.Is(err, ErrContextOverflow) {
 		t.Fatalf("got %v", err)
 	}
 	if _, err := budget.LoadDocument("https://www.w3.org/ns/credentials/v2"); err != nil {
@@ -405,7 +406,7 @@ func TestLoadDocument_CauseIsOnTheChainOnly(t *testing.T) {
 	if !errors.As(big, &tooBig) {
 		t.Fatalf("the cause is gone: %v", big)
 	}
-	if !errors.Is(big, errContextLoad) {
+	if !errors.Is(big, ErrContextLoad) {
 		t.Fatalf("got %v", big)
 	}
 	for _, path := range []string{"/notjson", "/500"} {
@@ -413,4 +414,62 @@ func TestLoadDocument_CauseIsOnTheChainOnly(t *testing.T) {
 			t.Fatalf("%s reads differently: %v", path, err)
 		}
 	}
+}
+
+// A caller tells the failures apart with errors.Is, through json-gold's wrapping.
+func TestContextErrors_AreReachable(t *testing.T) {
+	loopback := contextServer(t, func(w http.ResponseWriter, _ *http.Request) { writeContext(w, "term") })
+
+	t.Run("address", func(t *testing.T) {
+		if _, err := CanonicalizeDocument(docUsing(loopback.URL, "term")); !errors.Is(err, ErrContextAddress) || !errors.Is(err, ErrContextLoad) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("scheme", func(t *testing.T) {
+		if _, err := Canonicalize(docUsing("ftp://example.org/context", "term")); !errors.Is(err, ErrContextScheme) || !errors.Is(err, ErrContextLoad) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("alternate scheme", func(t *testing.T) {
+		srv := contextServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Link", `<ftp:context.json>; rel="alternate"; type="application/ld+json"`)
+		})
+		useTestClient(t, srv)
+		if _, err := Canonicalize(docUsing(srv.URL, "term")); !errors.Is(err, ErrContextScheme) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("requests", func(t *testing.T) {
+		var hits atomic.Int32
+		srv := contextServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Link", fmt.Sprintf(`</%d>; rel="alternate"; type="application/ld+json"`, hits.Add(1)))
+		})
+		useTestClient(t, srv)
+		if _, err := Canonicalize(docUsing(srv.URL, "term")); !errors.Is(err, ErrContextRequests) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("deadline", func(t *testing.T) {
+		release := make(chan struct{})
+		srv := contextServer(t, func(http.ResponseWriter, *http.Request) { <-release })
+		useTestClient(t, srv)
+		defer close(release)
+		saved := contextFetchTimeout
+		contextFetchTimeout = 50 * time.Millisecond
+		t.Cleanup(func() { contextFetchTimeout = saved })
+		if _, err := Canonicalize(docUsing(srv.URL, "term")); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("overflow", func(t *testing.T) {
+		srv := contextServer(t, func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"@context":"http://%s/"}`, r.Host)
+		})
+		useTestClient(t, srv)
+		if _, err := Canonicalize(docUsing(srv.URL+"/", "term")); !errors.Is(err, ErrContextOverflow) {
+			t.Fatalf("got %v", err)
+		}
+	})
 }
