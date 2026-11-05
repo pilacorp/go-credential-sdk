@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/jose"
 )
@@ -16,7 +17,9 @@ import (
 // that answers ErrIssuerNotSupported passes iss to the next; the first one
 // that gives any other answer, an error included, gives the result. So a
 // failed fetch never moves an issuer to another key source. When none
-// accepts iss, the result is ErrIssuerNotSupported.
+// accepts iss, the result is ErrIssuerNotSupported, its text holding the
+// reason each resolver gave: only a resolver knows what it reads, and so
+// what the caller has to supply instead.
 //
 // No resolver, or a nil one, is jose.ErrInvalidArgument. resolvers is copied.
 // The combined Keys returns ctx.Err() as soon as ctx is done, before asking
@@ -39,15 +42,22 @@ func (m multi) Keys(ctx context.Context, iss string) ([]PublicKey, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: issuerkey: nil context", jose.ErrInvalidArgument)
 	}
+	var reasons []string
 	for _, r := range m {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		keys, err := r.Keys(ctx, iss)
 		if errors.Is(err, ErrIssuerNotSupported) {
+			if err != ErrIssuerNotSupported {
+				reasons = append(reasons, strings.TrimPrefix(err.Error(), ErrIssuerNotSupported.Error()+": "))
+			}
 			continue
 		}
 		return keys, err
 	}
-	return nil, fmt.Errorf("%w: issuerkey: no resolver accepts this issuer", ErrIssuerNotSupported)
+	if len(reasons) == 0 {
+		return nil, fmt.Errorf("%w: issuerkey: no resolver accepts this issuer", ErrIssuerNotSupported)
+	}
+	return nil, fmt.Errorf("%w: issuerkey: no resolver accepts this issuer: %s", ErrIssuerNotSupported, strings.Join(reasons, "; "))
 }

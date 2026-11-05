@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -134,4 +135,28 @@ func newKey(t *testing.T) *ecdsa.PublicKey {
 		t.Fatal(err)
 	}
 	return &priv.PublicKey
+}
+
+type refusingResolver string
+
+func (r refusingResolver) Keys(context.Context, string) ([]PublicKey, error) {
+	return nil, fmt.Errorf("%w: %s", ErrIssuerNotSupported, string(r))
+}
+
+// A caller that gets no key must learn why, so each resolver's own reason
+// stays in the text; its text is the only place that says what to do.
+func TestMultiKeepsEachReason(t *testing.T) {
+	m, err := Multi(
+		prefixResolver{prefix: "y", err: errors.New("unused")},
+		refusingResolver("first reason"),
+		refusingResolver("second reason"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.Keys(context.Background(), "x")
+	want := "issuerkey: issuer not supported: issuerkey: no resolver accepts this issuer: first reason; second reason"
+	if !errors.Is(err, ErrIssuerNotSupported) || err.Error() != want {
+		t.Errorf("err = %v; want %q", err, want)
+	}
 }

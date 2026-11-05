@@ -16,7 +16,7 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 |---|---|---|
 | Issuer | Signs a credential for a Holder | `dc.Issue(ctx, req, key)`, `req.Validate()` |
 | Holder | Stores the credential, then presents only the claims it chooses, with a Key Binding JWT when the Verifier asks for one | `dc.Parse(s)`, `cred.Present(ctx, req)` |
-| Verifier | Checks a presented credential and reads its claims | `dc.Parse(s)`, `cred.Verify(ctx, issuers, opts...)`, `issuermeta.NewResolver(cfg)`, `statuslist.NewChecker(cfg)` |
+| Verifier | Checks a presented credential and reads its claims | `dc.Parse(s)`, `cred.Verify(ctx, issuers, opts...)`, `issuermeta.NewResolver(cfg)`, `didresolver.New(cfg)`, `statuslist.NewChecker(cfg)` |
 | Status Issuer | Publishes the status of the credentials it issued | `statuslist.New(size, bits)`, `list.Set(i, v)`, `list.IssueToken(ctx, claims, key)` |
 | Any | Names a credential, for example to record or anchor it | `cred.Hash()` |
 
@@ -29,6 +29,7 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 | Selects the disclosures of the claims in `Reveal` by OpenID4VP 1.0 §7.1.1 claims path pointers, with their concealed ancestors (RFC 9901 §4.2.6) | Asks the user which claims to present; RFC 9901 §7.2 leaves consent out of scope |
 | Writes the Key Binding JWT with `sd_hash` over exactly the SD-JWT sent (RFC 9901 §4.3.1), signed by the key of `cnf.jwk` | Sets `KeyBinding` when the Verifier requires Key Binding, with the Verifier's `aud` and `nonce` |
 | Retrieves JWT VC Issuer Metadata with the bounds of draft 19 §3 and refuses addresses that are not globally reachable (§7.1) | Lists the issuers it trusts (`Config.TrustedIssuerOrigins`, §2.5), blocks hosts of its own network with its egress policy |
+| Reads the keys of an `iss` that is a DID from its DID document (W3C DID Resolution v1.0, W3C Controlled Identifiers v1.0) | Names the DID resolver it trusts (`didresolver.Config.URL`), or brings one of its own (`Config.Resolver`) |
 | Verifies the signature, the Disclosures, the times, Key Binding and status (draft 19 §2.4, RFC 9901 §7.1, §7.3) | Sets `aud` and a fresh `nonce` per transaction and accepts each nonce once; checks that the issuer may issue this `vct` (§7.7) and the claims a protocol adds to the KB-JWT |
 | Retrieves, checks, merges and caches Type Metadata, and checks the payload against its claim metadata (draft 19 §5, §6) | Decides whether Type Metadata is processed and required, and which publishers it trusts (`typemeta.Config.TrustedPublisherOrigins`, §5.7, §7.8); renders the credential |
 | Fetches, verifies and caches Status List Tokens (draft-ietf-oauth-status-list-21 §8) | Chooses the issuers whose status keys it trusts (`statuslist.Config.Issuers`) and how old a list may be (`MaxAge`) |
@@ -47,11 +48,13 @@ import dc "github.com/pilacorp/go-credential-sdk/digitalcredential"
 | `SigningKey` | `issuerkey` | The Issuer's `jws.Signer`, its public key and `kid` |
 | `PublicKey` | `issuerkey` | A key an Issuer publishes for verifying, with its `kid` (RFC 7517 §4.5) |
 | `Config` | `issuermeta` | The configuration of a `Resolver`, copied at construction; an empty `TrustedIssuerOrigins` trusts every https issuer, and any other zero field gives a safe default |
+| `Config` | `didresolver` | The source of DID documents: `URL`, a DID resolver endpoint, or `Resolver`, a `DIDResolver` of your own |
 
 | Interface | Does | In the SDK | Written by the caller, for example |
 |---|---|---|---|
 | `jws.Signer` | Declares `alg` and signs the JWS Signing Input | `jws.PrivateKeySigner`, `jws.DigestSigner` | KMS, HSM, wallet key store |
-| `issuerkey.Resolver` | Returns the keys an `iss` currently publishes | `issuermeta.Resolver` (draft 19 §4); `issuerkey.Multi` combines resolvers | DID-based resolver, fixed key table |
+| `issuerkey.Resolver` | Returns the keys an `iss` currently publishes | `issuermeta.Resolver` (draft 19 §4), `didresolver.Resolver` (DID issuers); `issuerkey.Multi` combines resolvers | Fixed key table |
+| `didresolver.DIDResolver` | Resolves a DID to its resolution result or DID document, over any transport | The HTTP(S) binding, through `Config.URL` | gRPC client of a DID service, local registry |
 | `dc.StatusChecker` | Returns the raw status of the entry a credential points to | `*statuslist.Checker` | Another status mechanism, a local mirror of the lists |
 
 ## Issue
@@ -364,8 +367,50 @@ identical to `iss`, and the JWK Set in `jwks` or at `jwks_uri`.
   Metadata. A status list on an internal host is the Relying Party's choice (draft 21 §6.2): pass
   `statuslist.Config.HTTPClient` or a `StatusChecker` of your own.
 
+An `iss` that is a DID is none of this: draft 19 §2.5 leaves such key discovery to other specifications, so
+`issuermeta` refuses it with `ErrIssuerNotSupported` and the error text names `didresolver`, the package that reads it.
+
+```go
+dids, err := didresolver.New(didresolver.Config{URL: "https://resolver.example/1.0/identifiers/"})
+if err != nil {
+	return err
+}
+res, err := cred.Verify(ctx, dids)
+if err != nil {
+	return err
+}
+```
+
+- `URL` is the endpoint of the HTTP(S) binding of DID Resolution §9.1, the DID resolver you trust to answer for every
+  DID. It must be https. For another transport set `Resolver` instead, to a `DIDResolver` that returns the JSON of a
+  resolution result or of the document alone; the same rules then read it. Exactly one of the two is set.
+- Keys are the verification methods `assertionMethod` lists (CID §2.3.2), with the absolute URL of the method as `kid`,
+  so a token's `kid` is that URL, or absent when the document lists one key. A method is left out when it belongs to
+  another document or controller (CID §3.3), when `revoked` or `expires` has passed (CID §2.2; a time that cannot be
+  read counts as passed), or when it holds no single key this SDK reads: `Multikey` on P-256, `JsonWebKey` on P-256 or
+  secp256k1, `publicKeyHex` on `EcdsaSecp256k1VerificationKey2019`. `Keys` does not see when a token was signed, so a
+  key past its `revoked` time fails for every token, those signed before that time included.
+- The document's `id` must equal `iss` as a string (DID Resolution §4), case included.
+- Every DID the resolver answers for is accepted, as an empty trust list is. Pass the DIDs you accept to
+  `WithAcceptedIssuers`.
+- An `iss` that is not a conformant DID (DID Core 1.0 §3.1) is `ErrIssuerNotSupported` with no request made, and an
+  https `iss` gets text that names `issuermeta`. A resolver that refuses the DID or its method (400, 501) is
+  `ErrIssuerNotSupported`. A DID that does not exist or is deactivated (404, 410, or `deactivated` in the metadata) and
+  a document that must not be used are `ErrNoUsableKey`. A failed retrieval is any other error, wrapping the cause as
+  in `issuermeta`: `didresolver.StatusError`, `ErrRedirectNotAllowed` for a redirect off the origin of `URL`, and the
+  others the godoc of `Keys` lists.
+- Nothing is cached, so a removed key stops verifying on the next call, and each `Keys` is one request. A `Verify` that
+  also checks status asks twice unless the Status List Token is cached. To cache, wrap a `DIDResolver` or pass an
+  `HTTPClient` that caches.
+- The default client refuses addresses that are not globally reachable. A DID resolver inside your network needs
+  `HTTPClient`, which is trusted code as above.
+
+To read both kinds of issuer, join the two resolvers with `Multi`. A Verifier that meets only one kind needs only that
+one.
+
 `issuerkey.Multi(r1, r2, …)` asks resolvers in order and moves to the next only on `ErrIssuerNotSupported`, so a
-failed retrieval never sends an issuer to another key source. `issuerkey.Select(keys, header)` picks the key the JWS
+failed retrieval never sends an issuer to another key source. When no resolver accepts the `iss`, the error keeps what
+each one said. `issuerkey.Select(keys, header)` picks the key the JWS
 header names: a `kid` must match exactly one key, and a token without `kid` needs exactly one key; keys are never
 tried in turn.
 
