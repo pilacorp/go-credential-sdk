@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -47,6 +49,25 @@ const (
 	maxContextBytesPerOperation = 4 << 20
 )
 
+// Bounds on the term definitions of one JSON-LD operation. json-gold builds a
+// term's IRI by joining it to the IRI of the term it names, so a context that
+// fits the byte limits can still hold thousands of IRIs of megabytes each: its
+// memory is the number of terms times the longest IRI, and both are bounded
+// here. Bundled contexts count towards neither, having been written by hand.
+const (
+	// maxContextTerms bounds the distinct terms of an operation. schema.org,
+	// the largest context in common use, has about 3,000.
+	maxContextTerms = 10000
+	// maxInlineContextTerms bounds those in the document itself, where real
+	// contexts have tens.
+	maxInlineContextTerms = 1000
+	// maxContextTermBytes bounds a term's name, its IRI as written and @vocab
+	// and @base, and also the bytes of all the definitions of terms that other
+	// terms expand through. So no IRI exceeds three of these. A real IRI is about
+	// a tenth of one, and a real context has no chains at all.
+	maxContextTermBytes = 1 << 10
+)
+
 // contextFetchTimeout bounds one fetch: all its requests, each body included.
 // It is a var so tests can shorten it.
 var contextFetchTimeout = 10 * time.Second
@@ -59,6 +80,12 @@ var (
 	ErrContextScheme   = errors.New("context URL is not http or https")
 	ErrContextRequests = errors.New("context fetch made too many requests")
 	ErrContextOverflow = ld.NewJsonLdError(ld.ErrorCode("context overflow"), "the operation's context budget is used up")
+)
+
+// Refusals of what a document's contexts define, ahead of json-gold.
+var (
+	ErrTooManyContextTerms = errors.New("too many context term definitions")
+	ErrContextTermTooLong  = errors.New("context term is too long")
 )
 
 // contextLoadError keeps the cause of a failed fetch off the text, which would
@@ -206,16 +233,20 @@ func (t *boundedTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 // contextBudget is the loader of one JSON-LD operation: it stops the recursion
 // and the chains described at maxContextLoads, maxContextLoadTime and
-// maxContextBytesPerOperation. Bundled contexts include no remote context and
-// spend no load, only bytes.
+// maxContextBytesPerOperation, and holds the operation's terms. Bundled contexts
+// include no remote context and spend no load, only bytes.
 type contextBudget struct {
 	loads    int
 	bytes    int
 	deadline time.Time
+	terms    contextTerms
 }
 
 func newContextBudget() *contextBudget {
-	return &contextBudget{deadline: time.Now().Add(maxContextLoadTime)}
+	return &contextBudget{
+		deadline: time.Now().Add(maxContextLoadTime),
+		terms:    contextTerms{defs: make(map[string][]string), used: make(map[string]bool)},
+	}
 }
 
 // LoadDocument implements ld.DocumentLoader.
@@ -236,7 +267,137 @@ func (b *contextBudget) LoadDocument(rawURL string) (*ld.RemoteDocument, error) 
 	if b.bytes += size; b.bytes > maxContextBytesPerOperation {
 		return nil, ErrContextOverflow
 	}
+	b.terms.addDocument(doc.Document)
+	if err := b.terms.check(maxContextTerms); err != nil {
+		return nil, err
+	}
 	return doc, nil
+}
+
+// limitInlineContexts puts doc's own contexts on the operation's budget, before
+// json-gold processes them. It must be the budget's, not a count of their own:
+// a chain can alternate between the document and remote contexts.
+func limitInlineContexts(opts *ld.JsonLdOptions, doc interface{}) error {
+	terms := &opts.DocumentLoader.(*contextBudget).terms
+	terms.addDocument(doc)
+	return terms.check(maxInlineContextTerms)
+}
+
+// contextTerms sizes the term definitions of an operation before json-gold
+// processes them. Which definition wins depends on the order of the contexts,
+// and the document's are read before any remote one, so this ignores order and
+// counts every definition of every term another one expands through: an IRI
+// can use each of those at most once.
+type contextTerms struct {
+	defs    map[string][]string // a term's IRIs as written
+	used    map[string]bool     // the terms other terms expand through
+	chain   int                 // the bytes of the definitions of those
+	longest int                 // the longest name or IRI as written
+}
+
+func (c *contextTerms) check(limit int) error {
+	if len(c.defs) > limit {
+		return fmt.Errorf("%w: limit is %d", ErrTooManyContextTerms, limit)
+	}
+	if c.longest > maxContextTermBytes || c.chain > maxContextTermBytes {
+		return fmt.Errorf("%w: limit is %d bytes", ErrContextTermTooLong, maxContextTermBytes)
+	}
+	return nil
+}
+
+// addDocument adds the @context values anywhere under v.
+func (c *contextTerms) addDocument(v interface{}) {
+	switch t := v.(type) {
+	case []interface{}:
+		for _, item := range t {
+			c.addDocument(item)
+		}
+	case map[string]interface{}:
+		for key, item := range t {
+			if key == "@context" {
+				c.add(item)
+			} else {
+				c.addDocument(item)
+			}
+		}
+	}
+}
+
+// add adds a @context value. A string in one is a remote context, which comes
+// back through contextBudget when json-gold loads it.
+func (c *contextTerms) add(ctx interface{}) {
+	switch t := ctx.(type) {
+	case []interface{}:
+		for _, item := range t {
+			c.add(item)
+		}
+	case map[string]interface{}:
+		for key, def := range t {
+			switch {
+			case key == "@context":
+				c.add(def)
+			case key == "@vocab", key == "@base":
+				if iri, ok := def.(string); ok {
+					c.longest = max(c.longest, len(iri))
+					c.link(iri)
+				}
+			case !strings.HasPrefix(key, "@"):
+				c.define(key, def)
+			}
+		}
+	}
+}
+
+func (c *contextTerms) define(term string, def interface{}) {
+	iri := term // with no IRI of its own a term is its name, joined to @vocab or a prefix
+	switch d := def.(type) {
+	case string:
+		iri = d
+	case map[string]interface{}:
+		if id, ok := d["@id"].(string); ok {
+			iri = id
+		} else if reverse, ok := d["@reverse"].(string); ok {
+			iri = reverse
+		}
+		c.add(d["@context"])
+	}
+	c.longest = max(c.longest, len(term), len(iri))
+	c.defs[term] = append(c.defs[term], iri)
+	if c.used[term] {
+		c.link(iri)
+	}
+	if strings.Contains(iri, ":") {
+		c.use(expandsThrough(iri))
+	}
+}
+
+func (c *contextTerms) use(term string) {
+	if c.used[term] {
+		return
+	}
+	c.used[term] = true
+	for _, iri := range c.defs[term] {
+		c.link(iri)
+	}
+}
+
+// link counts an IRI that part of a chain is written as.
+func (c *contextTerms) link(iri string) {
+	if term := expandsThrough(iri); term != "" {
+		c.chain += len(iri)
+		c.use(term)
+	}
+}
+
+// expandsThrough returns the term json-gold may expand iri through: the part
+// before the colon of a compact IRI, or all of an alias. It returns "" for what
+// json-gold takes as it stands: a keyword, a blank node, or scheme://.
+func expandsThrough(iri string) string {
+	prefix, suffix, _ := strings.Cut(iri, ":")
+	if strings.HasPrefix(iri, "@") || prefix == "_" || strings.HasPrefix(suffix, "//") {
+		return ""
+	}
+	return prefix
 }
 
 // publicOnlyClient is the client of every context fetch unless a test replaced

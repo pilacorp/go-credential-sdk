@@ -255,7 +255,11 @@ func ExpandJSONLD(doc map[string]interface{}) (result []interface{}, err error) 
 	if err != nil {
 		return nil, fmt.Errorf("expand: standardize: %w", err)
 	}
-	out, err := ld.NewJsonLdProcessor().Expand(std, sdOptions())
+	opts := sdOptions()
+	if err := limitInlineContexts(opts, std); err != nil {
+		return nil, fmt.Errorf("expand: %w", err)
+	}
+	out, err := ld.NewJsonLdProcessor().Expand(std, opts)
 	if err != nil {
 		return nil, fmt.Errorf("expand: %w", err)
 	}
@@ -286,6 +290,9 @@ func ToRDFNQuads(doc interface{}) (result []string, err error) {
 	defer recoverJSONLD(&err, "to rdf")
 	opts := sdOptions()
 	opts.Format = "application/n-quads"
+	if err := limitInlineContexts(opts, doc); err != nil {
+		return nil, fmt.Errorf("to rdf: %w", err)
+	}
 	rdf, err := ld.NewJsonLdProcessor().ToRDF(doc, opts)
 	if err != nil {
 		return nil, fmt.Errorf("to rdf: %w", err)
