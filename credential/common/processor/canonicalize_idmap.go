@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	ld "github.com/piprate/json-gold/ld"
@@ -200,12 +201,20 @@ func blankNodeWork(dataset *ld.RDFDataset) int {
 		}
 	}
 
-	signatures := make(map[string]string, len(lines))
-	sharing := make(map[string]int, len(lines))
+	// Signatures are interned because a list key below copies one per relation.
+	signatures := make(map[string]int, len(lines))
+	interned := make(map[string]int, len(lines))
+	sharing := make(map[int]int, len(lines))
 	for id, l := range lines {
 		sort.Strings(l)
-		signatures[id] = strings.Join(l, "\n")
-		sharing[signatures[id]]++
+		sig := strings.Join(l, "\n")
+		n, ok := interned[sig]
+		if !ok {
+			n = len(interned)
+			interned[sig] = n
+		}
+		signatures[id] = n
+		sharing[n]++
 	}
 	interchangeable := func(id string) bool { return sharing[signatures[id]] > 1 }
 
@@ -223,10 +232,10 @@ func blankNodeWork(dataset *ld.RDFDataset) int {
 			// the distinct orderings: the running multinomial of each list.
 			counts := make(map[string]int)
 			for _, r := range related[group[i]] {
-				list := r.how + signatures[r.id]
+				list := r.how + "\x00" + strconv.Itoa(signatures[r.id])
 				counts[list]++
-				counts[list+r.id]++
-				orderings = orderings * counts[list] / counts[list+r.id]
+				counts[list+"\x00"+r.id]++
+				orderings = orderings * counts[list] / counts[list+"\x00"+r.id]
 				if orderings > maxBlankNodeWork {
 					return orderings
 				}

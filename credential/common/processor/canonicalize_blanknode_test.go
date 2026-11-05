@@ -260,3 +260,29 @@ func numbers(n int) []interface{} {
 	}
 	return list
 }
+
+// The guard runs on every document before the signature check, so it must not
+// be the cost itself: signatures hold a node's every quad line.
+func TestBlankNodeWork_AllocatesLinearly(t *testing.T) {
+	children := make([]interface{}, 5000)
+	for i := range children {
+		children[i] = map[string]interface{}{"name": "same"}
+	}
+	dataset, err := toRDFDataset(map[string]interface{}{
+		"@context": linkContext,
+		"knows":    map[string]interface{}{"knows": children},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	work := blankNodeWork(dataset)
+	runtime.ReadMemStats(&after)
+	if work != 0 {
+		t.Fatalf("scored %d", work)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 100<<20 {
+		t.Fatalf("allocated %d MiB", allocated>>20)
+	}
+}
