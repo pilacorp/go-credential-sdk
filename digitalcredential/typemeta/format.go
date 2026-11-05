@@ -39,8 +39,8 @@ type claimMeta struct {
 	hasDisplay, hasMandatory, hasSD, hasSVGID bool
 }
 
-// readDocument reads raw as one Type Metadata document. Its errors wrap
-// ErrInvalid; they name the property at fault and quote none of its value.
+// readDocument reads raw as one Type Metadata document (§5.2). Its errors
+// wrap ErrInvalid; they name the property at fault and quote none of its value.
 func readDocument(raw []byte) (*document, error) {
 	if len(raw) > maxDocumentBytes {
 		return nil, invalid("the document is over %d bytes, the SDK's limit", maxDocumentBytes)
@@ -51,30 +51,33 @@ func readDocument(raw []byte) (*document, error) {
 	}
 	obj, ok := v.(map[string]any)
 	if !ok {
-		return nil, invalid("the document is not a JSON object (draft-ietf-oauth-sd-jwt-vc-19 §5.2)")
+		return nil, invalid("the document is not a JSON object")
 	}
 	d := &document{}
 	if d.vct, ok = obj["vct"].(string); !ok {
-		return nil, invalid("vct is absent or not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.2)")
+		return nil, invalid("vct is absent or not a string")
 	}
 	if !optString(obj, "name", &d.name) || !optString(obj, "description", &d.description) {
-		return nil, invalid("name or description is not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.2)")
+		return nil, invalid("name or description is not a string")
 	}
 	if _, d.hasExtends = obj["extends"]; d.hasExtends {
 		if d.extends, _ = obj["extends"].(string); d.extends == "" {
-			return nil, invalid("extends is not a non-empty string; it names the type extended (draft-ietf-oauth-sd-jwt-vc-19 §5.4)")
+			// §5.4: extends is the URI of the type extended.
+			return nil, invalid("extends is not a non-empty string; it names the type extended")
 		}
 	}
 	_, d.hasExtendsIntegrity = obj["extends#integrity"]
 	if !optString(obj, "extends#integrity", &d.extendsIntegrity) {
-		return nil, invalid("extends#integrity is not a string (draft-ietf-oauth-sd-jwt-vc-19 §6)")
+		return nil, invalid("extends#integrity is not a string")
 	}
 	if d.hasExtendsIntegrity && !sri.WellFormed(d.extendsIntegrity) {
-		return nil, invalid("extends#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §6)")
+		// §6: the value is integrity metadata, by W3C SRI §3.5.
+		return nil, invalid("extends#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces)")
 	}
-	// Well formed, so all but its tokens is ASCII whitespace.
+	// §6: a present value must be verified, and one that is well formed with
+	// nothing but ASCII whitespace names no hash.
 	if d.hasExtendsIntegrity && strings.TrimSpace(d.extendsIntegrity) == "" {
-		return nil, invalid("extends#integrity is present and holds no hash, so none can check the parent document; write typemeta.Integrity of it or leave it out (draft-ietf-oauth-sd-jwt-vc-19 §6)")
+		return nil, invalid("extends#integrity is present and holds no hash, so none can check the parent document; write typemeta.Integrity of it or leave it out")
 	}
 	if v, ok := obj["display"]; ok {
 		d.hasDisplay = true
@@ -86,10 +89,12 @@ func readDocument(raw []byte) (*document, error) {
 	return d, nil
 }
 
+// readDisplays reads the display property (§5.5): objects with a locale
+// (RFC 5646 §2.1), a name and, optionally, a description and a rendering.
 func readDisplays(v any) ([]Display, error) {
 	arr, ok := v.([]any)
 	if !ok {
-		return nil, invalid("display is not an array (draft-ietf-oauth-sd-jwt-vc-19 §5.5)")
+		return nil, invalid("display is not an array")
 	}
 	if len(arr) > maxDisplay {
 		return nil, invalid("display has over %d elements, the SDK's limit", maxDisplay)
@@ -98,18 +103,18 @@ func readDisplays(v any) ([]Display, error) {
 	for i, e := range arr {
 		m, ok := e.(map[string]any)
 		if !ok {
-			return nil, invalid("display[%d] is not an object (draft-ietf-oauth-sd-jwt-vc-19 §5.5)", i)
+			return nil, invalid("display[%d] is not an object", i)
 		}
 		at := fmt.Sprintf("display[%d]", i)
 		d := &out[i]
 		if d.Locale, ok = m["locale"].(string); !ok || !wellFormedLangTag(d.Locale) {
-			return nil, invalid("%s.locale is absent or not a well-formed language tag (draft-ietf-oauth-sd-jwt-vc-19 §5.5; RFC 5646 §2.1)", at)
+			return nil, invalid("%s.locale is absent or not a well-formed language tag", at)
 		}
 		if d.Name, ok = m["name"].(string); !ok {
-			return nil, invalid("%s.name is absent or not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.5)", at)
+			return nil, invalid("%s.name is absent or not a string", at)
 		}
 		if !optString(m, "description", &d.Description) {
-			return nil, invalid("%s.description is not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.5)", at)
+			return nil, invalid("%s.description is not a string", at)
 		}
 		if r, ok := m["rendering"]; ok {
 			var err error
@@ -122,17 +127,18 @@ func readDisplays(v any) ([]Display, error) {
 }
 
 // readRendering reads the two rendering methods of §5.5.1; any other
-// method is ignored.
+// method is ignored. simple (§5.5.1.1) is an object whose colors are RGB
+// values (CSS Color Level 3 §4.2.1); svg_templates (§5.5.1.2) is an array.
 func readRendering(v any, at string) (*Rendering, error) {
 	m, ok := v.(map[string]any)
 	if !ok {
-		return nil, invalid("%s is not an object (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1)", at)
+		return nil, invalid("%s is not an object", at)
 	}
 	r := &Rendering{}
 	if s, ok := m["simple"]; ok {
 		sm, ok := s.(map[string]any)
 		if !ok {
-			return nil, invalid("%s.simple is not an object (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.1)", at)
+			return nil, invalid("%s.simple is not an object", at)
 		}
 		r.Simple = &SimpleRendering{}
 		var err error
@@ -147,14 +153,14 @@ func readRendering(v any, at string) (*Rendering, error) {
 			dst  *string
 		}{{"background_color", &r.Simple.BackgroundColor}, {"text_color", &r.Simple.TextColor}} {
 			if _, ok := sm[c.name]; ok && (!optString(sm, c.name, c.dst) || !rgbColor(*c.dst)) {
-				return nil, invalid("%s.simple.%s is not an RGB color value (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.1; CSS Color Level 3 §4.2.1)", at, c.name)
+				return nil, invalid("%s.simple.%s is not an RGB color value", at, c.name)
 			}
 		}
 	}
 	if s, ok := m["svg_templates"]; ok {
 		arr, ok := s.([]any)
 		if !ok {
-			return nil, invalid("%s.svg_templates is not an array (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.2)", at)
+			return nil, invalid("%s.svg_templates is not an array", at)
 		}
 		r.SVGTemplates = make([]SVGTemplate, len(arr))
 		for i, e := range arr {
@@ -168,6 +174,9 @@ func readRendering(v any, at string) (*Rendering, error) {
 	return r, nil
 }
 
+// readImage reads the logo (§5.5.1.1.1) or background_image (§5.5.1.1.2) of
+// m, nil when absent: an object with a uri and, optionally, a uri#integrity
+// holding integrity metadata (§6, W3C SRI §3.5).
 func readImage(m map[string]any, name, at string) (*Image, error) {
 	v, ok := m[name]
 	if !ok {
@@ -176,7 +185,7 @@ func readImage(m map[string]any, name, at string) (*Image, error) {
 	at += "." + name
 	im, ok := v.(map[string]any)
 	if !ok {
-		return nil, invalid("%s is not an object (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.1)", at)
+		return nil, invalid("%s is not an object", at)
 	}
 	img := &Image{}
 	var err error
@@ -185,26 +194,27 @@ func readImage(m map[string]any, name, at string) (*Image, error) {
 	}
 	// §5.5.1.1.1 gives the logo alt_text; §5.5.1.1.2 gives background_image
 	// only uri and uri#integrity, so its alt_text is an unknown property.
-	section := "§5.5.1.1.2"
 	if name == "logo" {
-		section = "§5.5.1.1.1"
 		if !optString(im, "alt_text", &img.AltText) {
-			return nil, invalid("%s.alt_text is not a string (draft-ietf-oauth-sd-jwt-vc-19 %s)", at, section)
+			return nil, invalid("%s.alt_text is not a string", at)
 		}
 	}
 	if !optStringPtr(im, "uri#integrity", &img.URIIntegrity) {
-		return nil, invalid("%s.uri#integrity is not a string (draft-ietf-oauth-sd-jwt-vc-19 %s)", at, section)
+		return nil, invalid("%s.uri#integrity is not a string", at)
 	}
 	if img.URIIntegrity != nil && !sri.WellFormed(*img.URIIntegrity) {
-		return nil, invalid("%s.uri#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §6)", at)
+		return nil, invalid("%s.uri#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces)", at)
 	}
 	return img, nil
 }
 
+// readSVGTemplate reads one element of svg_templates (§5.5.1.2): a uri, an
+// optional uri#integrity holding integrity metadata (§6, W3C SRI §3.5), and
+// properties (§5.5.1.2.1), required when there is more than one template.
 func readSVGTemplate(v any, several bool, at string) (SVGTemplate, error) {
 	m, ok := v.(map[string]any)
 	if !ok {
-		return SVGTemplate{}, invalid("%s is not an object (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.2)", at)
+		return SVGTemplate{}, invalid("%s is not an object", at)
 	}
 	var t SVGTemplate
 	var err error
@@ -212,21 +222,21 @@ func readSVGTemplate(v any, several bool, at string) (SVGTemplate, error) {
 		return SVGTemplate{}, err
 	}
 	if !optStringPtr(m, "uri#integrity", &t.URIIntegrity) {
-		return SVGTemplate{}, invalid("%s.uri#integrity is not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.2)", at)
+		return SVGTemplate{}, invalid("%s.uri#integrity is not a string", at)
 	}
 	if t.URIIntegrity != nil && !sri.WellFormed(*t.URIIntegrity) {
-		return SVGTemplate{}, invalid("%s.uri#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces; W3C SRI §3.5, draft-ietf-oauth-sd-jwt-vc-19 §6)", at)
+		return SVGTemplate{}, invalid("%s.uri#integrity is not integrity metadata (sha256-, sha384- or sha512- and base64, tokens separated by spaces)", at)
 	}
 	p, ok := m["properties"]
 	if !ok {
 		if several {
-			return SVGTemplate{}, invalid("%s has no properties, which draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.2 requires when there is more than one template", at)
+			return SVGTemplate{}, invalid("%s has no properties, which are required when there is more than one template", at)
 		}
 		return t, nil
 	}
 	pm, ok := p.(map[string]any)
 	if !ok {
-		return SVGTemplate{}, invalid("%s.properties is not an object (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.2.1)", at)
+		return SVGTemplate{}, invalid("%s.properties is not an object", at)
 	}
 	t.Properties = &SVGProperties{}
 	// The values §5.5.1.2.1 defines for each property.
@@ -244,12 +254,12 @@ func readSVGTemplate(v any, several bool, at string) (SVGTemplate, error) {
 			continue
 		}
 		if s, _ := v.(string); s != p.vals[0] && s != p.vals[1] {
-			return SVGTemplate{}, invalid("%s.properties.%s is neither %s nor %s (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.2.1)", at, p.name, p.vals[0], p.vals[1])
+			return SVGTemplate{}, invalid("%s.properties.%s is neither %s nor %s", at, p.name, p.vals[0], p.vals[1])
 		}
 		*p.dst = v.(string)
 	}
 	if *t.Properties == (SVGProperties{}) {
-		return SVGTemplate{}, invalid("%s.properties has none of orientation, color_scheme and contrast; draft-ietf-oauth-sd-jwt-vc-19 §5.5.1.2.1 requires one", at)
+		return SVGTemplate{}, invalid("%s.properties has none of orientation, color_scheme and contrast; one of them is required", at)
 	}
 	return t, nil
 }
@@ -260,7 +270,7 @@ func readSVGTemplate(v any, several bool, at string) (SVGTemplate, error) {
 func readURI(m map[string]any, at string) (string, error) {
 	s, ok := m["uri"].(string)
 	if !ok {
-		return "", invalid("%s.uri is absent or not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1)", at)
+		return "", invalid("%s.uri is absent or not a string", at)
 	}
 	u, err := url.Parse(s)
 	switch {
@@ -273,7 +283,7 @@ func readURI(m map[string]any, at string) (string, error) {
 	case u.Scheme == "data" && strings.Contains(u.Opaque, ","):
 		return s, nil
 	}
-	return "", invalid("%s.uri is neither an https URL with a host nor a data: URI, by RFC 3986 (draft-ietf-oauth-sd-jwt-vc-19 §5.5.1)", at)
+	return "", invalid("%s.uri is neither an https URL with a host nor a data: URI", at)
 }
 
 // readClaims reads the claims property of d (§5.6), nil when absent. Its
@@ -283,11 +293,11 @@ func (d *document) readClaims() ([]claimMeta, error) {
 		return nil, nil
 	}
 	if d.claims == nil {
-		return nil, claimsErr("claims is null; it is an array of claim metadata, or left out (draft-ietf-oauth-sd-jwt-vc-19 §5.6)")
+		return nil, claimsErr("claims is null; it is an array of claim metadata, or left out")
 	}
 	arr, ok := d.claims.([]any)
 	if !ok {
-		return nil, claimsErr("claims is not an array (draft-ietf-oauth-sd-jwt-vc-19 §5.6)")
+		return nil, claimsErr("claims is not an array")
 	}
 	if len(arr) > maxClaims {
 		return nil, claimsErr("claims has over %d elements, the SDK's limit", maxClaims)
@@ -303,15 +313,18 @@ func (d *document) readClaims() ([]claimMeta, error) {
 	return out, nil
 }
 
+// readClaim reads one element of claims (§5.6): path (§5.6.1), display
+// (§5.6.2) with its locale by RFC 5646 §2.1, mandatory (§5.6.3), sd (§5.6.4)
+// and svg_id (§5.6).
 func readClaim(v any, at string) (claimMeta, error) {
 	m, ok := v.(map[string]any)
 	if !ok {
-		return claimMeta{}, claimsErr("%s is not an object (draft-ietf-oauth-sd-jwt-vc-19 §5.6)", at)
+		return claimMeta{}, claimsErr("%s is not an object", at)
 	}
 	var c claimMeta
 	path, ok := m["path"].([]any)
 	if !ok || len(path) == 0 {
-		return claimMeta{}, claimsErr("%s.path is absent or not a non-empty array (draft-ietf-oauth-sd-jwt-vc-19 §5.6.1)", at)
+		return claimMeta{}, claimsErr("%s.path is absent or not a non-empty array", at)
 	}
 	if len(path) > maxPath {
 		return claimMeta{}, claimsErr("%s.path has over %d elements, the SDK's limit", at, maxPath)
@@ -326,18 +339,18 @@ func readClaim(v any, at string) (claimMeta, error) {
 			// select the same element.
 			n, err := jsonint.NonNegative(string(t))
 			if err != nil {
-				return claimMeta{}, claimsErr("%s.path[%d] is a number that is not a non-negative integer an int holds (draft-ietf-oauth-sd-jwt-vc-19 §5.6.1)", at, i)
+				return claimMeta{}, claimsErr("%s.path[%d] is a number that is not a non-negative integer an int holds", at, i)
 			}
 			c.Path[i] = n
 		default:
-			return claimMeta{}, claimsErr("%s.path[%d] is not a string, null or a non-negative integer (draft-ietf-oauth-sd-jwt-vc-19 §5.6.1)", at, i)
+			return claimMeta{}, claimsErr("%s.path[%d] is not a string, null or a non-negative integer", at, i)
 		}
 	}
 	if v, ok := m["display"]; ok {
 		c.hasDisplay = true
 		arr, ok := v.([]any)
 		if !ok {
-			return claimMeta{}, claimsErr("%s.display is not an array (draft-ietf-oauth-sd-jwt-vc-19 §5.6.2)", at)
+			return claimMeta{}, claimsErr("%s.display is not an array", at)
 		}
 		if len(arr) > maxDisplay {
 			return claimMeta{}, claimsErr("%s.display has over %d elements, the SDK's limit", at, maxDisplay)
@@ -347,36 +360,36 @@ func readClaim(v any, at string) (claimMeta, error) {
 			dm, ok := e.(map[string]any)
 			da := fmt.Sprintf("%s.display[%d]", at, i)
 			if !ok {
-				return claimMeta{}, claimsErr("%s is not an object (draft-ietf-oauth-sd-jwt-vc-19 §5.6.2)", da)
+				return claimMeta{}, claimsErr("%s is not an object", da)
 			}
 			d := &c.Display[i]
 			if d.Locale, ok = dm["locale"].(string); !ok || !wellFormedLangTag(d.Locale) {
-				return claimMeta{}, claimsErr("%s.locale is absent or not a well-formed language tag (draft-ietf-oauth-sd-jwt-vc-19 §5.6.2; RFC 5646 §2.1)", da)
+				return claimMeta{}, claimsErr("%s.locale is absent or not a well-formed language tag", da)
 			}
 			if d.Label, ok = dm["label"].(string); !ok {
-				return claimMeta{}, claimsErr("%s.label is absent or not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.6.2)", da)
+				return claimMeta{}, claimsErr("%s.label is absent or not a string", da)
 			}
 			if !optString(dm, "description", &d.Description) {
-				return claimMeta{}, claimsErr("%s.description is not a string (draft-ietf-oauth-sd-jwt-vc-19 §5.6.2)", da)
+				return claimMeta{}, claimsErr("%s.description is not a string", da)
 			}
 		}
 	}
 	if v, ok := m["mandatory"]; ok {
 		c.hasMandatory = true
 		if c.Mandatory, ok = v.(bool); !ok {
-			return claimMeta{}, claimsErr("%s.mandatory is not a boolean (draft-ietf-oauth-sd-jwt-vc-19 §5.6.3)", at)
+			return claimMeta{}, claimsErr("%s.mandatory is not a boolean", at)
 		}
 	}
 	if v, ok := m["sd"]; ok {
 		c.hasSD = true
 		if c.SD, _ = v.(string); c.SD != sdAlways && c.SD != sdAllowed && c.SD != sdNever {
-			return claimMeta{}, claimsErr("%s.sd is not always, allowed or never (draft-ietf-oauth-sd-jwt-vc-19 §5.6.4)", at)
+			return claimMeta{}, claimsErr("%s.sd is not always, allowed or never", at)
 		}
 	}
 	if v, ok := m["svg_id"]; ok {
 		c.hasSVGID = true
 		if c.SVGID, _ = v.(string); !svgID(c.SVGID) {
-			return claimMeta{}, claimsErr("%s.svg_id is not alphanumerics and underscores starting with no digit (draft-ietf-oauth-sd-jwt-vc-19 §5.6)", at)
+			return claimMeta{}, claimsErr("%s.svg_id is not alphanumerics and underscores starting with no digit", at)
 		}
 	}
 	return c, nil
@@ -406,7 +419,7 @@ func checkSVGIDs(claims []claimMeta) error {
 			continue
 		}
 		if seen[c.SVGID] {
-			return claimsErr("claims[%d].svg_id is used by another claim; draft-ietf-oauth-sd-jwt-vc-19 §5.6 requires it unique", i)
+			return claimsErr("claims[%d].svg_id is used by another claim; svg_id must be unique", i)
 		}
 		seen[c.SVGID] = true
 	}

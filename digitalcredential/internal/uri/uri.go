@@ -18,12 +18,12 @@ import (
 // rule s breaks and does not quote s.
 func Check(s string) error {
 	if !Valid(s) {
-		return errors.New("is not a URI (RFC 3986)")
+		return errors.New("is not a URI")
 	}
 	// RFC 3986 §3.1: a scheme compares case-insensitively.
 	scheme, rest, _ := strings.Cut(s, ":")
 	if (strings.EqualFold(scheme, "http") || strings.EqualFold(scheme, "https")) && !hasHost(rest) {
-		return errors.New("is an http or https URI without a host (RFC 9110 §4.2.1, §4.2.2)")
+		return errors.New("is an http or https URI without a host")
 	}
 	return nil
 }

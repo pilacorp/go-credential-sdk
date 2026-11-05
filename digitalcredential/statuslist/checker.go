@@ -310,7 +310,7 @@ func (c *Checker) Status(ctx context.Context, ref Ref, iss string) (uint8, error
 	// Not jose.ErrInvalidArgument, which Get would wrap: the index comes from
 	// the Referenced Token, not from a caller mistake.
 	if n := l.entries(); ref.Index >= n {
-		return 0, fmt.Errorf("%w: index %d is outside the list of %d entries (draft-ietf-oauth-status-list-21 §8.3 step 6)", ErrIndexOutOfBounds, ref.Index, n)
+		return 0, fmt.Errorf("%w: index %d is outside the list of %d entries", ErrIndexOutOfBounds, ref.Index, n)
 	}
 	return l.Get(ref.Index)
 }

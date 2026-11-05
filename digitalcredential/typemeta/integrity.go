@@ -31,7 +31,7 @@ func Integrity(doc []byte) string {
 // image and SVG templates it fetches.
 func CheckIntegrity(data []byte, integrity string) error {
 	if err := sri.Check(data, integrity); err != nil {
-		return fmt.Errorf("%w: typemeta: %v (draft-ietf-oauth-sd-jwt-vc-19 §6)", ErrInvalid, err)
+		return fmt.Errorf("%w: typemeta: %v", ErrInvalid, err)
 	}
 	return nil
 }

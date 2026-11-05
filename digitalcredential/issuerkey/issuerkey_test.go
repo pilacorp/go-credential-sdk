@@ -160,3 +160,13 @@ func TestMultiKeepsEachReason(t *testing.T) {
 		t.Errorf("err = %v; want %q", err, want)
 	}
 }
+
+// Without kid the verifier cannot tell which of several keys signed, and only
+// the issuer can fix that, so the text has to say so.
+func TestSelectNoKidManyKeysNamesTheFix(t *testing.T) {
+	two := []PublicKey{{KID: "a", Public: "a"}, {KID: "b", Public: "b"}}
+	_, err := Select(two, jws.Header{})
+	if err == nil || !strings.Contains(err.Error(), "the issuer must set kid") {
+		t.Fatalf("Select = %v; want a text telling the issuer to set kid", err)
+	}
+}
