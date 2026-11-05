@@ -12,9 +12,13 @@ import (
 // of canonical N-Quad statements. When the document contains no blank nodes the
 // sorted N-Quads are already canonical per RDFC-1.0; callers that may have blank
 // nodes should canonicalize with an id map instead (see CanonicalizeWithIdMap).
-func ToNQuads(input interface{}) ([]string, error) {
+func ToNQuads(input interface{}) (result []string, err error) {
+	defer recoverJSONLD(&err, "to nquads")
 	proc, opts := newProcessor()
 	opts.Format = "application/n-quads"
+	if err := limitInlineContexts(opts, input); err != nil {
+		return nil, fmt.Errorf("to nquads: %w", err)
+	}
 	rdf, err := proc.ToRDF(input, opts)
 	if err != nil {
 		return nil, fmt.Errorf("to nquads: %w", err)
@@ -47,13 +51,14 @@ func splitNQuads(s string) []string {
 }
 
 // newProcessor returns a processor + options pre-wired with the shared caching
-// document loader (so embedded W3C contexts resolve offline) and URDNA2015
+// document loader (so embedded W3C contexts resolve offline), its per-call
+// budget, and URDNA2015
 // (RDFC-1.0) as the canonicalization algorithm.
 func newProcessor() (*ld.JsonLdProcessor, *ld.JsonLdOptions) {
 	proc := ld.NewJsonLdProcessor()
 	opts := ld.NewJsonLdOptions("")
 	opts.Algorithm = ld.AlgorithmURDNA2015
-	opts.DocumentLoader = defaultDocumentLoader
+	opts.DocumentLoader = newContextBudget()
 	// Lossless processing: fail (don't silently drop) on terms that don't
 	// expand to an absolute IRI or keyword (W3C VC-DI DATA_LOSS_DETECTION).
 	opts.SafeMode = true
