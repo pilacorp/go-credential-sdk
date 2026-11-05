@@ -100,8 +100,8 @@ func TestKeysSaysTheCredentialHasNoIss(t *testing.T) {
 func TestKeysNamesIssuermetaForAnHTTPSIssuer(t *testing.T) {
 	r, _ := New(Config{URL: "https://resolver.example"})
 	_, err := r.Keys(context.Background(), "https://issuer.example")
-	if err == nil || !strings.Contains(err.Error(), "issuermeta.NewResolver") || !strings.Contains(err.Error(), "issuerkey.Multi") {
-		t.Errorf("err = %v; want it to name issuermeta.NewResolver and issuerkey.Multi", err)
+	if !errors.Is(err, issuerkey.ErrIssuerNotSupported) || !strings.Contains(err.Error(), "use issuermeta") {
+		t.Errorf("err = %v; want ErrIssuerNotSupported naming issuermeta", err)
 	}
 }
 
@@ -275,7 +275,6 @@ func TestKeysRefusesAnUnusableResolution(t *testing.T) {
 		"assertionMethod a number":  document([]any{multikeyVM()}, []any{1}),
 		"verificationMethod a map":  map[string]any{"id": testDID, "verificationMethod": map[string]any{}},
 		"verificationMethod number": document([]any{1}, []any{vmID}),
-		"one id defined twice":      document([]any{multikeyVM(), multikeyVM()}, []any{vmID}),
 	} {
 		if keys, err := keysOf(t, v, now); !errors.Is(err, issuerkey.ErrNoUsableKey) {
 			t.Errorf("%s: keys = %+v, err = %v; want ErrNoUsableKey", name, keys, err)
@@ -286,7 +285,7 @@ func TestKeysRefusesAnUnusableResolution(t *testing.T) {
 // A result without a document names that, not a mismatch of ids.
 func TestKeysSaysAResultHoldsNoDocument(t *testing.T) {
 	_, err := keysOf(t, map[string]any{"didDocument": nil}, now)
-	if err == nil || !strings.Contains(err.Error(), "holds no DID document") {
+	if err == nil || !strings.Contains(err.Error(), "no DID document") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -540,5 +539,126 @@ func TestKeysPassesOnTheErrorOfADIDResolver(t *testing.T) {
 	}
 	if _, err = r.Keys(context.Background(), testDID); !errors.Is(err, cause) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// An error in didResolutionMetadata keeps the meaning the status table of
+// DID Resolution §9.1 gives its type on the HTTP binding, so a DIDResolver of
+// another transport is read the same way: an outage never reads as a missing
+// key, and a refusal lets issuerkey.Multi ask the next resolver.
+func TestKeysReadsTheErrorTypeOfAResult(t *testing.T) {
+	const ns = "https://www.w3.org/ns/did#"
+	for typ, want := range map[any]error{
+		ns + "INVALID_DID":                       issuerkey.ErrIssuerNotSupported, // 400
+		ns + "INVALID_DID_URL":                   issuerkey.ErrIssuerNotSupported, // 400
+		ns + "INVALID_OPTIONS":                   issuerkey.ErrIssuerNotSupported, // 400
+		ns + "METHOD_NOT_SUPPORTED":              issuerkey.ErrIssuerNotSupported, // 501
+		ns + "FEATURE_NOT_SUPPORTED":             issuerkey.ErrIssuerNotSupported, // 501
+		ns + "NOT_FOUND":                         issuerkey.ErrNoUsableKey,        // 404
+		ns + "INTERNAL_ERROR":                    nil,                             // 500
+		ns + "INVALID_DID_DOCUMENT":              nil,                             // 500
+		ns + "REPRESENTATION_NOT_SUPPORTED":      nil,                             // 406
+		"https://other.example/errors#NOT_FOUND": nil,
+		"NOT_FOUND":                              nil, // §8: type MUST be a URL
+		"notFound":                               nil,
+		1:                                        nil,
+	} {
+		res := map[string]any{
+			"didResolutionMetadata": map[string]any{"error": map[string]any{"type": typ, "title": "RESOLVER-TITLE", "detail": "RESOLVER-DETAIL"}},
+			"didDocument":           nil,
+			"didDocumentMetadata":   map[string]any{},
+		}
+		_, err := keysOf(t, res, now)
+		switch {
+		case err == nil:
+			t.Errorf("%v: no error", typ)
+		case want != nil && !errors.Is(err, want):
+			t.Errorf("%v: err = %v; want %v", typ, err, want)
+		case want == nil && (errors.Is(err, issuerkey.ErrNoUsableKey) || errors.Is(err, issuerkey.ErrIssuerNotSupported)):
+			t.Errorf("%v: err = %v; want a failure, neither an answer nor a refusal", typ, err)
+		case strings.Contains(err.Error(), "RESOLVER-"):
+			t.Errorf("%v: err = %v quotes the resolver", typ, err)
+		}
+	}
+	// An error that is not an object, as resolvers before RFC 9457 wrote it.
+	_, err := keysOf(t, map[string]any{"didResolutionMetadata": map[string]any{"error": "notFound"}}, now)
+	if err == nil || errors.Is(err, issuerkey.ErrNoUsableKey) || errors.Is(err, issuerkey.ErrIssuerNotSupported) {
+		t.Errorf("string error: err = %v; want a failure", err)
+	}
+}
+
+// Through Multi, a refusal in the body moves the issuer to the next resolver.
+func TestMultiPassesARefusalInTheBody(t *testing.T) {
+	refusing, err := New(Config{Resolver: resolverFunc(func(context.Context, string) ([]byte, error) {
+		return []byte(`{"didResolutionMetadata":{"error":{"type":"https://www.w3.org/ns/did#METHOD_NOT_SUPPORTED"}},"didDocument":null}`), nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := New(Config{Resolver: resolverFunc(func(context.Context, string) ([]byte, error) {
+		return json.Marshal(document([]any{multikeyVM()}, []any{vmID}))
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := issuerkey.Multi(refusing, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys, err := m.Keys(context.Background(), testDID); err != nil || len(keys) != 1 {
+		t.Errorf("keys = %+v, err = %v", keys, err)
+	}
+}
+
+// deactivated wins over an error, as 410 overrides every other status of
+// §9.1, so a DID that is gone reads the same over any transport.
+func TestKeysReadsDeactivatedBeforeAnError(t *testing.T) {
+	for _, typ := range []string{"INTERNAL_ERROR", "METHOD_NOT_SUPPORTED", "INVALID_DID_DOCUMENT"} {
+		_, err := keysOf(t, map[string]any{
+			"didResolutionMetadata": map[string]any{"error": map[string]any{"type": "https://www.w3.org/ns/did#" + typ}},
+			"didDocument":           nil,
+			"didDocumentMetadata":   map[string]any{"deactivated": true},
+		}, now)
+		if !errors.Is(err, issuerkey.ErrNoUsableKey) {
+			t.Errorf("%s: err = %v; want ErrNoUsableKey", typ, err)
+		}
+	}
+}
+
+// Two different definitions of one id in one set are refused: otherwise a
+// clean copy would bring back a key the other copy revokes.
+func TestKeysRefusesAnIDDefinedTwice(t *testing.T) {
+	past := now.Add(-time.Hour).Format(time.RFC3339)
+	for name, doc := range map[string]map[string]any{
+		"reference and embedded":      document([]any{multikeyVM("revoked", past)}, []any{vmID, multikeyVM()}),
+		"embedded twice":              document(nil, []any{multikeyVM("revoked", past), multikeyVM()}),
+		"relative and absolute":       document(nil, []any{multikeyVM("revoked", past), multikeyVM("id", "#k")}),
+		"twice in verificationMethod": document([]any{multikeyVM("revoked", past), multikeyVM()}, []any{vmID}),
+	} {
+		if keys, err := keysOf(t, doc, now); !errors.Is(err, issuerkey.ErrNoUsableKey) {
+			t.Errorf("%s: keys = %+v, err = %v; want ErrNoUsableKey", name, keys, err)
+		}
+	}
+}
+
+// assertionMethod alone says which keys assert: an embedded method is used as
+// written, whatever verificationMethod holds, and an equal copy is no conflict.
+func TestKeysReadsEmbeddedMethodAsWritten(t *testing.T) {
+	past := now.Add(-time.Hour).Format(time.RFC3339)
+	for name, tt := range map[string]struct {
+		doc  map[string]any
+		want int
+	}{
+		"same copy in both sets":              {document([]any{multikeyVM()}, []any{multikeyVM()}), 1},
+		"same copy embedded twice":            {document(nil, []any{multikeyVM(), multikeyVM()}), 1},
+		"same copy twice, one reference":      {document([]any{multikeyVM(), multikeyVM()}, []any{vmID}), 1},
+		"reference and same copy":             {document([]any{multikeyVM()}, []any{vmID, multikeyVM()}), 1},
+		"clean embedded, revoked in the list": {document([]any{multikeyVM("revoked", past)}, []any{multikeyVM()}), 1},
+		"revoked embedded, clean in the list": {document([]any{multikeyVM()}, []any{multikeyVM("revoked", past)}), 0},
+	} {
+		keys, err := keysOf(t, tt.doc, now)
+		if err != nil || len(keys) != tt.want {
+			t.Errorf("%s: keys = %+v, err = %v; want %d keys", name, keys, err, tt.want)
+		}
 	}
 }

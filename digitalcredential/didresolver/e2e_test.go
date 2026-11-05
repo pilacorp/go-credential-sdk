@@ -21,6 +21,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/didresolver"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuermeta"
+	"github.com/pilacorp/go-credential-sdk/digitalcredential/statuslist"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
 
@@ -160,7 +161,7 @@ func TestVerifyTellsTheConsumerToSupplyADIDResolver(t *testing.T) {
 	for name, r := range map[string]issuerkey.Resolver{"alone": meta, "in Multi": multi} {
 		_, err := verify(t, r, compact)
 		var e *dc.Error
-		if !errors.As(err, &e) || e.Code != dc.CodeIssuerNotSupported || !strings.Contains(err.Error(), "didresolver.New") {
+		if !errors.As(err, &e) || e.Code != dc.CodeIssuerNotSupported || !strings.Contains(err.Error(), "use didresolver") {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}
@@ -221,5 +222,61 @@ func TestVerifyWithAcceptKey(t *testing.T) {
 		case tc.want != "" && (!errors.As(err, &e) || e.Code != tc.want):
 			t.Errorf("%s: err = %v; want %s", name, err, tc.want)
 		}
+	}
+}
+
+// A Status List Token whose iss is the DID is verified with the key the DID
+// document lists, as a credential is.
+func TestCheckerReadsAStatusListOfADIDIssuer(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := jws.PrivateKeySigner(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b64 := func(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+	vm := map[string]any{"type": "JsonWebKey", "publicKeyJwk": map[string]any{
+		"kty": "EC", "crv": "P-256",
+		"x": b64(priv.X.FillBytes(make([]byte, 32))),
+		"y": b64(priv.Y.FillBytes(make([]byte, 32))),
+	}}
+	list, err := statuslist.New(16, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := list.Set(3, 1); err != nil {
+		t.Fatal(err)
+	}
+	var token string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/statuslist+jwt")
+		w.Write([]byte(token))
+	}))
+	defer srv.Close()
+	uri := srv.URL + "/statuslists/1"
+	if token, err = list.IssueToken(context.Background(), statuslist.TokenClaims{
+		Sub: uri, IssuedAt: time.Now(), Expiry: time.Now().Add(time.Hour),
+		Other: map[string]any{"iss": issuerDID},
+	}, issuerkey.SigningKey{Signer: signer, Public: &priv.PublicKey, KID: issuerDID + "#key-1"}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := statuslist.NewChecker(statuslist.Config{Issuers: resolverFor(t, vm), HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for idx, want := range map[int]uint8{3: 1, 4: 0} {
+		if got, err := c.Status(context.Background(), statuslist.Ref{URI: uri, Index: idx}, issuerDID); err != nil || got != want {
+			t.Errorf("Status(%d) = %d, %v; want %d", idx, got, err, want)
+		}
+	}
+	_, other := p256Issuer(t)
+	c, err = statuslist.NewChecker(statuslist.Config{Issuers: resolverFor(t, other), HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Status(context.Background(), statuslist.Ref{URI: uri, Index: 3}, issuerDID); err == nil {
+		t.Error("a token signed by a key the document does not list was accepted")
 	}
 }

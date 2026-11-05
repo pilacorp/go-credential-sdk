@@ -1,6 +1,8 @@
 // Key material of a verification method: W3C Controlled Identifiers v1.0 (CID)
 // §2.2.1 to §2.2.3, and publicKeyHex of the older
-// EcdsaSecp256k1VerificationKey2019 type.
+// EcdsaSecp256k1VerificationKey2019 type. The key is read from its material,
+// which names its curve; type is read only for publicKeyHex, which does not,
+// so a JsonWebKey2020 or a mislabelled method still gives the key it holds.
 
 package didresolver
 

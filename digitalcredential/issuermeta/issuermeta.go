@@ -344,7 +344,7 @@ func metadataURL(iss string) (*url.URL, string, error) {
 	// A DID is a valid iss for another resolver, so the text says which one
 	// to supply rather than call the iss wrong.
 	if strings.HasPrefix(iss, "did:") {
-		return nil, "", fmt.Errorf("%w: issuermeta: iss is a DID, and this resolver reads only https issuers (draft-ietf-oauth-sd-jwt-vc-19 §4); to verify it, use a DID resolver: didresolver.New with its URL or your own. To accept both kinds, join them with issuerkey.Multi", issuerkey.ErrIssuerNotSupported)
+		return nil, "", fmt.Errorf("%w: issuermeta: iss is a DID; use didresolver for a DID iss", issuerkey.ErrIssuerNotSupported)
 	}
 	// draft-ietf-oauth-sd-jwt-vc-19 §4: iss MUST be an https URL as defined
 	// in RFC 3986; url.Parse accepts more, such as a host in Unicode.

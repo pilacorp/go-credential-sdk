@@ -636,7 +636,7 @@ func TestKeysNamesTheDIDResolverForADID(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = r.Keys(context.Background(), "did:example:123")
-	want := "issuerkey: issuer not supported: issuermeta: iss is a DID, and this resolver reads only https issuers (draft-ietf-oauth-sd-jwt-vc-19 §4); to verify it, use a DID resolver: didresolver.New with its URL or your own. To accept both kinds, join them with issuerkey.Multi"
+	want := "issuerkey: issuer not supported: issuermeta: iss is a DID; use didresolver for a DID iss"
 	if !errors.Is(err, issuerkey.ErrIssuerNotSupported) || err.Error() != want {
 		t.Errorf("err = %v; want %q", err, want)
 	}
