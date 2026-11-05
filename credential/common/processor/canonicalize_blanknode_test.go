@@ -3,6 +3,11 @@ package processor
 import (
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,4 +183,80 @@ func TestCanonicalizeDocument_MatchesNormalize(t *testing.T) {
 	if string(got) != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
+}
+
+// normalizationInputs are the rdf-canon inputs, which json-gold ships as the
+// URDNA2015 suite. go test puts the go tool on PATH.
+func normalizationInputs(t *testing.T) []string {
+	t.Helper()
+	dir, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/piprate/json-gold").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, err := filepath.Glob(filepath.Join(strings.TrimSpace(string(dir)), "ld", "testdata", "normalization", "*-in.nq"))
+	if err != nil || len(inputs) == 0 {
+		t.Fatalf("no inputs: %v", err)
+	}
+	return inputs
+}
+
+// Signatures depend on these bytes, so they must stay what Main writes.
+func TestCanonicalNQuads_MatchesMain(t *testing.T) {
+	for _, path := range normalizationInputs(t) {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			input, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parse := func() *ld.RDFDataset {
+				dataset, err := ld.ParseNQuads(string(input))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return dataset
+			}
+			opts := sdOptions()
+			opts.Format = "application/n-quads"
+			want, err := ld.NewNormalisationAlgorithm(ld.AlgorithmURDNA2015).Main(parse(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := canonicalNQuads(parse())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
+// Main joins its lines with +=, which allocates the square of the output.
+func TestNormalizeDataset_AllocatesLinearly(t *testing.T) {
+	dataset, err := toRDFDataset(map[string]interface{}{
+		"@context": map[string]interface{}{"values": map[string]interface{}{"@id": "https://example.org/values", "@container": "@list"}},
+		"@id":      "https://example.org/subject",
+		"values":   numbers(3000),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if _, err := normalizeDataset(dataset); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 100<<20 {
+		t.Fatalf("allocated %d MiB", allocated>>20)
+	}
+}
+
+func numbers(n int) []interface{} {
+	list := make([]interface{}, n)
+	for i := range list {
+		list[i] = float64(i)
+	}
+	return list
 }
