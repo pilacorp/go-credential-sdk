@@ -11,16 +11,11 @@ import (
 	"strings"
 )
 
-// TemplateFetcher retrieves the template a credential references. ref.ID comes
+// Fetcher retrieves the template a credential references. ref.ID comes
 // from the credential, so the implementation owns the scheme and address policy,
 // the read limit, the timeout, and the comparison with ref.MediaType.
-type TemplateFetcher interface {
+type Fetcher interface {
 	Fetch(context.Context, TemplateReference) ([]byte, error)
-}
-
-// RenderMethodFetcher retrieves a remote render method document.
-type RenderMethodFetcher interface {
-	FetchRenderMethod(context.Context, string) ([]byte, error)
 }
 
 func (m RenderMethod) validateTemplateContent() error {
@@ -144,7 +139,7 @@ func containsHTMLElement(source, element string) bool {
 	return false
 }
 
-func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher TemplateFetcher) error {
+func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher Fetcher) error {
 	if err := m.Validate(); err != nil {
 		return err
 	}
@@ -181,43 +176,6 @@ func defaultTemplateMediaType(suite string) string {
 	default:
 		return ""
 	}
-}
-
-// ValidateExternalRenderMethod fetches and validates a remote render method
-// document identified by m.ID. When supplied, the outer digest is verified.
-func (m RenderMethod) ValidateExternalRenderMethod(ctx context.Context, fetcher RenderMethodFetcher) error {
-	if err := m.Validate(); err != nil {
-		return err
-	}
-	if m.ID == "" {
-		return fmt.Errorf("renderMethod.id is required for external render method validation")
-	}
-	if fetcher == nil {
-		return fmt.Errorf("render method fetcher is required")
-	}
-	data, err := fetcher.FetchRenderMethod(ctx, m.ID)
-	if err != nil {
-		return fmt.Errorf("fetch external render method: %w", err)
-	}
-	if m.DigestMultibase != "" {
-		if err := verifyDigestMultibase(data, m.DigestMultibase); err != nil {
-			return fmt.Errorf("render method digest verification failed: %w", err)
-		}
-	}
-	var fetched RenderMethod
-	if err := json.Unmarshal(data, &fetched); err != nil {
-		return fmt.Errorf("decode external render method: %w", err)
-	}
-	if fetched.Type != m.Type {
-		return fmt.Errorf("external render method type %q does not match local type %q", fetched.Type, m.Type)
-	}
-	if fetched.RenderSuite != m.RenderSuite {
-		return fmt.Errorf("external render method suite %q does not match local suite %q", fetched.RenderSuite, m.RenderSuite)
-	}
-	if fetched.ID != "" && m.ID != "" && fetched.ID != m.ID {
-		return fmt.Errorf("external render method id %q does not match local id %q", fetched.ID, m.ID)
-	}
-	return fetched.Validate()
 }
 
 // verifyDigestMultibase verifies a base64url multibase SHA-256 multihash.

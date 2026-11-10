@@ -18,6 +18,29 @@ func TestWrapHTMLTemplateFiltersNestedProperties(t *testing.T) {
 	}
 }
 
+func TestRenderPropertyEmptySelectsNothing(t *testing.T) {
+	credential := CredentialData{"credentialSubject": map[string]any{"name": "Alice", "ssn": "123-45-6789"}}
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{}, Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<div>hello</div>`)}}}
+	artifact, err := method.WrapHTMLTemplate(context.Background(), credential, RenderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(artifact.SrcDoc, "123-45-6789") {
+		t.Fatal("WrapHTMLTemplate() exposed credential claims for empty renderProperty")
+	}
+
+	staticMethod := method
+	staticMethod.RenderSuite = "static"
+	staticMethod.Template = &Template{Embedded: &EmbeddedTemplate{MediaType: "application/octet-stream", Bytes: []byte("payload")}}
+	output, err := staticMethod.ResolveStatic(context.Background(), credential, RenderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.Credential != nil {
+		t.Fatalf("ResolveStatic() credential = %#v, want nil", output.Credential)
+	}
+}
+
 func TestWrapHTMLTemplateUsesJSONLDSelectionMetadata(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{"/credentialSubject/name"}, Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<div>hello</div>`)}}}
 	artifact, err := method.WrapHTMLTemplate(context.Background(), CredentialData{

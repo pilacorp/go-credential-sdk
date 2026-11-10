@@ -13,11 +13,11 @@ import (
 	"time"
 )
 
-type testTemplateFetcher struct {
+type testFetcher struct {
 	data []byte
 }
 
-func (f testTemplateFetcher) Fetch(context.Context, TemplateReference) ([]byte, error) {
+func (f testFetcher) Fetch(context.Context, TemplateReference) ([]byte, error) {
 	return f.data, nil
 }
 
@@ -53,6 +53,18 @@ func TestSerializeCredentialContentsRenderMethodArray(t *testing.T) {
 	methods, ok := doc["renderMethod"].([]interface{})
 	if !ok || len(methods) != 2 {
 		t.Fatalf("renderMethod = %#v, want an array of two methods", doc["renderMethod"])
+	}
+}
+
+func TestSerializeCredentialContentsPreservesEmptyRenderProperty(t *testing.T) {
+	contents := baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "html", ID: "https://example.com/html.json", RenderProperty: []string{}}})
+	doc, err := serializeCredentialContents(&contents)
+	if err != nil {
+		t.Fatalf("serializeCredentialContents() error = %v", err)
+	}
+	method := doc["renderMethod"].(map[string]interface{})
+	if _, ok := method["renderProperty"]; !ok {
+		t.Fatalf("renderMethod = %#v, want empty renderProperty", method)
 	}
 }
 
@@ -110,11 +122,44 @@ func TestRenderMethodRejectsInvalidURLs(t *testing.T) {
 		t.Fatal("serializeCredentialContents() error = nil, want invalid template reference URL error")
 	}
 
-	for _, scheme := range []string{"file:///tmp/template.json", "ftp://example.com/template.json", "javascript:alert(1)", "http://:8080/template.json", "https://:443"} {
+	for _, scheme := range []string{"http://:8080/template.json", "https://:443"} {
 		contents = baseRenderContents([]RenderMethod{{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{ID: scheme}}}})
 		if _, err := serializeCredentialContents(&contents); err == nil {
-			t.Errorf("serializeCredentialContents() error = nil for %q, want unsupported URL scheme error", scheme)
+			t.Errorf("serializeCredentialContents() error = nil for %q, want missing host error", scheme)
 		}
+	}
+}
+
+func TestRenderMethodAcceptsNonHTTPTemplateReferenceURIs(t *testing.T) {
+	for _, id := range []string{"data:text/html,hello", "ipfs://bafytemplate/template.html", "file:///tmp/template.html", "javascript:alert(1)"} {
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Reference: &TemplateReference{ID: id}}}
+		if err := method.validateFormat(); err != nil {
+			t.Errorf("validateFormat(%q) error = %v", id, err)
+		}
+	}
+}
+
+func TestTemplateReferenceDataURLIsDecodedWithoutFetcher(t *testing.T) {
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Reference: &TemplateReference{
+		ID: "data:text/html,%3Cp%3Ehi%3C%2Fp%3E",
+	}}}
+
+	data, err := templateBytes(context.Background(), method, nil)
+	if err != nil {
+		t.Fatalf("templateBytes() error = %v", err)
+	}
+	if string(data) != "<p>hi</p>" {
+		t.Fatalf("templateBytes() = %q, want %q", data, "<p>hi</p>")
+	}
+}
+
+func TestInvalidDataURLReferenceFailsWhenResolved(t *testing.T) {
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Reference: &TemplateReference{ID: "data:abc"}}}
+	if err := method.validateFormat(); err != nil {
+		t.Fatalf("validateFormat() error = %v, want format-only validation to pass", err)
+	}
+	if _, err := templateBytes(context.Background(), method, nil); err == nil {
+		t.Fatal("templateBytes() error = nil, want data URL decode error")
 	}
 }
 
@@ -199,12 +244,12 @@ func TestRenderMethodValidatesExternalTemplateOnRequest(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{
 		ID: "https://example.com/template.json", MediaType: "application/json", DigestMultibase: digest,
 	}}}
-	if err := method.ValidateExternalTemplate(context.Background(), testTemplateFetcher{data: data}); err != nil {
+	if err := method.ValidateExternalTemplate(context.Background(), testFetcher{data: data}); err != nil {
 		t.Fatalf("ValidateExternalTemplate() error = %v", err)
 	}
 
 	method.Template.Reference.DigestMultibase = testDigest([]byte("other bytes"))
-	if err := method.ValidateExternalTemplate(context.Background(), testTemplateFetcher{data: data}); err == nil {
+	if err := method.ValidateExternalTemplate(context.Background(), testFetcher{data: data}); err == nil {
 		t.Fatal("ValidateExternalTemplate() error = nil, want digest verification error")
 	}
 }
@@ -401,11 +446,11 @@ func TestValidateExternalTemplateDefaultsMissingMediaType(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{
 		ID: "https://example.com/template.json",
 	}}}
-	if err := method.ValidateExternalTemplate(context.Background(), testTemplateFetcher{data: data}); err != nil {
+	if err := method.ValidateExternalTemplate(context.Background(), testFetcher{data: data}); err != nil {
 		t.Fatalf("ValidateExternalTemplate() error = %v", err)
 	}
 	literal := []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"Alice"}]}`)
-	if err := method.ValidateExternalTemplate(context.Background(), testTemplateFetcher{data: literal}); err == nil {
+	if err := method.ValidateExternalTemplate(context.Background(), testFetcher{data: literal}); err == nil {
 		t.Fatal("ValidateExternalTemplate() error = nil, want literal value error")
 	}
 }
@@ -582,7 +627,8 @@ func TestTemplateDecodesEveryValidDataURL(t *testing.T) {
 		mediaType string
 		bytes     string
 	}{
-		{`data:,A%20brief%20note`, "", "A brief note"}, // RFC 2397 §4 example
+		{`data:,A%20brief%20note`, "text/plain;charset=US-ASCII", "A brief note"}, // RFC 2397 §4 example
+		{`data:;charset=utf-8,hello`, "text/plain;charset=utf-8", "hello"},
 		{`DATA:text/plain,hello`, "text/plain", "hello"},
 		{`data:text/plain;BASE64,aGVsbG8=`, "text/plain", "hello"},
 		{`data:text/plain;base64,aGVsbG8%3D`, "text/plain", "hello"},

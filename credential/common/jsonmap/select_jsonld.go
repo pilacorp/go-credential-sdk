@@ -7,8 +7,9 @@ import (
 )
 
 // SelectJSONLD returns the JSON-LD selection addressed by RFC 6901 pointers.
-// It preserves @context and the id/type metadata of selected nodes, matching
-// the selectJsonLd behavior used by the selective-disclosure implementation.
+// It preserves @context and the id/type metadata of selected nodes. The copy
+// in ecdsasd differs on numeric object keys, leading zeros and a missing
+// leading "/".
 func SelectJSONLD(document map[string]interface{}, pointers []string) (map[string]interface{}, error) {
 	if len(pointers) == 0 {
 		return nil, nil
@@ -18,11 +19,16 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 		selection["@context"] = deepCopyJSON(context)
 	}
 	initJSONLDSelection(selection, document)
+	seen := make(map[string]struct{}, len(pointers))
 
 	for _, pointer := range pointers {
 		if pointer != "" && !strings.HasPrefix(pointer, "/") {
 			return nil, fmt.Errorf("pointer %q must start with /", pointer)
 		}
+		if _, ok := seen[pointer]; ok {
+			continue
+		}
+		seen[pointer] = struct{}{}
 		path := parseJSONPointer(pointer)
 		if len(path) == 0 {
 			return deepCopyJSON(document).(map[string]interface{}), nil

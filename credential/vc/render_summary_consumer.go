@@ -10,8 +10,13 @@ import (
 // RenderOptions controls template retrieval for summary, HTML, and static
 // render methods.
 type RenderOptions struct {
-	Fetcher TemplateFetcher
+	Fetcher Fetcher
+	// MaxSummaryOutputBytes caps the total size of values RenderSummary copies
+	// from the credential. Zero or less uses a 1 MiB default.
+	MaxSummaryOutputBytes int
 }
+
+const defaultMaxSummaryOutputBytes = 1 << 20
 
 // RenderSummary resolves and validates a summary render method without
 // executing any template code. It returns the summary template with every JSON
@@ -31,7 +36,11 @@ func (m RenderMethod) RenderSummary(ctx context.Context, credential CredentialDa
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("decode summary template: %w", err)
 	}
-	if _, err := resolveNode(raw, credential, false, true); err != nil {
+	budget := opts.MaxSummaryOutputBytes
+	if budget <= 0 {
+		budget = defaultMaxSummaryOutputBytes
+	}
+	if _, err := resolveNode(raw, credential, false, true, &budget); err != nil {
 		return nil, err
 	}
 	resolved, err := json.Marshal(raw)
@@ -50,20 +59,33 @@ func (m RenderMethod) RenderSummary(ctx context.Context, credential CredentialDa
 	return &output, nil
 }
 
-func templateBytes(ctx context.Context, method RenderMethod, fetcher TemplateFetcher) ([]byte, error) {
+func templateBytes(ctx context.Context, method RenderMethod, fetcher Fetcher) ([]byte, error) {
 	if method.Template == nil {
 		return nil, fmt.Errorf("%s template is required", method.RenderSuite)
 	}
 	if method.Template.Embedded != nil {
 		return method.Template.Embedded.Bytes, nil
 	}
-	if fetcher == nil {
-		return nil, fmt.Errorf("template fetcher is required for external %s template", method.RenderSuite)
-	}
 	ref := *method.Template.Reference
-	data, err := fetcher.Fetch(ctx, ref)
-	if err != nil {
-		return nil, fmt.Errorf("fetch %s template: %w", method.RenderSuite, err)
+	var data []byte
+	if isDataURL(ref.ID) {
+		embedded, err := decodeDataURL(ref.ID)
+		if err != nil {
+			return nil, fmt.Errorf("decode %s template: %w", method.RenderSuite, err)
+		}
+		data = embedded.Bytes
+		if ref.MediaType == "" {
+			ref.MediaType = embedded.MediaType
+		}
+	} else {
+		if fetcher == nil {
+			return nil, fmt.Errorf("template fetcher is required for external %s template", method.RenderSuite)
+		}
+		var err error
+		data, err = fetcher.Fetch(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("fetch %s template: %w", method.RenderSuite, err)
+		}
 	}
 	if ref.DigestMultibase != "" {
 		if err := verifyDigestMultibase(data, ref.DigestMultibase); err != nil {
@@ -78,12 +100,12 @@ func templateBytes(ctx context.Context, method RenderMethod, fetcher TemplateFet
 	return data, nil
 }
 
-func resolveNode(value any, credential CredentialData, literal, required bool) (any, error) {
+func resolveNode(value any, credential CredentialData, literal, required bool, budget *int) (any, error) {
 	switch v := value.(type) {
 	case map[string]any:
 		for key, child := range v {
 			childRequired := required && (key == "name" || key == "description" || key == "fields" || key == "label" || key == "value")
-			resolved, err := resolveNode(child, credential, key == "label", childRequired)
+			resolved, err := resolveNode(child, credential, key == "label", childRequired, budget)
 			if err != nil {
 				return nil, err
 			}
@@ -96,7 +118,7 @@ func resolveNode(value any, credential CredentialData, literal, required bool) (
 		return v, nil
 	case []any:
 		for i, child := range v {
-			resolved, err := resolveNode(child, credential, literal, required)
+			resolved, err := resolveNode(child, credential, literal, required, budget)
 			if err != nil {
 				return nil, err
 			}
@@ -107,7 +129,7 @@ func resolveNode(value any, credential CredentialData, literal, required bool) (
 		if literal || !strings.HasPrefix(v, "/") {
 			return v, nil
 		}
-		resolved, err := ResolveJSONPointer(map[string]any(credential), v)
+		resolved, err := resolveJSONPointer(map[string]any(credential), v)
 		if err != nil {
 			if !required {
 				return nil, nil
@@ -123,14 +145,23 @@ func resolveNode(value any, credential CredentialData, literal, required bool) (
 			}
 			return nil, fmt.Errorf("JSON Pointer %q resolves to null", v)
 		}
+		text := ""
 		if s, ok := resolved.(string); ok {
-			return s, nil
+			text = s
+		} else {
+			var encoded strings.Builder
+			encoder := json.NewEncoder(&encoded)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(resolved); err != nil {
+				return nil, fmt.Errorf("encode pointer value %q: %w", v, err)
+			}
+			text = strings.TrimSuffix(encoded.String(), "\n")
 		}
-		encoded, err := json.Marshal(resolved)
-		if err != nil {
-			return nil, fmt.Errorf("encode pointer value %q: %w", v, err)
+		*budget -= len(text)
+		if *budget < 0 {
+			return nil, fmt.Errorf("summary output exceeds the size limit; raise RenderOptions.MaxSummaryOutputBytes to accept it")
 		}
-		return string(encoded), nil
+		return text, nil
 	default:
 		return value, nil
 	}

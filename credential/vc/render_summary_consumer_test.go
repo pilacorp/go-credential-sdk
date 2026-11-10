@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +59,27 @@ func TestRenderSummaryResolvesScalarsAndOmitsOptionalPointers(t *testing.T) {
 	}
 	if got.Name != "Alice" || got.Icon != "" || got.Fields[0].Value != "42" {
 		t.Fatalf("output = %+v", got)
+	}
+}
+
+func TestRenderSummaryLimitsCopiedOutput(t *testing.T) {
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"/credentialSubject/name","description":"Summary","fields":[{"label":"A","value":"/credentialSubject/name"},{"label":"B","value":"/credentialSubject/name"}]}`)}}}
+	_, err := method.RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"name": strings.Repeat("x", 8)}}, RenderOptions{MaxSummaryOutputBytes: 10})
+	if err == nil || !strings.Contains(err.Error(), "summary output exceeds the size limit") {
+		t.Fatalf("RenderSummary() error = %v, want output size error", err)
+	}
+}
+
+func TestRenderSummaryDoesNotHTMLEscapeNonStringPointerValues(t *testing.T) {
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Details","value":"/credentialSubject/details"}]}`)}}}
+	got, err := method.RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{
+		"details": map[string]any{"note": "A & B"},
+	}}, RenderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fields[0].Value != `{"note":"A & B"}` {
+		t.Fatalf("field value = %q, want unescaped JSON", got.Fields[0].Value)
 	}
 }
 

@@ -115,7 +115,7 @@ func (m RenderMethod) ResolveStatic(ctx context.Context, credential CredentialDa
 }
 
 func selectCredential(credential CredentialData, pointers []string) (CredentialData, error) {
-	if len(pointers) == 0 {
+	if pointers == nil {
 		return credential, nil
 	}
 	selected, err := jsonmap.SelectJSONLD(map[string]interface{}(credential), pointers)

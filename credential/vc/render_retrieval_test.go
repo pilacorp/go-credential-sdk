@@ -2,22 +2,12 @@ package vc
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
-
-type testRenderMethodFetcher struct {
-	data []byte
-}
-
-func (f testRenderMethodFetcher) FetchRenderMethod(context.Context, string) ([]byte, error) {
-	return f.data, nil
-}
 
 func TestResolveJSONPointer(t *testing.T) {
 	document := map[string]any{
@@ -35,7 +25,7 @@ func TestResolveJSONPointer(t *testing.T) {
 		{"/credentialSubject/items/1/value", float64(2)},
 	}
 	for _, tt := range tests {
-		got, err := ResolveJSONPointer(document, tt.pointer)
+		got, err := resolveJSONPointer(document, tt.pointer)
 		if err != nil {
 			t.Fatalf("ResolveJSONPointer(%q) error = %v", tt.pointer, err)
 		}
@@ -43,19 +33,19 @@ func TestResolveJSONPointer(t *testing.T) {
 			t.Errorf("ResolveJSONPointer(%q) = %v, want %v", tt.pointer, got, tt.want)
 		}
 	}
-	if _, err := ResolveJSONPointer(document, "/missing"); err == nil {
+	if _, err := resolveJSONPointer(document, "/missing"); err == nil {
 		t.Fatal("ResolveJSONPointer() error = nil, want missing pointer error")
 	}
 }
 
-func TestHTTPTemplateFetcherLimitsAndMediaType(t *testing.T) {
+func TestHTTPFetcherLimitsAndMediaType(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer server.Close()
 
-	fetcher := HTTPTemplateFetcher{Client: server.Client(), MaxResponseSize: 64, MaxRedirects: 2, Timeout: time.Second}
+	fetcher := HTTPFetcher{Client: server.Client(), MaxResponseSize: 64, MaxRedirects: 2, Timeout: time.Second}
 	data, err := fetcher.Fetch(context.Background(), TemplateReference{ID: server.URL, MediaType: "application/json"})
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
@@ -65,48 +55,9 @@ func TestHTTPTemplateFetcherLimitsAndMediaType(t *testing.T) {
 		t.Fatalf("Fetch() data = %s, want JSON response", data)
 	}
 
-	tooSmall := HTTPTemplateFetcher{Client: server.Client(), MaxResponseSize: 2}
+	tooSmall := HTTPFetcher{Client: server.Client(), MaxResponseSize: 2}
 	if _, err := tooSmall.Fetch(context.Background(), TemplateReference{ID: server.URL}); err == nil {
 		t.Fatal("Fetch() error = nil, want response size error")
-	}
-}
-
-func TestValidateExternalRenderMethodVerifiesOuterDigest(t *testing.T) {
-	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary","template":"` + testSummaryTemplateDataURL + `"}`)
-	hash := sha256.Sum256(data)
-	multihash := append([]byte{0x12, 0x20}, hash[:]...)
-	digest := "u" + base64.RawURLEncoding.EncodeToString(multihash)
-	method := RenderMethod{ID: "https://example.com/render-method.json", Type: "SuiteRenderMethod", RenderSuite: "summary", DigestMultibase: digest}
-	if err := method.ValidateExternalRenderMethod(context.Background(), testRenderMethodFetcher{data: data}); err != nil {
-		t.Fatalf("ValidateExternalRenderMethod() error = %v", err)
-	}
-	method.DigestMultibase = testDigest([]byte("other bytes"))
-	if err := method.ValidateExternalRenderMethod(context.Background(), testRenderMethodFetcher{data: data}); err == nil {
-		t.Fatal("ValidateExternalRenderMethod() error = nil, want digest error")
-	}
-}
-
-func TestValidateExternalRenderMethodAllowsMissingOuterDigest(t *testing.T) {
-	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary","template":"` + testSummaryTemplateDataURL + `"}`)
-	method := RenderMethod{
-		ID:          "https://example.com/render-method.json",
-		Type:        "SuiteRenderMethod",
-		RenderSuite: "summary",
-	}
-	if err := method.ValidateExternalRenderMethod(context.Background(), testRenderMethodFetcher{data: data}); err != nil {
-		t.Fatalf("ValidateExternalRenderMethod() error = %v, want nil without digest", err)
-	}
-}
-
-func TestValidateExternalRenderMethodRejectsSuiteMismatch(t *testing.T) {
-	method := RenderMethod{
-		ID:          "https://example.com/render-method.json",
-		Type:        "SuiteRenderMethod",
-		RenderSuite: "html",
-	}
-	data := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary","template":"` + testSummaryTemplateDataURL + `"}`)
-	if err := method.ValidateExternalRenderMethod(context.Background(), testRenderMethodFetcher{data: data}); err == nil {
-		t.Fatal("ValidateExternalRenderMethod() error = nil, want suite mismatch error")
 	}
 }
 
@@ -119,13 +70,13 @@ func TestResolveJSONPointerAcceptsOnlyRFC6901ArrayIndexes(t *testing.T) {
 	document := map[string]any{"list": []any{"first", "second"}, "object": map[string]any{"2024": "year"}}
 	valid := map[string]any{"/list/0": "first", "/list/1": "second", "/object/2024": "year"}
 	for pointer, want := range valid {
-		got, err := ResolveJSONPointer(document, pointer)
+		got, err := resolveJSONPointer(document, pointer)
 		if err != nil || got != want {
 			t.Errorf("ResolveJSONPointer(%q) = %v, %v; want %v", pointer, got, err, want)
 		}
 	}
 	for _, pointer := range []string{"/list/null", "/list/ 1", "/list/-0", "/list/01", "/list/+1", "/list/2", "/list/9223372036854775808"} {
-		if got, err := ResolveJSONPointer(document, pointer); err == nil {
+		if got, err := resolveJSONPointer(document, pointer); err == nil {
 			t.Errorf("ResolveJSONPointer(%q) = %v, want an error", pointer, got)
 		}
 	}

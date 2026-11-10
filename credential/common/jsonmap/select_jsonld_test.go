@@ -61,6 +61,33 @@ func TestSelectJSONLDMergesPointersAndHandlesArrays(t *testing.T) {
 	}
 }
 
+func TestSelectJSONLDDeduplicatesPointersWithoutChangingResult(t *testing.T) {
+	document := map[string]interface{}{
+		"credentialSubject": map[string]interface{}{
+			"profile": map[string]interface{}{
+				"name": "Alice",
+				"role": "member",
+			},
+		},
+	}
+
+	once, err := SelectJSONLD(document, []string{"/credentialSubject/profile"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := SelectJSONLD(document, []string{
+		"/credentialSubject/profile",
+		"/credentialSubject/profile",
+		"/credentialSubject/profile",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(repeated, once) {
+		t.Fatalf("repeated selection = %#v, want %#v", repeated, once)
+	}
+}
+
 func TestSelectJSONLDEscapesPointerTokens(t *testing.T) {
 	document := map[string]interface{}{
 		"credentialSubject": map[string]interface{}{

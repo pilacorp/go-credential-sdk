@@ -18,12 +18,18 @@ import (
 // The JSON member names are part of the signed credential and follow that
 // draft. Experimental: the draft can change, and this API changes with it.
 type RenderMethod struct {
+	// ID is the optional renderMethod.id (WD-20261013 §2.2). The SDK validates
+	// only its URI format and does not dereference it automatically. Rendering
+	// uses Template. An application may choose to use this identifier as a
+	// template reference by assigning it to Template.Reference.ID and copying
+	// DigestMultibase when present. ParseRenderMethods skips entries that have
+	// ID but no Template.
 	ID               string            `json:"id,omitempty"`
 	Type             string            `json:"type"`
 	RenderSuite      string            `json:"renderSuite"`
 	Name             string            `json:"name,omitempty"`
 	Description      string            `json:"description,omitempty"`
-	RenderProperty   []string          `json:"renderProperty,omitempty"`
+	RenderProperty   []string          `json:"renderProperty,omitzero"`
 	Template         *Template         `json:"template,omitempty"`
 	DigestMultibase  string            `json:"digestMultibase,omitempty"`
 	OutputPreference *OutputPreference `json:"outputPreference,omitempty"`
@@ -83,7 +89,7 @@ func ParseRenderMethods(data CredentialData) ([]RenderMethod, error) {
 		if err := json.Unmarshal(encoded, &method); err != nil {
 			return nil, fmt.Errorf("renderMethod[%d]: %w", i, err)
 		}
-		if err := method.Validate(); err != nil {
+		if err := method.validateFormat(); err != nil {
 			return nil, fmt.Errorf("renderMethod[%d]: %w", i, err)
 		}
 		methods = append(methods, method)
@@ -119,7 +125,7 @@ func isSupportedRenderSuite(suite string) bool {
 // The SDK sets no size limit on templates. A decoded data: template is never
 // larger than its encoded form in the credential, so the application bounds
 // embedded templates by limiting the credential size it accepts, and bounds
-// fetched templates in its TemplateFetcher.
+// fetched templates in its Fetcher.
 type Template struct {
 	Embedded  *EmbeddedTemplate
 	Reference *TemplateReference
@@ -134,8 +140,8 @@ type EmbeddedTemplate struct {
 
 // TemplateReference points to a template outside the credential. WD-20261013
 // §2.2 requires id, recommends mediaType and makes digestMultibase optional.
-// This SDK accepts only http and https for ID and treats MediaType as optional.
-// When DigestMultibase is set, the fetched bytes must match it.
+// ID follows the URL syntax; the Fetcher owns scheme and address
+// policy. When DigestMultibase is set, the resolved bytes must match it.
 type TemplateReference struct {
 	ID              string `json:"id"`
 	MediaType       string `json:"mediaType,omitempty"`
@@ -167,6 +173,21 @@ type RenderStyle struct {
 // a supported suite to have at least one of them, because a method with neither
 // cannot be rendered and a signed credential cannot be corrected.
 func (m RenderMethod) Validate() error {
+	if err := m.validateFormat(); err != nil {
+		return err
+	}
+	if m.Template != nil {
+		if err := m.validateTemplateContent(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateFormat checks the signed render method's shape without reading or
+// fetching template content. Embedded content is checked by Validate before
+// signing; referenced content is checked after retrieval.
+func (m RenderMethod) validateFormat() error {
 	if m.Type == "" {
 		return fmt.Errorf("renderMethod.type is required")
 	}
@@ -202,9 +223,6 @@ func (m RenderMethod) Validate() error {
 	if m.Template != nil {
 		if err := m.Template.validate(); err != nil {
 			return fmt.Errorf("renderMethod.template: %w", err)
-		}
-		if err := m.validateTemplateContent(); err != nil {
-			return err
 		}
 	}
 	if err := m.OutputPreference.validate(); err != nil {
@@ -275,9 +293,12 @@ func validateMediaType(mediaType string) error {
 
 func validateURL(raw, field string) error {
 	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() {
+		return fmt.Errorf("%s must be a valid absolute URI", field)
+	}
 	// Hostname, not Host: for "http://:8080/x" Host is ":8080" but there is no host.
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
-		return fmt.Errorf("%s must be a valid HTTP or HTTPS URL", field)
+	if (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() == "" {
+		return fmt.Errorf("%s must name a host", field)
 	}
 	return nil
 }
@@ -350,6 +371,11 @@ func decodeDataURL(raw string) (*EmbeddedTemplate, error) {
 		if decoded, err = base64.StdEncoding.DecodeString(unescaped); err != nil {
 			return nil, fmt.Errorf("decode embedded template data URL: %w", err)
 		}
+	}
+	if mediaType == "" {
+		mediaType = "text/plain;charset=US-ASCII"
+	} else if strings.HasPrefix(mediaType, ";") {
+		mediaType = "text/plain" + mediaType
 	}
 	return &EmbeddedTemplate{MediaType: mediaType, Bytes: decoded}, nil
 }

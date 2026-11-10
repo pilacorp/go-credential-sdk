@@ -211,9 +211,18 @@ For `static`:
 - `outputPreference` is generally not used.
 - The SDK returns verified payload bytes and metadata; interpretation and delivery belong to the application layer.
 
-#### 5.3.4 Remote render method
+#### 5.3.4 Render method `id`
 
-When the common `id` property is present, it identifies a remotely referenced render method. The fetched document is expected to provide the render method object and its `digestMultibase` protects the referenced render method. This is distinct from `template.digestMultibase`, which protects the template file referenced by the method.
+When the common `id` property is present, it identifies the render method and
+must follow URI syntax. The SDK validates its format but does not dereference
+it, because the specification does not settle whether it identifies a template
+or a complete render method document. Rendering always uses `template`.
+
+An application may explicitly choose to use `id` as an external template
+reference by assigning it to `Template.Reference.ID` and carrying over
+`digestMultibase`; the application's `Fetcher` then retrieves and
+validates the template. This is distinct from `template.digestMultibase`,
+which protects the template bytes referenced by `template`.
 
 ## 6. Validation
 
@@ -372,12 +381,12 @@ directly from the existing `credential/vc` package. A separate
 VC data model and follow the SDK's existing package organization.
 
 ```go
-type TemplateFetcher interface {
+type Fetcher interface {
 	Fetch(ctx context.Context, ref TemplateReference) ([]byte, error)
 }
 
 type RenderOptions struct {
-	Fetcher          TemplateFetcher
+	Fetcher          Fetcher
 }
 
 func RenderSummary(
@@ -411,7 +420,7 @@ type SummaryField struct {
 
 ### 8.1 Processing algorithm
 
-1. Decode the template from an embedded `data:` URL or load it through `TemplateFetcher`.
+1. Decode the template from an embedded `data:` URL or load it through `Fetcher`.
 2. For an external template, verify `digestMultibase` when present; embedded templates have no digest requirement.
 3. Validate the summary template.
 4. Recursively inspect string-valued template properties.
@@ -426,7 +435,7 @@ No field may combine values from multiple pointers. The SDK follows the current 
 
 ## 9. Template retrieval and integrity
 
-External retrieval is injected through `TemplateFetcher`; the core renderer must not create an unrestricted HTTP client.
+External retrieval is injected through `Fetcher`; the core renderer must not create an unrestricted HTTP client.
 
 The default HTTP implementation, if provided, must support:
 
@@ -565,7 +574,7 @@ go vet ./...
 
 - Implement RFC 6901 JSON Pointer parsing.
 - Implement multibase/multihash SHA-256 generation and verification.
-- Add injectable `TemplateFetcher`.
+- Add injectable `Fetcher`.
 - Add response-size, timeout, media-type, and redirect limits for the optional HTTP fetcher.
 - Distinguish render-method digest verification from template digest verification.
 

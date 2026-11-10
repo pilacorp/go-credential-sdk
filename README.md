@@ -92,12 +92,20 @@ includes `frame-src 'none'` (WD-20261013 §2.2.2.2),
 and `ResolveStatic` returns the static bytes, checked against
 `digestMultibase` when the template has one. All three accept
 `vc.RenderOptions` for template retrieval. External templates require an
-injected `TemplateFetcher`; when `digestMultibase` is present, SHA-256 multihash
+injected `Fetcher`; when `digestMultibase` is present, SHA-256 multihash
 verification is performed before the template is parsed. Referenced templates
 are then validated with the same rules as embedded ones; when `mediaType` is
 omitted, the suite's default media type is assumed.
 `ParseRenderMethods` skips suites the SDK does not support; each renderer accepts
 only its own suite.
+
+`RenderMethod.ID` is optional metadata for the render method itself. The SDK
+checks only that it is a valid URI and does not dereference it automatically.
+Rendering uses `Template`, even when `ID` is present. If an application wants
+to use that identifier as the source of an external template, it can choose
+that explicitly by copying `ID` (and `DigestMultibase`, when present) to
+`Template.Reference.ID` before calling a renderer. An entry with `ID` but no
+`Template` is skipped by `ParseRenderMethods`.
 
 ```go
 summary := vc.RenderMethod{

@@ -10,16 +10,18 @@ import (
 	"time"
 )
 
-// HTTPTemplateFetcher retrieves external templates with bounded response size
-// and caller-controlled HTTP behavior.
-type HTTPTemplateFetcher struct {
+// HTTPFetcher fetches external resources with limits on response size,
+// time and redirects. It does not check the address it connects to, so a
+// credential can point it at an internal host. Use it only for resources from
+// issuers the application trusts; otherwise implement Fetcher.
+type HTTPFetcher struct {
 	Client          *http.Client
 	MaxResponseSize int64
 	MaxRedirects    int
 	Timeout         time.Duration
 }
 
-func (f HTTPTemplateFetcher) Fetch(ctx context.Context, ref TemplateReference) ([]byte, error) {
+func (f HTTPFetcher) Fetch(ctx context.Context, ref TemplateReference) ([]byte, error) {
 	client := f.Client
 	if client == nil {
 		return nil, fmt.Errorf("http client is required")
@@ -71,12 +73,8 @@ func (f HTTPTemplateFetcher) Fetch(ctx context.Context, ref TemplateReference) (
 	return data, nil
 }
 
-func (f HTTPTemplateFetcher) FetchRenderMethod(ctx context.Context, id string) ([]byte, error) {
-	return f.Fetch(ctx, TemplateReference{ID: id})
-}
-
-// ResolveJSONPointer resolves an RFC 6901 pointer against a JSON-like value.
-func ResolveJSONPointer(document any, pointer string) (any, error) {
+// resolveJSONPointer resolves an RFC 6901 pointer against a JSON-like value.
+func resolveJSONPointer(document any, pointer string) (any, error) {
 	if pointer == "" {
 		return document, nil
 	}
