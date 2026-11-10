@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	whatwgurl "github.com/nlnwa/whatwg-url/url"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
@@ -18,12 +20,9 @@ import (
 // The JSON member names are part of the signed credential and follow that
 // draft. Experimental: the draft can change, and this API changes with it.
 type RenderMethod struct {
-	// ID is the optional renderMethod.id (WD-20261013 §2.2). The SDK validates
-	// only its URI format and does not dereference it automatically. Rendering
-	// uses Template. An application may choose to use this identifier as a
-	// template reference by assigning it to Template.Reference.ID and copying
-	// DigestMultibase when present. ParseRenderMethods skips entries that have
-	// ID but no Template.
+	// ID is the optional renderMethod.id (WD-20261013 §2.2). Rendering uses
+	// Template, even when ID is present. To render from ID, call Dereference and
+	// render the method it returns.
 	ID               string            `json:"id,omitempty"`
 	Type             string            `json:"type"`
 	RenderSuite      string            `json:"renderSuite"`
@@ -46,8 +45,8 @@ type RenderMethod struct {
 // the proof nor the contexts.
 //
 // Entries whose type is not SuiteRenderMethod, whose renderSuite is not
-// summary, html or static, or that have no template (remote render methods,
-// which this SDK does not retrieve) are skipped, as WD-20261013 §2.2 requires
+// summary, html or static, or that have neither a template nor an id are
+// skipped, as WD-20261013 §2.2 requires
 // for suites a consumer does not support. A supported entry that fails to
 // decode or validate is an error, reported with its index.
 //
@@ -98,14 +97,46 @@ func ParseRenderMethods(data CredentialData) ([]RenderMethod, error) {
 }
 
 // isSupportedRenderMethod skips what WD-20261013 §2.2 tells a consumer to
-// ignore, and remote render methods, which this SDK does not retrieve.
+// ignore. Entries with only an id are retained for Dereference.
 func isSupportedRenderMethod(entry map[string]any) bool {
 	if entry["type"] != "SuiteRenderMethod" {
 		return false
 	}
 	suite, _ := entry["renderSuite"].(string)
 	// A null template is no template: indexing covers absent and null alike.
-	return isSupportedRenderSuite(suite) && entry["template"] != nil
+	return isSupportedRenderSuite(suite) && (entry["template"] != nil || entry["id"] != nil)
+}
+
+// Dereference fetches the render method at ID with the fetcher the consumer
+// passes in, checks DigestMultibase when present, and returns the fetched method
+// to render.
+func (m RenderMethod) Dereference(ctx context.Context, fetcher Fetcher) (RenderMethod, error) {
+	if m.ID == "" {
+		return RenderMethod{}, fmt.Errorf("renderMethod.id is required to dereference")
+	}
+	if fetcher == nil {
+		return RenderMethod{}, fmt.Errorf("renderMethod.id %q needs a Fetcher", m.ID)
+	}
+	data, err := fetcher.Fetch(ctx, TemplateReference{ID: m.ID, DigestMultibase: m.DigestMultibase})
+	if err != nil {
+		return RenderMethod{}, fmt.Errorf("fetch renderMethod.id: %w", err)
+	}
+	if m.DigestMultibase != "" {
+		if err := verifyDigestMultibase(data, m.DigestMultibase); err != nil {
+			return RenderMethod{}, fmt.Errorf("renderMethod.digestMultibase: %w", err)
+		}
+	}
+	var fetched RenderMethod
+	if err := json.Unmarshal(data, &fetched); err != nil {
+		return RenderMethod{}, fmt.Errorf("decode fetched render method: %w", err)
+	}
+	if fetched.Type != m.Type || fetched.RenderSuite != m.RenderSuite {
+		return RenderMethod{}, fmt.Errorf("fetched render method is %s/%s, want %s/%s", fetched.Type, fetched.RenderSuite, m.Type, m.RenderSuite)
+	}
+	if err := fetched.Validate(); err != nil {
+		return RenderMethod{}, fmt.Errorf("fetched render method: %w", err)
+	}
+	return fetched, nil
 }
 
 // isSupportedRenderSuite reports whether this SDK renders suite.
@@ -292,13 +323,8 @@ func validateMediaType(mediaType string) error {
 }
 
 func validateURL(raw, field string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || !parsed.IsAbs() {
-		return fmt.Errorf("%s must be a valid absolute URI", field)
-	}
-	// Hostname, not Host: for "http://:8080/x" Host is ":8080" but there is no host.
-	if (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() == "" {
-		return fmt.Errorf("%s must name a host", field)
+	if _, err := whatwgurl.Parse(raw); err != nil {
+		return fmt.Errorf("%s must be a URL of the WHATWG URL Standard: %w", field, err)
 	}
 	return nil
 }

@@ -216,6 +216,19 @@ func TestResolveStaticReturnsPayloadAndMetadata(t *testing.T) {
 	}
 }
 
+func TestResolveStaticReturnsDataURLMediaType(t *testing.T) {
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", Template: &Template{Reference: &TemplateReference{
+		ID: "data:image/png;base64,iVBORw0KGgo=",
+	}}}
+	out, err := method.ResolveStatic(context.Background(), CredentialData{"id": "urn:x"}, RenderOptions{})
+	if err != nil {
+		t.Fatalf("ResolveStatic() error = %v", err)
+	}
+	if out.MediaType != "image/png" {
+		t.Errorf("MediaType = %q, want image/png", out.MediaType)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

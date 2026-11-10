@@ -15,9 +15,11 @@ import (
 
 type testFetcher struct {
 	data []byte
+	ref  TemplateReference
 }
 
-func (f testFetcher) Fetch(context.Context, TemplateReference) ([]byte, error) {
+func (f *testFetcher) Fetch(_ context.Context, ref TemplateReference) ([]byte, error) {
+	f.ref = ref
 	return f.data, nil
 }
 
@@ -144,7 +146,7 @@ func TestTemplateReferenceDataURLIsDecodedWithoutFetcher(t *testing.T) {
 		ID: "data:text/html,%3Cp%3Ehi%3C%2Fp%3E",
 	}}}
 
-	data, err := templateBytes(context.Background(), method, nil)
+	data, _, err := templateBytes(context.Background(), method, nil)
 	if err != nil {
 		t.Fatalf("templateBytes() error = %v", err)
 	}
@@ -158,7 +160,7 @@ func TestInvalidDataURLReferenceFailsWhenResolved(t *testing.T) {
 	if err := method.validateFormat(); err != nil {
 		t.Fatalf("validateFormat() error = %v, want format-only validation to pass", err)
 	}
-	if _, err := templateBytes(context.Background(), method, nil); err == nil {
+	if _, _, err := templateBytes(context.Background(), method, nil); err == nil {
 		t.Fatal("templateBytes() error = nil, want data URL decode error")
 	}
 }
@@ -244,12 +246,12 @@ func TestRenderMethodValidatesExternalTemplateOnRequest(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{
 		ID: "https://example.com/template.json", MediaType: "application/json", DigestMultibase: digest,
 	}}}
-	if err := method.ValidateExternalTemplate(context.Background(), testFetcher{data: data}); err != nil {
+	if err := method.ValidateExternalTemplate(context.Background(), &testFetcher{data: data}); err != nil {
 		t.Fatalf("ValidateExternalTemplate() error = %v", err)
 	}
 
 	method.Template.Reference.DigestMultibase = testDigest([]byte("other bytes"))
-	if err := method.ValidateExternalTemplate(context.Background(), testFetcher{data: data}); err == nil {
+	if err := method.ValidateExternalTemplate(context.Background(), &testFetcher{data: data}); err == nil {
 		t.Fatal("ValidateExternalTemplate() error = nil, want digest verification error")
 	}
 }
@@ -446,11 +448,11 @@ func TestValidateExternalTemplateDefaultsMissingMediaType(t *testing.T) {
 	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{
 		ID: "https://example.com/template.json",
 	}}}
-	if err := method.ValidateExternalTemplate(context.Background(), testFetcher{data: data}); err != nil {
+	if err := method.ValidateExternalTemplate(context.Background(), &testFetcher{data: data}); err != nil {
 		t.Fatalf("ValidateExternalTemplate() error = %v", err)
 	}
 	literal := []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"Alice"}]}`)
-	if err := method.ValidateExternalTemplate(context.Background(), testFetcher{data: literal}); err == nil {
+	if err := method.ValidateExternalTemplate(context.Background(), &testFetcher{data: literal}); err == nil {
 		t.Fatal("ValidateExternalTemplate() error = nil, want literal value error")
 	}
 }
@@ -493,6 +495,36 @@ func TestRenderMethodValidatesDigestMultibaseSyntax(t *testing.T) {
 	contents := baseRenderContents([]RenderMethod{reference("uInner")})
 	if _, err := NewJSONCredential(contents); err == nil {
 		t.Fatal("NewJSONCredential() error = nil, want digestMultibase syntax error")
+	}
+}
+
+func TestValidateURLFollowsURLStandard(t *testing.T) {
+	for raw, wantErr := range map[string]bool{
+		"https://example.org:70000/t.html": true,
+		"https:example.org/t.html":         false,
+		"data:text/html,hello":             false,
+		"urn:example:rm":                   false,
+	} {
+		if err := validateURL(raw, "template reference id"); (err != nil) != wantErr {
+			t.Errorf("validateURL(%q) error = %v, wantErr %v", raw, err, wantErr)
+		}
+	}
+}
+
+func TestRenderMethodDereferenceFetchesAndChecksDigest(t *testing.T) {
+	fetched := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary","template":"data:application/json,%7B%22name%22%3A%22N%22,%22description%22%3A%22D%22,%22fields%22:%5B%5D%7D"}`)
+	method := RenderMethod{
+		ID:   "https://example.com/render-method.json",
+		Type: "SuiteRenderMethod", RenderSuite: "summary",
+		DigestMultibase: testDigest(fetched),
+	}
+	fetcher := &testFetcher{data: fetched}
+	got, err := method.Dereference(context.Background(), fetcher)
+	if err != nil {
+		t.Fatalf("Dereference() error = %v", err)
+	}
+	if got.Template == nil || fetcher.ref.ID != method.ID || fetcher.ref.DigestMultibase != method.DigestMultibase {
+		t.Fatalf("Dereference() got method/ref = %+v/%+v", got, fetcher.ref)
 	}
 }
 
@@ -552,8 +584,8 @@ func TestParseRenderMethodsSkipsEntriesTheSDKMustIgnore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(methods) != 1 || methods[0].RenderSuite != "summary" {
-		t.Fatalf("methods = %+v, want only the supported summary entry", methods)
+	if len(methods) != 2 || methods[0].RenderSuite != "html" || methods[0].ID == "" || methods[1].RenderSuite != "summary" {
+		t.Fatalf("methods = %+v, want the id-only html entry and supported summary entry", methods)
 	}
 }
 

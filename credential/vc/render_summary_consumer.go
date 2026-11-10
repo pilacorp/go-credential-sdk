@@ -28,7 +28,7 @@ func (m RenderMethod) RenderSummary(ctx context.Context, credential CredentialDa
 	if err := m.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid summary render method: %w", err)
 	}
-	data, err := templateBytes(ctx, m, opts.Fetcher)
+	data, _, err := templateBytes(ctx, m, opts.Fetcher)
 	if err != nil {
 		return nil, err
 	}
@@ -59,19 +59,21 @@ func (m RenderMethod) RenderSummary(ctx context.Context, credential CredentialDa
 	return &output, nil
 }
 
-func templateBytes(ctx context.Context, method RenderMethod, fetcher Fetcher) ([]byte, error) {
+// templateBytes returns template bytes and the media type declared by the
+// credential, or carried by a data: URL when the credential omits it.
+func templateBytes(ctx context.Context, method RenderMethod, fetcher Fetcher) ([]byte, string, error) {
 	if method.Template == nil {
-		return nil, fmt.Errorf("%s template is required", method.RenderSuite)
+		return nil, "", fmt.Errorf("%s template is required", method.RenderSuite)
 	}
 	if method.Template.Embedded != nil {
-		return method.Template.Embedded.Bytes, nil
+		return method.Template.Embedded.Bytes, method.Template.Embedded.MediaType, nil
 	}
 	ref := *method.Template.Reference
 	var data []byte
 	if isDataURL(ref.ID) {
 		embedded, err := decodeDataURL(ref.ID)
 		if err != nil {
-			return nil, fmt.Errorf("decode %s template: %w", method.RenderSuite, err)
+			return nil, "", fmt.Errorf("decode %s template: %w", method.RenderSuite, err)
 		}
 		data = embedded.Bytes
 		if ref.MediaType == "" {
@@ -79,25 +81,25 @@ func templateBytes(ctx context.Context, method RenderMethod, fetcher Fetcher) ([
 		}
 	} else {
 		if fetcher == nil {
-			return nil, fmt.Errorf("template fetcher is required for external %s template", method.RenderSuite)
+			return nil, "", fmt.Errorf("template fetcher is required for external %s template", method.RenderSuite)
 		}
 		var err error
 		data, err = fetcher.Fetch(ctx, ref)
 		if err != nil {
-			return nil, fmt.Errorf("fetch %s template: %w", method.RenderSuite, err)
+			return nil, "", fmt.Errorf("fetch %s template: %w", method.RenderSuite, err)
 		}
 	}
 	if ref.DigestMultibase != "" {
 		if err := verifyDigestMultibase(data, ref.DigestMultibase); err != nil {
-			return nil, fmt.Errorf("verify %s template digest: %w", method.RenderSuite, err)
+			return nil, "", fmt.Errorf("verify %s template digest: %w", method.RenderSuite, err)
 		}
 	}
 	// A referenced template is not covered by the credential signature, so it
 	// must pass the same content rules as an embedded one before use.
 	if err := method.validateFetchedTemplate(ref, data); err != nil {
-		return nil, fmt.Errorf("invalid external %s template: %w", method.RenderSuite, err)
+		return nil, "", fmt.Errorf("invalid external %s template: %w", method.RenderSuite, err)
 	}
-	return data, nil
+	return data, ref.MediaType, nil
 }
 
 func resolveNode(value any, credential CredentialData, literal, required bool, budget *int) (any, error) {

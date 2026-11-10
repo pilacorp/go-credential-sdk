@@ -99,13 +99,11 @@ omitted, the suite's default media type is assumed.
 `ParseRenderMethods` skips suites the SDK does not support; each renderer accepts
 only its own suite.
 
-`RenderMethod.ID` is optional metadata for the render method itself. The SDK
-checks only that it is a valid URI and does not dereference it automatically.
-Rendering uses `Template`, even when `ID` is present. If an application wants
-to use that identifier as the source of an external template, it can choose
-that explicitly by copying `ID` (and `DigestMultibase`, when present) to
-`Template.Reference.ID` before calling a renderer. An entry with `ID` but no
-`Template` is skipped by `ParseRenderMethods`.
+`RenderMethod.ID` is an optional reference to a complete remote render method.
+Rendering uses `Template`, even when `ID` is present. To render from `ID`, call
+`RenderMethod.Dereference` with the caller's `Fetcher`, then render the returned
+method. An entry with `ID` but no `Template` is retained by
+`ParseRenderMethods` for this purpose.
 
 ```go
 summary := vc.RenderMethod{

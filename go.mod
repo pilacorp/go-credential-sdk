@@ -1,6 +1,6 @@
 module github.com/pilacorp/go-credential-sdk
 
-go 1.24.3
+go 1.25.0
 
 require (
 	github.com/btcsuite/btcd/btcec/v2 v2.3.5
@@ -8,11 +8,12 @@ require (
 	github.com/ethereum/go-ethereum v1.16.7
 	github.com/fxamacker/cbor/v2 v2.7.0
 	github.com/mr-tron/base58 v1.3.0
+	github.com/nlnwa/whatwg-url v0.6.2
 	github.com/piprate/json-gold v0.7.0
 	github.com/stretchr/testify v1.11.1
 	github.com/xeipuuv/gojsonschema v1.2.0
 	golang.org/x/exp v0.0.0-20250718183923-645b1fa84792
-	golang.org/x/sync v0.16.0
+	golang.org/x/sync v0.21.0
 )
 
 require (
@@ -42,7 +43,9 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f // indirect
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
-	golang.org/x/crypto v0.39.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/crypto v0.51.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

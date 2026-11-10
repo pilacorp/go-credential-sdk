@@ -214,15 +214,13 @@ For `static`:
 #### 5.3.4 Render method `id`
 
 When the common `id` property is present, it identifies the render method and
-must follow URI syntax. The SDK validates its format but does not dereference
-it, because the specification does not settle whether it identifies a template
-or a complete render method document. Rendering always uses `template`.
+must follow URI syntax. The SDK validates its format. To render from `id`, a
+consumer calls `RenderMethod.Dereference` with its fetcher, then renders the
+returned method. Rendering otherwise uses `template`.
 
-An application may explicitly choose to use `id` as an external template
-reference by assigning it to `Template.Reference.ID` and carrying over
-`digestMultibase`; the application's `Fetcher` then retrieves and
-validates the template. This is distinct from `template.digestMultibase`,
-which protects the template bytes referenced by `template`.
+When present, `digestMultibase` is checked while dereferencing the remote
+method. This is distinct from `template.digestMultibase`, which protects the
+template bytes referenced by `template`.
 
 ## 6. Validation
 
@@ -386,36 +384,22 @@ type Fetcher interface {
 }
 
 type RenderOptions struct {
-	Fetcher          Fetcher
+	Fetcher Fetcher
+	// MaxSummaryOutputBytes caps the total size of values copied from the
+	// credential into a summary. Zero or less uses a 1 MiB default.
+	MaxSummaryOutputBytes int
 }
 
-func RenderSummary(
+func (m RenderMethod) RenderSummary(
 	ctx context.Context,
 	credential CredentialData,
-	method RenderMethod,
 	opts RenderOptions,
-) (*SummaryOutput, error)
+) (*SummaryTemplate, error)
 ```
 
 The renderer must reject a method whose suite is not `summary`.
 
 ```go
-type SummaryOutput struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Icon        string         `json:"icon,omitempty"`
-	Theme       *SummaryTheme  `json:"theme,omitempty"`
-	Fields      []SummaryField `json:"fields"`
-	ValidFrom   string         `json:"validFrom,omitempty"`
-	ValidUntil  string         `json:"validUntil,omitempty"`
-}
-
-type SummaryField struct {
-	Label     string `json:"label"`
-	Value     string `json:"value"`
-	Language  string `json:"language,omitempty"`
-	Direction string `json:"direction,omitempty"`
-}
 ```
 
 ### 8.1 Processing algorithm
@@ -428,8 +412,9 @@ type SummaryField struct {
 6. Convert resolved non-string scalar values to their JSON string representation.
 7. Omit missing optional summary members and return an error for missing required summary members.
 8. Preserve literal strings unchanged.
-9. Validate the resulting summary output.
-10. Return the normalized `SummaryOutput`.
+9. Charge each resolved value against `MaxSummaryOutputBytes` and stop with an
+   error when the budget is exceeded.
+10. Return the normalized `SummaryTemplate`.
 
 No field may combine values from multiple pointers. The SDK follows the current suite definition that each field value resolves from one pointer.
 
@@ -534,89 +519,7 @@ go test ./...
 go vet ./...
 ```
 
-## 14. Implementation phases
-
-### Phase 0 — Contract and compatibility baseline
-
-- Freeze the public model names and object/array wire behavior.
-- Add test fixtures for the W3C examples, while correcting invalid example JSON comments.
-- Record the specification status and unsupported behaviors.
-
-### Phase 1 — Common data model and VC integration
-
-- Add `RenderMethod`, `TemplateReference`, `OutputPreference`, and suite-specific model types.
-- Add `CredentialContents.RenderMethods`.
-- Serialize `renderMethod` into the JSON-LD VC document.
-- Parse both a single object and an array.
-- Require the active JSON-LD context to define every render-method term used; do not auto-insert a context.
-- Ensure render metadata is included in the Data Integrity signing input and survives round trips.
-- Fail signing when any render-method term is unresolved.
-
-### Phase 1.5 — Canonicalization preservation gate
-
-- Canonicalize a VC containing each supported render suite.
-- Verify that `renderSuite`, `template`, `renderProperty`, `outputPreference`, `deliveryMode`, and `digestMultibase` survive canonicalization where applicable.
-- Fix the current silent-drop behavior for unresolved render terms.
-- Reject partial canonicalization rather than issuing a credential.
-
-### Phase 2 — Issuer authoring for all suites
-
-- Implement one `RenderMethod` object model with suite-specific validation.
-- Implement `Validate()` for each suite and summary template.
-- Provide constructors only as optional convenience helpers; struct literals remain the primary authoring API.
-- Implement embedded and referenced payloads for all suites.
-- Add helpers for external template references.
-- Accept optional `digestMultibase` for external template references and verify it when present.
-- Do not require or automatically add a digest for embedded templates.
-- Ensure authoring does not require network access unless explicitly requested.
-
-### Phase 3 — Integrity and retrieval foundation
-
-- Implement RFC 6901 JSON Pointer parsing.
-- Implement multibase/multihash SHA-256 generation and verification.
-- Add injectable `Fetcher`.
-- Add response-size, timeout, media-type, and redirect limits for the optional HTTP fetcher.
-- Distinguish render-method digest verification from template digest verification.
-
-### Phase 4 — Consumer support for `summary`
-
-- Select supported summary methods.
-- Decode embedded or referenced JSON templates.
-- Validate the template.
-- Resolve pointers, omit missing optional summary members, and fail missing required members.
-- Validate the rendered summary output.
-- Add deterministic golden tests.
-
-This phase implements the complete Go-side `summary` renderer. It does not mean that `summary` is the only supported suite; the following phases implement the HTML artifact and static payload consumer paths.
-
-### Phase 5 — HTML render artifact support
-
-- Validate HTML fragment shape.
-- Fetch and verify the external HTML payload.
-- Apply `renderProperty` using the W3C `selectJsonLd` algorithm.
-- Generate the filtered `application/vc` data block.
-- Generate the `srcdoc` wrapper with CSP, the data block, and the wrapper-side ready/error script; the iframe sandbox and host-side `MessageChannel` stay with the host page.
-- Return the complete HTML artifact and output preferences.
-- Do not execute JavaScript or start the client browser/WebView runtime.
-
-### Phase 6 — Consumer support for `static`
-
-- Decode embedded static payloads.
-- Fetch and verify referenced payloads.
-- Return payload bytes, media type, delivery mode, and selected properties.
-- Add fixtures for image, PDF, and opaque binary/NFC payloads.
-
-### Phase 7 — End-to-end verification and release documentation
-
-- Verify that changing any signed render metadata invalidates proofs.
-- Verify issuer-created credentials can be consumed by each suite.
-- Run compatibility tests for existing JSON-LD credentials without `renderMethod`.
-- Add README examples for authoring and consuming all three suites.
-- Run `go test ./credential/...`, `go test ./...`, and `go vet ./...`.
-
-VC-JWT, VC-JOSE, SD-JWT, and other securing mechanisms are deferred to a future specification and must not become implicit compatibility requirements for this implementation.
-
-## 15. Decisions
+## 14. Decisions
 
 The following decisions are fixed for this specification:
 
@@ -630,7 +533,7 @@ The following decisions are fixed for this specification:
 8. The initial release includes HTML artifact preparation but returns only `SrcDoc`, `Width`, and `Height`; the client owns the host-page iframe, CSP, sandbox, and lifecycle.
 9. The SDK does not automatically add a context. When render methods are used, the active context must define the terms used by the credential. The W3C Credentials Examples v2 context and equivalent issuer-supplied contexts are allowed.
 
-## 16. References
+## 15. References
 
 - W3C Verifiable Credential Rendering Methods v1.0: https://www.w3.org/TR/vc-render-method/
 - W3C Credentials Examples vocabulary v2: https://www.w3.org/ns/credentials/examples/v2

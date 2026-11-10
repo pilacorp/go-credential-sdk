@@ -32,7 +32,7 @@ func (m RenderMethod) WrapHTMLTemplate(ctx context.Context, credential Credentia
 	if err := m.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid html render method: %w", err)
 	}
-	template, err := templateBytes(ctx, m, opts.Fetcher)
+	template, _, err := templateBytes(ctx, m, opts.Fetcher)
 	if err != nil {
 		return nil, err
 	}
@@ -95,21 +95,13 @@ func (m RenderMethod) ResolveStatic(ctx context.Context, credential CredentialDa
 	if err := m.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid static render method: %w", err)
 	}
-	data, err := templateBytes(ctx, m, opts.Fetcher)
+	data, mediaType, err := templateBytes(ctx, m, opts.Fetcher)
 	if err != nil {
 		return nil, err
 	}
 	filtered, err := selectCredential(credential, m.RenderProperty)
 	if err != nil {
 		return nil, err
-	}
-	mediaType := ""
-	if m.Template != nil {
-		if m.Template.Embedded != nil {
-			mediaType = m.Template.Embedded.MediaType
-		} else if m.Template.Reference != nil {
-			mediaType = m.Template.Reference.MediaType
-		}
 	}
 	return &StaticOutput{Bytes: data, MediaType: mediaType, DeliveryMode: m.DeliveryMode, Credential: filtered}, nil
 }

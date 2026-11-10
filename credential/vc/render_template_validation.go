@@ -11,9 +11,11 @@ import (
 	"strings"
 )
 
-// Fetcher retrieves the template a credential references. ref.ID comes
-// from the credential, so the implementation owns the scheme and address policy,
-// the read limit, the timeout, and the comparison with ref.MediaType.
+// Fetcher retrieves the template or render method a credential references.
+// ref.ID comes from the credential, so the implementation owns the scheme and
+// address policy, the read limit, the timeout, and the comparison with
+// ref.MediaType. The credential signature does not cover bytes fetched with an
+// empty ref.DigestMultibase: refuse them here unless the issuer is trusted.
 type Fetcher interface {
 	Fetch(context.Context, TemplateReference) ([]byte, error)
 }
@@ -148,7 +150,7 @@ func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher Fetc
 	}
 	// templateBytes owns fetch, digest and content checks, so validation and
 	// rendering accept exactly the same templates.
-	_, err := templateBytes(ctx, m, fetcher)
+	_, _, err := templateBytes(ctx, m, fetcher)
 	return err
 }
 
