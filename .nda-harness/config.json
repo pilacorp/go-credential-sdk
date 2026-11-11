@@ -1,5 +1,0 @@
-{
-  "enabled": true,
-  "schema_version": 1,
-  "test_command": "go test ./..."
-}
