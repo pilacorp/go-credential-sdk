@@ -12,7 +12,10 @@ import (
 )
 
 // Fetcher retrieves the template or render method a credential references.
-// ref.ID comes from the credential, so the implementation owns the scheme and
+// ref.ID is the id in the credential as the URL Standard parser serializes it,
+// so a check on its host sees the host that net/http dials. net/http still
+// refuses some URLs the URL Standard accepts, such as a "%" that starts no
+// escape, and Fetch then fails. The implementation owns the scheme and
 // address policy, the read limit, the timeout, and the comparison with
 // ref.MediaType. The credential signature does not cover bytes fetched with an
 // empty ref.DigestMultibase: refuse them here unless the issuer is trusted.
@@ -142,7 +145,7 @@ func containsHTMLElement(source, element string) bool {
 }
 
 func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher Fetcher) error {
-	if err := m.Validate(); err != nil {
+	if err := m.validateInCredential(); err != nil {
 		return err
 	}
 	if m.Template == nil || m.Template.Reference == nil {

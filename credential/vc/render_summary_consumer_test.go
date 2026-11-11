@@ -236,3 +236,16 @@ func TestRenderSummaryTreatsNullLikeAMissingPointer(t *testing.T) {
 		t.Fatalf("RenderSummary() = %+v, want a null pointer error", got)
 	}
 }
+
+func TestRenderSummaryReadsDataURLWithSpaceBeforeScheme(t *testing.T) {
+	template := `{"name":"Badge","description":"A badge","fields":[{"label":"ID","value":"/id"}]}`
+	id := " data:application/json;base64," + base64.StdEncoding.EncodeToString([]byte(template))
+	m := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{ID: id}}}
+	out, err := m.RenderSummary(context.Background(), CredentialData{"id": "urn:x"}, RenderOptions{})
+	if err != nil {
+		t.Fatalf("RenderSummary() error = %v", err)
+	}
+	if out.Name != "Badge" {
+		t.Errorf("Name = %q, want Badge", out.Name)
+	}
+}

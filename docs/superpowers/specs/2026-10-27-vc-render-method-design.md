@@ -214,7 +214,8 @@ For `static`:
 #### 5.3.4 Render method `id`
 
 When the common `id` property is present, it identifies the render method and
-must follow URI syntax. The SDK validates its format. To render from `id`, a
+must follow the URL Standard, as WD-20261013 §2.2 requires. The SDK validates
+it with a URL Standard parser. To render from `id`, a
 consumer calls `RenderMethod.Dereference` with its fetcher, then renders the
 returned method. Rendering otherwise uses `template`.
 
@@ -230,7 +231,10 @@ When creating a credential through structured contents:
 
 - `type` is required and must equal `SuiteRenderMethod` for a suite method;
 - `renderSuite` is required and non-empty;
-- `id`, when present, must be a valid URL;
+- `id` and `template.id`, when present, must parse under the URL Standard (WD-20261013 §2.2);
+- a URL is refused above 8 KiB, unless it is a `data:` URL of the form `data:<media type>,<data>`, which holds a template. `data://...` has an authority and is bounded like any other URL. The URL Standard sets no limit; this one bounds the parser's time on one id taken from a credential. It does not bound the number of ids: a credential filled with 8 KiB ids that are all userinfo takes about 6 s of parsing per MiB, so the application bounds the credential size;
+- a `Fetcher` receives the id as the URL Standard parser serializes it, so a check on its host sees the host that is requested. An RFC 3986 client still refuses some of these URLs, such as one with a `%` that starts no escape, and the fetch fails;
+- for a suite this SDK renders, a `data:` URL in `template.id` carries the template in the credential, read by the same rule as a `data:` string in `template`, so `Validate()` decodes it, verifies its `digestMultibase` when present, and applies the suite content rules before signing;
 - every `renderProperty` must be a valid JSON Pointer;
 - `template`, when present, must match the wire shape required by its suite;
 - external template references MAY include `digestMultibase`;

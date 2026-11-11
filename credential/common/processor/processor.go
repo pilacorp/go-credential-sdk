@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/piprate/json-gold/ld"
 )
@@ -97,7 +98,7 @@ var wellKnownContexts = map[string][]byte{
 
 // localContextDocumentLoader wraps a default loader and checks for local context files first
 type localContextDocumentLoader struct {
-	fallback ld.DocumentLoader
+	fallback atomic.Pointer[cachingDocumentLoader]
 }
 
 // LoadDocument implements ld.DocumentLoader interface
@@ -108,7 +109,7 @@ func (l *localContextDocumentLoader) LoadDocument(url string) (*ld.RemoteDocumen
 	}
 
 	// Fallback to default loader (network)
-	return l.fallback.LoadDocument(url)
+	return l.fallback.Load().LoadDocument(url)
 }
 
 // loadLocalContext attempts to load a context from embedded data.
@@ -130,16 +131,14 @@ func loadLocalContext(url string) *ld.RemoteDocument {
 }
 
 // defaultDocumentLoader is a shared caching loader to prevent repeated fetches across function calls.
-var defaultDocumentLoader ld.DocumentLoader
+var defaultDocumentLoader = &localContextDocumentLoader{}
 
 func init() {
-	innerLoader := ld.NewDefaultDocumentLoader(nil) // HTTP client
 	// Cache only network fetches. Bundled local contexts are re-parsed fresh on
 	// every call (loadLocalContext json-unmarshals a new object each time) so
 	// json-gold can never mutate a shared cached context — that sharing caused
 	// intermittent "@protected ... not bool" panics once concurrency increased.
-	cachedNetwork := ld.NewCachingDocumentLoader(innerLoader)
-	defaultDocumentLoader = &localContextDocumentLoader{fallback: cachedNetwork}
+	SetDocumentLoaderHTTPClient(nil)
 }
 
 // recoverJSONLD converts a panic from the json-gold library (e.g. its unchecked
@@ -160,25 +159,31 @@ func CanonicalizeDocument(doc map[string]interface{}) (out []byte, err error) {
 	}
 	defer recoverJSONLD(&err, "canonicalize document")
 	processor := ld.NewJsonLdProcessor()
+	// The two steps of processor.Normalize, which cannot stop between them to
+	// check the cost. Like it, this leaves SafeMode off: see
+	// TestCanonicalizeDocument_SilentlyDropsUndefinedTerm.
 	jsonldOptions := ld.NewJsonLdOptions("")
-	jsonldOptions.Format = "application/n-quads"
-	jsonldOptions.Algorithm = ld.AlgorithmURDNA2015
-	// Use CachingDocumentLoader to cache remote contexts
-	jsonldOptions.DocumentLoader = defaultDocumentLoader
-	// Fail on undefined terms instead of silently dropping them (lossless).
-	jsonldOptions.SafeMode = true
+	jsonldOptions.DocumentLoader = newContextBudget()
 
 	standardizedDoc, err := standardizeToJSONLD(doc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to standardize to JSON-LD: %w", err)
 	}
+	if err := limitInlineContexts(jsonldOptions, standardizedDoc); err != nil {
+		return nil, fmt.Errorf("failed to normalize document: %w", err)
+	}
 
-	canonicalized, err := processor.Normalize(standardizedDoc, jsonldOptions)
+	dataset, err := processor.ToRDF(standardizedDoc, jsonldOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to normalize document: %w", err)
 	}
 
-	return []byte(canonicalized.(string)), nil
+	canonicalized, err := normalizeDataset(dataset.(*ld.RDFDataset))
+	if err != nil {
+		return nil, fmt.Errorf("failed to normalize document: %w", err)
+	}
+
+	return []byte(canonicalized), nil
 }
 
 // ComputeDigest computes the SHA-256 digest of the input data.
