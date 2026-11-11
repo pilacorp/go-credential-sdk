@@ -800,3 +800,146 @@ func TestRenderMethodValidatesOutputPreferenceAccessMode(t *testing.T) {
 		t.Fatal("Validate() of a decoded empty accessMode error = nil, want an error")
 	}
 }
+
+func TestNewJSONCredentialChecksDataURLInTemplateID(t *testing.T) {
+	summary := `{"name":"/credentialSubject/name","description":"A badge","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`
+	valid := "data:application/json;base64," + base64.StdEncoding.EncodeToString([]byte(summary))
+	// sha2-256 multihash of the bytes "other", base64url multibase.
+	otherDigest := "uEiDZKYoQ0bBzWDfcS9hdrGQbDzzvJ6R-XVOlTy8_Wy_P-g"
+	for name, tt := range map[string]struct {
+		ref     TemplateReference
+		wantErr bool
+	}{
+		"valid summary template":   {TemplateReference{ID: valid}, false},
+		"no comma in data URL":     {TemplateReference{ID: "data:abc"}, true},
+		"space before the scheme":  {TemplateReference{ID: " data:abc"}, true},
+		"tab inside the scheme":    {TemplateReference{ID: "da\tta:abc"}, true},
+		"control before scheme":    {TemplateReference{ID: "\x01data:abc"}, true},
+		"not a summary template":   {TemplateReference{ID: `data:application/json,{"x":1}`}, true},
+		"digest of other bytes":    {TemplateReference{ID: valid, DigestMultibase: otherDigest}, true},
+		"remote id is not fetched": {TemplateReference{ID: "https://example.com/summary.json"}, false},
+	} {
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &tt.ref}}
+		_, err := NewJSONCredential(baseRenderContents([]RenderMethod{method}))
+		if (err != nil) != tt.wantErr {
+			t.Errorf("%s: NewJSONCredential() error = %v, wantErr %v", name, err, tt.wantErr)
+		}
+	}
+	// A suite this SDK does not render keeps an opaque template.
+	other := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "pdf", Template: &Template{Reference: &TemplateReference{ID: "data:abc"}}}
+	if _, err := NewJSONCredential(baseRenderContents([]RenderMethod{other})); err != nil {
+		t.Errorf("unsupported suite: NewJSONCredential() error = %v, want nil", err)
+	}
+}
+
+func TestValidateChecksMediaTypeOfDataURLInTemplateID(t *testing.T) {
+	for name, tt := range map[string]struct {
+		id      string
+		wantErr bool
+	}{
+		"media type":       {"data:text/plain,abc", false},
+		"no media type":    {"data:,abc", false},
+		"not a media type": {"data:not a media type,abc", true},
+		"1 MiB media type": {"data:" + strings.Repeat("a", 1<<20) + ",abc", true},
+	} {
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", Template: &Template{Reference: &TemplateReference{ID: tt.id}}}
+		err := method.Validate()
+		if (err != nil) != tt.wantErr {
+			t.Errorf("%s: Validate() error = %v, wantErr %v", name, err, tt.wantErr)
+		}
+		// The media type comes from the credential, so the error quotes its start only.
+		if err != nil && len(err.Error()) > 1<<10 {
+			t.Errorf("%s: Validate() error is %d bytes", name, len(err.Error()))
+		}
+	}
+}
+
+func TestTemplateStringErrorQuotesStartOfMediaType(t *testing.T) {
+	var template Template
+	err := json.Unmarshal(mustJSON("data:"+strings.Repeat("a", 1<<20)+",abc"), &template)
+	if err == nil {
+		t.Fatalf("Unmarshal() error = nil, want an error")
+	}
+	if n := len(err.Error()); n > 1<<10 {
+		t.Errorf("Unmarshal() error is %d bytes, want under 1 KiB", n)
+	}
+}
+
+func TestValidateURLBoundsURLsThatAreNotDataURLs(t *testing.T) {
+	long := strings.Repeat("a", 200<<10)
+	for name, tt := range map[string]struct {
+		raw     string
+		wantErr bool
+	}{
+		"8 KiB https URL":             {"https://example.org/" + strings.Repeat("a", 8<<10-len("https://example.org/")), false},
+		"one byte over 8 KiB":         {"https://example.org/" + strings.Repeat("a", 8<<10+1-len("https://example.org/")), true},
+		"https URL over 8 KiB":        {"https://example.org/" + long, true},
+		"long userinfo":               {"http://" + long + "@example.org/", true},
+		"data URL with an authority":  {"data://" + long + "@example.org/", true},
+		"data URL holding a template": {"data:text/html," + long, false},
+		"space before a data URL":     {" data:text/html," + long, false},
+	} {
+		err := validateURL(tt.raw, "template reference id")
+		if (err != nil) != tt.wantErr {
+			t.Errorf("%s: validateURL() error = %v, wantErr %v", name, err != nil, tt.wantErr)
+		}
+	}
+}
+
+func TestTemplateDataURLReadsTheSameAsStringAndAsID(t *testing.T) {
+	dataURL := " data:text/html,<script>// note\nwindow.renderMethodReady()</script>\n"
+	var asString, asID Template
+	if err := json.Unmarshal(mustJSON(dataURL), &asString); err != nil {
+		t.Fatalf("string form: %v", err)
+	}
+	if err := json.Unmarshal(mustJSON(map[string]any{"id": dataURL}), &asID); err != nil {
+		t.Fatalf("id form: %v", err)
+	}
+	if asString.Embedded == nil {
+		t.Fatalf("string form: not read as an embedded template")
+	}
+	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", Template: &asID}
+	fromID, _, err := templateBytes(context.Background(), method, nil)
+	if err != nil {
+		t.Fatalf("id form: %v", err)
+	}
+	want := "<script>// notewindow.renderMethodReady()</script>"
+	if string(asString.Embedded.Bytes) != want || string(fromID) != want {
+		t.Errorf("string form = %q, id form = %q, want both %q", asString.Embedded.Bytes, fromID, want)
+	}
+}
+
+type recordingFetcher struct {
+	ids  []string
+	data []byte
+}
+
+func (f *recordingFetcher) Fetch(_ context.Context, ref TemplateReference) ([]byte, error) {
+	f.ids = append(f.ids, ref.ID)
+	return f.data, nil
+}
+
+func TestFetcherGetsTheURLStandardFormOfTheID(t *testing.T) {
+	fetcher := &recordingFetcher{data: []byte("<p>hi</p>")}
+	template := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", Template: &Template{Reference: &TemplateReference{ID: " https:example.org/t.html#v2\n"}}}
+	if _, err := template.ResolveStatic(context.Background(), CredentialData{"id": "urn:x"}, RenderOptions{Fetcher: fetcher}); err != nil {
+		t.Fatalf("ResolveStatic() error = %v", err)
+	}
+	remote := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", ID: "HTTPS://Example.org:443/m.json"}
+	fetcher.data = []byte(`{"type":"SuiteRenderMethod","renderSuite":"static","template":"data:text/plain,hi"}`)
+	if _, err := remote.Dereference(context.Background(), fetcher); err != nil {
+		t.Fatalf("Dereference() error = %v", err)
+	}
+	// Validate accepts a data: URL of any size as renderMethod.id, so Dereference does too.
+	inData := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", ID: "data:application/json," + strings.Repeat("a", 9<<10)}
+	if err := inData.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if _, err := inData.Dereference(context.Background(), fetcher); err != nil {
+		t.Fatalf("Dereference() of a 9 KiB data: id error = %v", err)
+	}
+	want := []string{"https://example.org/t.html#v2", "https://example.org/m.json", inData.ID}
+	if !reflect.DeepEqual(fetcher.ids, want) {
+		t.Errorf("Fetcher got ids %.200q, want %.200q", fetcher.ids, want)
+	}
+}

@@ -25,7 +25,7 @@ func (m RenderMethod) RenderSummary(ctx context.Context, credential CredentialDa
 	if m.RenderSuite != "summary" {
 		return nil, fmt.Errorf("render method suite must be summary")
 	}
-	if err := m.Validate(); err != nil {
+	if err := m.validateInCredential(); err != nil {
 		return nil, fmt.Errorf("invalid summary render method: %w", err)
 	}
 	data, _, err := templateBytes(ctx, m, opts.Fetcher)
@@ -70,10 +70,15 @@ func templateBytes(ctx context.Context, method RenderMethod, fetcher Fetcher) ([
 	}
 	ref := *method.Template.Reference
 	var data []byte
-	if isDataURL(ref.ID) {
-		embedded, err := decodeDataURL(ref.ID)
+	dataURL, inCredential := referencedDataURL(ref.ID)
+	if inCredential {
+		embedded, err := decodeDataURL(dataURL)
 		if err != nil {
 			return nil, "", fmt.Errorf("decode %s template: %w", method.RenderSuite, err)
+		}
+		// The string form of the same data: URL is refused for this in validate.
+		if err := validateMediaType(embedded.MediaType); err != nil {
+			return nil, "", fmt.Errorf("%s template %w", method.RenderSuite, err)
 		}
 		data = embedded.Bytes
 		if ref.MediaType == "" {
@@ -84,6 +89,9 @@ func templateBytes(ctx context.Context, method RenderMethod, fetcher Fetcher) ([
 			return nil, "", fmt.Errorf("template fetcher is required for external %s template", method.RenderSuite)
 		}
 		var err error
+		if ref.ID, err = serializeURL(ref.ID, "template reference id"); err != nil {
+			return nil, "", err
+		}
 		data, err = fetcher.Fetch(ctx, ref)
 		if err != nil {
 			return nil, "", fmt.Errorf("fetch %s template: %w", method.RenderSuite, err)
@@ -97,6 +105,9 @@ func templateBytes(ctx context.Context, method RenderMethod, fetcher Fetcher) ([
 	// A referenced template is not covered by the credential signature, so it
 	// must pass the same content rules as an embedded one before use.
 	if err := method.validateFetchedTemplate(ref, data); err != nil {
+		if inCredential {
+			return nil, "", fmt.Errorf("invalid %s template: %w", method.RenderSuite, err)
+		}
 		return nil, "", fmt.Errorf("invalid external %s template: %w", method.RenderSuite, err)
 	}
 	return data, ref.MediaType, nil

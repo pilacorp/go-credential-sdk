@@ -29,7 +29,7 @@ func (m RenderMethod) WrapHTMLTemplate(ctx context.Context, credential Credentia
 	if m.RenderSuite != "html" {
 		return nil, fmt.Errorf("render method suite must be html")
 	}
-	if err := m.Validate(); err != nil {
+	if err := m.validateInCredential(); err != nil {
 		return nil, fmt.Errorf("invalid html render method: %w", err)
 	}
 	template, _, err := templateBytes(ctx, m, opts.Fetcher)
@@ -92,7 +92,7 @@ func (m RenderMethod) ResolveStatic(ctx context.Context, credential CredentialDa
 	if m.RenderSuite != "static" {
 		return nil, fmt.Errorf("render method suite must be static")
 	}
-	if err := m.Validate(); err != nil {
+	if err := m.validateInCredential(); err != nil {
 		return nil, fmt.Errorf("invalid static render method: %w", err)
 	}
 	data, mediaType, err := templateBytes(ctx, m, opts.Fetcher)

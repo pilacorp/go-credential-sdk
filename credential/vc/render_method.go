@@ -117,7 +117,11 @@ func (m RenderMethod) Dereference(ctx context.Context, fetcher Fetcher) (RenderM
 	if fetcher == nil {
 		return RenderMethod{}, fmt.Errorf("renderMethod.id %q needs a Fetcher", m.ID)
 	}
-	data, err := fetcher.Fetch(ctx, TemplateReference{ID: m.ID, DigestMultibase: m.DigestMultibase})
+	id, err := serializeURL(m.ID, "renderMethod.id")
+	if err != nil {
+		return RenderMethod{}, err
+	}
+	data, err := fetcher.Fetch(ctx, TemplateReference{ID: id, DigestMultibase: m.DigestMultibase})
 	if err != nil {
 		return RenderMethod{}, fmt.Errorf("fetch renderMethod.id: %w", err)
 	}
@@ -197,22 +201,42 @@ type RenderStyle struct {
 
 // Validate checks a render method against WD-20261013 §2.2: required members,
 // the render suite, template URLs and media types, outputPreference, and the
-// content of an embedded template. It does not fetch a referenced template;
-// ValidateExternalTemplate checks one after retrieval.
+// content of an embedded template. A data: URL in template.id carries the
+// template in the credential, so it is decoded and checked here too. An id or
+// template.id longer than 8 KiB is refused, unless it is a data: URL with an
+// opaque path, such as "data:<media type>,<data>". It does
+// not fetch a referenced template; ValidateExternalTemplate checks one after
+// retrieval.
 //
 // WD-20261013 §2.2 makes both id and template optional. This SDK also requires
 // a supported suite to have at least one of them, because a method with neither
 // cannot be rendered and a signed credential cannot be corrected.
 func (m RenderMethod) Validate() error {
+	if err := m.validateInCredential(); err != nil {
+		return err
+	}
+	if m.Template == nil || m.Template.Reference == nil || !isSupportedRenderSuite(m.RenderSuite) {
+		return nil
+	}
+	if _, ok := referencedDataURL(m.Template.Reference.ID); ok {
+		// Signing is the last point where a broken data: template can be refused.
+		_, _, err := templateBytes(context.Background(), m, nil)
+		return err
+	}
+	return nil
+}
+
+// validateInCredential checks the render method's shape and an embedded
+// template's content. The render entry points call it in place of Validate,
+// because templateBytes then decodes and checks a referenced template once.
+func (m RenderMethod) validateInCredential() error {
 	if err := m.validateFormat(); err != nil {
 		return err
 	}
-	if m.Template != nil {
-		if err := m.validateTemplateContent(); err != nil {
-			return err
-		}
+	if m.Template == nil {
+		return nil
 	}
-	return nil
+	return m.validateTemplateContent()
 }
 
 // validateFormat checks the signed render method's shape without reading or
@@ -280,7 +304,7 @@ func (t *Template) validate() error {
 	if t.Embedded != nil {
 		// A comma would end the media type early in the data: URL MarshalJSON writes.
 		if err := validateMediaType(t.Embedded.MediaType); err != nil || strings.Contains(t.Embedded.MediaType, ",") {
-			return fmt.Errorf("embedded template mediaType %q is not a valid media type", t.Embedded.MediaType)
+			return fmt.Errorf("embedded template mediaType %.64q is not a valid media type", t.Embedded.MediaType)
 		}
 	}
 	return nil
@@ -317,16 +341,56 @@ func validateMediaType(mediaType string) error {
 	}
 	parsed, _, err := mime.ParseMediaType(mediaType)
 	if err != nil || !strings.Contains(parsed, "/") || strings.Contains(parsed, "*") {
-		return fmt.Errorf("mediaType %q is not a valid media type", mediaType)
+		// The media type comes from the credential and has no size limit, so only its start is quoted.
+		return fmt.Errorf("mediaType %.64q is not a valid media type", mediaType)
 	}
 	return nil
 }
 
+// maxURLBytes bounds a URL other than a data: URL that holds a template. The
+// URL Standard sets no limit; the parser in use takes time quadratic in the
+// length of a userinfo or host (1.2 s for a 195 KiB userinfo), and the id comes
+// from the credential.
+const maxURLBytes = 8 << 10
+
 func validateURL(raw, field string) error {
-	if _, err := whatwgurl.Parse(raw); err != nil {
-		return fmt.Errorf("%s must be a URL of the WHATWG URL Standard: %w", field, err)
+	// The parser has no failure in an opaque path, a query or a fragment, so it
+	// cannot refuse this URL; it would only cost about 35 ms per MiB of template.
+	if holdsTemplate(raw) {
+		return nil
 	}
-	return nil
+	_, err := parseURL(raw, field)
+	return err
+}
+
+// holdsTemplate reports whether raw is a data: URL with an opaque path, the
+// form "data:<media type>,<data>". "data://..." has an authority like any other
+// URL.
+func holdsTemplate(raw string) bool {
+	dataURL, ok := referencedDataURL(raw)
+	return ok && !strings.HasPrefix(dataURL[len("data:"):], "/")
+}
+
+// serializeURL returns raw as the URL Standard parser serializes it. A Fetcher
+// gets this form, so it requests the URL that validateURL accepted:
+// "https:example.org/t" is "https://example.org/t".
+func serializeURL(raw, field string) (string, error) {
+	parsed, err := parseURL(raw, field)
+	if err != nil {
+		return "", err
+	}
+	return parsed.Href(false), nil
+}
+
+func parseURL(raw, field string) (*whatwgurl.Url, error) {
+	if len(raw) > maxURLBytes && !holdsTemplate(raw) {
+		return nil, fmt.Errorf("%s is %d bytes; this SDK accepts at most %d for a URL, and more only for a data: URL of the form data:<media type>,<data>", field, len(raw), maxURLBytes)
+	}
+	parsed, err := whatwgurl.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be a URL of the WHATWG URL Standard: %w", field, err)
+	}
+	return parsed, nil
 }
 
 func validateJSONPointer(pointer string) error {
@@ -379,6 +443,21 @@ func isDataURL(raw string) bool {
 	return len(raw) >= 5 && strings.EqualFold(raw[:5], "data:")
 }
 
+// referencedDataURL reports whether id is a data: URL and returns it the way
+// the URL Standard parser reads it: C0 controls and spaces around it, and tabs
+// and newlines inside it, are removed before the scheme is read. A prefix test
+// on the raw id would send " data:..." to the Fetcher. The parser is not
+// called here: it takes about 35 ms per MiB, and a data: URL holds a template.
+// It also reads a data: string in template, and tells whether renderMethod.id
+// is bounded by maxURLBytes.
+func referencedDataURL(id string) (string, bool) {
+	id = strings.TrimFunc(id, func(r rune) bool { return r <= ' ' })
+	if strings.ContainsAny(id, "\t\n\r") {
+		id = strings.NewReplacer("\t", "", "\n", "", "\r", "").Replace(id)
+	}
+	return id, isDataURL(id)
+}
+
 // decodeDataURL decodes a data URL. RFC 2397 lets the media type be empty. Like
 // the WHATWG Fetch data: URL processor, it matches ";base64" case-insensitively
 // and percent-decodes before base64.
@@ -412,8 +491,9 @@ func (t *Template) decodeJSON(data []byte) error {
 		if err := json.Unmarshal(data, &raw); err != nil {
 			return err
 		}
-		if isDataURL(raw) {
-			embedded, err := decodeDataURL(raw)
+		// One rule reads a data: URL, as a string here and as template.id.
+		if dataURL, ok := referencedDataURL(raw); ok {
+			embedded, err := decodeDataURL(dataURL)
 			if err != nil {
 				return err
 			}
