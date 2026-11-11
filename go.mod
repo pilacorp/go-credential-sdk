@@ -9,6 +9,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.7.0
 	github.com/mr-tron/base58 v1.3.0
 	github.com/nlnwa/whatwg-url v0.6.2
+	github.com/pilacorp/go-credential-sdk/jose v0.1.0
 	github.com/piprate/json-gold v0.7.0
 	github.com/stretchr/testify v1.11.1
 	github.com/xeipuuv/gojsonschema v1.2.0

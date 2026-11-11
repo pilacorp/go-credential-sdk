@@ -1,7 +1,10 @@
 package processor
 
 import (
+	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	ld "github.com/piprate/json-gold/ld"
@@ -74,16 +77,9 @@ func canonicalizeNQuads(doc map[string]interface{}) (nquads []string, err error)
 		return nil, err
 	}
 
-	na := ld.NewNormalisationAlgorithm(ld.AlgorithmURDNA2015)
-	nopts := sdOptions()
-	nopts.Format = "application/n-quads"
-	res, err := na.Main(dataset, nopts)
+	nqStr, err := normalizeDataset(dataset)
 	if err != nil {
-		return nil, fmt.Errorf("canonicalize: normalize: %w", err)
-	}
-	nqStr, ok := res.(string)
-	if !ok {
-		return nil, fmt.Errorf("canonicalize: unexpected normalize type %T", res)
+		return nil, fmt.Errorf("canonicalize: %w", err)
 	}
 	return splitNQuadsKeepNL(nqStr), nil
 }
@@ -115,16 +111,9 @@ func canonicalizeDatasetWithIdMap(dataset *ld.RDFDataset) ([]string, map[string]
 		}
 	}
 
-	na := ld.NewNormalisationAlgorithm(ld.AlgorithmURDNA2015)
-	opts := sdOptions()
-	opts.Format = "application/n-quads"
-	res, err := na.Main(dataset, opts)
+	nqStr, err := normalizeDataset(dataset)
 	if err != nil {
-		return nil, nil, fmt.Errorf("canonicalize: normalize: %w", err)
-	}
-	nqStr, ok := res.(string)
-	if !ok {
-		return nil, nil, fmt.Errorf("canonicalize: unexpected normalize type %T", res)
+		return nil, nil, fmt.Errorf("canonicalize: %w", err)
 	}
 
 	idMap := make(map[string]string, len(slots))
@@ -136,6 +125,153 @@ func canonicalizeDatasetWithIdMap(dataset *ld.RDFDataset) ([]string, map[string]
 	return splitNQuadsKeepNL(nqStr), idMap, nil
 }
 
+// normalizeDataset is the one call into URDNA2015, refusing a dataset that
+// would take it factorial time. json-gold has no limit of its own.
+func normalizeDataset(dataset *ld.RDFDataset) (string, error) {
+	if blankNodeWork(dataset) > maxBlankNodeWork {
+		return "", fmt.Errorf("normalize: %w", ErrBlankNodeWork)
+	}
+	return canonicalNQuads(dataset)
+}
+
+// canonicalNQuads is what Main returns. Main joins its lines with +=, which is
+// quadratic and scores nothing in blankNodeWork, so this writes them itself.
+func canonicalNQuads(dataset *ld.RDFDataset) (string, error) {
+	na := ld.NewNormalisationAlgorithm(ld.AlgorithmURDNA2015)
+	na.Normalize(dataset)
+	var b strings.Builder
+	serializer := &ld.NQuadRDFSerializer{}
+	for _, q := range na.Quads() {
+		name := "@default"
+		if q.Graph != nil {
+			name = q.Graph.GetValue()
+		}
+		one := &ld.RDFDataset{Graphs: map[string][]*ld.Quad{name: {q}}}
+		if err := serializer.SerializeTo(&b, one); err != nil {
+			return "", fmt.Errorf("normalize: %w", err)
+		}
+	}
+	return b.String(), nil
+}
+
+// ErrBlankNodeWork is a dataset refused for the search it would take.
+var ErrBlankNodeWork = errors.New("too many interchangeable blank nodes")
+
+// maxBlankNodeWork admits every document in this SDK's tests, which score 0, or
+// 8 per pair of interchangeable proofs, and a list of 102 equal values, and
+// refuses anything shaped like the known attacks (a clique of 4 scores 46656).
+// A cap on the number of blank nodes cannot do this: a 1.4 KB clique of 9 takes
+// URDNA2015 half a minute, and a credential with 9 anonymous objects is ordinary.
+const maxBlankNodeWork = 20000
+
+// blankNodeWork scores the search URDNA2015 will do. json-gold has no limit,
+// and it cannot be stopped from outside.
+//
+// A blank node whose quads, with blank nodes masked, match no other node's is
+// labelled at once and costs nothing. The rest are interchangeable: Hash
+// N-Degree Quads tries every ordering of each list of nodes related to one the
+// same way, and recurses into the unlabelled ones. So a group of interchangeable
+// nodes joined by shared quads scores the product of those orderings over its
+// members, times its size for the walk that starts from each member, times its
+// edges to blank nodes for the hashing each walk does. A quad with no other
+// blank node is left out: it costs a step of a loop, so a node heavy in literals
+// costs what its bytes do. A group of one node with one ordering has no search.
+func blankNodeWork(dataset *ld.RDFDataset) int {
+	type relation struct{ how, id string }
+	lines := make(map[string][]string)
+	related := make(map[string][]relation)
+	for graph, quads := range dataset.Graphs {
+		for _, q := range quads {
+			// NewQuad derives the graph node the way json-gold's Normalize does.
+			nodes := []ld.Node{q.Subject, q.Object, ld.NewQuad(q.Subject, q.Predicate, q.Object, graph).Graph}
+			for _, n := range nodes {
+				if !ld.IsBlankNode(n) {
+					continue
+				}
+				id := n.GetValue()
+				lines[id] = append(lines[id], fmt.Sprintf("%v %v %v %v", masked(nodes[0], id), q.Predicate, masked(nodes[1], id), masked(nodes[2], id)))
+				for i, other := range nodes {
+					if ld.IsBlankNode(other) && other.GetValue() != id {
+						// Hash Related Blank Node leaves the predicate out for a graph name.
+						how := "g"
+						if i < 2 {
+							how = fmt.Sprint(i, q.Predicate)
+						}
+						related[id] = append(related[id], relation{how, other.GetValue()})
+					}
+				}
+			}
+		}
+	}
+
+	// Signatures are interned because a list key below copies one per relation.
+	signatures := make(map[string]int, len(lines))
+	interned := make(map[string]int, len(lines))
+	sharing := make(map[int]int, len(lines))
+	for id, l := range lines {
+		sort.Strings(l)
+		sig := strings.Join(l, "\n")
+		n, ok := interned[sig]
+		if !ok {
+			n = len(interned)
+			interned[sig] = n
+		}
+		signatures[id] = n
+		sharing[n]++
+	}
+	interchangeable := func(id string) bool { return sharing[signatures[id]] > 1 }
+
+	work := 0
+	seen := make(map[string]bool, len(lines))
+	for start := range lines {
+		if seen[start] || !interchangeable(start) {
+			continue
+		}
+		seen[start] = true
+		group := []string{start}
+		orderings := 1
+		edges := 0
+		for i := 0; i < len(group); i++ {
+			edges += len(related[group[i]])
+			// Lists can repeat a node, and json-gold's permutator then yields
+			// the distinct orderings: the running multinomial of each list.
+			counts := make(map[string]int)
+			for _, r := range related[group[i]] {
+				list := r.how + "\x00" + strconv.Itoa(signatures[r.id])
+				counts[list]++
+				counts[list+"\x00"+r.id]++
+				orderings = orderings * counts[list] / counts[list+"\x00"+r.id]
+				if orderings > maxBlankNodeWork {
+					return orderings
+				}
+				if !seen[r.id] && interchangeable(r.id) {
+					seen[r.id] = true
+					group = append(group, r.id)
+				}
+			}
+		}
+		if search := orderings * len(group); search > 1 {
+			if work += search * edges; work > maxBlankNodeWork {
+				return work
+			}
+		}
+	}
+	return work
+}
+
+// masked is the Hash First Degree Quads rule: the blank node under test reads
+// as _:a and every other as _:z.
+func masked(n ld.Node, id string) interface{} {
+	switch {
+	case !ld.IsBlankNode(n):
+		return n
+	case n.GetValue() == id:
+		return "_:a"
+	default:
+		return "_:z"
+	}
+}
+
 // ExpandJSONLD expands a compact JSON-LD document.
 func ExpandJSONLD(doc map[string]interface{}) (result []interface{}, err error) {
 	defer recoverJSONLD(&err, "expand")
@@ -143,7 +279,11 @@ func ExpandJSONLD(doc map[string]interface{}) (result []interface{}, err error) 
 	if err != nil {
 		return nil, fmt.Errorf("expand: standardize: %w", err)
 	}
-	out, err := ld.NewJsonLdProcessor().Expand(std, sdOptions())
+	opts := sdOptions()
+	if err := limitInlineContexts(opts, std); err != nil {
+		return nil, fmt.Errorf("expand: %w", err)
+	}
+	out, err := ld.NewJsonLdProcessor().Expand(std, opts)
 	if err != nil {
 		return nil, fmt.Errorf("expand: %w", err)
 	}
@@ -174,6 +314,9 @@ func ToRDFNQuads(doc interface{}) (result []string, err error) {
 	defer recoverJSONLD(&err, "to rdf")
 	opts := sdOptions()
 	opts.Format = "application/n-quads"
+	if err := limitInlineContexts(opts, doc); err != nil {
+		return nil, fmt.Errorf("to rdf: %w", err)
+	}
 	rdf, err := ld.NewJsonLdProcessor().ToRDF(doc, opts)
 	if err != nil {
 		return nil, fmt.Errorf("to rdf: %w", err)
@@ -188,7 +331,7 @@ func ToRDFNQuads(doc interface{}) (result []string, err error) {
 func sdOptions() *ld.JsonLdOptions {
 	opts := ld.NewJsonLdOptions("")
 	opts.Algorithm = ld.AlgorithmURDNA2015
-	opts.DocumentLoader = defaultDocumentLoader
+	opts.DocumentLoader = newContextBudget()
 	// Fail on undefined terms instead of silently dropping them (lossless).
 	opts.SafeMode = true
 	return opts

@@ -1,0 +1,16 @@
+{
+  "vct": "https://betelgeuse.example.com/education_credential/v42",
+  "vct#integrity": "sha256-vJKakJAQkDYkIhGrT1M3nxRuSj9udH0l1PXB06QHto8=",
+  "name": "Zaphod Beeblebrox",
+  "address": {
+    "street_address": "42 Galaxy Way",
+    "city": "Betelgeuse City",
+    "postal_code": "12345",
+    "country": "Betelgeuse"
+  },
+  "degrees": [
+    {"field_of_study": "Intergalactic Politics", "date_awarded": "2020-05-15"},
+    {"field_of_study": "Space Navigation", "date_awarded": "2018-06-20"},
+    {"field_of_study": "Quantum Mechanics", "date_awarded": "2016-07-25"}
+  ]
+}
