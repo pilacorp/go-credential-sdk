@@ -1,6 +1,6 @@
 # VC Render Method SDK Support
 
-Status: Draft for review  
+Status: Implemented in `credential/vc`. Experimental while the W3C draft can change  
 Audience: Go Credential SDK maintainers and implementers  
 Scope: JSON-LD Verifiable Credentials secured with W3C Data Integrity
 
@@ -21,10 +21,9 @@ Specifically, it will:
 - resolve RFC 6901 JSON Pointers;
 - support embedded and externally referenced templates;
 - validate and, when present, verify digests for externally referenced templates;
-- create all three standard render suites: `summary`, `html`, and `static`;
 - expose HTML and static render methods as validated metadata/payloads; client applications own actual rendering and delivery.
 
-The feature is experimental because the W3C Render Method specification and its suite details may evolve. The implementation target for this specification is the published W3C Working Draft on the Recommendation Track at `/TR/vc-render-method/`, not the editor's draft. The SDK must isolate the API and avoid making unrelated credential APIs depend on this feature.
+The feature is experimental because the W3C Render Method specification and its suite details may evolve. The implementation target is the W3C Working Draft of 2026-10-13 (WD-20261013), not the editor's draft. The SDK must isolate the API and avoid making unrelated credential APIs depend on this feature.
 
 ## 2. Problem
 
@@ -40,12 +39,12 @@ The W3C Render Method extension lets an issuer attach signed rendering instructi
 2. Represent the VC `renderMethod` property in `CredentialContents` and credential payloads.
 3. Preserve render methods through JSON-LD parsing, serialization, canonicalization, signing, and verification paths.
 4. Accept both a single render-method object and an array on input.
-5. Provide constructors for the `summary`, `html`, and `static` suites.
-6. Provide a normalized API for selecting supported suites.
+5. Author the `summary`, `html`, and `static` suites with one `RenderMethod` struct literal.
+6. Return the entries this SDK can render with `ParseRenderMethods`; each renderer accepts only its own suite.
 7. Implement deterministic `summary` template processing, complete `html` render artifact preparation, and `static` payload resolution.
 8. Validate summary templates before and after pointer substitution.
 9. Support `data:` templates and fetched templates through an injectable fetcher.
-10. Generate and verify SHA-256 multihash digests when requested.
+10. Verify SHA-256 multihash digests when present. The SDK does not generate a digest.
 11. Provide validated HTML/static metadata and payloads for client-side rendering; for `html`, the SDK prepares the filtered credential and the `srcdoc` wrapper (CSP, data block, and the wrapper-side lifecycle script) but does not execute it; the host page owns the sandboxed iframe, its CSP, and the `MessageChannel`.
 12. Document the experimental status, security boundaries, and compatibility behavior.
 
@@ -84,7 +83,7 @@ Add a field to `credential/vc.CredentialContents`:
 RenderMethods []RenderMethod `json:"renderMethod,omitempty"`
 ```
 
-The internal representation is always a slice. Parsing accepts either an object or an array to handle the W3C data model and existing credentials.
+The internal representation is always a slice. Parsing accepts either an object or an array to handle the W3C data model and existing credentials. One method is written as an object, several as an array.
 
 ### 5.2 Render method
 
@@ -95,15 +94,17 @@ type RenderMethod struct {
 	RenderSuite      string            `json:"renderSuite"`
 	Name             string            `json:"name,omitempty"`
 	Description      string            `json:"description,omitempty"`
-	RenderProperty   []string          `json:"renderProperty,omitempty"`
-	Template         json.RawMessage   `json:"template,omitempty"`
+	RenderProperty   []string          `json:"renderProperty,omitzero"`
+	Template         *Template         `json:"template,omitempty"`
 	DigestMultibase  string            `json:"digestMultibase,omitempty"`
 	OutputPreference *OutputPreference `json:"outputPreference,omitempty"`
 	DeliveryMode     string            `json:"deliveryMode,omitempty"`
 }
 ```
 
-The public model uses a typed template wrapper. The wire encoder converts it to the suite-specific JSON representation.
+`RenderProperty` is `omitzero`: a nil slice is absent and passes the whole credential, an empty slice is written as `[]`.
+
+The public model uses a typed template wrapper. On the wire an embedded template is a `data:` URL string and a reference is an object. A string that is not a `data:` URL is read as a reference with that `id`.
 
 ```go
 type Template struct {
@@ -138,19 +139,19 @@ type RenderStyle struct {
 }
 ```
 
-For supported suites, unknown properties are rejected during authoring and strict validation. An entry whose `renderSuite` is not supported by the SDK is retained as an opaque entry and ignored by suite-specific processors, as required by the W3C processing rule. The model retains top-level `id` and `digestMultibase` even when remote render-method processing is deferred.
+`ParseRenderMethods` skips an entry whose `type` is not `SuiteRenderMethod`, whose `renderSuite` is not `summary`, `html` or `static`, or that has neither `template` nor `id`, as the W3C processing rule requires for suites a consumer does not support. The entry stays in the credential. In a supported entry, a member this model does not have is ignored on read and is not written on authoring; only the summary template refuses unknown members (§6.2).
 
 ### 5.3 JSON-LD render-method context
 
-The VC v2 context defines the top-level `renderMethod` property. The SDK does not automatically add a context. When render methods are used, the active JSON-LD context MUST define every render-method term used by the credential; otherwise authoring/signing fails. The W3C Credentials Examples v2 context is accepted, and an issuer MAY provide an equivalent custom context.
+The SDK does not add a context and keeps the caller's `@context` unchanged. The active JSON-LD context MUST define every render-method term the credential uses; signing fails on a term it does not define. The W3C Credentials Examples v2 context is accepted, and an issuer MAY provide an equivalent context.
 
-The SDK MUST preserve the caller's context and MUST reject conflicting definitions that would change the meaning of render-method terms. Canonicalization tests MUST verify that all supported render-method fields survive when the caller supplies the required context.
+The SDK does not check what a context maps a render-method term to. When the credential embeds a proof, `ParseRenderMethods` expands it and refuses a term the context does not define. That is not a coverage check: a context with `@vocab` defines every term. The consumer runs the context validation of VC Data Integrity 1.0 §4.6 before reading render methods (§8).
 
-### 5.3 Suite-specific object rules
+### 5.4 Suite-specific object rules
 
 The common object is interpreted according to `renderSuite`.
 
-#### 5.3.1 `summary`
+#### 5.4.1 `summary`
 
 For `summary`:
 
@@ -189,7 +190,7 @@ type SummaryField struct {
 
 `name`, `description`, `fields`, and each field's `label` and `value` are required. `icon`, `theme`, `validFrom`, and `validUntil` are optional.
 
-#### 5.3.2 `html`
+#### 5.4.2 `html`
 
 For `html`:
 
@@ -201,7 +202,7 @@ For `html`:
 - The template is expected to read a filtered credential from an `application/vc` data block.
 - The SDK authoring and consumer APIs validate, resolve, filter, and package the HTML payload into a complete render artifact; the client application owns execution and browser/WebView lifecycle.
 
-#### 5.3.3 `static`
+#### 5.4.3 `static`
 
 For `static`:
 
@@ -209,9 +210,9 @@ For `static`:
 - `deliveryMode` identifies the intended delivery mechanism, such as `nfc`. It is optional, as in the W3C TR; the SDK does not require it and returns it unchanged in `StaticOutput`.
 - `renderProperty` MAY identify the VC properties represented by the static payload.
 - `outputPreference` is generally not used.
-- The SDK returns verified payload bytes and metadata; interpretation and delivery belong to the application layer.
+- The SDK returns the payload bytes, checked against `digestMultibase` when the template has one, with the media type, `deliveryMode` and the credential filtered by `renderProperty`; interpretation and delivery belong to the application layer.
 
-#### 5.3.4 Render method `id`
+#### 5.4.4 Render method `id`
 
 When the common `id` property is present, it identifies the render method and
 must follow the URL Standard, as WD-20261013 §2.2 requires. The SDK validates
@@ -231,6 +232,9 @@ When creating a credential through structured contents:
 
 - `type` is required and must equal `SuiteRenderMethod` for a suite method;
 - `renderSuite` is required and non-empty;
+- a method of a suite this SDK renders needs `template` or `id`;
+- `outputPreference.accessMode`, when present, lists one or more of `auditory`, `tactile`, `textual` and `visual`;
+- every `mediaType` is `type/subtype` with optional parameters and no wildcard; an embedded template's also has no comma, which would end it early in the `data:` URL;
 - `id` and `template.id`, when present, must parse under the URL Standard (WD-20261013 §2.2);
 - a URL is refused above 8 KiB, unless it is a `data:` URL of the form `data:<media type>,<data>`, which holds a template. `data://...` has an authority and is bounded like any other URL. The URL Standard sets no limit; this one bounds the parser's time on one id taken from a credential. It does not bound the number of ids: a credential filled with 8 KiB ids that are all userinfo takes about 6 s of parsing per MiB, so the application bounds the credential size;
 - a `Fetcher` receives the id as the URL Standard parser serializes it, so a check on its host sees the host that is requested. An RFC 3986 client still refuses some of these URLs, such as one with a `%` that starts no escape, and the fetch fails;
@@ -244,7 +248,7 @@ When creating a credential through structured contents:
 - after retrieval and digest verification, an external template MUST pass the same suite-specific content validation as an embedded template, because its content is not covered by the credential signature;
 - when an external template reference omits `mediaType`, the suite's expected media type is assumed for that validation (`application/json` for `summary`, `text/html` for `html`); a `mediaType` that is present must match as it does for embedded templates.
 
-Unknown `renderSuite` values are not rejected by credential parsing. They are retained but ignored by suite-specific renderers.
+Unknown `renderSuite` values are not rejected by credential parsing. They stay in the credential, `ParseRenderMethods` skips them, and each renderer refuses a method of another suite. `ParseRenderMethods` returns an error for a `renderMethod` entry that is not an object.
 
 ### 6.2 Summary template validation
 
@@ -265,7 +269,7 @@ The SDK must support creating render methods before the credential is signed. A 
 
 ### 7.1 Object-first authoring API
 
-Render methods are declarative data objects that map directly to the W3C object model. The primary authoring API MUST use a single `RenderMethod` struct literal; `renderSuite` selects suite-specific validation. Functional options are not required.
+Render methods are declarative data objects that map directly to the W3C object model. The authoring API is a single `RenderMethod` struct literal; `renderSuite` selects suite-specific validation. There are no constructors and no functional options.
 
 ```go
 summaryMethod := vc.RenderMethod{
@@ -273,66 +277,61 @@ summaryMethod := vc.RenderMethod{
 	RenderSuite: "summary",
 	Name:        "Degree summary",
 	Description: "Display the main degree information",
-	Template:    template,
+	Template: &vc.Template{Embedded: &vc.EmbeddedTemplate{
+		MediaType: "application/json",
+		Bytes:     summaryJSON,
+	}},
 }
 
 htmlMethod := vc.RenderMethod{
-	Type:          "SuiteRenderMethod",
-	RenderSuite:   "html",
+	Type:        "SuiteRenderMethod",
+	RenderSuite: "html",
 	RenderProperty: []string{
-		"/issuer/name",
+		"/issuer",
 		"/credentialSubject/name",
 	},
-	Template: template,
+	Template: &vc.Template{Embedded: &vc.EmbeddedTemplate{
+		MediaType: "text/html",
+		Bytes:     htmlFragment,
+	}},
 }
 
 staticMethod := vc.RenderMethod{
 	Type:         "SuiteRenderMethod",
 	RenderSuite:  "static",
-	Template:     payload,
-	MediaType:    "application/pdf",
-	DeliveryMode: "download",
+	DeliveryMode: "nfc",
+	Template: &vc.Template{Embedded: &vc.EmbeddedTemplate{
+		MediaType: "application/octet-stream",
+		Bytes:     payload,
+	}},
+}
+
+referenced := vc.RenderMethod{
+	Type:        "SuiteRenderMethod",
+	RenderSuite: "summary",
+	Template: &vc.Template{Reference: &vc.TemplateReference{
+		ID:              "https://example.com/templates/degree.json",
+		MediaType:       "application/json",
+		DigestMultibase: digest,
+	}},
 }
 
 if err := summaryMethod.Validate(); err != nil {
 	return err
 }
-if err := htmlMethod.Validate(); err != nil {
-	return err
-}
-if err := staticMethod.Validate(); err != nil {
-	return err
-}
 ```
 
-The suite-specific objects are converted to the common `RenderMethod` wire representation when attached to a credential. The SDK MAY provide small constructors as convenience helpers, but they MUST NOT be the only way to create a method and MUST NOT hide the object fields behind functional options.
+`NewJSONCredential` calls `Validate()` on every render method, so an explicit call is optional.
 
-For common embedded and referenced-template cases, convenience helpers MAY be provided:
+The authoring API:
 
-```go
-embedded, err := render.NewEmbeddedTemplate(template)
-
-referenced := vc.RenderMethod{
-	Type:        "SuiteRenderMethod",
-	RenderSuite: "summary",
-	Template: vc.TemplateReference{
-		ID:              "https://example.com/templates/degree.json",
-		MediaType:       "application/json",
-		DigestMultibase: digest,
-	},
-}
-```
-
-The authoring API must:
-
-- validate the suite-specific structure locally;
-- validate JSON Pointers in `renderProperty` and summary fields;
-- serialize embedded templates as `data:` URLs or the suite-defined embedded object;
-- accept external template references without requiring a network call by default;
-- optionally validate an external template through an injected fetcher;
-- accept optional `digestMultibase` for external template references and verify it when present;
-- do not automatically calculate or add a digest for embedded templates;
-- return or convert to a `RenderMethod` that can be placed in `CredentialContents.RenderMethods`.
+- validates the suite-specific structure locally;
+- validates JSON Pointers in `renderProperty` and summary fields;
+- serializes an embedded template as a base64 `data:` URL;
+- accepts an external template reference without a network call;
+- validates an external template through an injected fetcher when asked (§7.3);
+- accepts an optional `digestMultibase` on an external reference and checks its syntax;
+- does not calculate or add a digest.
 
 ### 7.2 Adding methods to a credential
 
@@ -340,7 +339,10 @@ The issuer creates the credential with render methods already attached:
 
 ```go
 credential, err := vc.NewJSONCredential(vc.CredentialContents{
-	Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+	Context: []interface{}{
+		"https://www.w3.org/ns/credentials/v2",
+		"https://www.w3.org/ns/credentials/examples/v2",
+	},
 	Types:   []string{"VerifiableCredential", "UniversityDegreeCredential"},
 	Issuer:  "did:example:issuer",
 	Subject: []vc.Subject{{CustomFields: map[string]interface{}{
@@ -363,17 +365,17 @@ Creating a render method with an external template reference must not require ne
 method := vc.RenderMethod{
 	Type:        "SuiteRenderMethod",
 	RenderSuite: "summary",
-	Template: vc.TemplateReference{
+	Template: &vc.Template{Reference: &vc.TemplateReference{
 		ID:              url,
 		MediaType:       "application/json",
 		DigestMultibase: digest,
-	},
+	}},
 }
 
 err := method.ValidateExternalTemplate(ctx, fetcher)
 ```
 
-If validation is requested, fetching, media-type validation, template validation, and digest verification must complete before the method is returned.
+`ValidateExternalTemplate` fetches the template, verifies its digest when present, and applies the suite content rules. It returns an error when any of them fails.
 
 ## 8. Consumer-side rendering API
 
@@ -399,12 +401,27 @@ func (m RenderMethod) RenderSummary(
 	credential CredentialData,
 	opts RenderOptions,
 ) (*SummaryTemplate, error)
+
+func (m RenderMethod) WrapHTMLTemplate(
+	ctx context.Context,
+	credential CredentialData,
+	opts RenderOptions,
+) (*HTMLRenderArtifact, error)
+
+func (m RenderMethod) ResolveStatic(
+	ctx context.Context,
+	credential CredentialData,
+	opts RenderOptions,
+) (*StaticOutput, error)
+
+func ParseRenderMethods(data CredentialData) ([]RenderMethod, error)
+
+func (m RenderMethod) Dereference(ctx context.Context, fetcher Fetcher) (RenderMethod, error)
 ```
 
-The renderer must reject a method whose suite is not `summary`.
+Each renderer refuses a method of another suite.
 
-```go
-```
+A consumer calls `Verify` first, then runs the context validation of VC Data Integrity 1.0 §4.6, then reads the methods with `ParseRenderMethods`. It returns them in document order. That order is not the issuer's preference: the VC context does not declare `renderMethod` as `@list`, so a Data Integrity proof does not cover it.
 
 ### 8.1 Processing algorithm
 
@@ -413,8 +430,8 @@ The renderer must reject a method whose suite is not `summary`.
 3. Validate the summary template.
 4. Recursively inspect string-valued template properties.
 5. Resolve strings beginning with `/` as RFC 6901 pointers against the credential.
-6. Convert resolved non-string scalar values to their JSON string representation.
-7. Omit missing optional summary members and return an error for missing required summary members.
+6. Convert a resolved value that is not a string, including an object or an array, to its JSON text.
+7. Treat a pointer that resolves to `null` as missing. Omit missing optional summary members and return an error for missing required summary members.
 8. Preserve literal strings unchanged.
 9. Charge each resolved value against `MaxSummaryOutputBytes` and stop with an
    error when the budget is exceeded.
@@ -426,16 +443,17 @@ No field may combine values from multiple pointers. The SDK follows the current 
 
 External retrieval is injected through `Fetcher`; the core renderer must not create an unrestricted HTTP client.
 
-The default HTTP implementation, if provided, must support:
+`HTTPFetcher` is the HTTP implementation the SDK ships. It:
 
-- caller-supplied `http.Client`;
-- request context and timeout;
-- maximum response size;
-- media-type checking;
-- bounded redirects;
-- digest verification before parsing;
-- no credential data in request URLs or headers;
-- no sensitive payload logging.
+- requires a caller-supplied `http.Client` and a positive `MaxResponseSize`;
+- honors the request context and an optional `Timeout`;
+- stops at the `MaxRedirects`-th redirect, as `net/http` does at its default of 10, so zero refuses every redirect; a negative value keeps the client's own policy;
+- compares the response `Content-Type` with the reference `mediaType` when the reference has one;
+- sends no credential data in the request and logs nothing.
+
+It does not check the address it connects to, so a credential can point it at an internal host. Use it only for templates from issuers the application trusts; otherwise implement `Fetcher`. The renderer verifies the digest after the fetcher returns and before it parses the template.
+
+The SDK sets no size limit on templates. The application bounds embedded templates by the credential size it accepts, and fetched templates in its `Fetcher`. A fetched template without `digestMultibase` is accepted; an application that needs the digest refuses such a reference in its `Fetcher`.
 
 The normative digest format is a multibase value using base64url-no-padding (`u`) containing a SHA-256 multihash. Digest values remain optional; when supplied, the SDK validates and verifies them.
 
@@ -447,16 +465,16 @@ For HTML, the SDK returns:
 
 ```go
 type HTMLRenderArtifact struct {
-	SrcDoc         string
-	Width          string
-	Height         string
+	SrcDoc string
+	Width  string
+	Height string
 }
 ```
 
 The SDK must:
 
 - validate the HTML fragment shape;
-- fetch and digest-check an external payload before exposing it to the client;
+- fetch an external payload, and verify its digest when the reference has one, before exposing it to the client;
 - filter the credential using `renderProperty` and the W3C `selectJsonLd` algorithm;
 - create the `application/vc` data block;
 - create wrapper code containing the filtered credential and HTML payload;
@@ -467,7 +485,7 @@ The SDK must:
 
 The client application is responsible for creating or selecting the actual iframe/WebView, assigning `srcdoc`, executing the artifact, handling the ready/error result, and controlling the user-facing lifecycle. The SDK returns code and data; it does not run them.
 
-For static methods, the SDK may return verified bytes plus `mediaType` and `deliveryMode`; it must not interpret the payload as trusted UI content.
+For static methods, the SDK returns the bytes with `mediaType`, `deliveryMode` and the filtered credential; it does not interpret the payload.
 
 ## 11. JSON-LD Data Integrity behavior
 
@@ -480,8 +498,9 @@ This specification covers only JSON-LD Verifiable Credentials secured with Data 
 - if a render-method term cannot be resolved, signing must fail rather than silently signing a partial object;
 - an unrecognized render suite must not cause otherwise valid credential verification to fail.
 
-VC-JWT, VC-JOSE, and SD-JWT are not processed by the render-method consumer
-APIs, but their credential payload paths MUST preserve `renderMethod` unchanged.
+The render-method readers take each member from the JSON as written. Until issue #179 is fixed, a holder can rewrite a signed credential into an equivalent JSON-LD form that hides `digestMultibase` or `renderProperty` from them while the proof still verifies.
+
+The consumer APIs take any `CredentialData`, so the payload of a VC-JWT or VC-JOSE credential can be read and rendered after its signature is verified. Such a payload has no embedded proof, and `ParseRenderMethods` skips the JSON-LD expansion. The VC-JWT, VC-JOSE and SD-JWT payload paths MUST preserve `renderMethod` unchanged.
 
 ## 12. Security and privacy requirements
 
@@ -500,12 +519,12 @@ APIs, but their credential payload paths MUST preserve `renderMethod` unchanged.
 The feature is accepted when:
 
 1. A credential with one render method round-trips through creation, serialization, and parsing.
-2. A credential with multiple render methods preserves order.
+2. A credential with multiple render methods keeps document order. That order is not signed (§8).
 3. Object and array input forms are both accepted.
-4. Unknown suites are preserved and ignored by supported renderers.
+4. Unknown suites are preserved and skipped by `ParseRenderMethods`.
 5. A valid summary template produces the expected output for nested objects and arrays.
 6. Pointer escaping for `~0` and `~1` works.
-7. Missing pointers follow the configured policy.
+7. Missing pointers follow §4: a required summary member and an HTML `renderProperty` fail, an optional summary member is omitted.
 8. Invalid summary templates fail before rendering.
 9. Invalid resolved output fails after rendering.
 10. Correct digests pass and incorrect digests fail.
@@ -523,25 +542,11 @@ go test ./...
 go vet ./...
 ```
 
-## 14. Decisions
+## 14. References
 
-The following decisions are fixed for this specification:
-
-1. The public credential field is `RenderMethods []RenderMethod`; the wire property remains `renderMethod`.
-2. The SDK accepts both object and array forms. One method serializes as an object; multiple methods serialize as an array.
-3. Suite validation is strict. Unsupported additional fields in a suite object or summary template are rejected.
-4. Missing required summary pointers fail; missing optional summary pointers are omitted; missing HTML `renderProperty` pointers fail.
-5. Supplied digest values are validated and verified using the TR's SHA-256 multihash rules; digest values remain optional.
-6. External template references MAY include `digestMultibase`.
-7. Embedded templates do not require a digest, and the SDK does not add one automatically.
-8. The initial release includes HTML artifact preparation but returns only `SrcDoc`, `Width`, and `Height`; the client owns the host-page iframe, CSP, sandbox, and lifecycle.
-9. The SDK does not automatically add a context. When render methods are used, the active context must define the terms used by the credential. The W3C Credentials Examples v2 context and equivalent issuer-supplied contexts are allowed.
-
-## 15. References
-
-- W3C Verifiable Credential Rendering Methods v1.0: https://www.w3.org/TR/vc-render-method/
+- W3C Verifiable Credential Rendering Methods v1.0, Working Draft 2026-10-13: https://www.w3.org/TR/2026/WD-vc-render-method-20261013/
 - W3C Credentials Examples vocabulary v2: https://www.w3.org/ns/credentials/examples/v2
-- W3C Verifiable Credentials Data Model v2.1: https://www.w3.org/TR/vc-data-model-2.1/
+- W3C Verifiable Credentials Data Model v2.0: https://www.w3.org/TR/vc-data-model-2.0/
+- W3C Verifiable Credential Data Integrity 1.0: https://www.w3.org/TR/vc-data-integrity/
 - RFC 6901 JSON Pointer: https://www.rfc-editor.org/rfc/rfc6901
 - W3C Data Integrity ECDSA Cryptosuites: https://www.w3.org/TR/vc-di-ecdsa/
-- RFC 9458 Oblivious HTTP: https://www.rfc-editor.org/rfc/rfc9458

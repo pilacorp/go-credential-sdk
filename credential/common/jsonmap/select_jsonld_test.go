@@ -2,6 +2,9 @@ package jsonmap
 
 import (
 	"reflect"
+	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -199,4 +202,104 @@ func TestSelectJSONLDRejectsPointerWithoutLeadingSlash(t *testing.T) {
 			t.Fatalf("SelectJSONLD(%q) = %v, want error", pointer, got)
 		}
 	}
+}
+
+func TestSelectJSONLDNestedPointersSelectTheOutermostOnce(t *testing.T) {
+	document := map[string]interface{}{
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"tags": []interface{}{"a", "b", "c"},
+			"profile": map[string]interface{}{
+				"name": "Alice",
+				"role": "member",
+			},
+		},
+	}
+	want, err := SelectJSONLD(document, []string{"/credentialSubject"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, pointers := range map[string][]string{
+		"outer first": {"/credentialSubject", "/credentialSubject/profile", "/credentialSubject/profile/name", "/credentialSubject/tags/1"},
+		"outer last":  {"/credentialSubject/tags/1", "/credentialSubject/profile/name", "/credentialSubject/profile", "/credentialSubject"},
+	} {
+		got, err := SelectJSONLD(document, pointers)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: selection = %#v, want %#v", name, got, want)
+		}
+	}
+
+	if got, err := SelectJSONLD(document, []string{"", "credentialSubject"}); err != nil || !reflect.DeepEqual(got, document) {
+		t.Fatalf("root pointer before a malformed one = %#v, %v; want the whole document", got, err)
+	}
+
+	_, err = SelectJSONLD(document, []string{"/credentialSubject", "/credentialSubject/missing"})
+	if err == nil || !strings.Contains(err.Error(), `"/credentialSubject/missing"`) {
+		t.Fatalf("pointer under a selected one that matches nothing: error = %v, want it named", err)
+	}
+}
+
+// A chain /a, /a/a, /a/a/a, ... over a large leaf copied the leaf once per
+// pointer: these 200 pointers over 16384 leaf members allocated 257 MiB.
+func TestSelectJSONLDCopiesNestedSelectionOnce(t *testing.T) {
+	const depth = 200
+	leaf := make(map[string]interface{}, 16<<10)
+	for i := 0; i < 16<<10; i++ {
+		leaf["k"+strconv.Itoa(i)] = "v"
+	}
+	var node interface{} = leaf
+	for i := 0; i < depth; i++ {
+		node = map[string]interface{}{"a": node}
+	}
+	document := map[string]interface{}{"a": node}
+	pointers := make([]string, 0, depth)
+	for i, pointer := 0, ""; i < depth; i++ {
+		pointer += "/a"
+		pointers = append(pointers, pointer)
+	}
+
+	if allocated := allocatedBySelect(t, document, pointers, false); allocated > 64<<20 {
+		t.Fatalf("allocated %d MiB for one copy of the leaf, want at most 64", allocated>>20)
+	}
+}
+
+// The same pointer listed 200 times over a leaf of 16384 members must copy
+// the leaf once, not once per listing.
+func TestSelectJSONLDCopiesRepeatedPointerOnce(t *testing.T) {
+	leaf := make(map[string]interface{}, 16<<10)
+	for i := 0; i < 16<<10; i++ {
+		leaf["k"+strconv.Itoa(i)] = "v"
+	}
+	pointers := make([]string, 200)
+	for i := range pointers {
+		pointers[i] = "/a"
+	}
+	document := map[string]interface{}{"a": leaf}
+	if allocated := allocatedBySelect(t, document, pointers, false); allocated > 64<<20 {
+		t.Fatalf("allocated %d MiB for one copy of the leaf, want at most 64", allocated>>20)
+	}
+}
+
+// A pointer of 1 MiB of "/" names one million empty members. Indexing every
+// token of it before checking the document allocated about 300 MiB.
+func TestSelectJSONLDBoundsAPointerThatMatchesNothing(t *testing.T) {
+	pointers := []string{strings.Repeat("/", 1<<20)}
+	if allocated := allocatedBySelect(t, map[string]interface{}{}, pointers, true); allocated > 64<<20 {
+		t.Fatalf("allocated %d MiB for a pointer that matches nothing, want at most 64", allocated>>20)
+	}
+}
+
+func allocatedBySelect(t *testing.T, document map[string]interface{}, pointers []string, wantErr bool) uint64 {
+	t.Helper()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := SelectJSONLD(document, pointers)
+	runtime.ReadMemStats(&after)
+	if (err != nil) != wantErr {
+		t.Fatalf("SelectJSONLD error = %v, want error %v", err, wantErr)
+	}
+	return after.TotalAlloc - before.TotalAlloc
 }
