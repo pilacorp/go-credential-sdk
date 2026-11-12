@@ -19,26 +19,107 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 		selection["@context"] = deepCopyJSON(context)
 	}
 	initJSONLDSelection(selection, document)
-	seen := make(map[string]struct{}, len(pointers))
+	paths := make([][]string, len(pointers))
+	selected := &pointerNode{}
+	for i, pointer := range pointers {
+		if pointer == "" || strings.HasPrefix(pointer, "/") {
+			paths[i] = parseJSONPointer(pointer)
+			selected.add(document, paths[i])
+		}
+	}
 
-	for _, pointer := range pointers {
-		if pointer != "" && !strings.HasPrefix(pointer, "/") {
-			return nil, fmt.Errorf("pointer %q must start with /", pointer)
+	for i, path := range paths {
+		if pointers[i] != "" && !strings.HasPrefix(pointers[i], "/") {
+			return nil, fmt.Errorf("pointer %q must start with /", pointers[i])
 		}
-		if _, ok := seen[pointer]; ok {
-			continue
-		}
-		seen[pointer] = struct{}{}
-		path := parseJSONPointer(pointer)
 		if len(path) == 0 {
 			return deepCopyJSON(document).(map[string]interface{}), nil
 		}
+		// A pointer under another selected pointer adds nothing: the outer one
+		// copies the whole value. Copying it again cost one copy per pointer.
+		if selected.coversFromAbove(path) {
+			if !matchesJSONPointer(document, path) {
+				return nil, fmt.Errorf("pointer %q: JSON Pointer does not match document", pointers[i])
+			}
+			continue
+		}
+		if !selected.takeFirst(path) {
+			continue
+		}
 		if _, err := selectJSONLDInto(document, path, selection); err != nil {
-			return nil, fmt.Errorf("pointer %q: %w", pointer, err)
+			return nil, fmt.Errorf("pointer %q: %w", pointers[i], err)
 		}
 	}
 	densifyJSONArrays(selection)
 	return selection, nil
+}
+
+// pointerNode is one reference token in the tree of requested pointers.
+type pointerNode struct {
+	children map[string]*pointerNode
+	// requested marks the end of a pointer; done marks that it was selected.
+	requested, done bool
+}
+
+// add indexes path only as deep as it matches document. A pointer that
+// matches nothing covers no other pointer, and its tokens are not kept.
+func (n *pointerNode) add(document interface{}, path []string) {
+	for _, token := range path {
+		next, ok := getJSONChild(document, token)
+		if !ok {
+			return
+		}
+		document = next
+		child := n.children[token]
+		if child == nil {
+			if n.children == nil {
+				n.children = map[string]*pointerNode{}
+			}
+			child = &pointerNode{}
+			n.children[token] = child
+		}
+		n = child
+	}
+	n.requested = true
+}
+
+// coversFromAbove reports whether a requested pointer is a proper prefix of
+// path. The root pointer is left out: it returns the whole document on its own.
+func (n *pointerNode) coversFromAbove(path []string) bool {
+	for _, token := range path[:len(path)-1] {
+		n = n.children[token]
+		if n == nil {
+			return false
+		}
+		if n.requested {
+			return true
+		}
+	}
+	return false
+}
+
+// takeFirst reports whether path has not been selected yet, and marks it.
+func (n *pointerNode) takeFirst(path []string) bool {
+	for _, token := range path {
+		n = n.children[token]
+		if n == nil {
+			return true
+		}
+	}
+	first := !n.done
+	n.done = true
+	return first
+}
+
+func matchesJSONPointer(document interface{}, path []string) bool {
+	for _, token := range path {
+		child, ok := getJSONChild(document, token)
+		if !ok {
+			return false
+		}
+		document = child
+	}
+	return true
 }
 
 func parseJSONPointer(pointer string) []string {
