@@ -140,7 +140,8 @@ func initJSONLDSelection(selection map[string]interface{}, source interface{}) {
 		selection["id"] = id
 	}
 	if typ, ok := node["type"]; ok {
-		selection["type"] = typ
+		// Copied: compacting arrays in the selection would write into the document.
+		selection["type"] = deepCopyJSON(typ)
 	}
 }
 
