@@ -1,6 +1,7 @@
 package jsonmap
 
 import (
+	"fmt"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -302,4 +303,21 @@ func allocatedBySelect(t *testing.T, document map[string]interface{}, pointers [
 		t.Fatalf("SelectJSONLD error = %v, want error %v", err, wantErr)
 	}
 	return after.TotalAlloc - before.TotalAlloc
+}
+
+// A pointer comes from the credential and has no size limit, so an error
+// quotes only its start.
+func TestSelectJSONLDErrorsQuoteOnlyTheStartOfAPointer(t *testing.T) {
+	long := strings.Repeat("a", 1<<20)
+	document := map[string]interface{}{"a": map[string]interface{}{}}
+	for name, pointers := range map[string][]string{
+		"no leading slash":           {long},
+		"missing member":             {"/" + long},
+		"missing under selected one": {"/a", "/a/" + long},
+	} {
+		_, err := SelectJSONLD(document, pointers)
+		if err == nil || len(err.Error()) > 1024 {
+			t.Errorf("%s: error = %.80v (%d bytes), want an error of at most 1024 bytes", name, err, len(fmt.Sprint(err)))
+		}
+	}
 }

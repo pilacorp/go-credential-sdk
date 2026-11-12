@@ -30,7 +30,7 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 
 	for i, path := range paths {
 		if pointers[i] != "" && !strings.HasPrefix(pointers[i], "/") {
-			return nil, fmt.Errorf("pointer %q must start with /", pointers[i])
+			return nil, fmt.Errorf("pointer %.64q must start with /", pointers[i])
 		}
 		if len(path) == 0 {
 			return deepCopyJSON(document).(map[string]interface{}), nil
@@ -39,7 +39,7 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 		// copies the whole value. Copying it again cost one copy per pointer.
 		if selected.coversFromAbove(path) {
 			if !matchesJSONPointer(document, path) {
-				return nil, fmt.Errorf("pointer %q: JSON Pointer does not match document", pointers[i])
+				return nil, fmt.Errorf("pointer %.64q: JSON Pointer does not match document", pointers[i])
 			}
 			continue
 		}
@@ -47,7 +47,7 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 			continue
 		}
 		if _, err := selectJSONLDInto(document, path, selection); err != nil {
-			return nil, fmt.Errorf("pointer %q: %w", pointers[i], err)
+			return nil, fmt.Errorf("pointer %.64q: %w", pointers[i], err)
 		}
 	}
 	densifyJSONArrays(selection)

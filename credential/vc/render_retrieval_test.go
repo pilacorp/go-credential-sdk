@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -146,5 +147,20 @@ func TestHTTPFetcherRefusesAReferenceMediaTypeThatDoesNotParse(t *testing.T) {
 	fetcher := HTTPFetcher{Client: server.Client(), MaxResponseSize: 64}
 	if _, err := fetcher.Fetch(context.Background(), TemplateReference{ID: server.URL, MediaType: "also bad"}); err == nil {
 		t.Fatal("Fetch() error = nil, want a mismatch")
+	}
+}
+
+// A long request URL must not push the reason for the failure out of the error.
+func TestHTTPFetcherErrorKeepsTheCauseOfALongURL(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+	fetcher := HTTPFetcher{Client: server.Client(), MaxResponseSize: 64, Timeout: 50 * time.Millisecond}
+	_, err := fetcher.Fetch(context.Background(), TemplateReference{ID: server.URL + "/" + strings.Repeat("a", 600)})
+	if err == nil || !strings.Contains(err.Error(), "deadline exceeded") {
+		t.Fatalf("Fetch() error = %v, want the timeout named", err)
 	}
 }

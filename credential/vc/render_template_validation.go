@@ -67,7 +67,8 @@ func (m RenderMethod) validateSummaryTemplateContent() error {
 	decoder := json.NewDecoder(strings.NewReader(string(m.Template.Embedded.Bytes)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&summary); err != nil {
-		return fmt.Errorf("invalid summary template: %w", err)
+		// The decoder names an unknown member in full, and the template comes from the credential.
+		return fmt.Errorf("invalid summary template: %w", boundedError{err})
 	}
 	if err := requireSummaryMembers(m.Template.Embedded.Bytes); err != nil {
 		return fmt.Errorf("summary template: %w", err)

@@ -52,11 +52,13 @@ func (f HTTPFetcher) Fetch(ctx context.Context, ref TemplateReference) ([]byte, 
 	}
 	resp, err := clientCopy.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch template: %w", err)
+		// The error carries the request URL or a redirect Location, both chosen
+		// by the credential or the server.
+		return nil, fmt.Errorf("fetch template: %w", boundedError{err})
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("fetch template: unexpected HTTP status %s", resp.Status)
+		return nil, fmt.Errorf("fetch template: unexpected HTTP status %.64q", resp.Status)
 	}
 	if ref.MediaType != "" {
 		// Both values are quoted only at their start: one comes from the
@@ -98,16 +100,16 @@ func resolveJSONPointer(document any, pointer string) (any, error) {
 			var ok bool
 			current, ok = value[token]
 			if !ok {
-				return nil, fmt.Errorf("JSON Pointer segment %q not found", token)
+				return nil, fmt.Errorf("JSON Pointer segment %.64q not found", token)
 			}
 		case []any:
 			index, ok := jsonPointerArrayIndex(token, len(value))
 			if !ok {
-				return nil, fmt.Errorf("JSON Pointer array index %q is invalid", token)
+				return nil, fmt.Errorf("JSON Pointer array index %.64q is invalid", token)
 			}
 			current = value[index]
 		default:
-			return nil, fmt.Errorf("cannot resolve JSON Pointer segment %q through %T", token, current)
+			return nil, fmt.Errorf("cannot resolve JSON Pointer segment %.64q through %T", token, current)
 		}
 	}
 	return current, nil
@@ -129,3 +131,21 @@ func jsonPointerArrayIndex(token string, length int) (int, bool) {
 	index, err := strconv.Atoi(token)
 	return index, err == nil && index < length
 }
+
+// boundedError shortens a cause whose text holds input from a credential or a
+// server, and still unwraps to the cause. It keeps both ends: net/http puts the
+// URL first and the reason (timeout, refused, redirect limit) last.
+type boundedError struct{ err error }
+
+const boundedErrorHalf = 256
+
+func (e boundedError) Error() string {
+	text := e.err.Error()
+	if len(text) <= 2*boundedErrorHalf {
+		return text
+	}
+	// Cutting by byte can split a rune, so invalid UTF-8 in the kept ends is dropped.
+	return strings.ToValidUTF8(text[:boundedErrorHalf], "") + "…" + strings.ToValidUTF8(text[len(text)-boundedErrorHalf:], "")
+}
+
+func (e boundedError) Unwrap() error { return e.err }
