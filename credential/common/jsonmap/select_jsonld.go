@@ -8,8 +8,9 @@ import (
 
 // SelectJSONLD returns the JSON-LD selection addressed by RFC 6901 pointers.
 // It preserves @context and the id/type metadata of selected nodes. The copy
-// in ecdsasd differs on numeric object keys, leading zeros and a missing
-// leading "/".
+// in ecdsasd differs on numeric object keys, leading zeros, a missing leading
+// "/", null array items, which it drops, and the root pointer "", where it
+// does not check the other pointers.
 func SelectJSONLD(document map[string]interface{}, pointers []string) (map[string]interface{}, error) {
 	if len(pointers) == 0 {
 		return nil, nil
@@ -28,13 +29,25 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 		}
 	}
 
+	root := false
 	for i, path := range paths {
 		if pointers[i] != "" && !strings.HasPrefix(pointers[i], "/") {
 			return nil, fmt.Errorf("pointer %.64q must start with /", pointers[i])
 		}
-		if len(path) == 0 {
-			return deepCopyJSON(document).(map[string]interface{}), nil
+		root = root || len(path) == 0
+	}
+	if root {
+		// The root pointer selects the whole document, but a pointer next to it
+		// that matches nothing is still an error (VC-DI-ECDSA §3.4.12).
+		for i, path := range paths {
+			if !matchesJSONPointer(document, path) {
+				return nil, fmt.Errorf("pointer %.64q: JSON Pointer does not match document", pointers[i])
+			}
 		}
+		return deepCopyJSON(document).(map[string]interface{}), nil
+	}
+
+	for i, path := range paths {
 		// A pointer under another selected pointer adds nothing: the outer one
 		// copies the whole value. Copying it again cost one copy per pointer.
 		if selected.coversFromAbove(path) {
@@ -217,7 +230,7 @@ func setJSONChild(parent interface{}, path string, value interface{}) interface{
 			return node
 		}
 		for len(node) <= index {
-			node = append(node, nil)
+			node = append(node, selectionHole{})
 		}
 		node[index] = value
 		return node
@@ -246,6 +259,12 @@ func arrayIndex(token string) (int, bool) {
 	return index, true
 }
 
+// selectionHole marks an array index the selection has not filled yet. A null
+// item copied from the document is data, so it cannot mark a hole.
+type selectionHole struct{}
+
+// densifyJSONArrays removes the holes the selection left in its arrays
+// (VC-DI-ECDSA §3.4.13); items copied from the document, null included, stay.
 func densifyJSONArrays(value interface{}) interface{} {
 	switch node := value.(type) {
 	case map[string]interface{}:
@@ -255,7 +274,7 @@ func densifyJSONArrays(value interface{}) interface{} {
 	case []interface{}:
 		compact := make([]interface{}, 0, len(node))
 		for _, child := range node {
-			if child != nil {
+			if _, hole := child.(selectionHole); !hole {
 				compact = append(compact, densifyJSONArrays(child))
 			}
 		}

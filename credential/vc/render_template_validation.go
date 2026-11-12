@@ -66,9 +66,7 @@ func (m RenderMethod) validateSummaryTemplateContent() error {
 		return fmt.Errorf("renderMethod.template media type for summary must be application/json")
 	}
 	var summary SummaryTemplate
-	decoder := json.NewDecoder(strings.NewReader(string(m.Template.Embedded.Bytes)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&summary); err != nil {
+	if err := decodeExactMembers(m.Template.Embedded.Bytes, &summary, true); err != nil {
 		// The decoder names an unknown member in full, and the template comes from the credential.
 		return fmt.Errorf("invalid summary template: %w", boundedError{err})
 	}
@@ -214,8 +212,16 @@ func decodeDigestMultibase(encoded string) ([]byte, error) {
 	if !strings.HasPrefix(encoded, "u") {
 		return nil, fmt.Errorf("digest must use base64url-no-padding multibase (\"u\" prefix)")
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(encoded, "u"))
-	if err != nil || len(raw) != 34 || raw[0] != 0x12 || raw[1] != 0x20 {
+	// Strict refuses non-zero pad bits; it still skips CR and LF, which RFC 4648
+	// §3.3 does not allow inside base64url, so they are refused first.
+	if strings.ContainsAny(encoded, "\r\n") {
+		return nil, fmt.Errorf("digest must use base64url-no-padding multibase without line breaks")
+	}
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(strings.TrimPrefix(encoded, "u"))
+	if err != nil {
+		return nil, fmt.Errorf("digest must use base64url-no-padding multibase: %w", err)
+	}
+	if len(raw) != 34 || raw[0] != 0x12 || raw[1] != 0x20 {
 		return nil, fmt.Errorf("digest must contain a SHA-256 multihash")
 	}
 	return raw[2:], nil

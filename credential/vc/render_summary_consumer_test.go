@@ -249,3 +249,21 @@ func TestRenderSummaryReadsDataURLWithSpaceBeforeScheme(t *testing.T) {
 		t.Errorf("Name = %q, want Badge", out.Name)
 	}
 }
+
+// The summary object refuses members it does not define, and "ICON" is not
+// icon: member names are case-sensitive.
+func TestRenderSummaryRefusesMembersThatDifferOnlyInCase(t *testing.T) {
+	for _, template := range []string{
+		`{"name":"x","description":"y","fields":[],"ICON":"/credentialSubject/secret"}`,
+		`{"name":"x","description":"y","fields":[{"label":"a","value":"/credentialSubject/secret","LANGUAGE":"en"}]}`,
+		`{"name":"x","description":"y","fields":[],"theme":{"PrimaryColor":"#000"}}`,
+	} {
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "application/json", Bytes: []byte(template)}}}
+		if err := method.Validate(); err == nil {
+			t.Errorf("%s: Validate() error = nil, want an unknown member error", template)
+		}
+		if _, err := method.RenderSummary(context.Background(), CredentialData{"credentialSubject": map[string]any{"secret": "S3CRET"}}, RenderOptions{}); err == nil {
+			t.Errorf("%s: RenderSummary() error = nil, want an unknown member error", template)
+		}
+	}
+}

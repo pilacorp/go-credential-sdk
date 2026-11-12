@@ -235,8 +235,8 @@ func TestSelectJSONLDNestedPointersSelectTheOutermostOnce(t *testing.T) {
 		}
 	}
 
-	if got, err := SelectJSONLD(document, []string{"", "credentialSubject"}); err != nil || !reflect.DeepEqual(got, document) {
-		t.Fatalf("root pointer before a malformed one = %#v, %v; want the whole document", got, err)
+	if _, err := SelectJSONLD(document, []string{"", "credentialSubject"}); err == nil {
+		t.Fatal("root pointer before a malformed one: error = nil, want the malformed pointer refused")
 	}
 
 	_, err = SelectJSONLD(document, []string{"/credentialSubject", "/credentialSubject/missing"})
@@ -338,5 +338,35 @@ func TestSelectJSONLDLeavesTheDocumentUnchanged(t *testing.T) {
 	want := []interface{}{nil, 1.0}
 	if got := document["type"].(map[string]interface{})["x"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("document type.x = %v after selection, want %v", got, want)
+	}
+}
+
+// VC-DI-ECDSA §3.4.12 copies a selected array as it is; only the holes left by
+// the selection are removed (§3.4.13), so null items keep their place.
+func TestSelectJSONLDKeepsNullArrayItems(t *testing.T) {
+	document := map[string]interface{}{"list": []interface{}{"a", nil, "b"}}
+	cases := map[string]interface{}{
+		"/list":   []interface{}{"a", nil, "b"},
+		"/list/1": []interface{}{nil},
+		"/list/2": []interface{}{"b"},
+	}
+	for pointer, want := range cases {
+		got, err := SelectJSONLD(document, []string{pointer})
+		if err != nil {
+			t.Fatalf("%s: %v", pointer, err)
+		}
+		if !reflect.DeepEqual(got["list"], want) {
+			t.Errorf("%s: list = %#v, want %#v", pointer, got["list"], want)
+		}
+	}
+}
+
+// Every pointer must match, whatever its position next to the root pointer.
+func TestSelectJSONLDRootPointerStillChecksTheOthers(t *testing.T) {
+	document := map[string]interface{}{"name": "Alice"}
+	for _, pointers := range [][]string{{"", "/missing"}, {"/missing", ""}} {
+		if _, err := SelectJSONLD(document, pointers); err == nil {
+			t.Errorf("%q: error = nil, want a missing pointer error", pointers)
+		}
 	}
 }

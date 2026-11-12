@@ -16,10 +16,15 @@ import (
 // credential can point it at an internal host. Use it only for resources from
 // issuers the application trusts; otherwise implement Fetcher.
 type HTTPFetcher struct {
-	Client          *http.Client
+	// Client sends the request; it is required.
+	Client *http.Client
+	// MaxResponseSize is the largest body read, in bytes; it must be positive.
 	MaxResponseSize int64
-	MaxRedirects    int
-	Timeout         time.Duration
+	// MaxRedirects is the number of redirects followed: 0 refuses every
+	// redirect, and a negative value keeps the policy of Client.
+	MaxRedirects int
+	// Timeout bounds the whole request; zero or less sets no timeout.
+	Timeout time.Duration
 }
 
 func (f HTTPFetcher) Fetch(ctx context.Context, ref TemplateReference) ([]byte, error) {
@@ -44,7 +49,8 @@ func (f HTTPFetcher) Fetch(ctx context.Context, ref TemplateReference) ([]byte, 
 	clientCopy := *client
 	if f.MaxRedirects >= 0 {
 		clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if len(via) >= f.MaxRedirects {
+			// via holds the requests already sent, so one redirect gives a length of 1.
+			if len(via) > f.MaxRedirects {
 				return fmt.Errorf("maximum redirect count %d exceeded", f.MaxRedirects)
 			}
 			return nil

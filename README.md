@@ -100,10 +100,15 @@ and `ResolveStatic` returns the static bytes, checked against
 `vc.RenderOptions` for template retrieval. External templates require an
 injected `Fetcher`; when `digestMultibase` is present, SHA-256 multihash
 verification is performed before the template is parsed. Referenced templates
-are then validated with the same rules as embedded ones; when `mediaType` is
-omitted, the suite's default media type is assumed.
-`ParseRenderMethods` skips suites the SDK does not support; each renderer accepts
-only its own suite. It checks the format of each entry; template content is
+are then validated with the same rules as embedded ones; when a fetched
+reference omits `mediaType`, the suite's default media type is assumed. A
+`data:` URL in `template.id` carries its own media type, read with the steps
+of the Fetch `data:` URL processor: `text/plain;charset=US-ASCII` when it names
+none. Unlike Fetch, a malformed media type parameter is an error.
+`ParseRenderMethods` skips render method types and suites the SDK does not
+support, and returns an error for an entry without a `type`, or a
+`SuiteRenderMethod` without a string `renderSuite`; member names are
+case-sensitive. Each renderer accepts only its own suite. It checks the format of each entry; template content is
 checked when a method is rendered, and by `Validate` before signing.
 
 A referenced template or render method is a network request to an address the

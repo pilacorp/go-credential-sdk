@@ -462,6 +462,8 @@ func testDigest(data []byte) string {
 	return "u" + base64.RawURLEncoding.EncodeToString(append([]byte{0x12, 0x20}, hash[:]...))
 }
 
+const base64URLAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
 func TestRenderMethodValidatesDigestMultibaseSyntax(t *testing.T) {
 	valid := testDigest([]byte("template"))
 	invalid := map[string]string{
@@ -472,6 +474,11 @@ func TestRenderMethodValidatesDigestMultibaseSyntax(t *testing.T) {
 		"not sha2-256":       "u" + base64.RawURLEncoding.EncodeToString(append([]byte{0x13, 0x20}, make([]byte, 32)...)),
 		"padded base64url":   valid + "=",
 		"placeholder suffix": "uInner",
+		// RFC 4648 §3.3 refuses characters outside the alphabet, and a strict
+		// decoder refuses non-zero pad bits; Go's decoder skips CR and LF.
+		"line feed inside":       valid[:10] + "\n" + valid[10:],
+		"carriage return inside": valid[:10] + "\r" + valid[10:],
+		"non-zero pad bits":      valid[:len(valid)-1] + string(base64URLAlphabet[strings.IndexByte(base64URLAlphabet, valid[len(valid)-1])|1]),
 	}
 	reference := func(digest string) RenderMethod {
 		return RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "summary", Template: &Template{Reference: &TemplateReference{
@@ -508,6 +515,28 @@ func TestValidateURLFollowsURLStandard(t *testing.T) {
 		if err := validateURL(raw, "template reference id"); (err != nil) != wantErr {
 			t.Errorf("validateURL(%q) error = %v, wantErr %v", raw, err, wantErr)
 		}
+	}
+}
+
+// The fetched body is one JSON value (RFC 8259 §2), as JSON.parse reads it.
+func TestRenderMethodDereferenceRefusesDataAfterTheJSONValue(t *testing.T) {
+	method := RenderMethod{ID: "https://example.com/render-method.json", Type: "SuiteRenderMethod", RenderSuite: "summary"}
+	for _, trailing := range []string{` <script>`, `{"x":1}`, `}`, `]`} {
+		fetched := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary","template":"data:application/json,%7B%22name%22%3A%22N%22,%22description%22%3A%22D%22,%22fields%22:%5B%5D%7D"}` + trailing)
+		if _, err := method.Dereference(context.Background(), &testFetcher{data: fetched}); err == nil {
+			t.Errorf("%q after the value: Dereference() error = nil", trailing)
+		}
+	}
+}
+
+// json.Unmarshal into a RenderMethod matches member names case-sensitively too.
+func TestRenderMethodUnmarshalIgnoresMembersThatDifferOnlyInCase(t *testing.T) {
+	var method RenderMethod
+	if err := json.Unmarshal([]byte(`{"type":"SuiteRenderMethod","renderSuite":"html","id":"https://example.com/rm","TEMPLATE":"https://example.com/t","RenderSuite":"static"}`), &method); err != nil {
+		t.Fatal(err)
+	}
+	if method.Template != nil || method.RenderSuite != "html" {
+		t.Errorf("method = %+v, want no template and suite html", method)
 	}
 }
 
@@ -566,6 +595,49 @@ func TestParseRenderMethodsKeepsDocumentOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(suites, []string{"static", "summary", "html"}) {
 		t.Fatalf("suites = %v, want document order", suites)
+	}
+}
+
+// Each renderMethod value MUST specify its type, and renderSuite is a REQUIRED
+// string (WD-20261013 §2.1, §2.2); a processor MUST error on a non-conforming
+// document (§1.2). Only a suite it does not recognize is ignored.
+func TestParseRenderMethodsRefusesEntriesWithoutTypeOrSuite(t *testing.T) {
+	for name, entry := range map[string]string{
+		"no type":            `{"renderSuite": "html", "template": "data:text/html,x"}`,
+		"null type":          `{"type": null, "renderSuite": "html", "template": "data:text/html,x"}`,
+		"number type":        `{"type": 5, "renderSuite": "html", "template": "data:text/html,x"}`,
+		"no renderSuite":     `{"type": "SuiteRenderMethod", "template": "data:text/html,x"}`,
+		"number renderSuite": `{"type": "SuiteRenderMethod", "renderSuite": 5, "template": "data:text/html,x"}`,
+		"null renderSuite":   `{"type": "SuiteRenderMethod", "renderSuite": null, "template": "data:text/html,x"}`,
+		"empty type":         `{"type": "", "renderSuite": "html", "template": "data:text/html,x"}`,
+		"empty type list":    `{"type": [], "renderSuite": "html", "template": "data:text/html,x"}`,
+	} {
+		data := parseRenderMethodsInput(t, `{"renderMethod": [`+entry+`]}`)
+		if _, err := ParseRenderMethods(data); err == nil || !strings.Contains(err.Error(), "renderMethod[0]") {
+			t.Errorf("%s: ParseRenderMethods() error = %v, want an error for renderMethod[0]", name, err)
+		}
+	}
+}
+
+// Member names are case-sensitive (WD-20261013 §2.2); encoding/json alone
+// would read "TEMPLATE" as template, which no other processor does.
+func TestParseRenderMethodsIgnoresMembersThatDifferOnlyInCase(t *testing.T) {
+	data := parseRenderMethodsInput(t, `{"renderMethod": [
+		{"type": "SuiteRenderMethod", "renderSuite": "html", "id": "https://example.com/rm", "TEMPLATE": "https://example.com/t"},
+		{"type": "SuiteRenderMethod", "renderSuite": "html", "template": {"id": "https://example.com/t", "MediaType": "text/html"}}
+	]}`)
+	methods, err := ParseRenderMethods(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(methods) != 2 {
+		t.Fatalf("methods = %+v, want 2", methods)
+	}
+	if methods[0].Template != nil {
+		t.Errorf("TEMPLATE was read as template: %+v", methods[0].Template.Reference)
+	}
+	if ref := methods[1].Template.Reference; ref == nil || ref.MediaType != "" {
+		t.Errorf("template.MediaType was read as mediaType: %+v", ref)
 	}
 }
 
@@ -672,6 +744,21 @@ func TestTemplateDecodesEveryValidDataURL(t *testing.T) {
 		{`data:text/plain;base64,YQ`, "text/plain", "a"},
 		{`data:text/plain;base64,YQ==`, "text/plain", "a"},
 		{`data:text/plain;base64,aGVs%20bG8=`, "text/plain", "hello"},
+		{`data:text/plain;base64,aGVs bG8=`, "text/plain", "hello"},
+		// The rest of the Fetch data: URL processor: the fragment is not data,
+		// the media type is trimmed, spaces may come before "base64", a "%" that
+		// starts no escape is kept, and a media type that does not parse is
+		// text/plain;charset=US-ASCII.
+		{`data:text/plain,a#b`, "text/plain", "a"},
+		{`data:text/plain;base64,YQ==#frag`, "text/plain", "a"},
+		{`data: text/html ,x`, "text/html", "x"},
+		{`data:text/html; base64,PHA+PC9wPg==`, "text/html", "<p></p>"},
+		{`data:text/html;base64 ,PHA+PC9wPg==`, "text/html", "<p></p>"},
+		{`data:text/html ;base64,PHA+PC9wPg==`, "text/html", "<p></p>"},
+		{`data: text/html \t ; base64,PHA+PC9wPg==`, "text/html", "<p></p>"},
+		{`data:text/plain,100%`, "text/plain", "100%"},
+		{`data:text/plain,a%zz`, "text/plain", "a%zz"},
+		{`data:foo,abc`, "text/plain;charset=US-ASCII", "abc"},
 	}
 	for _, tc := range cases {
 		var template Template
@@ -683,7 +770,7 @@ func TestTemplateDecodesEveryValidDataURL(t *testing.T) {
 			t.Errorf("%s: got %+v, want media type %q and bytes %q", tc.raw, template, tc.mediaType, tc.bytes)
 		}
 	}
-	for _, raw := range []string{`data:text/plain`, `data:text/plain;base64,!!!`, `data:text/plain,%zz`,
+	for _, raw := range []string{`data:text/plain`, `data:text/plain;base64,!!!`, `data:text/plain#a,b`,
 		// forgiving-base64 failures: a length of 1 mod 4, and "=" that is not
 		// one or two characters closing a length that is a multiple of 4.
 		`data:text/plain;base64,Y`, `data:text/plain;base64,YQ=`, `data:text/plain;base64,aGVsbG8==`, `data:text/plain;base64,YQ===`} {
@@ -702,7 +789,6 @@ func TestTemplateWritesDataURLWithoutWhitespace(t *testing.T) {
 		"text/html ; charset=utf-8": "data:text/html;charset=utf-8;base64,eA==",
 		"text/html;  charset=utf-8": "data:text/html;charset=utf-8;base64,eA==",
 		"text/html;\tcharset=utf-8": "data:text/html;charset=utf-8;base64,eA==",
-		" text/html ":               "data:text/html;base64,eA==",
 	}
 	for mediaType, want := range cases {
 		encoded, err := json.Marshal(Template{Embedded: &EmbeddedTemplate{MediaType: mediaType, Bytes: []byte("x")}})
@@ -716,6 +802,32 @@ func TestTemplateWritesDataURLWithoutWhitespace(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("%q: data URL = %q, want %q", mediaType, got, want)
+		}
+	}
+}
+
+// A quoted parameter keeps its spaces, so the data: URL reads back to the
+// issuer's media type; a "#" would start the URL fragment and is refused.
+func TestTemplateWritesQuotedMediaTypeParameterUnchanged(t *testing.T) {
+	template := Template{Embedded: &EmbeddedTemplate{MediaType: `text/plain; title="a b"`, Bytes: []byte("x")}}
+	encoded, err := json.Marshal(template)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if want := `"data:text/plain;title=\"a b\";base64,eA=="`; string(encoded) != want {
+		t.Errorf("json.Marshal() = %s, want %s", encoded, want)
+	}
+	var decoded Template
+	if err := json.Unmarshal(encoded, &decoded); err != nil || decoded.Embedded.MediaType != `text/plain;title="a b"` {
+		t.Errorf("read back = %+v, %v; want media type %q", decoded.Embedded, err, `text/plain;title="a b"`)
+	}
+
+	// "#" starts the fragment; the URL parser removes a tab and percent-encodes
+	// other controls and non-ASCII, so none of them reads back unchanged.
+	for _, mediaType := range []string{`text/plain; title="a#b"`, "text/plain;title=\"a\tb\"", "text/html;\vcharset=utf-8", "text/html;\u00a0charset=utf-8", `text/plain;title="a,b"`} {
+		template.Embedded.MediaType = mediaType
+		if _, err := json.Marshal(template); err == nil {
+			t.Errorf("json.Marshal() with media type %q: error = nil", mediaType)
 		}
 	}
 }
@@ -766,12 +878,19 @@ func TestRenderMethodValidatesEveryMediaType(t *testing.T) {
 		}
 	}
 	for _, build := range []func(string) RenderMethod{reference, output, embeddedStatic} {
-		for _, mediaType := range []string{"", "application/json", "text/html; charset=utf-8"} {
+		for _, mediaType := range []string{"", "application/json", "text/html; charset=utf-8", "text/html \t; charset=utf-8", "application/vnd.api+json", "image/svg+xml", "application/x-www_form.1$&^!"} {
 			if err := build(mediaType).Validate(); err != nil {
 				t.Errorf("Validate() with mediaType %q error = %v", mediaType, err)
 			}
 		}
-		for _, mediaType := range []string{"not a type", "text/", "/html", "text/html;charset", "text", "html", "png", "*/*", "text/*", "*/html"} {
+		for _, mediaType := range []string{"not a type", "text/", "/html", "text/html;charset", "text", "html", "png", "*/*", "text/*", "*/html",
+			// RFC 6838 §4.2 restricted-name: an ALPHA or DIGIT first, then only
+			// ALPHA, DIGIT and !#$&-^_.+, at most 127 characters.
+			"text/ht%ml", "text/ht'ml", "-x/y", "a{b}/c|d", "x/" + strings.Repeat("a", 128),
+			// U+212A KELVIN SIGN lower-cases to "k" but is not ASCII.
+			"text/mar\u212Adown", "\u212Aext/plain",
+			// RFC 9110 §8.3.1 allows only SP and HTAB, and only before a ";".
+			" text/html", "text/html ", "text/html\v", "text/html\v; charset=utf-8"} {
 			if err := build(mediaType).Validate(); err == nil {
 				t.Errorf("Validate() with mediaType %q error = nil, want invalid media type", mediaType)
 			}
@@ -846,10 +965,12 @@ func TestValidateChecksMediaTypeOfDataURLInTemplateID(t *testing.T) {
 		id      string
 		wantErr bool
 	}{
-		"media type":       {"data:text/plain,abc", false},
-		"no media type":    {"data:,abc", false},
-		"not a media type": {"data:not a media type,abc", true},
-		"1 MiB media type": {"data:" + strings.Repeat("a", 1<<20) + ",abc", true},
+		"media type":    {"data:text/plain,abc", false},
+		"no media type": {"data:,abc", false},
+		// Fetch reads a media type that does not parse as text/plain;charset=US-ASCII.
+		"not a media type": {"data:not a media type,abc", false},
+		"bad parameter":    {`data:text/plain;x=",abc`, true},
+		"1 MiB media type": {"data:text/" + strings.Repeat("a", 1<<20) + `;x=",abc`, true},
 	} {
 		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "static", Template: &Template{Reference: &TemplateReference{ID: tt.id}}}
 		err := method.Validate()
@@ -865,7 +986,7 @@ func TestValidateChecksMediaTypeOfDataURLInTemplateID(t *testing.T) {
 
 func TestTemplateStringErrorQuotesStartOfMediaType(t *testing.T) {
 	var template Template
-	err := json.Unmarshal(mustJSON("data:"+strings.Repeat("a", 1<<20)+",abc"), &template)
+	err := json.Unmarshal(mustJSON("data:text/"+strings.Repeat("a", 1<<20)+`;x=",abc`), &template)
 	if err == nil {
 		t.Fatalf("Unmarshal() error = nil, want an error")
 	}
@@ -966,5 +1087,40 @@ func TestRenderPropertyKeepsAnEmptyListOnTheWire(t *testing.T) {
 	var method RenderMethod
 	if err := json.Unmarshal(data, &method); err != nil || method.RenderProperty == nil {
 		t.Fatalf("json.Unmarshal() = %#v, %v; want an empty, non-nil RenderProperty", method.RenderProperty, err)
+	}
+}
+
+func TestParseRenderMethodsNamesRenderMethodInDecodeErrors(t *testing.T) {
+	data := CredentialData{"renderMethod": map[string]any{"type": "SuiteRenderMethod", "renderSuite": "summary", "id": "https://example.com/m", "name": 5}}
+	_, err := ParseRenderMethods(data)
+	if err == nil || !strings.Contains(err.Error(), "RenderMethod.name") || strings.Contains(err.Error(), "renderMethodFields") {
+		t.Fatalf("ParseRenderMethods() error = %v, want it to name RenderMethod.name", err)
+	}
+	var method RenderMethod
+	err = json.Unmarshal([]byte(`{"type":5}`), &method)
+	if err == nil || strings.Contains(err.Error(), "renderMethodFields") {
+		t.Fatalf("Unmarshal() error = %v, want no unexported type name", err)
+	}
+}
+
+func TestParseRenderMethodsLeavesTheCredentialUnchanged(t *testing.T) {
+	entry := map[string]any{"type": "SuiteRenderMethod", "renderSuite": "summary", "id": "https://example.com/m", "NAME": "x"}
+	if _, err := ParseRenderMethods(CredentialData{"renderMethod": entry}); err != nil {
+		t.Fatalf("ParseRenderMethods() error = %v", err)
+	}
+	if entry["NAME"] != "x" {
+		t.Fatal("ParseRenderMethods() removed a member from the caller's credential")
+	}
+}
+
+func TestParseRenderMethodsMatchesNestedMembersCaseSensitivelyInTypedMaps(t *testing.T) {
+	data := CredentialData{"renderMethod": map[string]any{"type": "SuiteRenderMethod", "renderSuite": "summary", "id": "https://example.com/m",
+		"outputPreference": CredentialData{"MediaType": "text/html"}}}
+	methods, err := ParseRenderMethods(data)
+	if err != nil {
+		t.Fatalf("ParseRenderMethods() error = %v", err)
+	}
+	if got := methods[0].OutputPreference.MediaType; got != "" {
+		t.Fatalf("outputPreference.mediaType = %q, want \"\": MediaType differs in case", got)
 	}
 }

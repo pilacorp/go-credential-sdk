@@ -3,10 +3,12 @@ package vc
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
-	"net/url"
+	"reflect"
 	"strings"
 
 	whatwgurl "github.com/nlnwa/whatwg-url/url"
@@ -40,6 +42,49 @@ type RenderMethod struct {
 	DeliveryMode     string            `json:"deliveryMode,omitempty"`
 }
 
+// renderMethodFields is RenderMethod without its UnmarshalJSON.
+type renderMethodFields RenderMethod
+
+// UnmarshalJSON decodes a render method with case-sensitive member names, so
+// every path reads the members other processors read: a member that differs
+// from a known name only in case, such as "TEMPLATE", is ignored. Unknown
+// members are ignored even under an outer Decoder's DisallowUnknownFields,
+// because encoding/json does not pass decoder options to an Unmarshaler.
+func (m *RenderMethod) UnmarshalJSON(data []byte) error {
+	return renderMethodError(decodeExactMembers(data, (*renderMethodFields)(m), false))
+}
+
+// decodeRenderMethodEntry decodes one renderMethod entry of a decoded
+// credential. Case variants are dropped from a copy that normalizeValue makes
+// with plain maps, so nested CredentialData is walked too and the caller's
+// credential is not changed. The entry is then encoded and decoded once into
+// renderMethodFields, skipping the second scan UnmarshalJSON would add.
+func decodeRenderMethodEntry(entry map[string]any) (RenderMethod, error) {
+	tree := normalizeValue(entry)
+	if _, err := dropCaseVariants(tree, reflect.TypeOf((*renderMethodFields)(nil)), false); err != nil {
+		return RenderMethod{}, err
+	}
+	encoded, err := json.Marshal(tree)
+	if err != nil {
+		return RenderMethod{}, err
+	}
+	var method RenderMethod
+	if err := json.Unmarshal(encoded, (*renderMethodFields)(&method)); err != nil {
+		return RenderMethod{}, renderMethodError(err)
+	}
+	return method, nil
+}
+
+// renderMethodError names RenderMethod, not the unexported renderMethodFields,
+// in a decode error.
+func renderMethodError(err error) error {
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) && typeErr.Struct == "renderMethodFields" {
+		typeErr.Struct = "RenderMethod"
+	}
+	return err
+}
+
 // ParseRenderMethods reads the renderMethod member of a credential, given as
 // one object or an array, and returns the entries this SDK can render, in
 // document order. That order is not the issuer's preference: the VC context does
@@ -49,11 +94,13 @@ type RenderMethod struct {
 // and every context URL resolves to a known file or hash): it checks neither
 // the proof nor the contexts.
 //
-// Entries whose type is not SuiteRenderMethod, whose renderSuite is not
-// summary, html or static, or that have neither a template nor an id are
-// skipped, as WD-20261013 §2.2 requires
-// for suites a consumer does not support. A supported entry that fails to
-// decode or has an invalid format is an error, reported with its index.
+// An entry without a type, or a SuiteRenderMethod without a string
+// renderSuite, does not conform (WD-20261013 §2.1, §2.2) and is an error.
+// Entries of another type and suites other than summary, html and static are
+// skipped, as §2.2 requires for suites a consumer does not support; entries
+// with neither a template nor an id are skipped too, since they have nothing
+// to render. A supported entry that fails to decode or has an invalid format
+// is an error. Each error names the entry's index.
 // Template content is not read here: a renderer checks it, and Validate checks
 // it before signing, so one entry with a broken template does not hide the
 // others.
@@ -85,15 +132,15 @@ func ParseRenderMethods(data CredentialData) ([]RenderMethod, error) {
 		if !ok {
 			return nil, fmt.Errorf("renderMethod[%d] must be an object", i)
 		}
-		if !isSupportedRenderMethod(object) {
-			continue
-		}
-		encoded, err := json.Marshal(object)
+		supported, err := isSupportedRenderMethod(object)
 		if err != nil {
 			return nil, fmt.Errorf("renderMethod[%d]: %w", i, err)
 		}
-		var method RenderMethod
-		if err := json.Unmarshal(encoded, &method); err != nil {
+		if !supported {
+			continue
+		}
+		method, err := decodeRenderMethodEntry(object)
+		if err != nil {
 			return nil, fmt.Errorf("renderMethod[%d]: %w", i, err)
 		}
 		if err := method.validateFormat(); err != nil {
@@ -104,15 +151,36 @@ func ParseRenderMethods(data CredentialData) ([]RenderMethod, error) {
 	return methods, nil
 }
 
-// isSupportedRenderMethod skips what WD-20261013 §2.2 tells a consumer to
-// ignore. Entries with only an id are retained for Dereference.
-func isSupportedRenderMethod(entry map[string]any) bool {
-	if entry["type"] != "SuiteRenderMethod" {
-		return false
+// isSupportedRenderMethod reports whether this SDK renders entry, and refuses
+// an entry that leaves out the type or renderSuite WD-20261013 §2.1 and §2.2
+// require. Entries with only an id are retained for Dereference.
+func isSupportedRenderMethod(entry map[string]any) (bool, error) {
+	// Indexing covers absent and null alike.
+	switch typ := entry["type"].(type) {
+	case nil:
+		return false, fmt.Errorf("type is required")
+	case string:
+		if typ == "" {
+			return false, fmt.Errorf("type is required")
+		}
+		if typ != "SuiteRenderMethod" {
+			return false, nil
+		}
+	case []any:
+		if len(typ) == 0 {
+			return false, fmt.Errorf("type is required")
+		}
+		// A list of types is another render method type, not the string
+		// SuiteRenderMethod §2.2 requires.
+		return false, nil
+	default:
+		return false, fmt.Errorf("type must be a string")
 	}
-	suite, _ := entry["renderSuite"].(string)
-	// A null template is no template: indexing covers absent and null alike.
-	return isSupportedRenderSuite(suite) && (entry["template"] != nil || entry["id"] != nil)
+	suite, ok := entry["renderSuite"].(string)
+	if !ok {
+		return false, fmt.Errorf("renderSuite is required and must be a string")
+	}
+	return isSupportedRenderSuite(suite) && (entry["template"] != nil || entry["id"] != nil), nil
 }
 
 // Dereference fetches the render method at ID with the fetcher the consumer
@@ -310,8 +378,7 @@ func (t *Template) validate() error {
 		}
 	}
 	if t.Embedded != nil {
-		// A comma would end the media type early in the data: URL MarshalJSON writes.
-		if err := validateMediaType(t.Embedded.MediaType); err != nil || strings.Contains(t.Embedded.MediaType, ",") {
+		if err := validateMediaType(t.Embedded.MediaType); err != nil || !fitsDataURL(t.Embedded.MediaType) {
 			return fmt.Errorf("embedded template mediaType %.64q is not a valid media type", t.Embedded.MediaType)
 		}
 	}
@@ -339,20 +406,44 @@ func (p *OutputPreference) validate() error {
 }
 
 // validateMediaType checks the syntax of an optional media type: empty is
-// allowed, anything else must parse as type/subtype with optional parameters.
-// mime.ParseMediaType also accepts a bare token such as "png" and wildcards such
-// as "text/*", neither of which names a media type (RFC 6838 §4.2), so both are
-// rejected here: the value is signed and cannot be corrected after issuance.
+// allowed, anything else must be type/subtype with optional parameters, where
+// type and subtype are restricted-names (RFC 6838 §4.2). mime.ParseMediaType
+// checks the parameters but also accepts a bare token such as "png", a
+// wildcard such as "text/*" and names RFC 6838 does not allow, such as
+// "text/ht%ml". The value is signed and cannot be corrected after issuance.
 func validateMediaType(mediaType string) error {
 	if mediaType == "" {
 		return nil
 	}
-	parsed, _, err := mime.ParseMediaType(mediaType)
-	if err != nil || !strings.Contains(parsed, "/") || strings.Contains(parsed, "*") {
+	// The names are read from the input: ParseMediaType lower-cases with
+	// Unicode rules, so U+212A KELVIN SIGN would come back as an ASCII "k".
+	// RFC 9110 §8.3.1 allows SP and HTAB only before a ";".
+	name, _, hasParameters := strings.Cut(mediaType, ";")
+	if hasParameters {
+		name = strings.TrimRight(name, " \t")
+	}
+	typeName, subtypeName, _ := strings.Cut(name, "/")
+	if _, _, err := mime.ParseMediaType(mediaType); err != nil || !isRestrictedName(typeName) || !isRestrictedName(subtypeName) {
 		// The media type comes from the credential and has no size limit, so only its start is quoted.
 		return fmt.Errorf("mediaType %.64q is not a valid media type", mediaType)
 	}
 	return nil
+}
+
+// isRestrictedName reports whether name is an RFC 6838 §4.2 restricted-name:
+// 1 to 127 characters, an ALPHA or DIGIT first, then ALPHA, DIGIT or !#$&-^_.+.
+func isRestrictedName(name string) bool {
+	if len(name) == 0 || len(name) > 127 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		alphaDigit := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+		if !alphaDigit && (i == 0 || strings.IndexByte("!#$&-^_.+", c) < 0) {
+			return false
+		}
+	}
+	return true
 }
 
 // maxURLBytes bounds a URL other than a data: URL that holds a template. The
@@ -427,10 +518,53 @@ func (t Template) MarshalJSON() ([]byte, error) {
 	if t.Reference != nil {
 		return json.Marshal(t.Reference)
 	}
-	// Whitespace is valid around media type parameters but not in a URL (RFC 3986).
-	mediaType := strings.Join(strings.Fields(t.Embedded.MediaType), "")
 	encoded := base64.StdEncoding.EncodeToString(t.Embedded.Bytes)
-	return json.Marshal("data:" + mediaType + ";base64," + encoded)
+	return json.Marshal("data:" + compactMediaType(t.Embedded.MediaType) + ";base64," + encoded)
+}
+
+// fitsDataURL reports whether the data: URL MarshalJSON writes reads back to
+// a non-empty mediaType; an empty one reads back as text/plain;charset=US-ASCII,
+// as Fetch defines. A comma would end the media type early and "#" would start the
+// fragment. The URL parser removes a tab and percent-encodes other controls
+// and non-ASCII, so only printable ASCII is allowed, and a tab only outside a
+// quoted-string, where MarshalJSON drops it as whitespace.
+func fitsDataURL(mediaType string) bool {
+	quoted, escaped := false, false
+	for i := 0; i < len(mediaType); i++ {
+		c := mediaType[i]
+		if c == ',' || c == '#' || c > '~' || (c < ' ' && (c != '\t' || quoted)) {
+			return false
+		}
+		if quoted {
+			quoted = escaped || c != '"'
+			escaped = !escaped && c == '\\'
+		} else {
+			quoted = c == '"'
+		}
+	}
+	return true
+}
+
+// compactMediaType drops the whitespace RFC 9110 allows around media type
+// parameters, which a URL cannot carry (RFC 3986), and keeps the spaces inside
+// a quoted-string, which are part of the parameter value.
+func compactMediaType(mediaType string) string {
+	var compact strings.Builder
+	quoted, escaped := false, false
+	for i := 0; i < len(mediaType); i++ {
+		c := mediaType[i]
+		switch {
+		case quoted:
+			quoted = escaped || c != '"'
+			escaped = !escaped && c == '\\'
+		case c == '"':
+			quoted = true
+		case strings.IndexByte(asciiWhitespace, c) >= 0:
+			continue
+		}
+		compact.WriteByte(c)
+	}
+	return compact.String()
 }
 
 func (t *Template) UnmarshalJSON(data []byte) error {
@@ -466,31 +600,72 @@ func referencedDataURL(id string) (string, bool) {
 	return id, isDataURL(id)
 }
 
-// decodeDataURL decodes a data URL. RFC 2397 lets the media type be empty. Like
-// the WHATWG Fetch data: URL processor, it matches ";base64" case-insensitively,
-// percent-decodes, then decodes base64 with forgiving-base64.
+// decodeDataURL decodes a data: URL as referencedDataURL returns it, following
+// the steps of the WHATWG Fetch data: URL processor: the fragment is not data,
+// the media type is trimmed, ";base64" may have spaces before "base64" and is
+// matched case-insensitively, the data is percent-decoded and then decoded
+// with forgiving-base64, and a type/subtype that does not parse is
+// text/plain;charset=US-ASCII. RFC 2397 lets the media type be empty. Two
+// differences remain: the media type is not percent-encoded as the URL
+// serializer would, and its parameters must parse with Go's mime.ParseMediaType,
+// where Fetch skips a malformed one.
 func decodeDataURL(raw string) (*EmbeddedTemplate, error) {
-	metadata, payload, ok := strings.Cut(raw[5:], ",")
+	raw, _, _ = strings.Cut(raw, "#")
+	mediaType, body, ok := strings.Cut(raw[len("data:"):], ",")
 	if !ok {
 		return nil, fmt.Errorf("embedded template must use a valid data URL")
 	}
-	unescaped, err := url.PathUnescape(payload)
-	if err != nil {
-		return nil, fmt.Errorf("decode embedded template data URL: %w", err)
-	}
-	mediaType, decoded := metadata, []byte(unescaped)
-	if n := len(metadata) - len(";base64"); n >= 0 && strings.EqualFold(metadata[n:], ";base64") {
-		mediaType = metadata[:n]
-		if decoded, err = forgivingBase64Decode(unescaped); err != nil {
+	mediaType = strings.Trim(mediaType, asciiWhitespace)
+	decoded := percentDecode(body)
+	if withoutBase64, ok := cutBase64Parameter(mediaType); ok {
+		// Fetch parses the rest as a MIME type, which strips HTTP whitespace.
+		mediaType = strings.TrimRight(withoutBase64, " \t")
+		var err error
+		if decoded, err = forgivingBase64Decode(string(decoded)); err != nil {
 			return nil, fmt.Errorf("decode embedded template data URL: %w", err)
 		}
 	}
-	if mediaType == "" {
-		mediaType = "text/plain;charset=US-ASCII"
-	} else if strings.HasPrefix(mediaType, ";") {
+	if strings.HasPrefix(mediaType, ";") {
 		mediaType = "text/plain" + mediaType
 	}
+	if name, ok := mediaTypeName(mediaType); !ok || !strings.Contains(name, "/") {
+		mediaType = "text/plain;charset=US-ASCII"
+	}
 	return &EmbeddedTemplate{MediaType: mediaType, Bytes: decoded}, nil
+}
+
+// asciiWhitespace is ASCII whitespace in the WHATWG Infra Standard.
+const asciiWhitespace = "\t\n\f\r "
+
+// cutBase64Parameter removes a final ";base64" from a data: URL media type,
+// allowing spaces between ";" and "base64" as Fetch does.
+func cutBase64Parameter(mediaType string) (string, bool) {
+	n := len(mediaType) - len("base64")
+	if n < 0 || !strings.EqualFold(mediaType[n:], "base64") {
+		return mediaType, false
+	}
+	rest := strings.TrimRight(mediaType[:n], " ")
+	if !strings.HasSuffix(rest, ";") {
+		return mediaType, false
+	}
+	return rest[:len(rest)-1], true
+}
+
+// percentDecode is percent-decode from the URL Standard: a "%" that does not
+// start two hex digits is kept as it is, where url.PathUnescape would fail.
+func percentDecode(encoded string) []byte {
+	decoded := make([]byte, 0, len(encoded))
+	for i := 0; i < len(encoded); i++ {
+		if encoded[i] == '%' && i+3 <= len(encoded) {
+			if b, err := hex.DecodeString(encoded[i+1 : i+3]); err == nil {
+				decoded = append(decoded, b[0])
+				i += 2
+				continue
+			}
+		}
+		decoded = append(decoded, encoded[i])
+	}
+	return decoded
 }
 
 // forgivingBase64Decode is forgiving-base64 decode (WHATWG Infra Standard), which
@@ -498,7 +673,7 @@ func decodeDataURL(raw string) (*EmbeddedTemplate, error) {
 // optional, so a data: URL another issuer wrote without "=" still decodes.
 func forgivingBase64Decode(encoded string) ([]byte, error) {
 	encoded = strings.Map(func(r rune) rune {
-		if r == '\t' || r == '\n' || r == '\f' || r == '\r' || r == ' ' {
+		if strings.ContainsRune(asciiWhitespace, r) {
 			return -1
 		}
 		return r
@@ -532,7 +707,7 @@ func (t *Template) decodeJSON(data []byte) error {
 		return nil
 	}
 	var ref TemplateReference
-	if err := json.Unmarshal(data, &ref); err != nil {
+	if err := decodeExactMembers(data, &ref, false); err != nil {
 		return err
 	}
 	t.Reference = &ref

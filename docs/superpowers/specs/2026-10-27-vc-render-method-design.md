@@ -248,7 +248,7 @@ When creating a credential through structured contents:
 - after retrieval and digest verification, an external template MUST pass the same suite-specific content validation as an embedded template, because its content is not covered by the credential signature;
 - when an external template reference omits `mediaType`, the suite's expected media type is assumed for that validation (`application/json` for `summary`, `text/html` for `html`); a `mediaType` that is present must match as it does for embedded templates.
 
-Unknown `renderSuite` values are not rejected by credential parsing. They stay in the credential, `ParseRenderMethods` skips them, and each renderer refuses a method of another suite. `ParseRenderMethods` returns an error for a `renderMethod` entry that is not an object.
+Unknown `renderSuite` values are not rejected by credential parsing. They stay in the credential, `ParseRenderMethods` skips them, and each renderer refuses a method of another suite. `ParseRenderMethods` returns an error for a `renderMethod` entry that is not an object, that has no `type`, or that is a `SuiteRenderMethod` without a string `renderSuite` (WD-20261013 §1.2, §2.1, §2.2).
 
 ### 6.2 Summary template validation
 
@@ -425,7 +425,7 @@ A consumer calls `Verify` first, then runs the context validation of VC Data Int
 
 ### 8.1 Processing algorithm
 
-1. Decode the template from an embedded `data:` URL, as the WHATWG Fetch `data:` URL processor does (base64 with forgiving-base64: padding optional, ASCII whitespace removed), or load it through `Fetcher`.
+1. Decode the template from an embedded `data:` URL, as the WHATWG Fetch `data:` URL processor does (the fragment is not data, the media type is trimmed, spaces may precede `base64`, a `%` that starts no escape is kept, base64 uses forgiving-base64, and a type/subtype that does not parse is `text/plain;charset=US-ASCII`; unlike Fetch, a malformed parameter is an error), or load it through `Fetcher`.
 2. For an external template, verify `digestMultibase` when present; embedded templates have no digest requirement.
 3. Validate the summary template.
 4. Recursively inspect string-valued template properties.
@@ -447,7 +447,7 @@ External retrieval is injected through `Fetcher`; the core renderer must not cre
 
 - requires a caller-supplied `http.Client` and a positive `MaxResponseSize`;
 - honors the request context and an optional `Timeout`;
-- stops at the `MaxRedirects`-th redirect, as `net/http` does at its default of 10, so zero refuses every redirect; a negative value keeps the client's own policy;
+- follows at most `MaxRedirects` redirects, so zero refuses every redirect; a negative value keeps the client's own policy;
 - when the reference has a `mediaType`, requires the response `Content-Type` to have the same type and subtype, ignoring case (RFC 9110 §8.3.1) and, by the SDK's own choice, parameters, even malformed ones;
 - sends no credential data in the request and logs nothing.
 

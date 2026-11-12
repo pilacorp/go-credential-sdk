@@ -63,6 +63,40 @@ func TestHTTPFetcherLimitsAndMediaType(t *testing.T) {
 	}
 }
 
+// MaxRedirects is the number of redirects followed: 1 follows one and refuses
+// a second, and 0 refuses every redirect.
+func TestHTTPFetcherFollowsMaxRedirects(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/two":
+			http.Redirect(w, r, "/one", http.StatusFound)
+		case "/one":
+			http.Redirect(w, r, "/ok", http.StatusFound)
+		default:
+			_, _ = w.Write([]byte("ok"))
+		}
+	}))
+	defer server.Close()
+
+	for _, tc := range []struct {
+		path         string
+		maxRedirects int
+		wantErr      bool
+	}{
+		{"/one", 1, false},
+		{"/two", 1, true},
+		{"/two", 2, false},
+		{"/one", 0, true},
+		{"/ok", 0, false},
+	} {
+		fetcher := HTTPFetcher{Client: server.Client(), MaxResponseSize: 64, MaxRedirects: tc.maxRedirects}
+		_, err := fetcher.Fetch(context.Background(), TemplateReference{ID: server.URL + tc.path})
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s with MaxRedirects %d: Fetch() error = %v, wantErr %v", tc.path, tc.maxRedirects, err, tc.wantErr)
+		}
+	}
+}
+
 func mustJSON(value any) []byte {
 	data, _ := json.Marshal(value)
 	return data

@@ -48,9 +48,7 @@ func (m RenderMethod) RenderSummary(ctx context.Context, credential CredentialDa
 		return nil, fmt.Errorf("encode summary output: %w", err)
 	}
 	var output SummaryTemplate
-	dec := json.NewDecoder(strings.NewReader(string(resolved)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&output); err != nil {
+	if err := decodeExactMembers(resolved, &output, true); err != nil {
 		return nil, fmt.Errorf("invalid resolved summary output: %w", err)
 	}
 	if err := requireSummaryMembers(resolved); err != nil {
