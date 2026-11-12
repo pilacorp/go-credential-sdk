@@ -44,7 +44,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
 
 ## Prerequisites
 
-- Go 1.18 or higher
+- Go 1.25 or higher
 - For VC/VP: Secure private key generation using `crypto/ecdsa` package and verification method for signing/verifying
 - Internet access for DID resolution and JSON-LD context fetching
 - Dependencies:
@@ -75,6 +75,12 @@ go get github.com/piprate/json-gold/ld
 
 ## Render methods
 
+Experimental: this API follows the W3C VC Render Method Working Draft
+WD-20261013 and changes when the draft does. Do not rely on render methods
+from a tagged release until [#179](https://github.com/pilacorp/go-credential-sdk/issues/179) is fixed: a holder can rewrite the JSON-LD of
+a signed credential so that `digestMultibase` or `renderProperty` is not read,
+and the proof still verifies.
+
 Render methods are signed JSON-LD VC metadata. The SDK does not add a JSON-LD
 context automatically; provide a context that defines the render-method terms.
 Create methods with the common `vc.RenderMethod` model and attach them before
@@ -97,7 +103,19 @@ verification is performed before the template is parsed. Referenced templates
 are then validated with the same rules as embedded ones; when `mediaType` is
 omitted, the suite's default media type is assumed.
 `ParseRenderMethods` skips suites the SDK does not support; each renderer accepts
-only its own suite.
+only its own suite. It checks the format of each entry; template content is
+checked when a method is rendered, and by `Validate` before signing.
+
+A referenced template or render method is a network request to an address the
+issuer chose, so the issuer can see when and from where a credential is shown.
+`HTTPFetcher` does not check that address and follows redirects, so it can
+reach internal hosts; for credentials from issuers you do not trust, pass a
+`Fetcher` that limits schemes and hosts, and refuses an empty
+`DigestMultibase` if the template must be covered by the signature.
+
+`renderProperty` holds JSON Pointers (RFC 6901). When it is absent the whole
+credential is passed to the template; `[]` passes nothing; `[""]` is the
+pointer to the whole document and passes everything.
 
 `RenderMethod.ID` is an optional reference to a complete remote render method.
 Rendering uses `Template`, even when `ID` is present. To render from `ID`, call

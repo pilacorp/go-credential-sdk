@@ -666,6 +666,12 @@ func TestTemplateDecodesEveryValidDataURL(t *testing.T) {
 		{`data:text/plain;base64,aGVsbG8%3D`, "text/plain", "hello"},
 		{`data:text/plain;base64,aGVsbG8=`, "text/plain", "hello"},
 		{`data:application/json,%7B%22a%22%3A1%7D`, "application/json", `{"a":1}`},
+		// Fetch decodes base64 with forgiving-base64 (WHATWG Infra Standard):
+		// padding is optional and ASCII whitespace is removed.
+		{`data:text/plain;base64,aGVsbG8`, "text/plain", "hello"},
+		{`data:text/plain;base64,YQ`, "text/plain", "a"},
+		{`data:text/plain;base64,YQ==`, "text/plain", "a"},
+		{`data:text/plain;base64,aGVs%20bG8=`, "text/plain", "hello"},
 	}
 	for _, tc := range cases {
 		var template Template
@@ -677,7 +683,10 @@ func TestTemplateDecodesEveryValidDataURL(t *testing.T) {
 			t.Errorf("%s: got %+v, want media type %q and bytes %q", tc.raw, template, tc.mediaType, tc.bytes)
 		}
 	}
-	for _, raw := range []string{`data:text/plain`, `data:text/plain;base64,!!!`, `data:text/plain,%zz`} {
+	for _, raw := range []string{`data:text/plain`, `data:text/plain;base64,!!!`, `data:text/plain,%zz`,
+		// forgiving-base64 failures: a length of 1 mod 4, and "=" that is not
+		// one or two characters closing a length that is a multiple of 4.
+		`data:text/plain;base64,Y`, `data:text/plain;base64,YQ=`, `data:text/plain;base64,aGVsbG8==`, `data:text/plain;base64,YQ===`} {
 		var template Template
 		if err := json.Unmarshal([]byte(`"`+raw+`"`), &template); err == nil {
 			t.Errorf("%s: json.Unmarshal() error = nil, want an invalid data URL error", raw)
@@ -941,5 +950,21 @@ func TestFetcherGetsTheURLStandardFormOfTheID(t *testing.T) {
 	want := []string{"https://example.org/t.html#v2", "https://example.org/m.json", inData.ID}
 	if !reflect.DeepEqual(fetcher.ids, want) {
 		t.Errorf("Fetcher got ids %.200q, want %.200q", fetcher.ids, want)
+	}
+}
+
+// An empty renderProperty shares nothing and an absent one shares everything,
+// so the empty list must survive a round trip instead of becoming nil.
+func TestRenderPropertyKeepsAnEmptyListOnTheWire(t *testing.T) {
+	data, err := json.Marshal(RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"renderProperty":[]`)) {
+		t.Fatalf("json.Marshal() = %s, want renderProperty as []", data)
+	}
+	var method RenderMethod
+	if err := json.Unmarshal(data, &method); err != nil || method.RenderProperty == nil {
+		t.Fatalf("json.Unmarshal() = %#v, %v; want an empty, non-nil RenderProperty", method.RenderProperty, err)
 	}
 }

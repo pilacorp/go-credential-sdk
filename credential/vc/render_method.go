@@ -19,6 +19,11 @@ import (
 //
 // The JSON member names are part of the signed credential and follow that
 // draft. Experimental: the draft can change, and this API changes with it.
+//
+// RenderProperty lists RFC 6901 JSON Pointers to the data a template sees: nil
+// passes the whole credential, an empty list passes nothing, and the pointer ""
+// selects the whole document. omitzero keeps an empty list on the wire, so it
+// does not read back as nil.
 type RenderMethod struct {
 	// ID is the optional renderMethod.id (WD-20261013 §2.2). Rendering uses
 	// Template, even when ID is present. To render from ID, call Dereference and
@@ -48,7 +53,10 @@ type RenderMethod struct {
 // summary, html or static, or that have neither a template nor an id are
 // skipped, as WD-20261013 §2.2 requires
 // for suites a consumer does not support. A supported entry that fails to
-// decode or validate is an error, reported with its index.
+// decode or has an invalid format is an error, reported with its index.
+// Template content is not read here: a renderer checks it, and Validate checks
+// it before signing, so one entry with a broken template does not hide the
+// others.
 //
 // When the credential embeds a proof, its JSON-LD is expanded first, and a
 // credential with a term the @context does not define is refused. This is not
@@ -459,8 +467,8 @@ func referencedDataURL(id string) (string, bool) {
 }
 
 // decodeDataURL decodes a data URL. RFC 2397 lets the media type be empty. Like
-// the WHATWG Fetch data: URL processor, it matches ";base64" case-insensitively
-// and percent-decodes before base64.
+// the WHATWG Fetch data: URL processor, it matches ";base64" case-insensitively,
+// percent-decodes, then decodes base64 with forgiving-base64.
 func decodeDataURL(raw string) (*EmbeddedTemplate, error) {
 	metadata, payload, ok := strings.Cut(raw[5:], ",")
 	if !ok {
@@ -473,7 +481,7 @@ func decodeDataURL(raw string) (*EmbeddedTemplate, error) {
 	mediaType, decoded := metadata, []byte(unescaped)
 	if n := len(metadata) - len(";base64"); n >= 0 && strings.EqualFold(metadata[n:], ";base64") {
 		mediaType = metadata[:n]
-		if decoded, err = base64.StdEncoding.DecodeString(unescaped); err != nil {
+		if decoded, err = forgivingBase64Decode(unescaped); err != nil {
 			return nil, fmt.Errorf("decode embedded template data URL: %w", err)
 		}
 	}
@@ -483,6 +491,26 @@ func decodeDataURL(raw string) (*EmbeddedTemplate, error) {
 		mediaType = "text/plain" + mediaType
 	}
 	return &EmbeddedTemplate{MediaType: mediaType, Bytes: decoded}, nil
+}
+
+// forgivingBase64Decode is forgiving-base64 decode (WHATWG Infra Standard), which
+// Fetch uses for data: URLs: ASCII whitespace is removed and padding is
+// optional, so a data: URL another issuer wrote without "=" still decodes.
+func forgivingBase64Decode(encoded string) ([]byte, error) {
+	encoded = strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\f' || r == '\r' || r == ' ' {
+			return -1
+		}
+		return r
+	}, encoded)
+	if len(encoded)%4 == 0 {
+		encoded = strings.TrimSuffix(encoded, "=")
+		encoded = strings.TrimSuffix(encoded, "=")
+	}
+	if len(encoded)%4 == 1 {
+		return nil, fmt.Errorf("base64 data has a length of 1 modulo 4")
+	}
+	return base64.RawStdEncoding.DecodeString(encoded)
 }
 
 func (t *Template) decodeJSON(data []byte) error {

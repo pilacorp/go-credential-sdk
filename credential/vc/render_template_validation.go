@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"mime"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
 // Fetcher retrieves the template or render method a credential references.
@@ -125,33 +127,32 @@ func (m RenderMethod) validateHTMLTemplate() error {
 	if !isMediaType(m.Template.Embedded.MediaType, "text/html") {
 		return fmt.Errorf("renderMethod.template media type for html must be text/html")
 	}
-	for _, tag := range []string{"html", "head", "body"} {
-		if containsHTMLElement(string(m.Template.Embedded.Bytes), tag) {
-			return fmt.Errorf("html template must be a fragment without <%s> element", tag)
-		}
+	if tag, ok := findDocumentTag(m.Template.Embedded.Bytes); ok {
+		return fmt.Errorf("html template must be a fragment without <%s> or </%s> tags", tag, tag)
 	}
 	return nil
 }
 
-func containsHTMLElement(source, element string) bool {
-	lower := strings.ToLower(source)
-	needle := "<" + element
-	for offset := 0; offset < len(lower); {
-		index := strings.Index(lower[offset:], needle)
-		if index < 0 {
-			return false
+// findDocumentTag returns the first html, head or body tag, start or end, in an
+// HTML fragment. The payload code MUST NOT include these tags because the
+// wrapper code provides them (VC Render Method, html suite). A tokenizer is
+// used so that text in script, style, comments and attribute values, which
+// holds no tags, is not mistaken for one.
+func findDocumentTag(fragment []byte) (string, bool) {
+	tokenizer := html.NewTokenizer(bytes.NewReader(fragment))
+	for {
+		switch tokenizer.Next() {
+		case html.ErrorToken:
+			// io.EOF ends the fragment; the reader is in memory, so no other error.
+			return "", false
+		case html.StartTagToken, html.EndTagToken, html.SelfClosingTagToken:
+			name, _ := tokenizer.TagName()
+			switch tag := string(name); tag {
+			case "html", "head", "body":
+				return tag, true
+			}
 		}
-		index += offset + len(needle)
-		if index == len(lower) {
-			return true
-		}
-		switch lower[index] {
-		case '>', '/', ' ', '\t', '\n', '\r', '\f':
-			return true
-		}
-		offset = index
 	}
-	return false
 }
 
 func (m RenderMethod) ValidateExternalTemplate(ctx context.Context, fetcher Fetcher) error {

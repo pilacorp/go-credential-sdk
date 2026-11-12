@@ -14,6 +14,9 @@ import (
 // rest: the sandboxed iframe, its own CSP, the MessageChannel, and waiting for
 // the ready or error message.
 type HTMLRenderArtifact struct {
+	// SrcDoc runs the issuer's script. Load it only in an iframe with
+	// sandbox="allow-scripts", never allow-same-origin, on a page whose CSP
+	// includes frame-src 'none' (WD-20261013 §2.2.2.2).
 	SrcDoc string
 	// Width and Height are raw credential values: assign them through
 	// element.style, never into HTML or a style attribute string.

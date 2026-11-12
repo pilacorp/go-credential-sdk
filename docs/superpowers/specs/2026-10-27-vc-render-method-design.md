@@ -195,7 +195,7 @@ type SummaryField struct {
 For `html`:
 
 - `template` provides an HTML fragment through a `data:` URL or a referenced template object.
-- The fragment MUST NOT contain `<html>`, `<head>`, or `<body>` elements.
+- The fragment MUST NOT contain `<html>`, `<head>`, or `<body>` tags, start or end. The SDK finds tags with an HTML tokenizer, so text in script, style, comments and attribute values is not taken for a tag.
 - `renderProperty` MAY restrict the VC data passed to the template.
 - If `renderProperty` is absent, the entire VC is presumed to be shared with the template environment.
 - `outputPreference` MAY provide `accessMode`, `mediaType`, and iframe `style.width`/`style.height` hints.
@@ -425,7 +425,7 @@ A consumer calls `Verify` first, then runs the context validation of VC Data Int
 
 ### 8.1 Processing algorithm
 
-1. Decode the template from an embedded `data:` URL or load it through `Fetcher`.
+1. Decode the template from an embedded `data:` URL, as the WHATWG Fetch `data:` URL processor does (base64 with forgiving-base64: padding optional, ASCII whitespace removed), or load it through `Fetcher`.
 2. For an external template, verify `digestMultibase` when present; embedded templates have no digest requirement.
 3. Validate the summary template.
 4. Recursively inspect string-valued template properties.

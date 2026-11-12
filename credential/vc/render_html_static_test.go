@@ -191,17 +191,33 @@ func TestWrapHTMLTemplatePreservesArraysWhenFilteringProperties(t *testing.T) {
 	}
 }
 
-func TestWrapHTMLTemplateRejectsDocumentElements(t *testing.T) {
-	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<html>bad</html>`)}}}
-	if _, err := method.WrapHTMLTemplate(context.Background(), CredentialData{}, RenderOptions{}); err == nil {
-		t.Fatal("WrapHTMLTemplate() error = nil")
+// The payload code MUST NOT include any <html>, <head> or <body> tags (VC
+// Render Method, html suite). An end tag is a tag too: </body></html> would
+// close the wrapper and leave the rest of the template outside its body.
+func TestWrapHTMLTemplateRejectsDocumentTags(t *testing.T) {
+	for _, fragment := range []string{
+		`<html>bad</html>`, `<HEAD></HEAD>`, `<body class="x">`, `<p>x</p></body></html><script>1</script>`,
+		`<p>x</p></head>`, `<p>x</p></HTML>`, `<body/>`,
+	} {
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(fragment)}}}
+		if _, err := method.WrapHTMLTemplate(context.Background(), CredentialData{}, RenderOptions{}); err == nil {
+			t.Errorf("WrapHTMLTemplate(%q) error = nil, want a document tag error", fragment)
+		}
 	}
 }
 
-func TestWrapHTMLTemplateAcceptsHeaderFragment(t *testing.T) {
-	method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(`<header>ok</header>`)}}}
-	if _, err := method.WrapHTMLTemplate(context.Background(), CredentialData{}, RenderOptions{}); err != nil {
-		t.Fatalf("WrapHTMLTemplate() rejected header fragment: %v", err)
+// Text that only looks like a tag, inside script, style, a comment or an
+// attribute value, is not a tag and must not refuse the template.
+func TestWrapHTMLTemplateAcceptsFragments(t *testing.T) {
+	for _, fragment := range []string{
+		`<header>ok</header>`, `<bodyguard>ok</bodyguard>`,
+		`<script>const s = '<body></body>';</script>`, `<style>p::before { content: "<html>" }</style>`,
+		`<!-- <head> -->`, `<p title="</body>">ok</p>`, `a < body`,
+	} {
+		method := RenderMethod{Type: "SuiteRenderMethod", RenderSuite: "html", Template: &Template{Embedded: &EmbeddedTemplate{MediaType: "text/html", Bytes: []byte(fragment)}}}
+		if _, err := method.WrapHTMLTemplate(context.Background(), CredentialData{}, RenderOptions{}); err != nil {
+			t.Errorf("WrapHTMLTemplate(%q) error = %v, want the fragment accepted", fragment, err)
+		}
 	}
 }
 
