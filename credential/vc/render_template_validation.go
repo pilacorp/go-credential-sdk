@@ -39,12 +39,21 @@ func (m RenderMethod) validateTemplateContent() error {
 }
 
 // isMediaType reports whether got names the media type want, comparing after
-// parsing. Type and subtype are compared case-insensitively (RFC 6838 §4.2); this
-// SDK ignores parameters by its own choice: "Application/JSON; charset=utf-8" is
-// application/json.
+// parsing. Type and subtype are compared case-insensitively (RFC 9110 §8.3.1);
+// this SDK ignores parameters by its own choice, so a malformed parameter does
+// not stop a match: "Application/JSON; charset" is application/json.
 func isMediaType(got, want string) bool {
-	parsed, _, err := mime.ParseMediaType(got)
-	return err == nil && parsed == want
+	gotType, gotOK := mediaTypeName(got)
+	wantType, wantOK := mediaTypeName(want)
+	return gotOK && wantOK && gotType == wantType
+}
+
+// mediaTypeName returns the lower-cased type/subtype of a media type and drops
+// its parameters, which this SDK does not compare.
+func mediaTypeName(mediaType string) (string, bool) {
+	name, _, _ := strings.Cut(mediaType, ";")
+	parsed, _, err := mime.ParseMediaType(name)
+	return parsed, err == nil
 }
 
 func (m RenderMethod) validateSummaryTemplateContent() error {

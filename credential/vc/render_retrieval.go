@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -58,12 +59,20 @@ func (f HTTPFetcher) Fetch(ctx context.Context, ref TemplateReference) ([]byte, 
 		return nil, fmt.Errorf("fetch template: unexpected HTTP status %s", resp.Status)
 	}
 	if ref.MediaType != "" {
-		contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
-		if contentType != ref.MediaType {
-			return nil, fmt.Errorf("template media type %q does not match expected %q", contentType, ref.MediaType)
+		// Both values are quoted only at their start: one comes from the
+		// credential, the other from the server.
+		contentType := resp.Header.Get("Content-Type")
+		if !isMediaType(contentType, ref.MediaType) {
+			return nil, fmt.Errorf("template media type %.64q does not match expected %.64q", contentType, ref.MediaType)
 		}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	// One byte past the limit tells a body at the limit from a longer one.
+	// At the largest int64 there is no longer body to tell apart.
+	readLimit := limit
+	if readLimit < math.MaxInt64 {
+		readLimit++
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, readLimit))
 	if err != nil {
 		return nil, fmt.Errorf("read template response: %w", err)
 	}
