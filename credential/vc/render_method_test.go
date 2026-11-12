@@ -557,6 +557,50 @@ func TestRenderMethodDereferenceFetchesAndChecksDigest(t *testing.T) {
 	}
 }
 
+func TestRenderMethodDereferenceRefusesAChangedDigestOrSuite(t *testing.T) {
+	fetched := []byte(`{"type":"SuiteRenderMethod","renderSuite":"summary","template":"data:application/json,%7B%22name%22%3A%22N%22,%22description%22%3A%22D%22,%22fields%22:%5B%5D%7D"}`)
+	method := RenderMethod{ID: "https://example.com/render-method.json", Type: "SuiteRenderMethod", RenderSuite: "summary", DigestMultibase: testDigest(fetched)}
+	changed := bytes.Replace(fetched, []byte(`%22N%22`), []byte(`%22M%22`), 1)
+	if _, err := method.Dereference(context.Background(), &testFetcher{data: changed}); err == nil || !strings.Contains(err.Error(), "renderMethod.digestMultibase") {
+		t.Errorf("changed bytes: Dereference() error = %v, want a digestMultibase error", err)
+	}
+	html := []byte(`{"type":"SuiteRenderMethod","renderSuite":"html","template":"data:text/html,%3Cp%3Ex%3C/p%3E"}`)
+	method.DigestMultibase = ""
+	if _, err := method.Dereference(context.Background(), &testFetcher{data: html}); err == nil {
+		t.Error("html method for a summary entry: Dereference() error = nil")
+	}
+}
+
+// The credential's renderProperty limits which claims the template sees; a
+// fetched method must not widen or change it.
+func TestRenderMethodDereferenceRefusesAnotherRenderProperty(t *testing.T) {
+	method := RenderMethod{ID: "https://i.example/rm", Type: "SuiteRenderMethod", RenderSuite: "html", RenderProperty: []string{"/credentialSubject/name"}}
+	for _, fetched := range []string{
+		`{"type":"SuiteRenderMethod","renderSuite":"html","template":"data:text/html,%3Cp%3Ex%3C/p%3E"}`,
+		`{"type":"SuiteRenderMethod","renderSuite":"html","renderProperty":["/credentialSubject"],"template":"data:text/html,%3Cp%3Ex%3C/p%3E"}`,
+	} {
+		if _, err := method.Dereference(context.Background(), &testFetcher{data: []byte(fetched)}); err == nil {
+			t.Errorf("fetched %s: Dereference() error = nil, want a renderProperty mismatch", fetched)
+		}
+	}
+	// [] shares nothing, so a fetched method without renderProperty would share everything.
+	nothing := RenderMethod{ID: method.ID, Type: method.Type, RenderSuite: method.RenderSuite, RenderProperty: []string{}}
+	if _, err := nothing.Dereference(context.Background(), &testFetcher{data: []byte(`{"type":"SuiteRenderMethod","renderSuite":"html","template":"data:text/html,%3Cp%3Ex%3C/p%3E"}`)}); err == nil {
+		t.Error("credential renderProperty [] and fetched without it: Dereference() error = nil")
+	}
+	same := `{"type":"SuiteRenderMethod","renderSuite":"html","renderProperty":["/credentialSubject/name"],"template":"data:text/html,%3Cp%3Ex%3C/p%3E"}`
+	if _, err := method.Dereference(context.Background(), &testFetcher{data: []byte(same)}); err != nil {
+		t.Errorf("same renderProperty: Dereference() error = %v", err)
+	}
+	// Without renderProperty in the credential the whole credential is shared,
+	// so the fetched method may narrow it.
+	method.RenderProperty = nil
+	narrowed := `{"type":"SuiteRenderMethod","renderSuite":"html","renderProperty":["/credentialSubject/name"],"template":"data:text/html,%3Cp%3Ex%3C/p%3E"}`
+	if _, err := method.Dereference(context.Background(), &testFetcher{data: []byte(narrowed)}); err != nil {
+		t.Errorf("credential without renderProperty: Dereference() error = %v", err)
+	}
+}
+
 func parseRenderMethodsInput(t *testing.T, document string) CredentialData {
 	t.Helper()
 	var data CredentialData

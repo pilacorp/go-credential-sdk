@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"mime"
 	"reflect"
+	"slices"
 	"strings"
 
 	whatwgurl "github.com/nlnwa/whatwg-url/url"
@@ -185,7 +186,8 @@ func isSupportedRenderMethod(entry map[string]any) (bool, error) {
 
 // Dereference fetches the render method at ID with the fetcher the consumer
 // passes in, checks DigestMultibase when present, and returns the fetched method
-// to render.
+// to render. The fetched method must have the same type and renderSuite, and,
+// when the credential sets renderProperty, the same renderProperty.
 func (m RenderMethod) Dereference(ctx context.Context, fetcher Fetcher) (RenderMethod, error) {
 	if m.ID == "" {
 		return RenderMethod{}, fmt.Errorf("renderMethod.id is required to dereference")
@@ -212,6 +214,13 @@ func (m RenderMethod) Dereference(ctx context.Context, fetcher Fetcher) (RenderM
 	}
 	if fetched.Type != m.Type || fetched.RenderSuite != m.RenderSuite {
 		return RenderMethod{}, fmt.Errorf("fetched render method is %.64q/%.64q, want %.64q/%.64q", fetched.Type, fetched.RenderSuite, m.Type, m.RenderSuite)
+	}
+	// renderProperty in the credential limits the claims the template sees, and
+	// WD-20261013 does not say how a fetched method merges with it, so a fetched
+	// method that changes it is refused rather than one of them chosen. nil and
+	// [] differ: nil shares the whole credential, [] shares nothing.
+	if m.RenderProperty != nil && (fetched.RenderProperty == nil || !slices.Equal(m.RenderProperty, fetched.RenderProperty)) {
+		return RenderMethod{}, fmt.Errorf("fetched render method has a different renderProperty from the credential")
 	}
 	if err := fetched.Validate(); err != nil {
 		return RenderMethod{}, fmt.Errorf("fetched render method: %w", err)
@@ -591,7 +600,8 @@ func isDataURL(raw string) bool {
 // on the raw id would send " data:..." to the Fetcher. The parser is not
 // called here: it takes about 35 ms per MiB, and a data: URL holds a template.
 // It also reads a data: string in template, and tells whether renderMethod.id
-// is bounded by maxURLBytes.
+// is bounded by maxURLBytes. So a literal tab or newline is never template
+// data; a template that needs one writes it as %0A or in base64.
 func referencedDataURL(id string) (string, bool) {
 	id = strings.TrimFunc(id, func(r rune) bool { return r <= ' ' })
 	if strings.ContainsAny(id, "\t\n\r") {

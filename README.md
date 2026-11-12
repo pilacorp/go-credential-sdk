@@ -125,8 +125,10 @@ pointer to the whole document and passes everything.
 `RenderMethod.ID` is an optional reference to a complete remote render method.
 Rendering uses `Template`, even when `ID` is present. To render from `ID`, call
 `RenderMethod.Dereference` with the caller's `Fetcher`, then render the returned
-method. An entry with `ID` but no `Template` is retained by
-`ParseRenderMethods` for this purpose.
+method. The fetched method must have the same `Type` and `RenderSuite`, and the
+same `RenderProperty` when the credential sets one, so a fetched method cannot
+widen the claims the issuer chose to show. An entry with `ID` but no `Template`
+is retained by `ParseRenderMethods` for this purpose.
 
 ```go
 summary := vc.RenderMethod{

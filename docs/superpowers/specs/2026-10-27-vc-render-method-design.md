@@ -220,6 +220,12 @@ it with a URL Standard parser. To render from `id`, a
 consumer calls `RenderMethod.Dereference` with its fetcher, then renders the
 returned method. Rendering otherwise uses `template`.
 
+The fetched method must have the same `type` and `renderSuite` as the entry in
+the credential. When the entry sets `renderProperty`, the fetched method must
+set the same list: WD-20261013 does not say how the two merge, and the list in
+the credential is the one the issuer signed. An entry without `renderProperty`
+shares the whole credential, so the fetched method may narrow it.
+
 When present, `digestMultibase` is checked while dereferencing the remote
 method. This is distinct from `template.digestMultibase`, which protects the
 template bytes referenced by `template`.
