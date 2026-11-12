@@ -448,7 +448,7 @@ External retrieval is injected through `Fetcher`; the core renderer must not cre
 - requires a caller-supplied `http.Client` and a positive `MaxResponseSize`;
 - honors the request context and an optional `Timeout`;
 - stops at the `MaxRedirects`-th redirect, as `net/http` does at its default of 10, so zero refuses every redirect; a negative value keeps the client's own policy;
-- compares the response `Content-Type` with the reference `mediaType` when the reference has one;
+- when the reference has a `mediaType`, requires the response `Content-Type` to have the same type and subtype, ignoring case (RFC 9110 §8.3.1) and, by the SDK's own choice, parameters, even malformed ones;
 - sends no credential data in the request and logs nothing.
 
 It does not check the address it connects to, so a credential can point it at an internal host. Use it only for templates from issuers the application trusts; otherwise implement `Fetcher`. The renderer verifies the digest after the fetcher returns and before it parses the template.

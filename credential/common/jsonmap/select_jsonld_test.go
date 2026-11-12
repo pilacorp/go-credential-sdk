@@ -1,6 +1,8 @@
 package jsonmap
 
 import (
+	"fmt"
+	"math"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -154,7 +156,8 @@ func TestArrayIndexRejectsOverflowAndNonCanonicalTokens(t *testing.T) {
 		{"-1", 0, false},
 		{"+1", 0, false},
 		{"1a", 0, false},
-		{"9223372036854775807", 9223372036854775807, true},
+		{strconv.Itoa(math.MaxInt), math.MaxInt, true},
+		{strconv.FormatUint(uint64(math.MaxInt)+1, 10), 0, false},
 		{"9223372036854775808", 0, false},
 		{"99999999999999999999999", 0, false},
 	}
@@ -302,4 +305,38 @@ func allocatedBySelect(t *testing.T, document map[string]interface{}, pointers [
 		t.Fatalf("SelectJSONLD error = %v, want error %v", err, wantErr)
 	}
 	return after.TotalAlloc - before.TotalAlloc
+}
+
+// A pointer comes from the credential and has no size limit, so an error
+// quotes only its start.
+func TestSelectJSONLDErrorsQuoteOnlyTheStartOfAPointer(t *testing.T) {
+	long := strings.Repeat("a", 1<<20)
+	document := map[string]interface{}{"a": map[string]interface{}{}}
+	for name, pointers := range map[string][]string{
+		"no leading slash":           {long},
+		"missing member":             {"/" + long},
+		"missing under selected one": {"/a", "/a/" + long},
+	} {
+		_, err := SelectJSONLD(document, pointers)
+		if err == nil || len(err.Error()) > 1024 {
+			t.Errorf("%s: error = %.80v (%d bytes), want an error of at most 1024 bytes", name, err, len(fmt.Sprint(err)))
+		}
+	}
+}
+
+// The selection must not share values with the document: compacting a
+// sparse array in the selection wrote through a shared type into the caller's
+// document.
+func TestSelectJSONLDLeavesTheDocumentUnchanged(t *testing.T) {
+	document := map[string]interface{}{
+		"type": map[string]interface{}{"x": []interface{}{nil, 1.0}},
+		"a":    "v",
+	}
+	if _, err := SelectJSONLD(document, []string{"/a"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []interface{}{nil, 1.0}
+	if got := document["type"].(map[string]interface{})["x"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("document type.x = %v after selection, want %v", got, want)
+	}
 }

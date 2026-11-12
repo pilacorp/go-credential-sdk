@@ -156,7 +156,7 @@ func resolveNode(value any, credential CredentialData, literal, required bool, b
 			if !required {
 				return nil, nil
 			}
-			return nil, fmt.Errorf("JSON Pointer %q resolves to null", v)
+			return nil, fmt.Errorf("JSON Pointer %.64q resolves to null", v)
 		}
 		text := ""
 		if s, ok := resolved.(string); ok {
@@ -166,7 +166,7 @@ func resolveNode(value any, credential CredentialData, literal, required bool, b
 			encoder := json.NewEncoder(&encoded)
 			encoder.SetEscapeHTML(false)
 			if err := encoder.Encode(resolved); err != nil {
-				return nil, fmt.Errorf("encode pointer value %q: %w", v, err)
+				return nil, fmt.Errorf("encode pointer value %.64q: %w", v, err)
 			}
 			text = strings.TrimSuffix(encoded.String(), "\n")
 		}

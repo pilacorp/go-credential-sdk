@@ -3,8 +3,10 @@ package vc
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -79,5 +81,86 @@ func TestResolveJSONPointerAcceptsOnlyRFC6901ArrayIndexes(t *testing.T) {
 		if got, err := resolveJSONPointer(document, pointer); err == nil {
 			t.Errorf("ResolveJSONPointer(%q) = %v, want an error", pointer, got)
 		}
+	}
+}
+
+// Type and subtype are case-insensitive (RFC 9110 §8.3.1), and the SDK ignores
+// parameters, so these responses match the reference.
+func TestHTTPFetcherMatchesMediaTypeByTypeAndSubtype(t *testing.T) {
+	for _, tc := range []struct{ header, want string }{
+		{"Text/HTML", "text/html"},
+		{"text/html; charset=utf-8", "TEXT/html"},
+		{"application/json", "application/json; charset=utf-8"},
+		{"text/html; charset", "text/html"},
+		{"text/html; charset=utf-8; charset=latin1", "text/html"},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", tc.header)
+			_, _ = w.Write([]byte("x"))
+		}))
+		fetcher := HTTPFetcher{Client: server.Client(), MaxResponseSize: 64}
+		_, err := fetcher.Fetch(context.Background(), TemplateReference{ID: server.URL, MediaType: tc.want})
+		server.Close()
+		if err != nil {
+			t.Errorf("Content-Type %q against %q: %v", tc.header, tc.want, err)
+		}
+	}
+}
+
+func TestHTTPFetcherRefusesAnotherMediaType(t *testing.T) {
+	for _, header := range []string{"text/plain", "", "not a media type"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header()["Content-Type"] = []string{header}
+			_, _ = w.Write([]byte("x"))
+		}))
+		fetcher := HTTPFetcher{Client: server.Client(), MaxResponseSize: 64}
+		_, err := fetcher.Fetch(context.Background(), TemplateReference{ID: server.URL, MediaType: "text/html"})
+		server.Close()
+		if err == nil {
+			t.Errorf("Content-Type %q against text/html: error = nil, want a mismatch", header)
+		}
+	}
+}
+
+// MaxResponseSize at the largest int64 means no limit. Adding one byte for the
+// size check overflowed to a negative limit, and the body read as empty.
+func TestHTTPFetcherReadsTheBodyAtTheLargestLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	fetcher := HTTPFetcher{Client: server.Client(), MaxResponseSize: math.MaxInt64}
+	data, err := fetcher.Fetch(context.Background(), TemplateReference{ID: server.URL})
+	if err != nil || string(data) != `{"ok":true}` {
+		t.Fatalf("Fetch() = %q, %v; want the body", data, err)
+	}
+}
+
+// A reference media type that does not parse matches nothing, not even a
+// response media type that does not parse either.
+func TestHTTPFetcherRefusesAReferenceMediaTypeThatDoesNotParse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header()["Content-Type"] = []string{"also bad"}
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer server.Close()
+	fetcher := HTTPFetcher{Client: server.Client(), MaxResponseSize: 64}
+	if _, err := fetcher.Fetch(context.Background(), TemplateReference{ID: server.URL, MediaType: "also bad"}); err == nil {
+		t.Fatal("Fetch() error = nil, want a mismatch")
+	}
+}
+
+// A long request URL must not push the reason for the failure out of the error.
+func TestHTTPFetcherErrorKeepsTheCauseOfALongURL(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+	fetcher := HTTPFetcher{Client: server.Client(), MaxResponseSize: 64, Timeout: 50 * time.Millisecond}
+	_, err := fetcher.Fetch(context.Background(), TemplateReference{ID: server.URL + "/" + strings.Repeat("a", 600)})
+	if err == nil || !strings.Contains(err.Error(), "deadline exceeded") {
+		t.Fatalf("Fetch() error = %v, want the timeout named", err)
 	}
 }

@@ -115,7 +115,7 @@ func (m RenderMethod) Dereference(ctx context.Context, fetcher Fetcher) (RenderM
 		return RenderMethod{}, fmt.Errorf("renderMethod.id is required to dereference")
 	}
 	if fetcher == nil {
-		return RenderMethod{}, fmt.Errorf("renderMethod.id %q needs a Fetcher", m.ID)
+		return RenderMethod{}, fmt.Errorf("renderMethod.id %.64q needs a Fetcher", m.ID)
 	}
 	id, err := serializeURL(m.ID, "renderMethod.id")
 	if err != nil {
@@ -135,7 +135,7 @@ func (m RenderMethod) Dereference(ctx context.Context, fetcher Fetcher) (RenderM
 		return RenderMethod{}, fmt.Errorf("decode fetched render method: %w", err)
 	}
 	if fetched.Type != m.Type || fetched.RenderSuite != m.RenderSuite {
-		return RenderMethod{}, fmt.Errorf("fetched render method is %s/%s, want %s/%s", fetched.Type, fetched.RenderSuite, m.Type, m.RenderSuite)
+		return RenderMethod{}, fmt.Errorf("fetched render method is %.64q/%.64q, want %.64q/%.64q", fetched.Type, fetched.RenderSuite, m.Type, m.RenderSuite)
 	}
 	if err := fetched.Validate(); err != nil {
 		return RenderMethod{}, fmt.Errorf("fetched render method: %w", err)
@@ -324,7 +324,7 @@ func (p *OutputPreference) validate() error {
 		switch mode {
 		case "auditory", "tactile", "textual", "visual":
 		default:
-			return fmt.Errorf("accessMode[%d] %q is not auditory, tactile, textual or visual", i, mode)
+			return fmt.Errorf("accessMode[%d] %.64q is not auditory, tactile, textual or visual", i, mode)
 		}
 	}
 	return validateMediaType(p.MediaType)
