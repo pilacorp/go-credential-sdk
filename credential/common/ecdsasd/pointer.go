@@ -31,6 +31,9 @@ func parsePointer(pointer string) []interface{} {
 	return parsed
 }
 
+// TODO: Reuse jsonmap.SelectJSONLD here so JSON-LD pointer selection has one
+// implementation across selective disclosure and rendering.
+//
 // selectJsonLd builds a JSON-LD selection document containing only the values
 // addressed by pointers, carrying @context and the id/type of every traversed
 // node. Ports digitalbazaar di-sd-primitives selectJsonLd (includeTypes=true).

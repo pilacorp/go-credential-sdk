@@ -92,6 +92,7 @@ func requireJOSECredential(m CredentialData) error {
 	}
 	return requireCredentialType(m["type"])
 }
+
 // to look up revocation. Both the 1.1 and the 2.0 spelling of the validity window
 // are listed so that neither can be moved out of the signature, whichever one a
 // payload uses.

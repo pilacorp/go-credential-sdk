@@ -19,6 +19,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
   - [vc-jose-cose (VC 2.0 secured as a JWT)](#vc-jose-cose)
   - [Presentations secured as a JWT (vp+jwt)](#vp-jose-cose)
   - [ecdsa-sd-2023 (Selective Disclosure for JSON-LD)](#ecdsa-sd-2023)
+  - [Render methods](#render-methods)
   - [Example](#vc-example)
 - [Verifiable Presentation (VP) Package](#verifiable-presentation-vp-package)
   - [Features](#vp-features)
@@ -43,7 +44,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
 
 ## Prerequisites
 
-- Go 1.18 or higher
+- Go 1.25 or higher
 - For VC/VP: Secure private key generation using `crypto/ecdsa` package and verification method for signing/verifying
 - Internet access for DID resolution and JSON-LD context fetching
 - Dependencies:
@@ -71,6 +72,73 @@ go get github.com/piprate/json-gold/ld
 ---
 
 # Verifiable Credential (VC) Package
+
+## Render methods
+
+Experimental: this API follows the W3C VC Render Method Working Draft
+WD-20261013 and changes when the draft does. Do not rely on render methods
+from a tagged release until [#179](https://github.com/pilacorp/go-credential-sdk/issues/179) is fixed: a holder can rewrite the JSON-LD of
+a signed credential so that `digestMultibase` or `renderProperty` is not read,
+and the proof still verifies.
+
+Render methods are signed JSON-LD VC metadata. The SDK does not add a JSON-LD
+context automatically; provide a context that defines the render-method terms.
+Create methods with the common `vc.RenderMethod` model and attach them before
+signing. With ecdsa-sd-2023, pass `/renderMethod` as a mandatory pointer, or the
+holder can drop or trim methods and the derived proof still verifies.
+
+Consumers call `Verify` first, then run the context validation of VC Data
+Integrity 1.0 §4.6: `@context` deeply equals a known value, no subtree of the
+credential contains `@context`, and every context URL resolves to a known file
+or hash. Then read the methods with `vc.ParseRenderMethods`.
+`RenderSummary` resolves JSON Pointers,
+`WrapHTMLTemplate` returns a `SrcDoc` that the host must load in an iframe with
+`sandbox="allow-scripts"`, never `allow-same-origin`, on a page whose CSP
+includes `frame-src 'none'` (WD-20261013 §2.2.2.2),
+and `ResolveStatic` returns the static bytes, checked against
+`digestMultibase` when the template has one. All three accept
+`vc.RenderOptions` for template retrieval. External templates require an
+injected `Fetcher`; when `digestMultibase` is present, SHA-256 multihash
+verification is performed before the template is parsed. Referenced templates
+are then validated with the same rules as embedded ones; when a fetched
+reference omits `mediaType`, the suite's default media type is assumed. A
+`data:` URL in `template.id` carries its own media type, read with the steps
+of the Fetch `data:` URL processor: `text/plain;charset=US-ASCII` when it names
+none. Unlike Fetch, a malformed media type parameter is an error.
+`ParseRenderMethods` skips render method types and suites the SDK does not
+support, and returns an error for an entry without a `type`, or a
+`SuiteRenderMethod` without a string `renderSuite`; member names are
+case-sensitive. Each renderer accepts only its own suite. It checks the format of each entry; template content is
+checked when a method is rendered, and by `Validate` before signing.
+
+A referenced template or render method is a network request to an address the
+issuer chose, so the issuer can see when and from where a credential is shown.
+`HTTPFetcher` does not check that address and follows redirects, so it can
+reach internal hosts; for credentials from issuers you do not trust, pass a
+`Fetcher` that limits schemes and hosts, and refuses an empty
+`DigestMultibase` if the template must be covered by the signature.
+
+`renderProperty` holds JSON Pointers (RFC 6901). When it is absent the whole
+credential is passed to the template; `[]` passes nothing; `[""]` is the
+pointer to the whole document and passes everything.
+
+`RenderMethod.ID` is an optional reference to a complete remote render method.
+Rendering uses `Template`, even when `ID` is present. To render from `ID`, call
+`RenderMethod.Dereference` with the caller's `Fetcher`, then render the returned
+method. The fetched method must have the same `Type` and `RenderSuite`, and the
+same `RenderProperty` when the credential sets one, so a fetched method cannot
+widen the claims the issuer chose to show. An entry with `ID` but no `Template`
+is retained by `ParseRenderMethods` for this purpose.
+
+```go
+summary := vc.RenderMethod{
+	Type: "SuiteRenderMethod", RenderSuite: "summary",
+	Template: &vc.Template{Embedded: &vc.EmbeddedTemplate{
+		MediaType: "application/json",
+		Bytes: []byte(`{"name":"Degree","description":"Summary","fields":[{"label":"Name","value":"/credentialSubject/name"}]}`),
+	}},
+}
+```
 
 ## <a name="vc-features"></a>Features
 
