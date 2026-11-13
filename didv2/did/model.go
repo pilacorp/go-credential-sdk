@@ -90,8 +90,9 @@ type VerificationMethod struct {
 	// after this timestamp. Empty for active keys.
 	Revoked *time.Time `json:"revoked,omitempty"`
 	// RevocationReason carries the reason code (RFC 5280 §5.3.1) for the
-	// revocation. Hard reasons (keyCompromise, cACompromise, aACompromise)
-	// invalidate every signature ever produced by the key.
+	// revocation. keyCompromise is the hard reason: it invalidates every
+	// signature ever produced by the key. RevokeVerificationMethod can raise a
+	// soft reason to it later.
 	RevocationReason string `json:"revocationReason,omitempty"`
 }
 

@@ -2,6 +2,7 @@ package did
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -10,6 +11,15 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+// ErrAlreadyRevoked is wrapped by RevokeVerificationMethod and
+// RotateVerificationMethod when the verification method is already revoked and
+// the call may not change it.
+var ErrAlreadyRevoked = errors.New("verification method is already revoked")
+
+// reasonKeyCompromise is the revocation reason of a key that leaked or may
+// have (RFC 5280 §5.3.1). Verifiers refuse every signature such a key made.
+const reasonKeyCompromise = "keyCompromise"
 
 // VerificationPurpose is a DID relationship purpose supported by Pila.
 type VerificationPurpose string
@@ -144,7 +154,7 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 		return "", fmt.Errorf("verification method not found: %s", oldKid)
 	}
 	if doc.VerificationMethod[oldIdx].Revoked != nil {
-		return "", fmt.Errorf("verification method %q is already revoked", oldVMID)
+		return "", fmt.Errorf("%w: %q", ErrAlreadyRevoked, oldVMID)
 	}
 
 	purposes := doc.purposesOfKid(oldVMID)
@@ -169,6 +179,11 @@ func (doc *DIDDocument) RotateVerificationMethod(oldKid string, newVM Verificati
 // relationship arrays on purpose: verifiers compare proof.created against the
 // revoked timestamp, so removing the reference would also invalidate
 // signatures made while the key was still active.
+//
+// A VM already revoked can be revoked again only as keyCompromise, and only
+// when its reason is another one: the reason becomes keyCompromise and the
+// first revoked time stays, so revokedAt is not used. Any other second revoke
+// wraps ErrAlreadyRevoked and leaves the VM as it is.
 func (doc *DIDDocument) RevokeVerificationMethod(kid string, reason string, revokedAt time.Time) error {
 	if doc == nil {
 		return fmt.Errorf("document is nil")
@@ -188,7 +203,17 @@ func (doc *DIDDocument) RevokeVerificationMethod(kid string, reason string, revo
 		return fmt.Errorf("verification method not found: %s", kid)
 	}
 	if vm.Revoked != nil {
-		return fmt.Errorf("verification method %q is already revoked at %s (reason: %s)",
+		// A key retired for a soft reason may leak later. Raising it to
+		// keyCompromise is the only change allowed: it keeps the first revoked
+		// time, which a keyCompromise key does not need to be refused.
+		if reason == reasonKeyCompromise && vm.RevocationReason != reasonKeyCompromise {
+			vm.RevocationReason = reason
+			doc.ensureContext(cidContext)
+
+			return nil
+		}
+
+		return fmt.Errorf("%w: %q at %s (reason: %s)", ErrAlreadyRevoked,
 			vm.Id, vm.Revoked.UTC().Format(time.RFC3339), vm.RevocationReason)
 	}
 
