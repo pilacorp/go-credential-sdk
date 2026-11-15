@@ -37,28 +37,58 @@ func parsePointer(pointer string) []interface{} {
 // selectJsonLd builds a JSON-LD selection document containing only the values
 // addressed by pointers, carrying @context and the id/type of every traversed
 // node. Ports digitalbazaar di-sd-primitives selectJsonLd (includeTypes=true).
+//
+// Every pointer is "" or starts with "/" (RFC 6901 §3): parsePointer drops the
+// first token, so "credentialSubject" would read as "", the whole document.
+// Every pointer must match, the root pointer's neighbours included
+// (VC-DI-ECDSA §3.4.12).
 func selectJsonLd(document map[string]interface{}, pointers []string) (map[string]interface{}, error) {
 	if len(pointers) == 0 {
 		return nil, nil
 	}
+	paths := make([][]interface{}, len(pointers))
+	root := false
+	for i, pointer := range pointers {
+		if pointer != "" && !strings.HasPrefix(pointer, "/") {
+			return nil, fmt.Errorf("pointer %.64q must start with /", pointer)
+		}
+		paths[i] = parsePointer(pointer)
+		root = root || len(paths[i]) == 0
+	}
+	if root {
+		for i, path := range paths {
+			if !matchesPointer(document, path) {
+				return nil, fmt.Errorf("pointer %.64q: JSON pointer does not match document", pointers[i])
+			}
+		}
+		cloned, _ := deepCopy(document).(map[string]interface{})
+		return cloned, nil
+	}
+
 	sel := map[string]interface{}{}
 	if ctx, ok := document["@context"]; ok {
 		sel["@context"] = deepCopy(ctx)
 	}
 	initSelection(sel, document)
 
-	for _, pointer := range pointers {
-		paths := parsePointer(pointer)
-		if len(paths) == 0 {
-			cloned, _ := deepCopy(document).(map[string]interface{})
-			return cloned, nil
-		}
-		if _, err := selectInto(document, paths, sel); err != nil {
-			return nil, fmt.Errorf("pointer %q: %w", pointer, err)
+	for i, path := range paths {
+		if _, err := selectInto(document, path, sel); err != nil {
+			return nil, fmt.Errorf("pointer %.64q: %w", pointers[i], err)
 		}
 	}
 	densifyArrays(sel)
 	return sel, nil
+}
+
+func matchesPointer(document interface{}, path []interface{}) bool {
+	for _, token := range path {
+		child, ok := getChild(document, token)
+		if !ok {
+			return false
+		}
+		document = child
+	}
+	return true
 }
 
 // selectInto walks paths into source, blending the selection into sel (the
@@ -91,8 +121,10 @@ func selectInto(source interface{}, paths []interface{}, sel interface{}) (inter
 		return nil, fmt.Errorf("JSON pointer does not match document")
 	}
 
+	// A hole an earlier pointer left is not selected yet: a later pointer
+	// below it starts a fresh selection there.
 	childSel, _ := getChild(sel, path)
-	if childSel == nil {
+	if _, hole := childSel.(selectionHole); hole || childSel == nil {
 		if _, isArr := childSource.([]interface{}); isArr {
 			childSel = []interface{}{}
 		} else {
@@ -156,7 +188,7 @@ func setChild(parent interface{}, path interface{}, val interface{}) interface{}
 			return p
 		}
 		for len(p) <= idx {
-			p = append(p, nil)
+			p = append(p, selectionHole{})
 		}
 		p[idx] = val
 		return p
@@ -165,7 +197,12 @@ func setChild(parent interface{}, path interface{}, val interface{}) interface{}
 	}
 }
 
-// densifyArrays removes nil holes left by sparse array selection.
+// selectionHole marks an array index the selection has not filled. A null item
+// copied from the document is data, so it cannot mark a hole.
+type selectionHole struct{}
+
+// densifyArrays removes the holes the selection left in its arrays
+// (VC-DI-ECDSA §3.4.13); items copied from the document, null included, stay.
 func densifyArrays(v interface{}) interface{} {
 	switch t := v.(type) {
 	case map[string]interface{}:
@@ -176,7 +213,7 @@ func densifyArrays(v interface{}) interface{} {
 	case []interface{}:
 		out := make([]interface{}, 0, len(t))
 		for _, e := range t {
-			if e == nil {
+			if _, hole := e.(selectionHole); hole {
 				continue
 			}
 			out = append(out, densifyArrays(e))
