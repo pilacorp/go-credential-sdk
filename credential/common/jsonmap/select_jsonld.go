@@ -180,8 +180,10 @@ func selectJSONLDInto(source interface{}, path []string, selection interface{}) 
 	if !ok {
 		return nil, fmt.Errorf("JSON Pointer does not match document")
 	}
+	// A hole an earlier pointer left is not selected yet: a later pointer
+	// below it starts a fresh selection there.
 	childSelection, _ := getJSONChild(selection, path[0])
-	if childSelection == nil {
+	if _, hole := childSelection.(selectionHole); hole || childSelection == nil {
 		if _, isArray := child.([]interface{}); isArray {
 			childSelection = []interface{}{}
 		} else {
