@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -385,5 +386,76 @@ func TestRevokeVerificationMethod_PublishesCIDContext(t *testing.T) {
 	}
 	if !slices.Contains(doc.Context, cidContext) {
 		t.Fatalf("expected %s in @context after revoke, got %v", cidContext, doc.Context)
+	}
+}
+
+// A key retired for a soft reason may leak later. Revoking it again as
+// keyCompromise is how its controller tells verifiers; the first revoked time
+// stays, since a keyCompromise key is refused whatever the signing time.
+func TestRevokeVerificationMethod_SoftReasonCanBecomeKeyCompromise(t *testing.T) {
+	doc := GenerateDIDDocument("0x02aa", testDID, "", testIssuer, DIDTypePeople, nil)
+	first := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
+
+	if err := doc.RevokeVerificationMethod("#key-1", "superseded", first); err != nil {
+		t.Fatalf("first revoke: %v", err)
+	}
+	if err := doc.RevokeVerificationMethod("#key-1", "keyCompromise", first.AddDate(0, 5, 0)); err != nil {
+		t.Fatalf("revoke again as keyCompromise: %v", err)
+	}
+
+	vm := doc.FindVerificationMethod("#key-1")
+	if vm.RevocationReason != "keyCompromise" {
+		t.Fatalf("reason = %q, want keyCompromise", vm.RevocationReason)
+	}
+	if vm.Revoked == nil || !vm.Revoked.Equal(first) {
+		t.Fatalf("revoked = %v, want the first revocation time %v", vm.Revoked, first)
+	}
+}
+
+func TestRevokeVerificationMethod_SecondRevokeOtherwiseRefused(t *testing.T) {
+	cases := []struct {
+		name          string
+		first, second string
+	}{
+		{"keyCompromise again", "keyCompromise", "keyCompromise"},
+		{"keyCompromise softened", "keyCompromise", "superseded"},
+		{"soft to soft", "superseded", "cessationOfOperation"},
+		{"same soft reason", "superseded", "superseded"},
+		{"another spelling of keyCompromise", "superseded", "KeyCompromise"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := GenerateDIDDocument("0x02aa", testDID, "", testIssuer, DIDTypePeople, nil)
+			first := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
+			if err := doc.RevokeVerificationMethod("#key-1", tc.first, first); err != nil {
+				t.Fatalf("first revoke: %v", err)
+			}
+
+			err := doc.RevokeVerificationMethod("#key-1", tc.second, time.Time{})
+			if !errors.Is(err, ErrAlreadyRevoked) {
+				t.Fatalf("err = %v, want ErrAlreadyRevoked", err)
+			}
+			vm := doc.FindVerificationMethod("#key-1")
+			if vm.RevocationReason != tc.first || !vm.Revoked.Equal(first) {
+				t.Fatalf("method changed on a refused revoke: %q at %v", vm.RevocationReason, vm.Revoked)
+			}
+		})
+	}
+}
+
+// A revoked method cannot be rotated, whatever the reason given, and the refusal
+// can be told apart from other validation errors.
+func TestRotateVerificationMethod_RevokedIsRefusedWithErrAlreadyRevoked(t *testing.T) {
+	doc := GenerateDIDDocument("0x02aa", testDID, "", testIssuer, DIDTypePeople, nil)
+	if err := doc.RevokeVerificationMethod("#key-1", "superseded", time.Time{}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	_, err := doc.RotateVerificationMethod("#key-1", VerificationMethod{PublicKeyHex: "0x04"}, "keyCompromise", time.Time{})
+	if !errors.Is(err, ErrAlreadyRevoked) {
+		t.Fatalf("err = %v, want ErrAlreadyRevoked", err)
+	}
+	if len(doc.VerificationMethod) != 1 {
+		t.Fatalf("a refused rotation added a method: %d methods", len(doc.VerificationMethod))
 	}
 }
