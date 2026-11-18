@@ -295,7 +295,7 @@ func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
 // signed. Those are refused rather than checked wrongly.
 //
 // The document is not modified, whatever the outcome.
-func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof) error {
+func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, opts ...ProofVerifyOpt) error {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
@@ -315,7 +315,7 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 			suite, DataIntegrityProof, ECDSARDFC2019)
 	}
 
-	ok, err := m.verifyOneProof(resolver, proof)
+	ok, err := m.verifyOneProof(resolver, proof, proofVerifyConfigFrom(opts).expectedPurpose)
 	if err != nil {
 		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
 	}
@@ -340,7 +340,7 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 //
 // resolver is required; callers must construct it (e.g. via
 // verificationmethod.NewHTTPResolver(baseURL)) before invoking VerifyProof.
-func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targetVM string) (bool, error) {
+func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targetVM string, opts ...ProofVerifyOpt) (bool, error) {
 	if m == nil {
 		return false, fmt.Errorf("JSONMap is nil")
 	}
@@ -355,12 +355,13 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	if len(proofs) == 0 {
 		return false, fmt.Errorf("credential has no proof")
 	}
+	expectedPurpose := proofVerifyConfigFrom(opts).expectedPurpose
 
 	// Verify a single, caller-selected proof.
 	if targetVM != "" {
 		for i := range proofs {
 			if proofs[i].VerificationMethod == targetVM {
-				ok, err := m.verifyOneProof(resolver, &proofs[i])
+				ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose)
 				if err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
@@ -373,7 +374,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	// W3C proof set: every proof must verify, each against its own
 	// verification method.
 	for i := range proofs {
-		ok, err := m.verifyOneProof(resolver, &proofs[i])
+		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose)
 		if err != nil {
 			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
 		}
@@ -386,7 +387,10 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 
 // verifyOneProof verifies a single proof against the DID document resolved from
 // that proof's own verification method.
-func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, expectedPurpose string) (bool, error) {
+	if err := proofPurposeDisagrees(proof, expectedPurpose); err != nil {
+		return false, err
+	}
 	signerDID, err := m.didForProof(proof)
 	if err != nil {
 		return false, err
@@ -723,6 +727,54 @@ func DIDFromField(v interface{}) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// ProofVerifyOpt configures VerifyProof and VerifyDetachedProof.
+type ProofVerifyOpt func(*proofVerifyConfig)
+
+type proofVerifyConfig struct {
+	// expectedPurpose is the proof purpose the verifier is performing.
+	// Empty means the caller did not say, and the purpose written in the
+	// proof is the one that is checked.
+	expectedPurpose string
+}
+
+func proofVerifyConfigFrom(opts []ProofVerifyOpt) proofVerifyConfig {
+	var cfg proofVerifyConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return cfg
+}
+
+// WithExpectedProofPurpose is the expectedProofPurpose of Data Integrity 1.0
+// §4.4. When set, a Data Integrity proof whose proofPurpose differs is
+// refused before any DID is resolved. JwtProof2020 is left to its own check:
+// that suite does not carry the purpose in a field this comparison can read.
+func WithExpectedProofPurpose(purpose string) ProofVerifyOpt {
+	return func(cfg *proofVerifyConfig) {
+		if purpose == "" {
+			return
+		}
+		cfg.expectedPurpose = purpose
+	}
+}
+
+// proofPurposeDisagrees reports a Data Integrity proof whose proofPurpose is
+// not the one the verifier asked for. A verifier that passed no purpose does
+// not disagree with anything.
+func proofPurposeDisagrees(proof *dto.Proof, expected string) error {
+	if expected == "" || proof == nil || proof.Type == JwtProof2020 {
+		return nil
+	}
+	if proof.ProofPurpose == expected {
+		return nil
+	}
+	return fmt.Errorf(
+		"proof.proofPurpose %q does not match the proof purpose %q this verifier expects",
+		proof.ProofPurpose, expected)
 }
 
 // strictPurposeCheck enforces the post-crypto checks for multi-VM:
