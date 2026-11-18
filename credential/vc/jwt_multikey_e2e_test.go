@@ -329,9 +329,9 @@ func TestJWT_MismatchErrorHintWorks(t *testing.T) {
 	}
 }
 
-// Parse leaves the signing key empty, so re-signing a parsed token skips the key
-// check (Accept's own table covers the rest). Pinned so a change is deliberate.
-func TestJWT_ParsedTokenSignsWithoutKeyCheck(t *testing.T) {
+// Parse leaves the signing key empty, so re-signing a parsed token is refused:
+// Accept has no key to check against. Fixed in #101.
+func TestJWT_ParsedTokenRefusesSign(t *testing.T) {
 	const did = "did:example:jwt-dual"
 	resolver, secpSigner, p256Signer := dualCurveDID(t, did)
 
@@ -355,16 +355,12 @@ func TestJWT_ParsedTokenSignsWithoutKeyCheck(t *testing.T) {
 		t.Fatalf("signing input: %v", err)
 	}
 
-	// Wrong key: accepted at signing (no key to check against), refused by Verify.
-	// WithReplaceProof because a parsed token already carries the issuer's
-	// signature and re-signing replaces it; this test is about the key check,
-	// not about whether replacing is allowed by default.
 	wrongKey := jwttest.SignExternally(t, secpSigner, string(input))
-	if err := parsed.AddCustomProof(&dto.Proof{Signature: wrongKey}, vc.WithReplaceProof()); err != nil {
-		t.Fatalf("a parsed token has no resolved method; signing must not check the key, got: %v", err)
+	err = parsed.AddCustomProof(&dto.Proof{Signature: wrongKey}, vc.WithReplaceProof())
+	if err == nil {
+		t.Fatal("a parsed token must refuse signing — no key to check against")
 	}
-	if err := parsed.Verify(vc.WithResolver(resolver)); err == nil {
-		t.Fatal("verify must reject a signature by another key")
+	if !strings.Contains(err.Error(), "no verification method is bound") {
+		t.Fatalf("unexpected error: %v", err)
 	}
-
 }
