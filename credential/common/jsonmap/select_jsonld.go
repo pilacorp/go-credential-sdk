@@ -8,7 +8,9 @@ import (
 
 // SelectJSONLD returns the JSON-LD selection addressed by RFC 6901 pointers.
 // It preserves @context and the id/type metadata of selected nodes. The copy
-// in ecdsasd differs on numeric object keys and leading zeros.
+// in ecdsasd differs on numeric object keys and non-canonical array indexes
+// (leading zeros, a sign), and leaves the leading-slash and root-pointer
+// checks to its callers, since it also reads pointers stored in a base proof.
 func SelectJSONLD(document map[string]interface{}, pointers []string) (map[string]interface{}, error) {
 	if len(pointers) == 0 {
 		return nil, nil

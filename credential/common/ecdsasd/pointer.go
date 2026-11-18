@@ -31,49 +31,54 @@ func parsePointer(pointer string) []interface{} {
 	return parsed
 }
 
+// checkPointers refuses a pointer a caller supplies that is not "" and does not
+// start with "/" (RFC 6901 §3), or that matches nothing in document
+// (VC-DI-ECDSA §3.4.12). parsePointer drops the first token, so
+// "credentialSubject" would read as "", the whole document. CreateBaseProof and
+// DeriveProof check their pointers here. selectJsonLd does not: it also reads
+// the mandatory pointers stored in an issued base proof, which released versions
+// signed without these checks.
+func checkPointers(document map[string]interface{}, pointers []string) error {
+	for _, pointer := range pointers {
+		if pointer != "" && !strings.HasPrefix(pointer, "/") {
+			return fmt.Errorf("pointer %.64q must start with /", pointer)
+		}
+	}
+	for _, pointer := range pointers {
+		if !matchesPointer(document, parsePointer(pointer)) {
+			return fmt.Errorf("pointer %.64q: JSON pointer does not match document", pointer)
+		}
+	}
+	return nil
+}
+
 // TODO: Reuse jsonmap.SelectJSONLD here so JSON-LD pointer selection has one
 // implementation across selective disclosure and rendering.
 //
 // selectJsonLd builds a JSON-LD selection document containing only the values
 // addressed by pointers, carrying @context and the id/type of every traversed
 // node. Ports digitalbazaar di-sd-primitives selectJsonLd (includeTypes=true).
-//
-// Every pointer is "" or starts with "/" (RFC 6901 §3): parsePointer drops the
-// first token, so "credentialSubject" would read as "", the whole document.
-// Every pointer must match, the root pointer's neighbours included
-// (VC-DI-ECDSA §3.4.12).
+// Like the reference, it reads a pointer by dropping its first token, and
+// returns the whole document when it reaches the root pointer: a stored pointer
+// is read as it was issued. checkPointers is for a caller's pointers.
 func selectJsonLd(document map[string]interface{}, pointers []string) (map[string]interface{}, error) {
 	if len(pointers) == 0 {
 		return nil, nil
 	}
-	paths := make([][]interface{}, len(pointers))
-	root := false
-	for i, pointer := range pointers {
-		if pointer != "" && !strings.HasPrefix(pointer, "/") {
-			return nil, fmt.Errorf("pointer %.64q must start with /", pointer)
-		}
-		paths[i] = parsePointer(pointer)
-		root = root || len(paths[i]) == 0
-	}
-	if root {
-		for i, path := range paths {
-			if !matchesPointer(document, path) {
-				return nil, fmt.Errorf("pointer %.64q: JSON pointer does not match document", pointers[i])
-			}
-		}
-		cloned, _ := deepCopy(document).(map[string]interface{})
-		return cloned, nil
-	}
-
 	sel := map[string]interface{}{}
 	if ctx, ok := document["@context"]; ok {
 		sel["@context"] = deepCopy(ctx)
 	}
 	initSelection(sel, document)
 
-	for i, path := range paths {
-		if _, err := selectInto(document, path, sel); err != nil {
-			return nil, fmt.Errorf("pointer %.64q: %w", pointers[i], err)
+	for _, pointer := range pointers {
+		paths := parsePointer(pointer)
+		if len(paths) == 0 {
+			cloned, _ := deepCopy(document).(map[string]interface{})
+			return cloned, nil
+		}
+		if _, err := selectInto(document, paths, sel); err != nil {
+			return nil, fmt.Errorf("pointer %.64q: %w", pointer, err)
 		}
 	}
 	densifyArrays(sel)
