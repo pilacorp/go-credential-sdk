@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -139,8 +140,8 @@ func issueBase(t *testing.T, s e2eSetup) []byte {
 	); err != nil {
 		t.Fatalf("add base proof: %v", err)
 	}
-	if err := base.Verify(vc.WithResolver(s.resolver)); err != nil {
-		t.Fatalf("verify base proof: %v", err)
+	if err := base.Verify(vc.WithResolver(s.resolver)); err == nil || !strings.Contains(err.Error(), "base proof") {
+		t.Fatalf("base proof at verification: %v", err)
 	}
 	serialized, err := base.Serialize()
 	if err != nil {

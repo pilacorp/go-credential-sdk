@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -98,8 +99,9 @@ func TestECDSASD_P256Multikey_IssueDeriveVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse base: %v", err)
 	}
-	if err := base.Verify(vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("verify base via Multikey VM: %v", err)
+	err = base.Verify(vc.WithResolver(resolver))
+	if err == nil || !strings.Contains(err.Error(), "base proof") || !strings.Contains(err.Error(), "0xd95d01") {
+		t.Fatalf("base proof at verification: %v", err)
 	}
 	derived, err := base.Derive([]string{"credentialSubject.name"})
 	if err != nil {
