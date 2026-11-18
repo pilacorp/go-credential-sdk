@@ -635,6 +635,9 @@ func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, 
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
 	}
+	if err := verificationmethod.RequireController(doc, vm); err != nil {
+		return false, err
+	}
 	pub, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
 		return false, err

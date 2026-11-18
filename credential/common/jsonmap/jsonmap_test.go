@@ -1624,6 +1624,36 @@ func TestVerifyProof_RefusesDanglingPreviousProof(t *testing.T) {
 	}
 }
 
+// CID 1.0 §3.3: the verification method's controller must be the document that
+// was resolved. The signature does not cover that field, so a document can
+// name another DID as controller and still verify today.
+func TestVerifyProof_RefusesForeignController(t *testing.T) {
+	sp, pub := testKeyPair(t)
+	m := testCredential()
+	attachSignedECDSAProof(t, &m, sp, &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+	})
+
+	vm, err := verificationmethod.NewP256VM("did:example:issuer", "key-1", pub)
+	if err != nil {
+		t.Fatalf("vm: %v", err)
+	}
+	vm.Controller = "did:example:someone-else"
+	doc := verificationmethod.NewDIDDocument("did:example:issuer", vm)
+
+	ok, err := (&m).VerifyProof(verificationmethod.NewStaticResolver(doc), "")
+	if err == nil && ok {
+		t.Fatal("a verification method controlled by another DID verified")
+	}
+	if err == nil || !strings.Contains(err.Error(), "controller") {
+		t.Fatalf("refused, but not for the controller: %v", err)
+	}
+}
+
 func attachSignedECDSAProof(t *testing.T, m *JSONMap, sp signer.SignerProvider, proof *dto.Proof) {
 	t.Helper()
 	m.ensureDataIntegrityContext()
