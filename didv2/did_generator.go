@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pilacorp/go-credential-sdk/didv2/did"
@@ -259,10 +260,16 @@ func (d *DIDGenerator) GenerateIssuerSignature(
 		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
 	}
 
+	contract, release, err := d.resolveContract(cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	// require RPC URL valid.
 	// this is optional field, if not set, will use default value is zero.
 	if cfg.SyncEpoch {
-		epoch, err := d.didContract.GetCapabilityEpoch(ctx, issuerAddr)
+		epoch, err := contract.GetCapabilityEpoch(ctx, issuerAddr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get capability epoch: %w", err)
 		}
@@ -271,7 +278,7 @@ func (d *DIDGenerator) GenerateIssuerSignature(
 	}
 
 	issueDIDPayload := &issuer.IssueDIDPayload{
-		ContractAddress: d.baseConfig.DIDSMCAddr,
+		ContractAddress: cfg.DIDSMCAddr,
 		IssuerAddress:   issuerAddr,
 		DidAddress:      didAddr,
 		DidType:         didType,
@@ -316,10 +323,16 @@ func (d *DIDGenerator) GenerateDIDCreateTransaction(
 		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
 	}
 
+	contract, release, err := d.resolveContract(cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	// require RPC URL valid.
 	// this is optional field, if not set, will use default value is zero.
 	if cfg.SyncNonce {
-		nonce, err := d.didContract.GetNonce(ctx, common.HexToAddress(didAddr))
+		nonce, err := contract.GetNonce(ctx, common.HexToAddress(didAddr))
 		if err != nil {
 			return nil, fmt.Errorf("failed to get nonce: %w", err)
 		}
@@ -336,7 +349,7 @@ func (d *DIDGenerator) GenerateDIDCreateTransaction(
 		Nonce:         cfg.Nonce,
 	}
 
-	txResult, err := d.didContract.CreateDIDTx(ctx, didCreateTxReq, cfg.DIDSigner)
+	txResult, err := contract.CreateDIDTx(ctx, didCreateTxReq, cfg.DIDSigner)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate DID TX from issuer signature: %w", err)
 	}
@@ -369,8 +382,14 @@ func (d *DIDGenerator) GenerateSetDocumentHashTransaction(
 		return nil, fmt.Errorf("issuer signature is required")
 	}
 
+	contract, release, err := d.resolveContract(cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	if cfg.SyncNonce {
-		nonce, err := d.didContract.GetNonce(ctx, common.HexToAddress(didAddr))
+		nonce, err := contract.GetNonce(ctx, common.HexToAddress(didAddr))
 		if err != nil {
 			return nil, fmt.Errorf("failed to get nonce: %w", err)
 		}
@@ -385,7 +404,7 @@ func (d *DIDGenerator) GenerateSetDocumentHashTransaction(
 		Nonce:      cfg.Nonce,
 	}
 
-	txResult, err := d.didContract.SetDocumentHashTx(ctx, req, cfg.DIDSigner)
+	txResult, err := contract.SetDocumentHashTx(ctx, req, cfg.DIDSigner)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate setDocumentHash Tx: %w", err)
 	}
@@ -412,8 +431,14 @@ func (d *DIDGenerator) GenerateSetDocumentHashByIssuerTransaction(
 		return nil, fmt.Errorf("issuer signer is required")
 	}
 
+	contract, release, err := d.resolveContract(cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	if cfg.SyncNonce {
-		nonce, err := d.didContract.GetNonce(ctx, common.HexToAddress(cfg.IssuerSigner.GetAddress()))
+		nonce, err := contract.GetNonce(ctx, common.HexToAddress(cfg.IssuerSigner.GetAddress()))
 		if err != nil {
 			return nil, fmt.Errorf("failed to get nonce: %w", err)
 		}
@@ -426,7 +451,7 @@ func (d *DIDGenerator) GenerateSetDocumentHashByIssuerTransaction(
 		Nonce:      cfg.Nonce,
 	}
 
-	txResult, err := d.didContract.SetDocumentHashByIssuerTx(ctx, req, cfg.IssuerSigner)
+	txResult, err := contract.SetDocumentHashByIssuerTx(ctx, req, cfg.IssuerSigner)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate setDocumentHashByIssuer Tx: %w", err)
 	}
@@ -456,4 +481,29 @@ func (d *DIDGenerator) resolveConfig(options ...DIDOption) (*DIDConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// resolveContract returns the contract client to use for a call and a release
+// function that the caller must defer. When the merged cfg overrides RPC,
+// contract address or chain ID compared to the base config, a new contract
+// client is built for that single call and release closes it. When all match,
+// the shared d.didContract is returned and release is a no-op.
+func (d *DIDGenerator) resolveContract(cfg *DIDConfig) (*didcontract.Contract, func(), error) {
+	noop := func() {}
+
+	if strings.EqualFold(cfg.DIDSMCAddr, d.baseConfig.DIDSMCAddr) &&
+		cfg.ChainID == d.baseConfig.ChainID &&
+		cfg.RPC == d.baseConfig.RPC {
+		return d.didContract, noop, nil
+	}
+
+	c, err := didcontract.NewContract(&didcontract.Config{
+		RPCURL:          cfg.RPC,
+		ContractAddress: cfg.DIDSMCAddr,
+		ChainID:         cfg.ChainID,
+	})
+	if err != nil {
+		return nil, noop, fmt.Errorf("failed to initialize per-call contract client: %w", err)
+	}
+	return c, c.Close, nil
 }
