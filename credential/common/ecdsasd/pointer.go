@@ -31,12 +31,36 @@ func parsePointer(pointer string) []interface{} {
 	return parsed
 }
 
+// checkPointers refuses a pointer a caller supplies that is not "" and does not
+// start with "/" (RFC 6901 §3), or that matches nothing in document
+// (VC-DI-ECDSA §3.4.12). parsePointer drops the first token, so
+// "credentialSubject" would read as "", the whole document. CreateBaseProof and
+// DeriveProof check their pointers here. selectJsonLd does not: it also reads
+// the mandatory pointers stored in an issued base proof, which released versions
+// signed without these checks.
+func checkPointers(document map[string]interface{}, pointers []string) error {
+	for _, pointer := range pointers {
+		if pointer != "" && !strings.HasPrefix(pointer, "/") {
+			return fmt.Errorf("pointer %.64q must start with /", pointer)
+		}
+	}
+	for _, pointer := range pointers {
+		if !matchesPointer(document, parsePointer(pointer)) {
+			return fmt.Errorf("pointer %.64q: JSON pointer does not match document", pointer)
+		}
+	}
+	return nil
+}
+
 // TODO: Reuse jsonmap.SelectJSONLD here so JSON-LD pointer selection has one
 // implementation across selective disclosure and rendering.
 //
 // selectJsonLd builds a JSON-LD selection document containing only the values
 // addressed by pointers, carrying @context and the id/type of every traversed
 // node. Ports digitalbazaar di-sd-primitives selectJsonLd (includeTypes=true).
+// Like the reference, it reads a pointer by dropping its first token, and
+// returns the whole document when it reaches the root pointer: a stored pointer
+// is read as it was issued. checkPointers is for a caller's pointers.
 func selectJsonLd(document map[string]interface{}, pointers []string) (map[string]interface{}, error) {
 	if len(pointers) == 0 {
 		return nil, nil
@@ -54,11 +78,22 @@ func selectJsonLd(document map[string]interface{}, pointers []string) (map[strin
 			return cloned, nil
 		}
 		if _, err := selectInto(document, paths, sel); err != nil {
-			return nil, fmt.Errorf("pointer %q: %w", pointer, err)
+			return nil, fmt.Errorf("pointer %.64q: %w", pointer, err)
 		}
 	}
 	densifyArrays(sel)
 	return sel, nil
+}
+
+func matchesPointer(document interface{}, path []interface{}) bool {
+	for _, token := range path {
+		child, ok := getChild(document, token)
+		if !ok {
+			return false
+		}
+		document = child
+	}
+	return true
 }
 
 // selectInto walks paths into source, blending the selection into sel (the
@@ -91,8 +126,10 @@ func selectInto(source interface{}, paths []interface{}, sel interface{}) (inter
 		return nil, fmt.Errorf("JSON pointer does not match document")
 	}
 
+	// A hole an earlier pointer left is not selected yet: a later pointer
+	// below it starts a fresh selection there.
 	childSel, _ := getChild(sel, path)
-	if childSel == nil {
+	if _, hole := childSel.(selectionHole); hole || childSel == nil {
 		if _, isArr := childSource.([]interface{}); isArr {
 			childSel = []interface{}{}
 		} else {
@@ -156,7 +193,7 @@ func setChild(parent interface{}, path interface{}, val interface{}) interface{}
 			return p
 		}
 		for len(p) <= idx {
-			p = append(p, nil)
+			p = append(p, selectionHole{})
 		}
 		p[idx] = val
 		return p
@@ -165,7 +202,12 @@ func setChild(parent interface{}, path interface{}, val interface{}) interface{}
 	}
 }
 
-// densifyArrays removes nil holes left by sparse array selection.
+// selectionHole marks an array index the selection has not filled. A null item
+// copied from the document is data, so it cannot mark a hole.
+type selectionHole struct{}
+
+// densifyArrays removes the holes the selection left in its arrays
+// (VC-DI-ECDSA §3.4.13); items copied from the document, null included, stay.
 func densifyArrays(v interface{}) interface{} {
 	switch t := v.(type) {
 	case map[string]interface{}:
@@ -176,7 +218,7 @@ func densifyArrays(v interface{}) interface{} {
 	case []interface{}:
 		out := make([]interface{}, 0, len(t))
 		for _, e := range t {
-			if e == nil {
+			if _, hole := e.(selectionHole); hole {
 				continue
 			}
 			out = append(out, densifyArrays(e))

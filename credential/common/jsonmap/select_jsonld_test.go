@@ -370,3 +370,24 @@ func TestSelectJSONLDRootPointerStillChecksTheOthers(t *testing.T) {
 		}
 	}
 }
+
+// A later pointer can fill a hole an earlier one left: /a/1/x first leaves a
+// hole at /a/0, which /a/0/y then fills. The hole was taken for a selected
+// value, the write into it was lost, and /a/0/y vanished without an error.
+func TestSelectJSONLDFillsAHoleALaterPointerReaches(t *testing.T) {
+	document := map[string]interface{}{"a": []interface{}{
+		map[string]interface{}{"y": "Y0", "secret": "s0"},
+		map[string]interface{}{"x": "X1", "secret": "s1"},
+	}}
+	want := []interface{}{map[string]interface{}{"y": "Y0"}, map[string]interface{}{"x": "X1"}}
+
+	for _, pointers := range [][]string{{"/a/0/y", "/a/1/x"}, {"/a/1/x", "/a/0/y"}} {
+		got, err := SelectJSONLD(document, pointers)
+		if err != nil {
+			t.Fatalf("%q: %v", pointers, err)
+		}
+		if !reflect.DeepEqual(got["a"], want) {
+			t.Errorf("%q: a = %#v, want %#v", pointers, got["a"], want)
+		}
+	}
+}
