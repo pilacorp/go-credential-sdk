@@ -514,7 +514,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 
 	if options.isCheckRevocation {
 		g.Go(func() error {
-			if err := checkRevocation(e.credentialData); err != nil {
+			if err := checkRevocation(e.credentialData, options.resolver); err != nil {
 				return fmt.Errorf("check revocation: %w", err)
 			}
 

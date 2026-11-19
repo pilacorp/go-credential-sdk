@@ -584,7 +584,7 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 
 	if options.isCheckRevocation {
 		g.Go(func() error {
-			if err := checkRevocation(j.payloadData); err != nil {
+			if err := checkRevocation(j.payloadData, options.resolver); err != nil {
 				return fmt.Errorf("check revocation: %w", err)
 			}
 			return nil

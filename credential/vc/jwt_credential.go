@@ -361,7 +361,10 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 
 	if options.isCheckRevocation {
 		g.Go(func() error {
-			if err := checkRevocation(j.payloadData); err != nil {
+			// VC-JWT 1.1 §6.3.1: the issuer may only appear in the JWT
+			// "iss" claim, not in the vc payload.
+			iss, _ := j.jwtClaims["iss"].(string)
+			if err := checkRevocation(j.payloadData, options.resolver, iss); err != nil {
 				return fmt.Errorf("check revocation: %w", err)
 			}
 			return nil
