@@ -58,7 +58,7 @@ func TestSigningKeyAccept(t *testing.T) {
 		{"63 bytes", keyOf(p256), make([]byte, 63), "got 63 bytes"},
 		{"72 bytes (DER)", keyOf(p256), make([]byte, 72), "got 72 bytes"},
 		{"256 bytes (RSA)", keyOf(p256), make([]byte, 256), "got 256 bytes"},
-		{"parsed token: no key, another key's signature", SigningKey{}, rs(other, input), ""},
+		{"parsed token: no key, another key's signature", SigningKey{}, rs(other, input), "no verification method is bound"},
 		{"parsed token: no key, wrong length", SigningKey{}, make([]byte, 72), "got 72 bytes"},
 	}
 	for _, tc := range cases {
