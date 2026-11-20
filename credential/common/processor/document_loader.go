@@ -243,28 +243,60 @@ func (t *boundedTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 // and the chains described at maxContextLoads, maxContextLoadTime and
 // maxContextBytesPerOperation, and holds the operation's terms. Bundled contexts
 // include no remote context and spend no load, only bytes.
+//
+// A loaded context is a leaf when nothing in it—top-level @context, any
+// nested/scoped @context, @import—references another context by URL string. A
+// leaf cannot take part in a cycle, so its byte, load and term costs are paid
+// once; repeat loads are free. A non-leaf URL pays the full cost on every load,
+// so the byte budget stops large cycles early and maxContextLoads catches small
+// ones.
 type contextBudget struct {
 	loads    int
 	bytes    int
 	deadline time.Time
 	terms    contextTerms
+	seen     map[string]bool           // URLs whose first load has been processed
+	leaf     map[string]bool           // URLs whose document is a leaf (no URL refs)
+	docs     map[string]*cachedContext // per-operation copies (leaf fast path, survives global eviction)
 }
 
 func newContextBudget() *contextBudget {
 	return &contextBudget{
 		deadline: time.Now().Add(maxContextLoadTime),
 		terms:    contextTerms{defs: make(map[string][]string), used: make(map[string]bool)},
+		seen:     make(map[string]bool),
+		leaf:     make(map[string]bool),
+		docs:     make(map[string]*cachedContext),
 	}
 }
 
 // LoadDocument implements ld.DocumentLoader.
 func (b *contextBudget) LoadDocument(rawURL string) (*ld.RemoteDocument, error) {
 	if data, bundled := wellKnownContexts[rawURL]; bundled {
-		if b.bytes += len(data); b.bytes > maxContextBytesPerOperation {
-			return nil, ErrContextOverflow
+		if !b.seen[rawURL] {
+			if b.bytes += len(data); b.bytes > maxContextBytesPerOperation {
+				return nil, ErrContextOverflow
+			}
+			b.seen[rawURL] = true
 		}
 		return defaultDocumentLoader.LoadDocument(rawURL)
 	}
+
+	// A leaf URL already loaded is free: its document defines terms without
+	// referencing any other context, so it cannot take part in a cycle.
+	// Decode from the per-operation copy, not the process-wide cache, which
+	// evicts entries at maxCachedContexts: a host could serve a leaf first,
+	// then a self-cycle after eviction.
+	if b.seen[rawURL] && b.leaf[rawURL] {
+		if e := b.docs[rawURL]; e != nil {
+			return e.decode()
+		}
+		// Per-operation copy missing; drop the leaf flag and fall through,
+		// so this and every later load of the URL is charged in full.
+		delete(b.leaf, rawURL)
+	}
+
+	// First load, or a repeat of a non-leaf URL (may be part of a cycle).
 	if b.loads++; b.loads > maxContextLoads || time.Now().After(b.deadline) {
 		return nil, ErrContextOverflow
 	}
@@ -279,7 +311,75 @@ func (b *contextBudget) LoadDocument(rawURL string) (*ld.RemoteDocument, error) 
 	if err := b.terms.check(maxContextTerms); err != nil {
 		return nil, err
 	}
+	if !b.seen[rawURL] {
+		b.seen[rawURL] = true
+		if isLeafContext(doc.Document) {
+			b.leaf[rawURL] = true
+			// Keep a per-operation copy so the leaf fast path does not go
+			// through the process-wide cache, which evicts entries.
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
+			enc.SetEscapeHTML(false)
+			_ = enc.Encode(doc.Document) // cannot fail: came from JSON
+			b.docs[rawURL] = &cachedContext{
+				raw:         buf.Bytes(),
+				documentURL: doc.DocumentURL,
+				contextURL:  doc.ContextURL,
+			}
+		}
+	}
 	return doc, nil
+}
+
+// isLeafContext reports whether the loaded document's @context defines terms
+// without referencing any other context by URL string. A leaf context cannot
+// take part in any cycle: it has no string URL in its top-level @context, no
+// URL in a nested/scoped @context, and no @import.
+func isLeafContext(doc interface{}) bool {
+	m, ok := doc.(map[string]interface{})
+	if !ok {
+		return true
+	}
+	return !contextHasURLRef(m["@context"])
+}
+
+// contextHasURLRef reports whether a @context value contains any string that
+// json-gold would load as another context document.
+func contextHasURLRef(ctx interface{}) bool {
+	switch v := ctx.(type) {
+	case string:
+		return true
+	case []interface{}:
+		for _, item := range v {
+			if contextHasURLRef(item) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		if _, ok := v["@import"]; ok {
+			return true
+		}
+		for key, def := range v {
+			if key == "@context" {
+				if contextHasURLRef(def) {
+					return true
+				}
+				continue
+			}
+			if strings.HasPrefix(key, "@") {
+				continue
+			}
+			// A term definition that is a map may carry a scoped @context.
+			if defMap, ok := def.(map[string]interface{}); ok {
+				if scoped, ok := defMap["@context"]; ok {
+					if contextHasURLRef(scoped) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // limitInlineContexts puts doc's own contexts on the operation's budget, before
