@@ -223,12 +223,12 @@ func TestVP_HolderFullIRI(t *testing.T) {
 	if err == nil {
 		t.Fatal("Verify returned nil — holder hidden by full-IRI rename")
 	}
-	// holder has @type: @id in the VCDM context, so renaming the key to its
-	// full IRI changes how the value is interpreted (IRI vs literal string),
-	// which changes the canonical RDF. The proof itself catches this, so the
-	// error is a proof failure rather than ErrNotCompactedForm. Either way
-	// the attack is blocked.
-	t.Logf("error (expected): %v", err)
+	// holder is not a graph key this check compares. Renaming a string holder
+	// to its full IRI leaves both sides without that short name, so the
+	// compacted-form check does not fire. The proof fails instead.
+	if errors.Is(err, processor.ErrNotCompactedForm) {
+		t.Fatalf("holder full IRI must be refused by the proof, got ErrNotCompactedForm: %v", err)
+	}
 }
 
 // TestVP_VerifiableCredentialUnderNest checks that moving verifiableCredential
