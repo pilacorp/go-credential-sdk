@@ -9,6 +9,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
@@ -237,6 +238,33 @@ func (e *JSONPresentation) ExtractField(path string) interface{} {
 func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
+	// Step 1: verify the proof first. The proof check works on the canonical
+	// RDF, so it accepts any equivalent JSON shape. All later checks read the
+	// raw JSON by key name, so they need the compacted form.
+	if options.isVerifyProof {
+		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
+			options.resolver,
+			options.proofVerificationMethod,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+		if !isValid {
+			return fmt.Errorf("invalid proof")
+		}
+
+		// Verify that every property the SDK reads by short name has the same
+		// value in the raw document and in the JSON-LD compacted form.
+		if err := e.verifyCompactedForm(); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+
+		if err := e.checkChallengeAndDomain(options); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+	}
+
+	// Step 2: run the remaining checks on the original (unmutated) presentation.
 	if options.isValidateVC {
 		if err := verifyCredentials(PresentationData(e.presentationData), options); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
@@ -249,23 +277,51 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		}
 	}
 
-	if options.isVerifyProof {
-		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
-			options.resolver,
-			options.proofVerificationMethod,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to verify presentation: %w", err)
-		}
-		if !isValid {
-			return fmt.Errorf("invalid proof")
-		}
-		if err := e.checkChallengeAndDomain(options); err != nil {
-			return fmt.Errorf("failed to verify presentation: %w", err)
-		}
+	return nil
+}
+
+// vpCompactedKeys lists the top-level properties that post-proof checks and
+// SDK readers access by short name in a presentation.
+var vpCompactedKeys = []string{
+	"holder",
+	"verifiableCredential",
+	"type",
+	"validFrom",
+	"validUntil",
+}
+
+// vpPresenceOnlyKeys marks keys compared by presence and element count only.
+// verifiableCredential is compared this way because embedded credentials are
+// independent signed documents verified on their own.
+var vpPresenceOnlyKeys = map[string]bool{
+	"verifiableCredential": true,
+}
+
+// vpGraphKeys maps short names to full IRIs for properties whose VCDM 2.0
+// context definition uses @container: @graph. JSON-LD compaction places these
+// under the full IRI instead of the short name.
+var vpGraphKeys = map[string]string{
+	"verifiableCredential": "https://www.w3.org/2018/credentials#verifiableCredential",
+}
+
+// verifyCompactedForm computes the compacted form of the full presentation
+// body (embedded credentials included, so that renamed or nested
+// verifiableCredential is detected) and verifies that the keys the SDK reads
+// match between raw and compacted. The raw data is never mutated.
+func (e *JSONPresentation) verifyCompactedForm() error {
+	m := (*jsonmap.JSONMap)(&e.presentationData)
+	body, err := m.ToMap()
+	if err != nil {
+		return fmt.Errorf("compact form check: serialize body: %w", err)
+	}
+	delete(body, "proof")
+
+	compacted, err := processor.CompactDocumentForm(body)
+	if err != nil {
+		return fmt.Errorf("compact form check: %w", err)
 	}
 
-	return nil
+	return processor.VerifyCompactedKeys(body, compacted, vpCompactedKeys, vpPresenceOnlyKeys, vpGraphKeys)
 }
 
 // checkChallengeAndDomain enforces WithExpectedChallenge / WithExpectedDomain

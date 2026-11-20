@@ -500,6 +500,32 @@ func (e *JSONCredential) ExtractField(path string) any {
 func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
+	// Step 1: verify the proof first. The proof check works on the canonical
+	// RDF of the document, so it accepts any equivalent JSON shape. All later
+	// checks read the raw JSON by key name, so they need the compacted form.
+	if options.isVerifyProof {
+		isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
+			options.resolver,
+			options.proofVerificationMethod,
+		)
+		if err != nil {
+			return fmt.Errorf("credential verification failed: verify proof: %w", err)
+		}
+		if !isValid {
+			return fmt.Errorf("credential verification failed: invalid proof")
+		}
+
+		// Step 2: verify that every property the SDK reads by short name has
+		// the same value in the raw document and in the JSON-LD compacted form.
+		// If any differs the document was rewritten (e.g. @nest, full IRI) and
+		// is refused. The raw data is NOT mutated.
+		if err := e.verifyCompactedForm(); err != nil {
+			return fmt.Errorf("credential verification failed: %w", err)
+		}
+	}
+
+	// Step 3: run the remaining checks on the original (unmutated) credential
+	// data, which is now proven to be in compacted form for the keys that matter.
 	g := &errgroup.Group{}
 
 	if options.isValidateSchema {
@@ -522,24 +548,6 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		})
 	}
 
-	if options.isVerifyProof {
-		g.Go(func() error {
-			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
-				options.resolver,
-				options.proofVerificationMethod,
-			)
-			if err != nil {
-				return fmt.Errorf("verify proof: %w", err)
-			}
-
-			if !isValid {
-				return fmt.Errorf("invalid proof")
-			}
-
-			return nil
-		})
-	}
-
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("credential verification failed: %w", err)
 	}
@@ -552,4 +560,40 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	return nil
+}
+
+// vcCompactedKeys lists the top-level properties that post-proof checks and
+// SDK readers access by short name. If any of these differs between the raw
+// document and the JSON-LD compacted form, the document is refused.
+//
+// credentialSubject is not included: no security check reads it, and
+// including it would reject v1 credentials whose custom subject fields are
+// not defined in the VC context (they are dropped during expansion).
+var vcCompactedKeys = []string{
+	"credentialStatus",
+	"credentialSchema",
+	"renderMethod",
+	"issuer",
+	"type",
+	"validFrom",
+	"validUntil",
+}
+
+// verifyCompactedForm computes the compacted form and verifies that every key
+// the SDK reads matches between the raw body and the compacted copy. The raw
+// data is never mutated.
+func (e *JSONCredential) verifyCompactedForm() error {
+	m := (*jsonmap.JSONMap)(&e.credentialData)
+	body, err := m.ToMap()
+	if err != nil {
+		return fmt.Errorf("compact form check: serialize body: %w", err)
+	}
+	delete(body, "proof")
+
+	compacted, err := processor.CompactDocumentForm(body)
+	if err != nil {
+		return fmt.Errorf("compact form check: %w", err)
+	}
+
+	return processor.VerifyCompactedKeys(body, compacted, vcCompactedKeys, nil, nil)
 }
