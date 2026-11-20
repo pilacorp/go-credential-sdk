@@ -177,3 +177,62 @@ func TestWithJSONLDLimits_ECDSASD_OverLimit(t *testing.T) {
 		t.Fatalf("expected ErrTooManyValues for ecdsa-sd derived, got %v", err)
 	}
 }
+
+// TestWithJSONLDLimits_VC_SigningSkipsCheck verifies that WithJSONLDLimits does
+// NOT block signing: an over-limit credential that passes through
+// AddProofByProvider should succeed, because limits exist to protect the
+// verifier, not the issuer.
+func TestWithJSONLDLimits_VC_SigningSkipsCheck(t *testing.T) {
+	const issuerDID = "did:example:sign-no-check"
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+	vm, err := vmpkg.NewP256VM(issuerDID, "key-1", &priv.PublicKey)
+	if err != nil {
+		t.Fatalf("p256 vm: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(issuerDID, vm))
+
+	// Build a large credential that exceeds MaxValues=5.
+	subject := map[string]interface{}{"id": "did:example:subject"}
+	for i := 0; i < 50; i++ {
+		subject[fmt.Sprintf("field%d", i)] = fmt.Sprintf("value%d", i)
+	}
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			map[string]interface{}{"@vocab": "https://example.org/vocab#"},
+		},
+		"id":                "urn:uuid:sign-no-check-vc",
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            issuerDID,
+		"validFrom":         "2026-01-01T00:00:00Z",
+		"credentialSubject": subject,
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	cred, err := vc.ParseJSONCredential(raw,
+		vc.WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 5}),
+	)
+	if err != nil {
+		t.Fatalf("ParseJSONCredential should ignore limits on non-verify path: %v", err)
+	}
+
+	err = cred.AddProofByProvider(prov,
+		vc.WithVerificationMethodKey("key-1"),
+		vc.WithResolver(resolver),
+		vc.WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 5}),
+	)
+	if err != nil {
+		t.Fatalf("AddProofByProvider should ignore limits on signing path: %v", err)
+	}
+}

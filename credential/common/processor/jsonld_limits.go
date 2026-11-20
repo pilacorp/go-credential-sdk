@@ -16,8 +16,8 @@ import (
 // them from the largest credential it issues. No existing API is changed.
 type JSONLDLimits struct {
 	// MaxValues is the total number of JSON values the document may contain,
-	// excluding the @context subtree. Every array element and every object
-	// member (key-value pair) at any depth counts as one value.
+	// including inline @context subtrees. Every array element and every
+	// object member (key-value pair) at any depth counts as one value.
 	//
 	// This bound is sound by construction: any merge json-gold performs
 	// during expansion (IRI aliases, @nest, same-@id, scoped-context
@@ -35,14 +35,16 @@ type JSONLDLimits struct {
 	// on every use, so processing time is roughly proportional to this count
 	// times the size of the scoped context.
 	//
-	// What is counted: the document's top-level @context chain is loaded
-	// through the caching document loader (the same cache verification itself
-	// uses) to learn which terms have a scoped @context in their definition.
-	// All reachable contexts are walked: scoped contexts, nested scoped
-	// contexts, and contexts introduced via @import. The document body
-	// (everything except @context) is then scanned, and every use of such a
-	// term as a property name and every use as a @type / type value is
-	// counted once.
+	// What is counted: every @context in the document (at any depth, not
+	// just the top-level one) is loaded through the caching document loader
+	// (the same cache verification itself uses) to learn which terms have a
+	// scoped @context in their definition. All reachable contexts are
+	// walked: scoped contexts, nested scoped contexts, and contexts
+	// introduced via @import. The document body (everything except @context)
+	// is then scanned, and every use of such a term as a property name and
+	// every use as a type value is counted once. Type aliases — context
+	// terms that expand to @type (e.g. "kieu": "@type") — are recognised:
+	// values under an alias key count the same as under @type / type.
 	//
 	// If any context URL cannot be loaded (or exceeds the remote-load
 	// budget), the document is refused with ErrUnresolvedContext.
@@ -99,17 +101,16 @@ func checkTotalValues(doc map[string]interface{}, limit int) error {
 	return nil
 }
 
-// countValues recursively counts JSON values in v, excluding @context
-// subtrees. Each object member (key-value pair) counts as 1, and each array
-// element counts as 1, at every depth. The count is O(document size).
+// countValues recursively counts JSON values in v. Every object member
+// (key-value pair) counts as 1, and every array element counts as 1, at any
+// depth. Inline @context subtrees are counted because json-gold processes them
+// (they define terms, trigger @import loads, and scoped-context re-parsing).
+// The count is O(document size).
 func countValues(v interface{}) int {
 	switch t := v.(type) {
 	case map[string]interface{}:
 		total := 0
-		for key, val := range t {
-			if key == "@context" {
-				continue
-			}
+		for _, val := range t {
 			total++ // count this member
 			total += countValues(val)
 		}
@@ -127,30 +128,52 @@ func countValues(v interface{}) int {
 
 // ===== (b) scoped context uses =====
 
-// maxResolverRemoteLoads bounds the remote context URLs the scoped-term
-// collector tries to load. A document that references more non-bundled URLs
-// than this triggers ErrUnresolvedContext. Real credentials reference 1-5
-// context URLs; this limit protects the pre-scan from pathological documents
-// with hundreds of context URLs that would each cause a network round-trip.
-const maxResolverRemoteLoads = 32
+// collectScopedTerms returns the set of term names that carry a scoped
+// @context anywhere in the given context chain, and whether any context URL
+// could not be resolved. Used directly by unit tests.
+func collectScopedTerms(ctx interface{}) (map[string]bool, bool) {
+	c := &scopedTermCollector{
+		result:      make(map[string]bool),
+		typeAliases: make(map[string]bool),
+		seen:        make(map[string]bool),
+		budget:      newContextBudget(),
+	}
+	c.walk(ctx)
+	return c.result, c.hasUnresolved
+}
 
-// checkScopedContextUses identifies terms with scoped @context from the
-// document's top-level @context chain (and all reachable scoped, nested, and
-// @import'ed contexts), then counts how many times those terms appear as
-// property names or @type / type values in the document body.
+// checkScopedContextUses identifies terms with scoped @context from every
+// @context in the document (not just the top-level one — credentialSubject,
+// holder, and embedded VCs may carry inline contexts that define additional
+// scoped terms). It then counts how many times those terms appear as property
+// names or as type values in the document body. Type aliases (context terms
+// that expand to @type) are recognised too: a key that is an alias is treated
+// the same as @type / type.
+//
+// Context URLs are loaded through a contextBudget, which shares the same
+// per-operation limits (30 s deadline, 4 MB bytes, 1024 loads) as the
+// verification loader.
 func checkScopedContextUses(doc map[string]interface{}, limit int) error {
-	scoped, hasUnresolved := collectScopedTerms(doc["@context"])
+	c := &scopedTermCollector{
+		result:      make(map[string]bool),
+		typeAliases: make(map[string]bool),
+		seen:        make(map[string]bool),
+		budget:      newContextBudget(),
+	}
 
-	// Refuse when any context is unresolved. An unresolvable context could
-	// define scoped terms the scan cannot see, causing an under-count.
-	if hasUnresolved {
+	// Walk every @context in the document, at any depth.
+	walkDocContexts(doc, func(ctx interface{}) {
+		c.walk(ctx)
+	})
+
+	if c.hasUnresolved {
 		return fmt.Errorf("%w", ErrUnresolvedContext)
 	}
 
-	if len(scoped) == 0 {
+	if len(c.result) == 0 {
 		return nil
 	}
-	count := countScopedUses(doc, scoped)
+	count := countScopedUses(doc, c.result, c.typeAliases)
 	if count > limit {
 		return fmt.Errorf("%w: %d uses, limit is %d",
 			ErrTooManyScopedContextUses, count, limit)
@@ -158,27 +181,34 @@ func checkScopedContextUses(doc map[string]interface{}, limit int) error {
 	return nil
 }
 
-// collectScopedTerms returns the set of term names that carry a scoped
-// @context anywhere in the given context chain, and whether any context URL
-// could not be resolved. It loads remote contexts through the caching
-// document loader (same cache verification itself uses), with a remote-load
-// budget of maxResolverRemoteLoads. It recurses into scoped contexts and
-// handles @import so that terms defined only inside a scoped or imported
-// context are found too.
-func collectScopedTerms(ctx interface{}) (map[string]bool, bool) {
-	c := &scopedTermCollector{
-		result: make(map[string]bool),
-		seen:   make(map[string]bool),
+// walkDocContexts visits every @context value at any depth in the document
+// tree and calls fn for each. It does not recurse into the @context values
+// themselves (those are context definitions, not document nodes).
+func walkDocContexts(v interface{}, fn func(ctx interface{})) {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		if ctx, ok := t["@context"]; ok {
+			fn(ctx)
+		}
+		for key, val := range t {
+			if key == "@context" {
+				continue
+			}
+			walkDocContexts(val, fn)
+		}
+	case []interface{}:
+		for _, item := range t {
+			walkDocContexts(item, fn)
+		}
 	}
-	c.walk(ctx)
-	return c.result, c.hasUnresolved
 }
 
 type scopedTermCollector struct {
-	result        map[string]bool
-	seen          map[string]bool
+	result        map[string]bool // terms that carry a scoped @context
+	typeAliases   map[string]bool // terms that expand to @type
+	seen          map[string]bool // context URLs already visited
 	hasUnresolved bool
-	remoteLoads   int
+	budget        *contextBudget
 }
 
 func (c *scopedTermCollector) walk(ctx interface{}) {
@@ -188,19 +218,12 @@ func (c *scopedTermCollector) walk(ctx interface{}) {
 			return
 		}
 		c.seen[v] = true
-		if _, bundled := wellKnownContexts[v]; !bundled {
-			c.remoteLoads++
-			if c.remoteLoads > maxResolverRemoteLoads {
-				c.hasUnresolved = true
-				return
-			}
-		}
-		doc := loadContextForScan(v)
-		if doc == nil {
+		parsed := c.loadContext(v)
+		if parsed == nil {
 			c.hasUnresolved = true
 			return
 		}
-		c.walk(doc)
+		c.walk(parsed)
 	case []interface{}:
 		for _, item := range v {
 			c.walk(item)
@@ -216,23 +239,32 @@ func (c *scopedTermCollector) walk(ctx interface{}) {
 			if strings.HasPrefix(key, "@") {
 				continue
 			}
-			defMap, ok := def.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if scoped, ok := defMap["@context"]; ok && scoped != nil {
-				c.result[key] = true
-				// Recursively find scoped terms inside this scoped context.
-				c.walk(scoped)
+			switch d := def.(type) {
+			case string:
+				// A term defined as the string "@type" is a type alias.
+				if d == "@type" {
+					c.typeAliases[key] = true
+				}
+			case map[string]interface{}:
+				// {"@id": "@type"} is also a type alias.
+				if id, ok := d["@id"]; ok {
+					if idStr, ok := id.(string); ok && idStr == "@type" {
+						c.typeAliases[key] = true
+					}
+				}
+				if scoped, ok := d["@context"]; ok && scoped != nil {
+					c.result[key] = true
+					c.walk(scoped)
+				}
 			}
 		}
 	}
 }
 
-// loadContextForScan loads a context URL for the pre-scan. Bundled contexts
-// are loaded from embedded bytes; remote contexts go through the caching
-// document loader.
-func loadContextForScan(url string) interface{} {
+// loadContext loads a context URL through the contextBudget, which enforces
+// the same per-operation limits as the verification loader (30 s deadline,
+// 4 MB bytes, 1024 loads). Bundled contexts are served from embedded bytes.
+func (c *scopedTermCollector) loadContext(url string) interface{} {
 	// Bundled context: parse from embedded bytes.
 	if data, ok := wellKnownContexts[url]; ok {
 		var doc map[string]interface{}
@@ -241,8 +273,8 @@ func loadContextForScan(url string) interface{} {
 		}
 		return doc["@context"]
 	}
-	// Remote context: use the caching loader.
-	doc, err := defaultDocumentLoader.fallback.Load().LoadDocument(url)
+	// Remote context: use the budgeted loader.
+	doc, err := c.budget.LoadDocument(url)
 	if err != nil {
 		return nil
 	}
@@ -252,9 +284,10 @@ func loadContextForScan(url string) interface{} {
 	return nil
 }
 
-// countScopedUses counts uses of scoped terms as property names and as
-// @type / type values in v, excluding @context keys.
-func countScopedUses(v interface{}, scoped map[string]bool) int {
+// countScopedUses counts uses of scoped terms as property names and as type
+// values in v, excluding @context keys. typeAliases are keys that expand to
+// @type in the active context, so their values are type values too.
+func countScopedUses(v interface{}, scoped, typeAliases map[string]bool) int {
 	total := 0
 	switch t := v.(type) {
 	case map[string]interface{}:
@@ -267,14 +300,14 @@ func countScopedUses(v interface{}, scoped map[string]bool) int {
 				total++
 			}
 			// Type values that are scoped terms (type-scoped contexts).
-			if key == "@type" || key == "type" {
+			if key == "@type" || key == "type" || typeAliases[key] {
 				total += countTypeValues(val, scoped)
 			}
-			total += countScopedUses(val, scoped)
+			total += countScopedUses(val, scoped, typeAliases)
 		}
 	case []interface{}:
 		for _, item := range t {
-			total += countScopedUses(item, scoped)
+			total += countScopedUses(item, scoped, typeAliases)
 		}
 	}
 	return total

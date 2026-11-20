@@ -31,8 +31,8 @@ func TestCheckTotalValues_AtLimit(t *testing.T) {
 			"data": makeArray(96),
 		},
 	}
-	// Total: credentialSubject(1) + data(1) + 96 elements = 98
-	if err := CheckJSONLDLimits(doc, JSONLDLimits{MaxValues: 98}); err != nil {
+	// Total: @context(1) + 1 element + credentialSubject(1) + data(1) + 96 elements = 100
+	if err := CheckJSONLDLimits(doc, JSONLDLimits{MaxValues: 100}); err != nil {
 		t.Fatalf("at-limit document should pass: %v", err)
 	}
 }
@@ -44,7 +44,7 @@ func TestCheckTotalValues_OverLimit(t *testing.T) {
 			"data": makeArray(101),
 		},
 	}
-	// Total: credentialSubject(1) + data(1) + 101 elements = 103
+	// Total: @context(1) + 1 element + credentialSubject(1) + data(1) + 101 elements = 105
 	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxValues: 100})
 	if err == nil {
 		t.Fatal("over-limit document should be refused")
@@ -87,16 +87,16 @@ func TestCheckTotalValues_NestedArray(t *testing.T) {
 	}
 }
 
-func TestCheckTotalValues_ContextSkipped(t *testing.T) {
-	// @context arrays can be long (many context URLs); they should not be
-	// counted as values.
+func TestCheckTotalValues_ContextIncluded(t *testing.T) {
+	// Inline @context subtrees are counted because json-gold processes them.
 	doc := map[string]interface{}{
-		"@context":          makeArray(200), // big context array, should be excluded
+		"@context":          makeArray(200), // 200 context elements are counted
 		"credentialSubject": map[string]interface{}{"name": "test"},
 	}
-	// Total: credentialSubject(1) + name(1) = 2
-	if err := CheckJSONLDLimits(doc, JSONLDLimits{MaxValues: 10}); err != nil {
-		t.Fatalf("@context should be skipped: %v", err)
+	// Total: @context(1) + 200 elements + credentialSubject(1) + name(1) = 203
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxValues: 10})
+	if !errors.Is(err, ErrTooManyValues) {
+		t.Fatalf("inline @context should count toward MaxValues, got %v", err)
 	}
 }
 
@@ -129,16 +129,16 @@ func TestCountValues(t *testing.T) {
 		{"object with array", map[string]interface{}{
 			"data": makeArray(5),
 		}, 1 + 5},
-		{"@context excluded", map[string]interface{}{
+		{"@context included", map[string]interface{}{
 			"@context": makeArray(100),
 			"data":     "v",
-		}, 1},
-		{"nested @context excluded", map[string]interface{}{
+		}, 1 + 100 + 1},
+		{"nested @context included", map[string]interface{}{
 			"inner": map[string]interface{}{
 				"@context": "skip",
 				"name":     "v",
 			},
-		}, 1 + 1},
+		}, 1 + 1 + 1},
 		{"empty array", []interface{}{}, 0},
 		{"empty object", map[string]interface{}{}, 0},
 	}
@@ -1410,6 +1410,120 @@ func makeMap(n int) map[string]interface{} {
 		m[fmt.Sprintf("x%d", i)] = fmt.Sprintf("v%d", i)
 	}
 	return m
+}
+
+// ===== Review findings: type alias, inline body context, @context in MaxValues =====
+
+func TestBypass_TypeAlias_Caught(t *testing.T) {
+	// "kieu" is defined as an alias for @type. 20 uses of a scoped type
+	// through "kieu" should be counted as type-scoped-context uses.
+	subjects := make([]interface{}, 20)
+	for i := range subjects {
+		subjects[i] = map[string]interface{}{
+			"kieu": "ScopedType",
+			"name": fmt.Sprintf("item%d", i),
+		}
+	}
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			map[string]interface{}{
+				"kieu": "@type",
+				"ScopedType": map[string]interface{}{
+					"@id":      "https://example.org/ScopedType",
+					"@context": map[string]interface{}{"name": "https://example.org/name"},
+				},
+			},
+		},
+		"type":              "VerifiableCredential",
+		"issuer":            "did:example:issuer",
+		"credentialSubject": subjects,
+	}
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 5})
+	if !errors.Is(err, ErrTooManyScopedContextUses) {
+		t.Fatalf("type alias bypass should be caught, got %v", err)
+	}
+}
+
+func TestBypass_TypeAlias_MapDefinition_Caught(t *testing.T) {
+	// "kieu" defined with {"@id": "@type"} (map form) must also be detected.
+	subjects := make([]interface{}, 20)
+	for i := range subjects {
+		subjects[i] = map[string]interface{}{
+			"kieu": "ScopedType",
+			"name": fmt.Sprintf("item%d", i),
+		}
+	}
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			map[string]interface{}{
+				"kieu": map[string]interface{}{"@id": "@type"},
+				"ScopedType": map[string]interface{}{
+					"@id":      "https://example.org/ScopedType",
+					"@context": map[string]interface{}{"name": "https://example.org/name"},
+				},
+			},
+		},
+		"type":              "VerifiableCredential",
+		"issuer":            "did:example:issuer",
+		"credentialSubject": subjects,
+	}
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 5})
+	if !errors.Is(err, ErrTooManyScopedContextUses) {
+		t.Fatalf("type alias (map def) bypass should be caught, got %v", err)
+	}
+}
+
+func TestBypass_InlineBodyContext_ScopedTerm_Caught(t *testing.T) {
+	// A scoped term defined on credentialSubject's inline @context (not the
+	// top-level @context) should still be detected and counted.
+	subject := map[string]interface{}{
+		"@context": map[string]interface{}{
+			"bodyScopedTerm": map[string]interface{}{
+				"@id":      "https://example.org/bodyScopedTerm",
+				"@context": map[string]interface{}{"inner": "https://example.org/inner"},
+			},
+		},
+		"id": "did:example:subject",
+	}
+	for i := 0; i < 20; i++ {
+		subject[fmt.Sprintf("n%d", i)] = map[string]interface{}{
+			"bodyScopedTerm": fmt.Sprintf("val%d", i),
+		}
+	}
+	doc := map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":              "VerifiableCredential",
+		"issuer":            "did:example:issuer",
+		"credentialSubject": subject,
+	}
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 5})
+	if !errors.Is(err, ErrTooManyScopedContextUses) {
+		t.Fatalf("inline body context scoped term should be caught, got %v", err)
+	}
+}
+
+func TestCheckTotalValues_InlineContextCounted(t *testing.T) {
+	// @context subtrees should count toward MaxValues because json-gold
+	// processes them (inline context body is work).
+	termDefs := make(map[string]interface{})
+	for i := 0; i < 50; i++ {
+		termDefs[fmt.Sprintf("t%d", i)] = fmt.Sprintf("https://example.org/t%d", i)
+	}
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			termDefs,
+		},
+		"credentialSubject": map[string]interface{}{"name": "test"},
+	}
+	// The inline context has 50 terms plus overhead. With @context counted,
+	// the total should exceed 5.
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxValues: 5})
+	if !errors.Is(err, ErrTooManyValues) {
+		t.Fatalf("inline context should count toward MaxValues, got %v", err)
+	}
 }
 
 // ===== Attack shape timing without limit (baseline) =====

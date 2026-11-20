@@ -239,8 +239,9 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
 	// Pre-scan: refuse documents that would cause excessive JSON-LD work,
-	// before json-gold processes them.
-	if options.jsonldLimits.IsSet() {
+	// before json-gold processes them. Only the verification path runs the
+	// check: limits protect the verifier, not the presenter.
+	if options.isVerifyProof && options.jsonldLimits.IsSet() {
 		if err := processor.CheckJSONLDLimits(
 			map[string]interface{}(e.presentationData), options.jsonldLimits); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)

@@ -152,6 +152,56 @@ func TestWithJSONLDLimits_VP_UnderLimit(t *testing.T) {
 	}
 }
 
+// TestWithJSONLDLimits_VP_SigningSkipsCheck verifies that WithJSONLDLimits does
+// NOT block the parse/signing path: a VP parsed with an over-limit document
+// should succeed because limits protect the verifier, not the presenter.
+func TestWithJSONLDLimits_VP_SigningSkipsCheck(t *testing.T) {
+	const holder = "did:example:sign-nolim"
+
+	holderKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	holderProv, _ := signer.NewP256Provider(holderKey)
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(holder, mustP256VM(t, holder, "key-1", &holderKey.PublicKey)),
+	)
+
+	// Build a VP with enough VCs to push total values well over MaxValues=5.
+	// The VCs themselves are small but numerous.
+	vcs := make([]interface{}, 20)
+	for i := range vcs {
+		vcs[i] = map[string]interface{}{
+			"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+			"type":              "VerifiableCredential",
+			"issuer":            fmt.Sprintf("did:example:issuer%d", i),
+			"credentialSubject": map[string]interface{}{"id": fmt.Sprintf("did:example:sub%d", i)},
+		}
+	}
+
+	vpMap := map[string]interface{}{
+		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":                 []interface{}{"VerifiablePresentation"},
+		"holder":               holder,
+		"verifiableCredential": vcs,
+	}
+	raw, _ := json.Marshal(vpMap)
+
+	// ParseJSONPresentation with over-limit should NOT fail on non-verify path.
+	pres, err := ParseJSONPresentation(raw,
+		WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 5}),
+	)
+	if err != nil {
+		t.Fatalf("ParseJSONPresentation should ignore limits on non-verify path: %v", err)
+	}
+
+	// AddProofByProvider also should NOT check limits (signing path).
+	err = pres.AddProofByProvider(holderProv,
+		WithResolver(resolver),
+		WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 5}),
+	)
+	if err != nil {
+		t.Fatalf("AddProofByProvider should ignore limits on signing path: %v", err)
+	}
+}
+
 // TestWithJSONLDLimits_VP_NoOption verifies that without WithJSONLDLimits the
 // VP verifies as on main (no limit imposed).
 func TestWithJSONLDLimits_VP_NoOption(t *testing.T) {
