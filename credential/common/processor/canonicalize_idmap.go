@@ -3,6 +3,7 @@ package processor
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -306,6 +307,147 @@ func CompactJSONLD(expanded []interface{}, ctx interface{}) (result map[string]i
 		return nil, fmt.Errorf("compact: %w", err)
 	}
 	return out, nil
+}
+
+// CompactDocumentForm expands a JSON-LD document body (without proof) and
+// compacts it back against the document's own @context, so that every property
+// is under the short name the context defines — the compacted document form
+// VCDM 2.0 §6.1 requires.
+//
+// Expansion is permissive (no SafeMode): terms not defined in @context are
+// silently dropped rather than causing an error. This is correct because the
+// comparison list covers only well-known VC/VP properties that every context
+// defines. SafeMode for undefined terms is already enforced by the proof
+// verification step (Canonicalize / ExpandJSONLD).
+//
+// If the document has no @context, it is returned unchanged.
+func CompactDocumentForm(body map[string]interface{}) (map[string]interface{}, error) {
+	ctx, ok := body["@context"]
+	if !ok || ctx == nil {
+		return body, nil
+	}
+
+	expanded, err := expandPermissive(body)
+	if err != nil {
+		return nil, fmt.Errorf("compact document form: expand: %w", err)
+	}
+
+	compacted, err := CompactJSONLD(expanded, ctx)
+	if err != nil {
+		return nil, fmt.Errorf("compact document form: compact: %w", err)
+	}
+
+	return compacted, nil
+}
+
+// expandPermissive expands a JSON-LD document without SafeMode. Terms not
+// defined by @context are dropped instead of causing an error. Used by
+// CompactDocumentForm where the caller only compares well-known properties.
+func expandPermissive(doc map[string]interface{}) (result []interface{}, err error) {
+	defer recoverJSONLD(&err, "expand")
+	std, err := standardizeForCanonicalization(doc)
+	if err != nil {
+		return nil, fmt.Errorf("expand: standardize: %w", err)
+	}
+	opts := ld.NewJsonLdOptions("")
+	opts.Algorithm = ld.AlgorithmURDNA2015
+	opts.DocumentLoader = newContextBudget()
+	// No SafeMode: undefined terms are dropped rather than refused.
+	out, err := ld.NewJsonLdProcessor().Expand(std, opts)
+	if err != nil {
+		return nil, fmt.Errorf("expand: %w", err)
+	}
+	return out, nil
+}
+
+// ErrNotCompactedForm signals that a verified document's raw JSON is not in
+// compacted form for one or more properties the SDK reads by short name.
+// A holder rewrote the JSON into an equivalent form (e.g. @nest, full IRI)
+// that would hide a property from post-proof checks.
+var ErrNotCompactedForm = errors.New("document is not in compacted form")
+
+// VerifyCompactedKeys checks that for each key in keys, the value in raw
+// matches the value in compacted after normalizing single-element arrays to
+// scalars (JSON-LD @set containers may wrap/unwrap). Keys in presenceOnly are
+// compared by presence and element count only — their internal structure is
+// verified independently (e.g. each embedded VC in verifiableCredential).
+//
+// graphKeys maps short names to full IRIs for properties whose JSON-LD context
+// uses @container: @graph. The compactor places these under the full IRI
+// instead of the short name; VerifyCompactedKeys checks the full IRI as a
+// fallback. Pass nil when no graph-container properties are in the list.
+func VerifyCompactedKeys(raw, compacted map[string]interface{}, keys []string, presenceOnly map[string]bool, graphKeys map[string]string) error {
+	for _, key := range keys {
+		rv := raw[key]
+		cv := compacted[key]
+		// For graph-container properties the JSON-LD compactor may place the
+		// value under the full IRI instead of the short name.
+		if cv == nil {
+			if iri, ok := graphKeys[key]; ok {
+				cv = compacted[iri]
+			}
+		}
+		if presenceOnly[key] {
+			if !presenceCountEqual(rv, cv) {
+				return fmt.Errorf("%w: %s", ErrNotCompactedForm, key)
+			}
+		} else {
+			if !normalizedDeepEqual(rv, cv) {
+				return fmt.Errorf("%w: %s", ErrNotCompactedForm, key)
+			}
+		}
+	}
+	return nil
+}
+
+// normalizedDeepEqual returns true when a and b are equal after recursively
+// unwrapping single-element arrays. This handles JSON-LD @set containers
+// that wrap/unwrap scalars vs arrays.
+func normalizedDeepEqual(a, b interface{}) bool {
+	return reflect.DeepEqual(normalizeForCompare(a), normalizeForCompare(b))
+}
+
+// normalizeForCompare recursively unwraps single-element arrays so that
+// "value" and ["value"] compare equal, as do {"k":"v"} and [{"k":"v"}].
+func normalizeForCompare(v interface{}) interface{} {
+	switch val := v.(type) {
+	case []interface{}:
+		if len(val) == 1 {
+			return normalizeForCompare(val[0])
+		}
+		out := make([]interface{}, len(val))
+		for i, e := range val {
+			out[i] = normalizeForCompare(e)
+		}
+		return out
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(val))
+		for k, e := range val {
+			out[k] = normalizeForCompare(e)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// presenceCountEqual returns true when both values are nil, or both are
+// non-nil with the same element count.
+func presenceCountEqual(a, b interface{}) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return elementCount(a) == elementCount(b)
+}
+
+func elementCount(v interface{}) int {
+	if arr, ok := v.([]interface{}); ok {
+		return len(arr)
+	}
+	return 1
 }
 
 // ToRDFNQuads converts a JSON-LD document to N-Quads (each ending in "\n"),
