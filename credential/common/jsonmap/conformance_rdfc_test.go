@@ -234,7 +234,7 @@ func TestW3CRDFC_Phase3_Hashes(t *testing.T) {
 // this SDK but breaks every other implementation.
 func TestW3CRDFC_Phase4_HashData(t *testing.T) {
 	doc := rdfcSignedDoc(t)
-	got, err := doc.ecdsaHashData(rdfcProof(t))
+	got, err := doc.ecdsaHashData(rdfcProof(t), nil)
 	if err != nil {
 		t.Fatalf("ecdsaHashData: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestW3CRDFC_Phase5_ProofValueEncoding(t *testing.T) {
 // verifier has to compute, independently of this SDK's verification path.
 func TestW3CRDFC_Phase6_SignatureVerifiesOnP256(t *testing.T) {
 	doc := rdfcSignedDoc(t)
-	hashData, err := doc.ecdsaHashData(rdfcProof(t))
+	hashData, err := doc.ecdsaHashData(rdfcProof(t), nil)
 	if err != nil {
 		t.Fatalf("ecdsaHashData: %v", err)
 	}
