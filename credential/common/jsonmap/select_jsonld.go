@@ -2,15 +2,13 @@ package jsonmap
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
 )
 
 // SelectJSONLD returns the JSON-LD selection addressed by RFC 6901 pointers.
-// It preserves @context and the id/type metadata of selected nodes. The copy
-// in ecdsasd differs on numeric object keys and non-canonical array indexes
-// (leading zeros, a sign), and leaves the leading-slash and root-pointer
-// checks to its callers, since it also reads pointers stored in a base proof.
+// It preserves @context and the id/type metadata of selected nodes.
 func SelectJSONLD(document map[string]interface{}, pointers []string) (map[string]interface{}, error) {
 	if len(pointers) == 0 {
 		return nil, nil
@@ -24,7 +22,11 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 	selected := &pointerNode{}
 	for i, pointer := range pointers {
 		if pointer == "" || strings.HasPrefix(pointer, "/") {
-			paths[i] = parseJSONPointer(pointer)
+			tokens, err := jsonpointer.ParseTokens(pointer)
+			if err != nil {
+				return nil, fmt.Errorf("pointer %.64q: %w", pointer, err)
+			}
+			paths[i] = tokens
 			selected.add(document, paths[i])
 		}
 	}
@@ -40,7 +42,7 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 		// The root pointer selects the whole document, but a pointer next to it
 		// that matches nothing is still an error (VC-DI-ECDSA §3.4.12).
 		for i, path := range paths {
-			if !matchesJSONPointer(document, path) {
+			if !jsonpointer.Matches(document, path) {
 				return nil, fmt.Errorf("pointer %.64q: JSON Pointer does not match document", pointers[i])
 			}
 		}
@@ -51,7 +53,7 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 		// A pointer under another selected pointer adds nothing: the outer one
 		// copies the whole value. Copying it again cost one copy per pointer.
 		if selected.coversFromAbove(path) {
-			if !matchesJSONPointer(document, path) {
+			if !jsonpointer.Matches(document, path) {
 				return nil, fmt.Errorf("pointer %.64q: JSON Pointer does not match document", pointers[i])
 			}
 			continue
@@ -78,20 +80,20 @@ type pointerNode struct {
 // matches nothing covers no other pointer, and its tokens are not kept.
 func (n *pointerNode) add(document interface{}, path []string) {
 	for _, token := range path {
-		next, ok := getJSONChild(document, token)
-		if !ok {
+		child, err := jsonpointer.GetChild(document, token)
+		if err != nil {
 			return
 		}
-		document = next
-		child := n.children[token]
-		if child == nil {
+		document = child
+		next := n.children[token]
+		if next == nil {
 			if n.children == nil {
 				n.children = map[string]*pointerNode{}
 			}
-			child = &pointerNode{}
-			n.children[token] = child
+			next = &pointerNode{}
+			n.children[token] = next
 		}
-		n = child
+		n = next
 	}
 	n.requested = true
 }
@@ -122,26 +124,6 @@ func (n *pointerNode) takeFirst(path []string) bool {
 	first := !n.done
 	n.done = true
 	return first
-}
-
-func matchesJSONPointer(document interface{}, path []string) bool {
-	for _, token := range path {
-		child, ok := getJSONChild(document, token)
-		if !ok {
-			return false
-		}
-		document = child
-	}
-	return true
-}
-
-func parseJSONPointer(pointer string) []string {
-	parts := strings.Split(pointer, "/")[1:]
-	path := make([]string, 0, len(parts))
-	for _, part := range parts {
-		path = append(path, strings.ReplaceAll(strings.ReplaceAll(part, "~1", "/"), "~0", "~"))
-	}
-	return path
 }
 
 func initJSONLDSelection(selection map[string]interface{}, source interface{}) {
@@ -178,8 +160,8 @@ func selectJSONLDInto(source interface{}, path []string, selection interface{}) 
 			return source, nil
 		}
 	}
-	child, ok := getJSONChild(source, path[0])
-	if !ok {
+	child, err := jsonpointer.GetChild(source, path[0])
+	if err != nil {
 		return nil, fmt.Errorf("JSON Pointer does not match document")
 	}
 	// A hole an earlier pointer left is not selected yet: a later pointer
@@ -205,14 +187,14 @@ func initJSONLDSelectionMap(source interface{}) map[string]interface{} {
 	return selection
 }
 
-func getJSONChild(parent interface{}, path string) (interface{}, bool) {
+func getJSONChild(parent interface{}, token string) (interface{}, bool) {
 	switch value := parent.(type) {
 	case map[string]interface{}:
-		child, ok := value[path]
+		child, ok := value[token]
 		return child, ok
 	case []interface{}:
-		index, ok := arrayIndex(path)
-		if !ok || index < 0 || index >= len(value) {
+		index, ok := jsonpointer.ArrayIndex(token)
+		if !ok || index >= len(value) {
 			return nil, false
 		}
 		return value[index], true
@@ -221,13 +203,13 @@ func getJSONChild(parent interface{}, path string) (interface{}, bool) {
 	}
 }
 
-func setJSONChild(parent interface{}, path string, value interface{}) interface{} {
+func setJSONChild(parent interface{}, token string, value interface{}) interface{} {
 	switch node := parent.(type) {
 	case map[string]interface{}:
-		node[path] = value
+		node[token] = value
 		return node
 	case []interface{}:
-		index, ok := arrayIndex(path)
+		index, ok := jsonpointer.ArrayIndex(token)
 		if !ok {
 			return node
 		}
@@ -239,26 +221,6 @@ func setJSONChild(parent interface{}, path string, value interface{}) interface{
 	default:
 		return parent
 	}
-}
-
-// arrayIndex parses an RFC 6901 array-index token: "0" or a decimal number
-// without leading zeros. Tokens that overflow int are rejected rather than
-// wrapping to a negative index.
-func arrayIndex(token string) (int, bool) {
-	if token == "" || (len(token) > 1 && token[0] == '0') {
-		return 0, false
-	}
-	for i := 0; i < len(token); i++ {
-		if token[i] < '0' || token[i] > '9' {
-			return 0, false
-		}
-	}
-	// The digit check above excludes signs, so Atoi only fails on overflow.
-	index, err := strconv.Atoi(token)
-	if err != nil || index < 0 {
-		return 0, false
-	}
-	return index, true
 }
 
 // selectionHole marks an array index the selection has not filled yet. A null

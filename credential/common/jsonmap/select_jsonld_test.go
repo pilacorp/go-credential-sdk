@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
 )
 
 func TestSelectJSONLDPreservesContextAndNodeMetadata(t *testing.T) {
@@ -162,9 +164,9 @@ func TestArrayIndexRejectsOverflowAndNonCanonicalTokens(t *testing.T) {
 		{"99999999999999999999999", 0, false},
 	}
 	for _, tc := range cases {
-		got, ok := arrayIndex(tc.token)
+		got, ok := jsonpointer.ArrayIndex(tc.token)
 		if ok != tc.ok || (ok && got != tc.want) {
-			t.Errorf("arrayIndex(%q) = (%d, %v), want (%d, %v)", tc.token, got, ok, tc.want, tc.ok)
+			t.Errorf("jsonpointer.ArrayIndex(%q) = (%d, %v), want (%d, %v)", tc.token, got, ok, tc.want, tc.ok)
 		}
 	}
 }

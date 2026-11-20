@@ -6,9 +6,10 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
 )
 
 // HTTPFetcher fetches external resources with limits on response size,
@@ -92,50 +93,7 @@ func (f HTTPFetcher) Fetch(ctx context.Context, ref TemplateReference) ([]byte, 
 
 // resolveJSONPointer resolves an RFC 6901 pointer against a JSON-like value.
 func resolveJSONPointer(document any, pointer string) (any, error) {
-	if pointer == "" {
-		return document, nil
-	}
-	if err := validateJSONPointer(pointer); err != nil {
-		return nil, err
-	}
-	current := document
-	for _, token := range strings.Split(pointer[1:], "/") {
-		token = strings.ReplaceAll(strings.ReplaceAll(token, "~1", "/"), "~0", "~")
-		switch value := current.(type) {
-		case map[string]any:
-			var ok bool
-			current, ok = value[token]
-			if !ok {
-				return nil, fmt.Errorf("JSON Pointer segment %.64q not found", token)
-			}
-		case []any:
-			index, ok := jsonPointerArrayIndex(token, len(value))
-			if !ok {
-				return nil, fmt.Errorf("JSON Pointer array index %.64q is invalid", token)
-			}
-			current = value[index]
-		default:
-			return nil, fmt.Errorf("cannot resolve JSON Pointer segment %.64q through %T", token, current)
-		}
-	}
-	return current, nil
-}
-
-// jsonPointerArrayIndex parses an RFC 6901 §4 array index: "0" or digits with
-// no leading zero, below length. It accepts the same tokens as the selectJsonLd
-// implementation in jsonmap, so a pointer resolves the same way for summary and
-// html.
-func jsonPointerArrayIndex(token string, length int) (int, bool) {
-	if token == "" || (len(token) > 1 && token[0] == '0') {
-		return 0, false
-	}
-	for i := 0; i < len(token); i++ {
-		if token[i] < '0' || token[i] > '9' {
-			return 0, false
-		}
-	}
-	index, err := strconv.Atoi(token)
-	return index, err == nil && index < length
+	return jsonpointer.Resolve(document, pointer)
 }
 
 // boundedError shortens a cause whose text holds input from a credential or a

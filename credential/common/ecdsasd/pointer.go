@@ -2,42 +2,16 @@ package ecdsasd
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
-)
 
-// parsePointer parses an RFC 6901 JSON Pointer into path segments. Numeric
-// segments become int (array indexes); escaped segments are unescaped
-// (~1 -> "/", ~0 -> "~"). Ports digitalbazaar di-sd-primitives parsePointer.
-func parsePointer(pointer string) []interface{} {
-	parts := strings.Split(pointer, "/")
-	if len(parts) > 0 {
-		parts = parts[1:]
-	}
-	parsed := make([]interface{}, 0, len(parts))
-	for _, part := range parts {
-		if !strings.Contains(part, "~") {
-			if n, err := strconv.Atoi(part); err == nil {
-				parsed = append(parsed, n)
-				continue
-			}
-			parsed = append(parsed, part)
-			continue
-		}
-		un := strings.ReplaceAll(part, "~1", "/")
-		un = strings.ReplaceAll(un, "~0", "~")
-		parsed = append(parsed, un)
-	}
-	return parsed
-}
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
+)
 
 // checkPointers refuses a pointer a caller supplies that is not "" and does not
 // start with "/" (RFC 6901 §3), or that matches nothing in document
-// (VC-DI-ECDSA §3.4.12). parsePointer drops the first token, so
-// "credentialSubject" would read as "", the whole document. CreateBaseProof and
-// DeriveProof check their pointers here. selectJsonLd does not: it also reads
-// the mandatory pointers stored in an issued base proof, which released versions
-// signed without these checks.
+// (VC-DI-ECDSA §3.4.12). CreateBaseProof and DeriveProof check their pointers
+// here. selectJsonLd does not: it also reads the mandatory pointers stored in
+// an issued base proof, which released versions signed without these checks.
 func checkPointers(document map[string]interface{}, pointers []string) error {
 	for _, pointer := range pointers {
 		if pointer != "" && !strings.HasPrefix(pointer, "/") {
@@ -45,7 +19,11 @@ func checkPointers(document map[string]interface{}, pointers []string) error {
 		}
 	}
 	for _, pointer := range pointers {
-		if !matchesPointer(document, parsePointer(pointer)) {
+		tokens, err := jsonpointer.ParseTokens(pointer)
+		if err != nil {
+			return fmt.Errorf("pointer %.64q: %w", pointer, err)
+		}
+		if !jsonpointer.Matches(document, tokens) {
 			return fmt.Errorf("pointer %.64q: JSON pointer does not match document", pointer)
 		}
 	}
@@ -72,12 +50,15 @@ func selectJsonLd(document map[string]interface{}, pointers []string) (map[strin
 	initSelection(sel, document)
 
 	for _, pointer := range pointers {
-		paths := parsePointer(pointer)
-		if len(paths) == 0 {
+		tokens, err := storedPointerTokens(pointer)
+		if err != nil {
+			return nil, fmt.Errorf("pointer %.64q: %w", pointer, err)
+		}
+		if len(tokens) == 0 {
 			cloned, _ := deepCopy(document).(map[string]interface{})
 			return cloned, nil
 		}
-		if _, err := selectInto(document, paths, sel); err != nil {
+		if _, err := selectInto(document, tokens, sel); err != nil {
 			return nil, fmt.Errorf("pointer %.64q: %w", pointer, err)
 		}
 	}
@@ -85,22 +66,23 @@ func selectJsonLd(document map[string]interface{}, pointers []string) (map[strin
 	return sel, nil
 }
 
-func matchesPointer(document interface{}, path []interface{}) bool {
-	for _, token := range path {
-		child, ok := getChild(document, token)
-		if !ok {
-			return false
-		}
-		document = child
+// storedPointerTokens reads a pointer the way the reference reads a stored
+// mandatory pointer: the text before the first "/" is dropped. "x/validFrom"
+// reads as /validFrom, and a pointer with no "/" (such as "credentialSubject")
+// reads as the root pointer. A pointer that starts with "/" is plain RFC 6901.
+func storedPointerTokens(pointer string) ([]string, error) {
+	i := strings.Index(pointer, "/")
+	if i < 0 {
+		return nil, nil
 	}
-	return true
+	return jsonpointer.ParseTokens(pointer[i:])
 }
 
 // selectInto walks paths into source, blending the selection into sel (the
 // current selection node), and returns the (possibly grown) selection node so
 // slice growth propagates to the parent.
-func selectInto(source interface{}, paths []interface{}, sel interface{}) (interface{}, error) {
-	if len(paths) == 0 {
+func selectInto(source interface{}, tokens []string, sel interface{}) (interface{}, error) {
+	if len(tokens) == 0 {
 		switch v := source.(type) {
 		case map[string]interface{}:
 			merged := map[string]interface{}{}
@@ -120,15 +102,15 @@ func selectInto(source interface{}, paths []interface{}, sel interface{}) (inter
 		}
 	}
 
-	path := paths[0]
-	childSource, ok := getChild(source, path)
+	token := tokens[0]
+	childSource, ok := getChild(source, token)
 	if !ok {
 		return nil, fmt.Errorf("JSON pointer does not match document")
 	}
 
 	// A hole an earlier pointer left is not selected yet: a later pointer
 	// below it starts a fresh selection there.
-	childSel, _ := getChild(sel, path)
+	childSel, _ := getChild(sel, token)
 	if _, hole := childSel.(selectionHole); hole || childSel == nil {
 		if _, isArr := childSource.([]interface{}); isArr {
 			childSel = []interface{}{}
@@ -137,11 +119,11 @@ func selectInto(source interface{}, paths []interface{}, sel interface{}) (inter
 		}
 	}
 
-	newChild, err := selectInto(childSource, paths[1:], childSel)
+	newChild, err := selectInto(childSource, tokens[1:], childSel)
 	if err != nil {
 		return nil, err
 	}
-	return setChild(sel, path, newChild), nil
+	return setChild(sel, token, newChild), nil
 }
 
 // initSelection copies the non-blank id and type from source into sel (per the
@@ -160,18 +142,14 @@ func initSelection(sel map[string]interface{}, source interface{}) map[string]in
 	return sel
 }
 
-func getChild(parent interface{}, path interface{}) (interface{}, bool) {
+func getChild(parent interface{}, token string) (interface{}, bool) {
 	switch p := parent.(type) {
 	case map[string]interface{}:
-		key, ok := path.(string)
-		if !ok {
-			return nil, false
-		}
-		v, ok := p[key]
+		v, ok := p[token]
 		return v, ok
 	case []interface{}:
-		idx, ok := path.(int)
-		if !ok || idx < 0 || idx >= len(p) {
+		idx, ok := jsonpointer.ArrayIndex(token)
+		if !ok || idx >= len(p) {
 			return nil, false
 		}
 		return p[idx], true
@@ -180,15 +158,13 @@ func getChild(parent interface{}, path interface{}) (interface{}, bool) {
 	}
 }
 
-func setChild(parent interface{}, path interface{}, val interface{}) interface{} {
+func setChild(parent interface{}, token string, val interface{}) interface{} {
 	switch p := parent.(type) {
 	case map[string]interface{}:
-		if key, ok := path.(string); ok {
-			p[key] = val
-		}
+		p[token] = val
 		return p
 	case []interface{}:
-		idx, ok := path.(int)
+		idx, ok := jsonpointer.ArrayIndex(token)
 		if !ok {
 			return p
 		}
