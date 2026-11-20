@@ -3,12 +3,21 @@ package didv2
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/gorilla/websocket"
 	"github.com/pilacorp/go-credential-sdk/didv2/did"
 	"github.com/pilacorp/go-credential-sdk/didv2/issuer"
 	"github.com/pilacorp/go-credential-sdk/didv2/signer"
@@ -59,7 +68,7 @@ func TestIssue196_PerCallOverride_GenerateDID(t *testing.T) {
 	overrideContract := "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	overrideChain := int64(999)
 
-	g, _ := newTestGenerator(t, baseContract, baseChain)
+	g, issuerSigner := newTestGenerator(t, baseContract, baseChain)
 
 	// Call GenerateDID with per-call overrides.
 	res, err := g.GenerateDID(
@@ -83,6 +92,7 @@ func TestIssue196_PerCallOverride_GenerateDID(t *testing.T) {
 	if got := tx.ChainId().Int64(); got != overrideChain {
 		t.Errorf("tx.ChainId = %d, want %d", got, overrideChain)
 	}
+	assertIssuerSigBindsContract(t, tx, res.DID, issuerSigner.GetAddress(), overrideContract, baseContract)
 }
 
 // TestIssue196_PerCallOverride_IssuerSignatureUsesOverrideContract verifies
@@ -103,47 +113,42 @@ func TestIssue196_PerCallOverride_IssuerSignatureUsesOverrideContract(t *testing
 		t.Fatalf("did addr: %v", err)
 	}
 
+	capID, err := issuer.GenerateCapID()
+	if err != nil {
+		t.Fatal(err)
+	}
 	sig, err := g.GenerateIssuerSignature(
 		t.Context(),
 		did.DIDTypeItem,
 		didAddr,
 		issuerSigner.GetAddress(),
 		WithDIDAddressSMC(overrideContract),
+		WithCapID(capID),
 	)
 	if err != nil {
 		t.Fatalf("GenerateIssuerSignature: %v", err)
 	}
-
-	// Rebuild the payload with the override contract to check the sig matches.
-	capID, _ := issuer.GenerateCapID() // just need a valid one
-	payloadOverride, _ := issuer.BuildIssueDIDPayload(&issuer.IssueDIDPayload{
-		ContractAddress: overrideContract,
-		IssuerAddress:   issuerSigner.GetAddress(),
-		DidAddress:      didAddr,
-		DidType:         did.DIDTypeItem,
-		Epoch:           0,
-		CapID:           capID,
-	})
-	payloadBase, _ := issuer.BuildIssueDIDPayload(&issuer.IssueDIDPayload{
-		ContractAddress: baseContract,
-		IssuerAddress:   issuerSigner.GetAddress(),
-		DidAddress:      didAddr,
-		DidType:         did.DIDTypeItem,
-		Epoch:           0,
-		CapID:           capID,
-	})
-
-	// The two payloads must differ (proving the contract address is embedded).
-	if bytes.Equal(payloadOverride, payloadBase) {
-		t.Fatal("payloads with different contracts are equal; test is broken")
+	payload := func(contract string) []byte {
+		t.Helper()
+		out, err := issuer.BuildIssueDIDPayload(&issuer.IssueDIDPayload{
+			ContractAddress: contract,
+			IssuerAddress:   issuerSigner.GetAddress(),
+			DidAddress:      didAddr,
+			DidType:         did.DIDTypeItem,
+			Epoch:           0,
+			CapID:           capID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
 	}
-
-	// We cannot re-derive the exact capID used by the internal call, so instead
-	// we verify the returned signature is non-nil (above) and that the bug's
-	// symptom is gone: if the old code had been used (d.baseConfig), the
-	// signature would have been generated for baseContract. The GenerateDID
-	// test already covers the full round-trip (tx + sig both use the override).
-	_ = sig
+	if got := recoverIssuer(t, payload(overrideContract), sig); !strings.EqualFold(got, issuerSigner.GetAddress()) {
+		t.Fatalf("signature recovers %s, want issuer %s for the override contract", got, issuerSigner.GetAddress())
+	}
+	if got := recoverIssuer(t, payload(baseContract), sig); strings.EqualFold(got, issuerSigner.GetAddress()) {
+		t.Fatal("signature also recovers the issuer for the base contract")
+	}
 }
 
 // TestIssue196_PerCallOverride_CreateTransaction verifies that
@@ -314,30 +319,30 @@ func TestIssue196_NoOverride_Unchanged(t *testing.T) {
 }
 
 // TestIssue196_SharedContractNotClosedByNoOverrideCall verifies that a call
-// without overrides does not close the shared base contract client: a second
-// call must still succeed.
+// without overrides does not close the shared base contract client. SyncNonce
+// reads the nonce from that client, so a second read must hit the same server
+// and the websocket must still be open.
 func TestIssue196_SharedContractNotClosedByNoOverrideCall(t *testing.T) {
 	baseContract := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	baseChain := int64(111)
+	srv := newWSServer(t)
+	defer srv.close()
 
-	g, _ := newTestGenerator(t, baseContract, baseChain)
-
-	// First call (no override) -- exercises release(), which must be a no-op.
-	_, err := g.GenerateDID(t.Context(), did.DIDTypeItem, "", nil)
-	if err != nil {
-		t.Fatalf("first GenerateDID: %v", err)
+	g, issuerSigner := newTestGeneratorRPC(t, baseContract, srv.url, 111)
+	before := srv.reads.Load()
+	if srv.conns.Load() != 1 {
+		t.Fatalf("shared client connections = %d, want 1", srv.conns.Load())
 	}
 
-	// Second call -- if the first call closed the shared client, this would
-	// fail or behave incorrectly.
-	res, err := g.GenerateDID(t.Context(), did.DIDTypeItem, "", nil)
-	if err != nil {
-		t.Fatalf("second GenerateDID: %v", err)
+	for i := 0; i < 2; i++ {
+		if err := syncNonce(t, g, issuerSigner); err != nil {
+			t.Fatalf("read %d: %v", i+1, err)
+		}
 	}
-
-	tx := decodeTx(t, res.Transaction.TxHex)
-	if got := tx.To(); got == nil || !strings.EqualFold(got.Hex(), common.HexToAddress(baseContract).Hex()) {
-		t.Errorf("tx.To = %v, want %s (base)", got, baseContract)
+	if got := srv.reads.Load() - before; got < 2 {
+		t.Fatalf("shared server reads = %d, want at least 2", got)
+	}
+	if srv.conns.Load() != 1 {
+		t.Fatalf("shared client connections after two reads = %d, want 1", srv.conns.Load())
 	}
 }
 
@@ -374,4 +379,194 @@ func TestIssue196_ResolveContract_PerCallRelease(t *testing.T) {
 	}
 	release2() // closes the per-call client
 	release2() // second call must be safe (Close is idempotent)
+}
+
+// TestIssue196_WithRPC_ReadUsesOverrideServer requires a SyncNonce read to
+// reach only the per-call RPC, and the per-call websocket to be gone after
+// the call returns. The shared client stays connected.
+func TestIssue196_WithRPC_ReadUsesOverrideServer(t *testing.T) {
+	baseContract := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	base := newWSServer(t)
+	override := newWSServer(t)
+	defer base.close()
+	defer override.close()
+
+	g, issuerSigner := newTestGeneratorRPC(t, baseContract, base.url, 111)
+	baseBefore := base.reads.Load()
+	if err := syncNonce(t, g, issuerSigner, WithRPC(override.url)); err != nil {
+		t.Fatalf("SyncNonce via override RPC: %v", err)
+	}
+	if override.reads.Load() < 1 {
+		t.Fatal("per-call RPC received no read")
+	}
+	if base.reads.Load() != baseBefore {
+		t.Fatalf("base RPC reads changed by %d during an override call", base.reads.Load()-baseBefore)
+	}
+	waitConns(t, &override.conns, 0)
+	if base.conns.Load() != 1 {
+		t.Fatalf("shared connections = %d, want 1", base.conns.Load())
+	}
+}
+
+func newTestGeneratorRPC(t *testing.T, contractAddr, rpcURL string, chainID int64) (*DIDGenerator, signer.SignerProvider) {
+	t.Helper()
+	issuerKey, err := did.GenerateECDSAKeyPair()
+	if err != nil {
+		t.Fatalf("generate issuer key: %v", err)
+	}
+	issuerSigner, err := signer.NewDefaultProvider(issuerKey.GetPrivateKeyHex())
+	if err != nil {
+		t.Fatalf("issuer signer: %v", err)
+	}
+	g, err := NewDIDGenerator(
+		WithDIDAddressSMC(contractAddr),
+		WithDIDChainID(chainID),
+		WithRPC(rpcURL),
+		WithIssuerSignerProvider(issuerSigner),
+	)
+	if err != nil {
+		t.Fatalf("new generator: %v", err)
+	}
+	return g, issuerSigner
+}
+
+// syncNonce performs one SyncNonce read through GenerateDIDCreateTransaction.
+func syncNonce(t *testing.T, g *DIDGenerator, issuerSigner signer.SignerProvider, opts ...DIDOption) error {
+	t.Helper()
+	didKey, err := did.GenerateECDSAKeyPair()
+	if err != nil {
+		return err
+	}
+	didSigner, err := signer.NewDefaultProvider(didKey.GetPrivateKeyHex())
+	if err != nil {
+		return err
+	}
+	didAddr, err := did.AddressFromPublicKeyHex(didKey.GetPublicKeyHex())
+	if err != nil {
+		return err
+	}
+	sig, err := g.GenerateIssuerSignature(t.Context(), did.DIDTypeItem, didAddr, issuerSigner.GetAddress())
+	if err != nil {
+		return err
+	}
+	callOpts := append([]DIDOption{
+		WithSyncNonce(true),
+		WithDIDSignerProvider(didSigner),
+	}, opts...)
+	_, err = g.GenerateDIDCreateTransaction(
+		t.Context(), did.DIDTypeItem, "0x"+strings.Repeat("ab", 32),
+		didAddr, issuerSigner.GetAddress(), sig, callOpts...,
+	)
+	return err
+}
+
+const createDIDABI = `[{"name":"createDID","type":"function","stateMutability":"nonpayable","inputs":[{"name":"issuer","type":"address"},{"name":"didType","type":"uint8"},{"name":"docHash","type":"bytes32"},{"name":"capId","type":"bytes32"},{"name":"v","type":"uint8"},{"name":"r","type":"bytes32"},{"name":"s","type":"bytes32"}]}]`
+
+func assertIssuerSigBindsContract(t *testing.T, tx *types.Transaction, didIdentifier, issuerAddr, overrideContract, baseContract string) {
+	t.Helper()
+	parsed, err := abi.JSON(strings.NewReader(createDIDABI))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := parsed.Methods["createDID"].Inputs.Unpack(tx.Data()[4:])
+	if err != nil {
+		t.Fatalf("unpack createDID: %v", err)
+	}
+	capID := out[3].([32]byte)
+	v := out[4].(uint8)
+	r := out[5].([32]byte)
+	s := out[6].([32]byte)
+	sig := &issuer.Signature{V: big.NewInt(int64(v)), R: new(big.Int).SetBytes(r[:]), S: new(big.Int).SetBytes(s[:])}
+	didAddr := strings.TrimPrefix(strings.ToLower(didIdentifier), DefaultMethod+":")
+	payload := func(contract string) []byte {
+		t.Helper()
+		b, err := issuer.BuildIssueDIDPayload(&issuer.IssueDIDPayload{
+			ContractAddress: contract,
+			IssuerAddress:   issuerAddr,
+			DidAddress:      didAddr,
+			DidType:         did.DIDTypeItem,
+			CapID:           "0x" + hex.EncodeToString(capID[:]),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	if got := recoverIssuer(t, payload(overrideContract), sig); !strings.EqualFold(got, issuerAddr) {
+		t.Fatalf("tx signature recovers %s, want issuer %s for %s", got, issuerAddr, overrideContract)
+	}
+	if got := recoverIssuer(t, payload(baseContract), sig); strings.EqualFold(got, issuerAddr) {
+		t.Fatal("tx signature also recovers the issuer for the base contract")
+	}
+}
+
+func recoverIssuer(t *testing.T, payload []byte, sig *issuer.Signature) string {
+	t.Helper()
+	var packed [65]byte
+	r, s := sig.R.Bytes(), sig.S.Bytes()
+	copy(packed[32-len(r):32], r)
+	copy(packed[64-len(s):64], s)
+	packed[64] = byte(sig.V.Uint64() - 27)
+	pub, err := crypto.SigToPub(crypto.Keccak256(payload), packed[:])
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	return crypto.PubkeyToAddress(*pub).Hex()
+}
+
+type wsRPC struct {
+	url   string
+	reads atomic.Int32
+	conns atomic.Int32
+	close func()
+}
+
+func newWSServer(t *testing.T) *wsRPC {
+	t.Helper()
+	srv := &wsRPC{}
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		srv.conns.Add(1)
+		defer srv.conns.Add(-1)
+		defer conn.Close()
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if strings.Contains(string(msg), "eth_getTransactionCount") {
+				srv.reads.Add(1)
+			}
+			_ = conn.WriteMessage(websocket.TextMessage, rpcResult(msg))
+		}
+	}))
+	srv.url = "ws" + strings.TrimPrefix(httpSrv.URL, "http")
+	srv.close = httpSrv.Close
+	return srv
+}
+
+func rpcResult(msg []byte) []byte {
+	var one struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(msg, &one); err != nil || len(one.ID) == 0 {
+		return []byte(`{"jsonrpc":"2.0","id":1,"result":"0x0"}`)
+	}
+	return []byte(`{"jsonrpc":"2.0","id":` + string(one.ID) + `,"result":"0x0"}`)
+}
+
+func waitConns(t *testing.T, n *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if n.Load() == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("connections = %d, want %d", n.Load(), want)
 }
