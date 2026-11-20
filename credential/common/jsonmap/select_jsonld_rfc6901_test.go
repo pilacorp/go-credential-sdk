@@ -54,6 +54,12 @@ func TestSelectJSONLDRFC6901SharedCases(t *testing.T) {
 			wantErr:  true,
 		},
 		{
+			name:     "signed array index -1 rejected",
+			document: map[string]interface{}{"list": []interface{}{"a", "b"}},
+			pointers: []string{"/list/-1"},
+			wantErr:  true,
+		},
+		{
 			name:     "tilde escape ~0 and slash escape ~1",
 			document: map[string]interface{}{"a/b": map[string]interface{}{"~key": "escaped"}},
 			pointers: []string{"/a~1b/~0key"},

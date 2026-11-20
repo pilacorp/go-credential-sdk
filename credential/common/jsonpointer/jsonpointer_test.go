@@ -281,18 +281,11 @@ func TestResolveRejectsBadTildeEscapes(t *testing.T) {
 	}
 }
 
-// TestMatchesRejectsBadTildeEscapes ensures Matches returns false for pointers
-// with invalid ~ escapes (they cannot address any value).
-func TestMatchesRejectsBadTildeEscapes(t *testing.T) {
-	doc := map[string]interface{}{"foo~2bar": "oops"}
-	tokens, err := ParseTokens("/foo~2bar")
-	if err == nil {
-		// If ParseTokens is fixed, it returns an error and tokens is nil.
-		// Matches with nil tokens returns true (root), so the bug is in
-		// ParseTokens, not Matches.
-		if Matches(doc, tokens) {
-			t.Error(`Matches(doc, ParseTokens("/foo~2bar")) = true; want false`)
-		}
+// TestParseTokensRejectsFooTilde2 is the Matches case from the spec. A token
+// that parsed would be an ordinary object key, so Matches cannot reject it.
+// The refusal belongs to ParseTokens.
+func TestParseTokensRejectsFooTilde2(t *testing.T) {
+	if _, err := ParseTokens("/foo~2bar"); err == nil {
+		t.Fatal(`ParseTokens("/foo~2bar") = nil, want an error`)
 	}
-	// If ParseTokens returns an error, that's the fix working.
 }
