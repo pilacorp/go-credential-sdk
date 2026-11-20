@@ -162,12 +162,11 @@ func TestVerifyProof_OneInvalidAmongSeveral(t *testing.T) {
 	p1["proofValue"] = pv[:i] + string(swap) + pv[i+1:]
 
 	ok2, err := m.VerifyProof(resolver, "")
-	if ok2 {
-		t.Fatal("VerifyProof = true with a tampered proof, want false")
-	}
-	// Error should mention proof index 1.
-	if err != nil && !strings.Contains(err.Error(), "proof 1") {
-		t.Fatalf("error should reference proof 1: %v", err)
+	// A one-character change in a base58btc proofValue still decodes and stays
+	// 64 bytes, so the verifier reports a bad signature as (false, nil). The
+	// "proof 1" error is covered by TestVerifyProof_ErrorsPreservedOrdering.
+	if ok2 || err != nil {
+		t.Fatalf("tampered proof: ok=%v err=%v, want false, nil", ok2, err)
 	}
 }
 
