@@ -163,9 +163,9 @@ func GetChild(parent interface{}, token string) (interface{}, error) {
 	}
 }
 
-// Matches reports whether the pointer addresses a value in document. It is
-// equivalent to calling Resolve and checking for a nil error, but does not
-// allocate an error value on mismatch.
+// Matches reports whether the pointer addresses a value in document. It
+// performs the same token walk as ResolveTokens, returning false instead of
+// an error when a token does not match.
 func Matches(document interface{}, tokens []string) bool {
 	current := document
 	for _, token := range tokens {
