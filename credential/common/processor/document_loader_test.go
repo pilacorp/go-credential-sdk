@@ -512,10 +512,113 @@ func TestContextErrors_AreReachable(t *testing.T) {
 	})
 }
 
-// A context URL loaded many times in one operation has its bytes counted once:
-// the budget bounds the total bytes of distinct contexts, not the sum of every
-// load. This is the scenario from #193: a scoped @import that points at the
-// same context for each of 414+ items must not overflow the budget.
+// The leaf fast path decodes from a per-operation copy, not the process-wide
+// cache. After the cache evicts an entry, a host could serve a different body
+// for the same URL. Without the per-operation copy the second body is accepted
+// with no load, byte or time charge and no re-classification: a self-cycle
+// would recurse until fatal stack overflow (not recoverable).
+func TestContextBudget_LeafEvictionSafe(t *testing.T) {
+	var mu sync.Mutex
+	serveCycle := false
+	srv := contextServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/ld+json")
+		mu.Lock()
+		cycle := serveCycle
+		mu.Unlock()
+		if cycle && r.URL.Path == "/target" {
+			_, _ = fmt.Fprintf(w, `{"@context":"http://%s/target"}`, r.Host)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"@context":{"t":"https://example.org/t"}}`)
+	})
+	useTestClient(t, srv)
+
+	budget := newContextBudget()
+	// First load: classified as leaf, per-operation copy stored.
+	if _, err := budget.LoadDocument(srv.URL + "/target"); err != nil {
+		t.Fatal(err)
+	}
+	if !budget.leaf[srv.URL+"/target"] {
+		t.Fatal("expected leaf classification")
+	}
+
+	// Simulate eviction from the process-wide cache: in production this
+	// happens when maxCachedContexts distinct URLs are loaded across any
+	// number of concurrent operations.
+	loader := defaultDocumentLoader.fallback.Load()
+	loader.mu.Lock()
+	delete(loader.docs, srv.URL+"/target")
+	loader.mu.Unlock()
+
+	// Switch the server to serve a self-cycle for /target.
+	mu.Lock()
+	serveCycle = true
+	mu.Unlock()
+
+	// Leaf fast path: must use the per-operation copy, not re-fetch.
+	doc, err := budget.LoadDocument(srv.URL + "/target")
+	if err != nil {
+		t.Fatalf("leaf fast path failed: %v", err)
+	}
+	m := doc.Document.(map[string]interface{})
+	if contextHasURLRef(m["@context"]) {
+		t.Fatal("got the cyclic document instead of the per-operation copy")
+	}
+	if budget.loads != 1 {
+		t.Fatalf("loads = %d, want 1 (leaf fast path should be free)", budget.loads)
+	}
+}
+
+// The #193 scenario end-to-end: a type whose scoped @import points at the
+// bundled credentials/v2 (10,131 bytes) is used N times. Without the fix
+// 414 uses overflow the 4 MiB byte budget. This test is acceptance A-1.
+func TestExpand_ScopedImportRepeated(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		items int
+	}{
+		{"413_items", 413},
+		{"414_items", 414},
+		{"5000_items", 5000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			subjects := make([]interface{}, tc.items)
+			for i := range subjects {
+				subjects[i] = map[string]interface{}{
+					"type": "ScopedType",
+					"val":  fmt.Sprintf("v%d", i),
+				}
+			}
+			doc := map[string]interface{}{
+				"@context": []interface{}{
+					"https://www.w3.org/ns/credentials/v2",
+					map[string]interface{}{
+						"@version": 1.1,
+						"ScopedType": map[string]interface{}{
+							"@id": "https://example.org/ScopedType",
+							"@context": map[string]interface{}{
+								"@import": "https://www.w3.org/ns/credentials/v2",
+								"val":     "https://example.org/val",
+							},
+						},
+					},
+				},
+				"type":              "VerifiableCredential",
+				"credentialSubject": subjects,
+			}
+			opts := sdOptions()
+			_, err := ld.NewJsonLdProcessor().Expand(doc, opts)
+			if err != nil {
+				t.Fatalf("%d items: %v", tc.items, err)
+			}
+		})
+	}
+}
+
+// A leaf context URL loaded many times in one operation has its bytes counted
+// once. A non-leaf URL pays the full cost on every load, so cycles are still
+// bounded. This exercises LoadDocument directly (the integration test above
+// exercises the full Expand pipeline).
 func TestContextBudget_RepeatedURLCountedOnce(t *testing.T) {
 	t.Run("remote", func(t *testing.T) {
 		// A context whose cached size × 2000 exceeds the byte budget, so
@@ -651,8 +754,8 @@ func TestCanonicalize_ContextIncludingItselfStopsAtTheByteLimit(t *testing.T) {
 	if !errors.Is(err, ErrContextOverflow) {
 		t.Fatalf("got %v", err)
 	}
-	// The byte budget should stop it in a handful of loads. With a ~170 KB
-	// cached context, 4 MiB / 170 KB ≈ 24 loads—far below maxContextLoads.
+	// pad is maxContextBytes/2 ≈ 0.5 MiB. The byte budget should stop it
+	// in a handful of loads: 4 MiB / 0.5 MiB ≈ 8—far below maxContextLoads.
 	if budget.loads > 50 {
 		t.Fatalf("%d loads, expected the byte budget to stop it early", budget.loads)
 	}
@@ -691,8 +794,9 @@ func TestCanonicalize_MutualAndLongCyclesStoppedByBudget(t *testing.T) {
 	})
 
 	t.Run("A→B→C→A_large", func(t *testing.T) {
-		// Three ~130 KB contexts in a long cycle. All are non-leaf.
-		// The byte budget catches it early—far below maxContextLoads.
+		// Three contexts in a long cycle, each ~384 KB (maxContextBytes/8
+		// repetitions of ",{}" = 131072 × 3 bytes). All are non-leaf.
+		// The byte budget catches it early: 4 MiB / 384 KB ≈ 11 loads.
 		pad := strings.Repeat(",{}", maxContextBytes/8)
 		mux := http.NewServeMux()
 		var srvURL string
@@ -716,7 +820,7 @@ func TestCanonicalize_MutualAndLongCyclesStoppedByBudget(t *testing.T) {
 		if !errors.Is(err, ErrContextOverflow) {
 			t.Fatalf("got %v", err)
 		}
-		// ~130 KB per load, 4 MiB budget → ~32 loads. Assert far below maxContextLoads.
+		// ~384 KB per load, 4 MiB budget → ~11 loads. Assert far below maxContextLoads.
 		if budget.loads > 100 {
 			t.Fatalf("%d loads, expected the byte budget to stop it early", budget.loads)
 		}

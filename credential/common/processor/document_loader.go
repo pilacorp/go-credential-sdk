@@ -255,8 +255,9 @@ type contextBudget struct {
 	bytes    int
 	deadline time.Time
 	terms    contextTerms
-	seen     map[string]bool // URLs whose first load has been processed
-	leaf     map[string]bool // URLs whose document is a leaf (no URL refs)
+	seen     map[string]bool           // URLs whose first load has been processed
+	leaf     map[string]bool           // URLs whose document is a leaf (no URL refs)
+	docs     map[string]*cachedContext // per-operation copies (leaf fast path, survives global eviction)
 }
 
 func newContextBudget() *contextBudget {
@@ -265,6 +266,7 @@ func newContextBudget() *contextBudget {
 		terms:    contextTerms{defs: make(map[string][]string), used: make(map[string]bool)},
 		seen:     make(map[string]bool),
 		leaf:     make(map[string]bool),
+		docs:     make(map[string]*cachedContext),
 	}
 }
 
@@ -272,19 +274,26 @@ func newContextBudget() *contextBudget {
 func (b *contextBudget) LoadDocument(rawURL string) (*ld.RemoteDocument, error) {
 	if data, bundled := wellKnownContexts[rawURL]; bundled {
 		if !b.seen[rawURL] {
-			b.seen[rawURL] = true
 			if b.bytes += len(data); b.bytes > maxContextBytesPerOperation {
 				return nil, ErrContextOverflow
 			}
+			b.seen[rawURL] = true
 		}
 		return defaultDocumentLoader.LoadDocument(rawURL)
 	}
 
 	// A leaf URL already loaded is free: its document defines terms without
 	// referencing any other context, so it cannot take part in a cycle.
+	// Decode from the per-operation copy, not the process-wide cache, which
+	// evicts entries at maxCachedContexts: a host could serve a leaf first,
+	// then a self-cycle after eviction.
 	if b.seen[rawURL] && b.leaf[rawURL] {
-		doc, _, err := defaultDocumentLoader.fallback.Load().load(rawURL)
-		return doc, err
+		if e := b.docs[rawURL]; e != nil {
+			return e.decode()
+		}
+		// Per-operation copy missing; drop the leaf flag and fall through,
+		// so this and every later load of the URL is charged in full.
+		delete(b.leaf, rawURL)
 	}
 
 	// First load, or a repeat of a non-leaf URL (may be part of a cycle).
@@ -295,18 +304,29 @@ func (b *contextBudget) LoadDocument(rawURL string) (*ld.RemoteDocument, error) 
 	if err != nil {
 		return nil, err
 	}
-	if !b.seen[rawURL] {
-		b.seen[rawURL] = true
-		if isLeafContext(doc.Document) {
-			b.leaf[rawURL] = true
-		}
-	}
 	if b.bytes += size; b.bytes > maxContextBytesPerOperation {
 		return nil, ErrContextOverflow
 	}
 	b.terms.addDocument(doc.Document)
 	if err := b.terms.check(maxContextTerms); err != nil {
 		return nil, err
+	}
+	if !b.seen[rawURL] {
+		b.seen[rawURL] = true
+		if isLeafContext(doc.Document) {
+			b.leaf[rawURL] = true
+			// Keep a per-operation copy so the leaf fast path does not go
+			// through the process-wide cache, which evicts entries.
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
+			enc.SetEscapeHTML(false)
+			_ = enc.Encode(doc.Document) // cannot fail: came from JSON
+			b.docs[rawURL] = &cachedContext{
+				raw:         buf.Bytes(),
+				documentURL: doc.DocumentURL,
+				contextURL:  doc.ContextURL,
+			}
+		}
 	}
 	return doc, nil
 }
