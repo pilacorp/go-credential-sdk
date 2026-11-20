@@ -1475,6 +1475,128 @@ func TestBypass_TypeAlias_MapDefinition_Caught(t *testing.T) {
 	}
 }
 
+func TestBypass_TypeAlias_ChainedAlias_Caught(t *testing.T) {
+	// "loai" is defined as "kieu", and "kieu" is defined as "@type".
+	// json-gold resolves loai → kieu → @type (confirmed by expansion test).
+	// 20 uses of a scoped type through "loai" should be counted.
+	subjects := make([]interface{}, 20)
+	for i := range subjects {
+		subjects[i] = map[string]interface{}{
+			"loai": "ScopedType",
+			"name": fmt.Sprintf("item%d", i),
+		}
+	}
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			map[string]interface{}{
+				"kieu": "@type",
+				"loai": "kieu",
+				"ScopedType": map[string]interface{}{
+					"@id":      "https://example.org/ScopedType",
+					"@context": map[string]interface{}{"name": "https://example.org/name"},
+				},
+			},
+		},
+		"type":              "VerifiableCredential",
+		"issuer":            "did:example:issuer",
+		"credentialSubject": subjects,
+	}
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 5})
+	if !errors.Is(err, ErrTooManyScopedContextUses) {
+		t.Fatalf("chained type alias bypass should be caught, got %v", err)
+	}
+}
+
+func TestBypass_TypeAlias_ChainedMap_Caught(t *testing.T) {
+	// "loai" defined as {"@id": "kieu"}, "kieu" as "@type".
+	subjects := make([]interface{}, 20)
+	for i := range subjects {
+		subjects[i] = map[string]interface{}{
+			"loai": "ScopedType",
+			"name": fmt.Sprintf("item%d", i),
+		}
+	}
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			map[string]interface{}{
+				"kieu": "@type",
+				"loai": map[string]interface{}{"@id": "kieu"},
+				"ScopedType": map[string]interface{}{
+					"@id":      "https://example.org/ScopedType",
+					"@context": map[string]interface{}{"name": "https://example.org/name"},
+				},
+			},
+		},
+		"type":              "VerifiableCredential",
+		"issuer":            "did:example:issuer",
+		"credentialSubject": subjects,
+	}
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 5})
+	if !errors.Is(err, ErrTooManyScopedContextUses) {
+		t.Fatalf("chained type alias (map @id) bypass should be caught, got %v", err)
+	}
+}
+
+func TestBypass_TypeAlias_ThreeLevel_Caught(t *testing.T) {
+	// "a" → "b" → "kieu" → "@type": three-level chain.
+	subjects := make([]interface{}, 20)
+	for i := range subjects {
+		subjects[i] = map[string]interface{}{
+			"a":    "ScopedType",
+			"name": fmt.Sprintf("item%d", i),
+		}
+	}
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			map[string]interface{}{
+				"kieu": "@type",
+				"b":    "kieu",
+				"a":    "b",
+				"ScopedType": map[string]interface{}{
+					"@id":      "https://example.org/ScopedType",
+					"@context": map[string]interface{}{"name": "https://example.org/name"},
+				},
+			},
+		},
+		"type":              "VerifiableCredential",
+		"issuer":            "did:example:issuer",
+		"credentialSubject": subjects,
+	}
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 5})
+	if !errors.Is(err, ErrTooManyScopedContextUses) {
+		t.Fatalf("3-level chained type alias bypass should be caught, got %v", err)
+	}
+}
+
+func TestScanBudget_ExcessiveRemoteContexts_Refused(t *testing.T) {
+	// A document referencing more remote context URLs than the contextBudget
+	// allows (maxContextLoads=1024) should be refused with ErrUnresolvedContext.
+	// This pins the contextBudget wiring: if the scan used
+	// defaultDocumentLoader.fallback directly (unbounded), it would not refuse.
+	srv := contextServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/ld+json")
+		w.Write([]byte(`{"@context":{"dummy":"https://example.org/dummy"}}`))
+	})
+	useTestClient(t, srv)
+
+	// Build a context with 1030 distinct remote URLs (> 1024 budget).
+	ctxArray := make([]interface{}, 1030)
+	for i := range ctxArray {
+		ctxArray[i] = fmt.Sprintf("%s/ctx/%d", srv.URL, i)
+	}
+	doc := map[string]interface{}{
+		"@context":          ctxArray,
+		"credentialSubject": map[string]interface{}{"name": "test"},
+	}
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 1})
+	if !errors.Is(err, ErrUnresolvedContext) {
+		t.Fatalf("excessive remote contexts should trigger ErrUnresolvedContext, got %v", err)
+	}
+}
+
 func TestBypass_InlineBodyContext_ScopedTerm_Caught(t *testing.T) {
 	// A scoped term defined on credentialSubject's inline @context (not the
 	// top-level @context) should still be detected and counted.

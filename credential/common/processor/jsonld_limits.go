@@ -43,7 +43,8 @@ type JSONLDLimits struct {
 	// introduced via @import. The document body (everything except @context)
 	// is then scanned, and every use of such a term as a property name and
 	// every use as a type value is counted once. Type aliases — context
-	// terms that expand to @type (e.g. "kieu": "@type") — are recognised:
+	// terms that expand to @type, including through chains (e.g.
+	// "loai": "kieu", "kieu": "@type") — are recognised:
 	// values under an alias key count the same as under @type / type.
 	//
 	// If any context URL cannot be loaded (or exceeds the remote-load
@@ -135,10 +136,12 @@ func collectScopedTerms(ctx interface{}) (map[string]bool, bool) {
 	c := &scopedTermCollector{
 		result:      make(map[string]bool),
 		typeAliases: make(map[string]bool),
+		termDefs:    make(map[string]string),
 		seen:        make(map[string]bool),
 		budget:      newContextBudget(),
 	}
 	c.walk(ctx)
+	c.resolveTypeAliasChains()
 	return c.result, c.hasUnresolved
 }
 
@@ -157,6 +160,7 @@ func checkScopedContextUses(doc map[string]interface{}, limit int) error {
 	c := &scopedTermCollector{
 		result:      make(map[string]bool),
 		typeAliases: make(map[string]bool),
+		termDefs:    make(map[string]string),
 		seen:        make(map[string]bool),
 		budget:      newContextBudget(),
 	}
@@ -165,6 +169,7 @@ func checkScopedContextUses(doc map[string]interface{}, limit int) error {
 	walkDocContexts(doc, func(ctx interface{}) {
 		c.walk(ctx)
 	})
+	c.resolveTypeAliasChains()
 
 	if c.hasUnresolved {
 		return fmt.Errorf("%w", ErrUnresolvedContext)
@@ -204,9 +209,10 @@ func walkDocContexts(v interface{}, fn func(ctx interface{})) {
 }
 
 type scopedTermCollector struct {
-	result        map[string]bool // terms that carry a scoped @context
-	typeAliases   map[string]bool // terms that expand to @type
-	seen          map[string]bool // context URLs already visited
+	result        map[string]bool   // terms that carry a scoped @context
+	typeAliases   map[string]bool   // terms that expand to @type (resolved)
+	termDefs      map[string]string // raw term → target mappings for chain resolution
+	seen          map[string]bool   // context URLs already visited
 	hasUnresolved bool
 	budget        *contextBudget
 }
@@ -241,21 +247,44 @@ func (c *scopedTermCollector) walk(ctx interface{}) {
 			}
 			switch d := def.(type) {
 			case string:
-				// A term defined as the string "@type" is a type alias.
+				// Record the mapping for chain resolution.
+				c.termDefs[key] = d
 				if d == "@type" {
 					c.typeAliases[key] = true
 				}
 			case map[string]interface{}:
-				// {"@id": "@type"} is also a type alias.
 				if id, ok := d["@id"]; ok {
-					if idStr, ok := id.(string); ok && idStr == "@type" {
-						c.typeAliases[key] = true
+					if idStr, ok := id.(string); ok {
+						c.termDefs[key] = idStr
+						if idStr == "@type" {
+							c.typeAliases[key] = true
+						}
 					}
 				}
 				if scoped, ok := d["@context"]; ok && scoped != nil {
 					c.result[key] = true
 					c.walk(scoped)
 				}
+			}
+		}
+	}
+}
+
+// resolveTypeAliasChains resolves indirect type aliases to a fixed point.
+// If "loai" → "kieu" and "kieu" → "@type", then "loai" is also a type alias.
+// json-gold resolves such chains through its IRI expansion of term values
+// (JSON-LD 1.1 § 4.2.2), so the pre-scan must do the same.
+func (c *scopedTermCollector) resolveTypeAliasChains() {
+	changed := true
+	for changed {
+		changed = false
+		for term, target := range c.termDefs {
+			if c.typeAliases[term] {
+				continue
+			}
+			if c.typeAliases[target] {
+				c.typeAliases[term] = true
+				changed = true
 			}
 		}
 	}
