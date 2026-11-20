@@ -500,6 +500,17 @@ func (e *JSONCredential) ExtractField(path string) any {
 func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
+	// Pre-scan: refuse documents that would cause excessive JSON-LD work,
+	// before json-gold processes them. The check is a plain JSON walk and
+	// takes microseconds even on large documents. Only the verification
+	// path runs the check: limits protect the verifier, not the issuer.
+	if options.isVerifyProof && options.jsonldLimits.IsSet() {
+		if err := processor.CheckJSONLDLimits(
+			map[string]interface{}(e.credentialData), options.jsonldLimits); err != nil {
+			return fmt.Errorf("credential verification failed: %w", err)
+		}
+	}
+
 	g := &errgroup.Group{}
 
 	if options.isValidateSchema {
