@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	whatwgurl "github.com/nlnwa/whatwg-url/url"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
@@ -356,7 +357,7 @@ func (m RenderMethod) validateFormat() error {
 		}
 	}
 	for i, pointer := range m.RenderProperty {
-		if err := validateJSONPointer(pointer); err != nil {
+		if err := jsonpointer.Validate(pointer); err != nil {
 			return fmt.Errorf("renderMethod.renderProperty[%d]: %w", i, err)
 		}
 	}
@@ -499,25 +500,6 @@ func parseURL(raw, field string) (*whatwgurl.Url, error) {
 		return nil, fmt.Errorf("%s must be a URL of the WHATWG URL Standard: %w", field, err)
 	}
 	return parsed, nil
-}
-
-func validateJSONPointer(pointer string) error {
-	if pointer == "" {
-		return nil
-	}
-	if !strings.HasPrefix(pointer, "/") {
-		return fmt.Errorf("must be a valid RFC 6901 JSON Pointer")
-	}
-	for i := 0; i < len(pointer); i++ {
-		if pointer[i] != '~' {
-			continue
-		}
-		if i+1 >= len(pointer) || (pointer[i+1] != '0' && pointer[i+1] != '1') {
-			return fmt.Errorf("must be a valid RFC 6901 JSON Pointer")
-		}
-		i++
-	}
-	return nil
 }
 
 func (t Template) MarshalJSON() ([]byte, error) {

@@ -10,6 +10,7 @@ import (
 	"mime"
 	"strings"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
 	"golang.org/x/net/html"
 )
 
@@ -77,7 +78,7 @@ func (m RenderMethod) validateSummaryTemplateContent() error {
 		if strings.HasPrefix(field.Label, "/") {
 			return fmt.Errorf("summary template fields[%d].label must be a literal string", i)
 		}
-		if field.Value == "" || validateJSONPointer(field.Value) != nil {
+		if field.Value == "" || jsonpointer.Validate(field.Value) != nil {
 			return fmt.Errorf("summary template fields[%d].value must be a valid JSON Pointer", i)
 		}
 	}
