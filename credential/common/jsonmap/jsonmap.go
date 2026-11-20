@@ -827,8 +827,10 @@ func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmet
 		return fmt.Errorf("verification method '%s' revoked with hard reason '%s'", vm.ID, vm.RevocationReason)
 	}
 
-	// DI 1.0 §2.1: a present created is an XML Schema dateTimeStamp. RFC3339 is
-	// that form. A revoked key needs created to show the proof came first.
+	// DI 1.0 §2.1: a present created must be a date-time. It is checked with
+	// time.RFC3339, not the full XML Schema dateTimeStamp grammar: a comma
+	// before the fraction is accepted, a year outside 0000-9999 and hour 24 are
+	// refused. A revoked key needs created to show the proof came first.
 	if proofCreated == "" && vm.Revoked != nil {
 		return fmt.Errorf("verification method '%s' was revoked at %s; the proof has no created to show it was made earlier",
 			vm.ID, vm.Revoked.UTC().Format(time.RFC3339))

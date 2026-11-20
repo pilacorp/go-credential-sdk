@@ -1624,6 +1624,29 @@ func TestVerifyProof_RefusesDanglingPreviousProof(t *testing.T) {
 	}
 }
 
+// A detached proof is checked against the proofs already attached to the
+// document, so a previousProof naming only the detached proof's own id is
+// dangling.
+func TestVerifyDetachedProof_RefusesSelfPreviousProof(t *testing.T) {
+	_, pub := testKeyPair(t)
+	m := testCredential()
+	proof := &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+		Id:                 "urn:uuid:proof-1",
+		PreviousProof:      dto.StringOrStrings{"urn:uuid:proof-1"},
+		ProofValue:         "z1111",
+	}
+
+	err := (&m).VerifyDetachedProof(issuerResolver(t, pub), proof)
+	if err == nil || !strings.Contains(err.Error(), "previousProof") {
+		t.Fatalf("detached proof whose previousProof is its own id: got %v, want a previousProof error", err)
+	}
+}
+
 // CID 1.0 §3.3: the verification method's controller must be the document that
 // was resolved. The signature does not cover that field, so a document can
 // name another DID as controller and still verify today.
