@@ -16,6 +16,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/safehttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -493,6 +494,23 @@ func TestFetchAndCheckRevocation(t *testing.T) {
 func TestNewClient_UsesDefaultHTTPClient(t *testing.T) {
 	client := NewClient()
 	assert.Equal(t, defaultHTTPClient, client.client)
+}
+
+// The default client refuses a status list on a non-public address, so a
+// credential cannot make the verifier fetch an internal URL. The server
+// answers 200 to show the refusal is at the dial, not from the response.
+func TestDefaultHTTPClient_RefusesLoopback(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	_, err := NewClient().FetchStatusListCredential(srv.URL)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, safehttp.ErrNonPublicAddress)
+	assert.Zero(t, hits, "the request must not reach the server")
 }
 
 // The default client bounds the whole fetch, and SetDefaultHTTPClient(nil)
