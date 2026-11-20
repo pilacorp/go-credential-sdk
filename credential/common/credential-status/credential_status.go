@@ -13,6 +13,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
@@ -28,8 +29,18 @@ const (
 	maxDecompressedSize int64 = 16 << 20
 )
 
-var defaultHTTPClient = &http.Client{
-	Timeout: 10 * time.Second,
+// defaultHTTPClient refuses connections to non-public addresses (loopback,
+// RFC 1918, link-local, etc.) the same way the @context document loader does.
+// Tests that need to reach httptest servers on 127.0.0.1 must pass
+// WithHTTPClient to supply a client without the restriction.
+var defaultHTTPClient = newDefaultHTTPClient()
+
+// newDefaultHTTPClient bounds the whole request, body read included, at 10
+// seconds: the public-only transport bounds only the dial and the handshake.
+func newDefaultHTTPClient() *http.Client {
+	c := safehttp.NewPublicOnlyClient()
+	c.Timeout = 10 * time.Second
+	return c
 }
 
 type Client struct {
@@ -58,6 +69,18 @@ func WithResolver(resolver verificationmethod.ResolverProvider) Option {
 	return func(c *Client) {
 		c.resolver = resolver
 	}
+}
+
+// SetDefaultHTTPClient replaces the package-level HTTP client used by
+// NewClient when no WithHTTPClient option is passed. It exists so that tests
+// running httptest servers on 127.0.0.1 can bypass the SSRF-safe dialer,
+// the same way the @context loader's SetDocumentLoaderHTTPClient does.
+// Passing nil restores the SSRF-safe default.
+func SetDefaultHTTPClient(c *http.Client) {
+	if c == nil {
+		c = newDefaultHTTPClient()
+	}
+	defaultHTTPClient = c
 }
 
 func NewClient(options ...Option) *Client {
@@ -105,9 +128,12 @@ func (c *Client) FetchStatusListCredential(statusListCredentialURL string) (*Sta
 		return nil, fmt.Errorf("status list credential API returned non-200 status: %s", resp.Status)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read status list credential response body: %w", err)
+	}
+	if int64(len(body)) > maxResponseBodySize {
+		return nil, fmt.Errorf("status list response exceeds %d bytes", maxResponseBodySize)
 	}
 
 	var result StatusListCredentialResponse
@@ -192,6 +218,25 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 	}
 	if slCredential.Issuer.DID != issuerDID {
 		return fmt.Errorf("status list credential issuer %q does not match credential issuer %q", slCredential.Issuer.DID, issuerDID)
+	}
+
+	// Verify that every proof was signed by the issuer: the DID in each
+	// proof's verificationMethod must equal the status list issuer.
+	// VerifyProof checks the cryptographic signature but does not compare
+	// the signer DID with the issuer field, so a list signed by a
+	// different DID that has assertionMethod would pass without this.
+	proofs, err := vcMap.Proofs()
+	if err != nil {
+		return fmt.Errorf("failed to parse status list credential proofs: %w", err)
+	}
+	for i, p := range proofs {
+		proofDID := didFromVM(p.VerificationMethod)
+		if proofDID == "" {
+			return fmt.Errorf("status list credential proof %d has no DID in verificationMethod %q", i, p.VerificationMethod)
+		}
+		if proofDID != slCredential.Issuer.DID {
+			return fmt.Errorf("status list credential proof %d signed by %q, but issuer is %q", i, proofDID, slCredential.Issuer.DID)
+		}
 	}
 
 	// Verify validity period.
@@ -284,14 +329,21 @@ func CheckBitStatus(position int, subject StatusListCredentialSubject, entryPurp
 //
 // Deprecated: use CheckBitStatus which handles both W3C and legacy encodings
 // and compares the entry's statusPurpose. IsRevoked hard-codes the purpose to
-// "revocation" and returns false (not revoked) for any other purpose.
+// "revocation" and returns a statusPurpose mismatch error for any other purpose.
 func IsRevoked(position int, subject StatusListCredentialSubject) (bool, error) {
-	// Preserve backward compatibility: non-revocation purposes return false.
-	if subject.StatusPurpose != "revocation" {
-		return false, nil
-	}
-
 	return CheckBitStatus(position, subject, "revocation")
+}
+
+// didFromVM extracts the DID prefix from a verification method URL
+// ("did:x:y#key-1" -> "did:x:y"). Returns "" when vm is not a DID URL.
+func didFromVM(vm string) string {
+	if !strings.HasPrefix(vm, "did:") {
+		return ""
+	}
+	if i := strings.IndexByte(vm, '#'); i > 0 {
+		return vm[:i]
+	}
+	return vm
 }
 
 // decompressFromBase64URLWithLimit decodes a base64url-no-pad string, then
