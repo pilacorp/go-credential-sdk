@@ -107,6 +107,14 @@ func NewContract(cfg *Config) (*Contract, error) {
 	}, nil
 }
 
+// Close closes the underlying RPC client. It is safe to call on a Contract
+// whose RPC client is nil (e.g. when the dial failed at construction).
+func (e *Contract) Close() {
+	if e.rpcClient != nil {
+		e.rpcClient.Close()
+	}
+}
+
 // CreateDIDTx creates a signed raw transaction for creating a DID on-chain.
 //
 // This method:
