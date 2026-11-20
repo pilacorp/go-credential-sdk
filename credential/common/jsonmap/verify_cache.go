@@ -3,10 +3,10 @@ package jsonmap
 import "sync/atomic"
 
 // canonicalizeCount is incremented each time DocumentDigest or
-// LegacyHexCanonicalize performs a full URDNA2015 canonicalization.
-// Package-internal tests read and reset it to verify that multi-proof
-// verification caches the result. Production code never reads it; the
-// atomic add is a single instruction and costs nothing measurable.
+// LegacyHexCanonicalize completes a full URDNA2015 canonicalization
+// successfully. Package-internal tests read and reset it to verify that
+// multi-proof verification caches the result. Production code never reads
+// it; the atomic add is a single instruction and costs nothing measurable.
 //
 // The variable is package-global, so tests that assert its value must not
 // run in parallel with any test that canonicalizes (including themselves).

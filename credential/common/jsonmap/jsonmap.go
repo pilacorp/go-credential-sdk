@@ -73,7 +73,6 @@ func (m *JSONMap) ToMap() (map[string]interface{}, error) {
 // to verify those proofs, never to issue new ones — ecdsaHashData is the Data
 // Integrity replacement.
 func (m *JSONMap) LegacyHexCanonicalize() ([]byte, error) {
-	incCanonicalizeCount()
 	mCopy := make(JSONMap)
 	for k, v := range *m {
 		if k != proofField {
@@ -95,6 +94,7 @@ func (m *JSONMap) LegacyHexCanonicalize() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
 	}
+	incCanonicalizeCount()
 
 	return processor.ComputeDigest(canonicalDoc)
 }
@@ -829,7 +829,6 @@ func jwsKid(jws string) (string, bool) {
 
 // DocumentDigest returns the SHA-256 digest of the canonicalized document body.
 func (m *JSONMap) DocumentDigest() ([]byte, error) {
-	incCanonicalizeCount()
 	body, err := m.bodyWithoutProof()
 	if err != nil {
 		return nil, err
@@ -838,6 +837,7 @@ func (m *JSONMap) DocumentDigest() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	incCanonicalizeCount()
 	digest := sha256.Sum256(bodyCanonical)
 	return digest[:], nil
 }
