@@ -12,6 +12,7 @@ import (
 	credentialstatus "github.com/pilacorp/go-credential-sdk/credential/common/credential-status"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
@@ -626,8 +627,12 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 }
 
 // checkRevocation checks that credentialStatus is present and, if using a
-// status list, verifies the credential is not revoked.
-func checkRevocation(c CredentialData) error {
+// status list, verifies the credential is not revoked. It also verifies the
+// status list credential itself: its proof, issuer match, and validity period.
+//
+// issuerDIDFallbacks supplies additional DID strings to try when c["issuer"]
+// is missing (e.g. the JWT "iss" claim for VC-JWT 1.1 §6.3.1).
+func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvider, issuerDIDFallbacks ...string) error {
 	// If there's no credentialStatus at all, treat as not using revocation → no error.
 	rawStatus, ok := c["credentialStatus"]
 	if !ok || rawStatus == nil {
@@ -669,13 +674,32 @@ func checkRevocation(c CredentialData) error {
 		return fmt.Errorf("invalid credentialStatus.statusListIndex: %w", err)
 	}
 
-	// Call status list API and check revocation based on encodedList bits.
-	isRevoked, err := credentialstatus.FetchAndCheckRevocation(statusListCredential, position)
-	if err != nil {
-		return fmt.Errorf("failed to check revocation: %w", err)
+	// Extract the entry's statusPurpose (defaults to "revocation" for
+	// backward compatibility with entries that omit the field).
+	entryPurpose, _ := statusMap["statusPurpose"].(string)
+	if entryPurpose == "" {
+		entryPurpose = "revocation"
 	}
-	if isRevoked {
-		return fmt.Errorf("credential is revoked")
+
+	// Extract the credential's issuer DID for the issuer-match check.
+	// For JWT VCs (VC-JWT 1.1 §6.3.1) the issuer may only be in the JWT
+	// "iss" claim rather than duplicated inside the "vc" payload.
+	issuerDID, _ := jsonmap.DIDFromField(c["issuer"])
+	if issuerDID == "" {
+		for _, fb := range issuerDIDFallbacks {
+			if fb != "" {
+				issuerDID = fb
+				break
+			}
+		}
+	}
+
+	// Fetch, verify, and check the status list credential.
+	client := credentialstatus.NewClient(
+		credentialstatus.WithResolver(resolver),
+	)
+	if err := client.VerifyAndCheckStatus(statusListCredential, position, entryPurpose, issuerDID); err != nil {
+		return fmt.Errorf("failed to check revocation: %w", err)
 	}
 
 	return nil

@@ -13,9 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"net/http"
+
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
 
+	credentialstatus "github.com/pilacorp/go-credential-sdk/credential/common/credential-status"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
@@ -547,6 +550,10 @@ func TestParseStringField(t *testing.T) {
 }
 
 func TestCheckRevocation_RevokedJSONCredential(t *testing.T) {
+	// auth-dev.pila.vn resolves to a private address; bypass SSRF for this test.
+	credentialstatus.SetDefaultHTTPClient(&http.Client{Timeout: 10 * time.Second})
+	t.Cleanup(func() { credentialstatus.SetDefaultHTTPClient(nil) })
+
 	credentialJSON := []byte(`{
 	  "id": "did:nda:testnet:95c00e62-76ff-46a1-b2bc-f1d3b80d0aa9",
 	  "type": "VerifiableCredential",
@@ -585,9 +592,9 @@ func TestCheckRevocation_RevokedJSONCredential(t *testing.T) {
 	  }
 	}`)
 
-	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation(), WithVerifyProof(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "credential is revoked")
+	assert.Contains(t, err.Error(), "credential status is set for purpose")
 }
 
 func TestCheckRevocation_NotRevokedJSONCredential(t *testing.T) {
@@ -621,8 +628,12 @@ func TestCheckRevocation_NotRevokedJSONCredential(t *testing.T) {
 	  }
 	}`)
 
-	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
-	assert.NoError(t, err)
+	// This unsigned credential cannot have its proof verified, so
+	// WithCheckRevocation requires WithVerifyProof and the guard
+	// fires before any outbound request.
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "WithCheckRevocation requires WithVerifyProof")
 }
 
 func TestCheckRevocation_EmptyStatusJSONCredential(t *testing.T) {
@@ -650,7 +661,8 @@ func TestCheckRevocation_EmptyStatusJSONCredential(t *testing.T) {
 	  }
 	}`)
 
-	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
+	// Empty credentialStatus: nothing to revoke-check; just parse.
+	_, err := ParseCredential(credentialJSON)
 	assert.NoError(t, err)
 }
 
@@ -678,21 +690,30 @@ func TestCheckRevocation_NoStatusFieldJSONCredential(t *testing.T) {
 	  }
 	}`)
 
-	_, err := ParseCredential(credentialJSON, WithCheckRevocation())
+	// No credentialStatus field: nothing to revoke-check; just parse.
+	_, err := ParseCredential(credentialJSON)
 	assert.NoError(t, err)
 }
 
 func TestCheckRevocation_RevokedJWTCredential(t *testing.T) {
+	// auth-dev.pila.vn resolves to a private address; bypass SSRF for this test.
+	credentialstatus.SetDefaultHTTPClient(&http.Client{Timeout: 10 * time.Second})
+	t.Cleanup(func() { credentialstatus.SetDefaultHTTPClient(nil) })
+
 	revokedJWT := "eyJhbGciOiJFUzI1NksiLCJraWQiOiJkaWQ6bmRhOnRlc3RuZXQ6MHgyMjIxMzdmYjAwOTkxMTViZDBiMDQ0NmM0ZDY2YzgxY2NmNDFlMGJiI2tleS0xIiwidHlwIjoiSldUIn0.eyJleHAiOjE3ODc5OTQxMTEsImlhdCI6MTc1NjQ1ODExMSwiaXNzIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYiIsImp0aSI6ImRpZDpuZGE6dGVzdG5ldDpjOGFjZjdmNC05ZDQzLTRhYjctYWRhOC03NjZmYmU3NTA2ZDMiLCJuYmYiOjE3NTY0NTgxMTEsInN1YiI6ImRpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIiLCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvbnMvY3JlZGVudGlhbHMvdjIiLCJodHRwczovL3d3dy53My5vcmcvbnMvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjIiXSwiY3JlZGVudGlhbFNjaGVtYSI6eyJpZCI6Imh0dHBzOi8vYXV0aC1kZXYucGlsYS52bi9hcGkvdjEvc2NoZW1hcy83MWExNGNlMS1jOGZhLTRkZjQtOTYwYi1lMThiYjYyODJjZWUiLCJ0eXBlIjoiSnNvblNjaGVtYSJ9LCJjcmVkZW50aWFsU3RhdHVzIjp7ImlkIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYi9jcmVkZW50aWFscy9zdGF0dXMvMCMxNSIsInN0YXR1c0xpc3RDcmVkZW50aWFsIjoiaHR0cHM6Ly9hdXRoLWRldi5waWxhLnZuL2FwaS92MS9pc3N1ZXJzL2RpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIvY3JlZGVudGlhbHMvc3RhdHVzLzAiLCJzdGF0dXNMaXN0SW5kZXgiOiIxNSIsInN0YXR1c1B1cnBvc2UiOiJyZXZvY2F0aW9uIiwidHlwZSI6IkJpdHN0cmluZ1N0YXR1c0xpc3RFbnRyeSJ9LCJjcmVkZW50aWFsU3ViamVjdCI6eyJhZ2UiOjEwLCJkZXBhcnRtZW50IjoiRW5naW5lZXJpbmciLCJpZCI6ImRpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIiLCJuYW1lIjoiVGVzdCBDcmVhdGUiLCJzYWxhcnkiOjUwMDAwfSwiaWQiOiJkaWQ6bmRhOnRlc3RuZXQ6YzhhY2Y3ZjQtOWQ0My00YWI3LWFkYTgtNzY2ZmJlNzUwNmQzIiwiaXNzdWVyIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYiIsInR5cGUiOiJWZXJpZmlhYmxlQ3JlZGVudGlhbCIsInZhbGlkRnJvbSI6IjIwMjUtMDgtMjlUMDk6MDE6NTFaIiwidmFsaWRVbnRpbCI6IjIwMjYtMDgtMjlUMDk6MDE6NTFaIn19.P5ulGrKwY9KlxwqSN3Bs6aTQSGqS4z--brmJp3XtcTomXe8mse7gD3MHZF8C74V9zvgXV6RIM0vFzqdxzVUfnQ"
 
-	_, err := ParseCredential([]byte(revokedJWT), WithCheckRevocation())
+	_, err := ParseCredential([]byte(revokedJWT), WithCheckRevocation(), WithVerifyProof(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
 	assert.Error(t, err)
 }
 
 func TestCheckRevocation_NotRevokedJWTCredential(t *testing.T) {
+	// auth-dev.pila.vn resolves to a private address; bypass SSRF for this test.
+	credentialstatus.SetDefaultHTTPClient(&http.Client{Timeout: 10 * time.Second})
+	t.Cleanup(func() { credentialstatus.SetDefaultHTTPClient(nil) })
+
 	notRevokedJWT := "eyJhbGciOiJFUzI1NksiLCJraWQiOiJkaWQ6bmRhOnRlc3RuZXQ6MHgyMjIxMzdmYjAwOTkxMTViZDBiMDQ0NmM0ZDY2YzgxY2NmNDFlMGJiI2tleS0xIiwidHlwIjoiSldUIn0.eyJleHAiOjE3ODc5OTQxMTEsImlhdCI6MTc1NjQ1ODExMSwiaXNzIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYiIsImp0aSI6ImRpZDpuZGE6dGVzdG5ldDpjMGExNDU3YS1kYTdmLTRlYTQtOWZmOC0xYTgxMDFhZjViMjAiLCJuYmYiOjE3NTY0NTgxMTEsInN1YiI6ImRpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIiLCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvbnMvY3JlZGVudGlhbHMvdjIiLCJodHRwczovL3d3dy53My5vcmcvbnMvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjIiXSwiY3JlZGVudGlhbFNjaGVtYSI6eyJpZCI6Imh0dHBzOi8vYXV0aC1kZXYucGlsYS52bi9hcGkvdjEvc2NoZW1hcy83MWExNGNlMS1jOGZhLTRkZjQtOTYwYi1lMThiYjYyODJjZWUiLCJ0eXBlIjoiSnNvblNjaGVtYSJ9LCJjcmVkZW50aWFsU3RhdHVzIjp7ImlkIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYi9jcmVkZW50aWFscy9zdGF0dXMvMCMxNyIsInN0YXR1c0xpc3RDcmVkZW50aWFsIjoiaHR0cHM6Ly9hdXRoLWRldi5waWxhLnZuL2FwaS92MS9pc3N1ZXJzL2RpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIvY3JlZGVudGlhbHMvc3RhdHVzLzAiLCJzdGF0dXNMaXN0SW5kZXgiOiIxNyIsInN0YXR1c1B1cnBvc2UiOiJyZXZvY2F0aW9uIiwidHlwZSI6IkJpdHN0cmluZ1N0YXR1c0xpc3RFbnRyeSJ9LCJjcmVkZW50aWFsU3ViamVjdCI6eyJhZ2UiOjEwLCJkZXBhcnRtZW50IjoiRW5naW5lZXJpbmciLCJpZCI6ImRpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIiLCJuYW1lIjoiVGVzdCBDcmVhdGUiLCJzYWxhcnkiOjUwMDAwfSwiaWQiOiJkaWQ6bmRhOnRlc3RuZXQ6YzBhMTQ1N2EtZGE3Zi00ZWE0LTlmZjgtMWE4MTAxYWY1YjIwIiwiaXNzdWVyIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYiIsInR5cGUiOiJWZXJpZmlhYmxlQ3JlZGVudGlhbCIsInZhbGlkRnJvbSI6IjIwMjUtMDgtMjlUMDk6MDE6NTFaIiwidmFsaWRVbnRpbCI6IjIwMjYtMDgtMjlUMDk6MDE6NTFaIn19.95u0K9WTZdmAr-s7jCTppk75VqpM-vyMZVARhopZBoE418g4T3tT_1UhNZMrgFmPgvEqvLl1xJ-ZvHXqpwMKqw"
 
-	_, err := ParseCredential([]byte(notRevokedJWT), WithCheckRevocation())
+	_, err := ParseCredential([]byte(notRevokedJWT), WithCheckRevocation(), WithVerifyProof(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
 	assert.NoError(t, err)
 }
 
