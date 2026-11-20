@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
@@ -148,6 +149,7 @@ type credentialOptions struct {
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
 	replaceProof            bool
+	jsonldLimits            processor.JSONLDLimits
 }
 
 // WithReplaceProof (signing) lets a signing call replace a signature the
@@ -384,6 +386,23 @@ func WithSchemaLoader(loader SchemaLoaderFunc) CredentialOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.resolver = resolver
+	}
+}
+
+// WithJSONLDLimits sets pre-verification limits on the JSON-LD processing work
+// a document can cause. A document that exceeds a limit is refused before
+// json-gold runs, with an error matchable via errors.Is against
+// processor.ErrTooManyValues, processor.ErrTooManyScopedContextUses or, when
+// MaxScopedContextUses is set and a context cannot be loaded,
+// processor.ErrUnresolvedContext.
+//
+// No limit is imposed by default; behavior is identical to today.
+//
+// Applies to Verify and Parse with WithVerifyProof — the paths that run
+// json-gold on the caller's document. Signing calls ignore it.
+func WithJSONLDLimits(limits processor.JSONLDLimits) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.jsonldLimits = limits
 	}
 }
 

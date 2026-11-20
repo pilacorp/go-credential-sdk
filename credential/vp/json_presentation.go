@@ -9,6 +9,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
@@ -236,6 +237,15 @@ func (e *JSONPresentation) ExtractField(path string) interface{} {
 
 func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
+
+	// Pre-scan: refuse documents that would cause excessive JSON-LD work,
+	// before json-gold processes them.
+	if options.jsonldLimits.IsSet() {
+		if err := processor.CheckJSONLDLimits(
+			map[string]interface{}(e.presentationData), options.jsonldLimits); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+	}
 
 	if options.isValidateVC {
 		if err := verifyCredentials(PresentationData(e.presentationData), options); err != nil {
