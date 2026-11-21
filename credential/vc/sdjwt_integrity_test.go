@@ -1017,14 +1017,29 @@ func TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused(t *testing.T) {
 					mangle: func(t *testing.T, _ map[string]interface{}, ds []string) []string {
 						return append(ds, rawDisclosure(t, "c2FsdFhYc2FsdFhYc2FsdFhY", "nickname", "Al"))
 					},
-					wantErr: "matches nothing in the payload",
+					wantErr: "no digest references disclosure",
 				},
 				{
 					name: "the same disclosure twice",
 					mangle: func(_ *testing.T, _ map[string]interface{}, ds []string) []string {
 						return append(ds, ds[0])
 					},
-					wantErr: "sent more than once",
+					wantErr: "given twice",
+				},
+				{
+					// RFC 9901 section 4.2.1: the claim name of a disclosure
+					// must not be "_sd", "_sd_alg" or "...". The builder
+					// refuses it by the rule the parser applies.
+					name: "a disclosure named _sd",
+					mangle: func(t *testing.T, custom map[string]interface{}, ds []string) []string {
+						d := rawDisclosure(t, "c2FsdFlZc2FsdFlZc2FsdFlZ", "_sd", "x")
+						sum := sha256.Sum256([]byte(d))
+						sd, _ := custom["_sd"].([]interface{})
+						custom["_sd"] = append(sd, base64.RawURLEncoding.EncodeToString(sum[:]))
+
+						return append(ds, d)
+					},
+					wantErr: "is reserved",
 				},
 				{
 					name: "a disclosure for a digest the caller never carried",
@@ -1033,7 +1048,7 @@ func TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused(t *testing.T) {
 
 						return ds
 					},
-					wantErr: "matches nothing in the payload",
+					wantErr: "no digest references disclosure",
 				},
 			} {
 				t.Run(tc.name, func(t *testing.T) {

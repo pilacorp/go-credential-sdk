@@ -126,7 +126,7 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 
 	// Reconstruct deep-copies, so this validates without touching what gets
 	// signed.
-	if _, rerr := sdjwt.Reconstruct(vcMap, disclosures, true); rerr != nil {
+	if _, rerr := recreateSDPayload(vcMap, disclosures); rerr != nil {
 		return nil, fmt.Errorf("invalid SD-JWT disclosures: %w", rerr)
 	}
 
@@ -327,30 +327,12 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	// names "...", "_sd" and "_sd_alg" are rejected, and duplicate digests
 	// across the whole payload are refused.
 	disclosable := declaredSD || combinedSD || hasSDAlg
-	if sdAlg, _ := payloadMap["_sd_alg"].(string); (disclosable || len(disclosures) > 0) && sdAlg != "" && sdAlg != sdjwt.DefaultHashAlgorithm {
-		// module jose recreates sha-256 payloads only, while
-		// WithSDHashAlgorithm issues sha-384 and sha-512 too (RFC 9901
-		// section 4.1.1 allows any IANA hash). Those keep the reading they
-		// had before the move, so credentials already issued with them parse.
-		processed, rerr := sdjwt.Reconstruct(payloadMap, disclosures, true)
+	if disclosable || len(disclosures) > 0 {
+		recreated, rerr := recreateSDPayload(payloadMap, disclosures)
 		if rerr != nil {
 			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rerr)
 		}
-		vcMap = processed
-	} else if disclosable || len(disclosures) > 0 {
-		parsed := make([]josesdjwt.Disclosure, len(disclosures))
-		for i, d := range disclosures {
-			p, perr := josesdjwt.ParseDisclosure(d)
-			if perr != nil {
-				return nil, fmt.Errorf("failed to parse disclosure: %w", perr)
-			}
-			parsed[i] = p
-		}
-		recreated, rerr := josesdjwt.Recreate(payloadMap, parsed)
-		if rerr != nil {
-			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rerr)
-		}
-		vcMap = recreated.Claims
+		vcMap = recreated
 	}
 
 	// Reconstruct deep-copies, so payloadMap is still exactly what the signature
@@ -661,4 +643,32 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	return nil
+}
+
+// recreateSDPayload returns the claims of an SD-JWT payload with the
+// disclosures put back, without changing payload. Issuance and parsing both
+// call it, so a credential that signs is read by the same rules when it is
+// parsed. A sha-256 payload goes through module jose, which applies RFC 9901
+// section 7.1: undisclosed array elements are removed, the names "...", "_sd"
+// and "_sd_alg" are refused, and a digest used twice is refused. module jose
+// recreates sha-256 only, while WithSDHashAlgorithm also issues sha-384 and
+// sha-512 (section 4.1.1 allows any IANA hash), so those keep the reading
+// they had before the move to module jose.
+func recreateSDPayload(payload map[string]interface{}, disclosures []string) (map[string]interface{}, error) {
+	if alg, _ := payload["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
+		return sdjwt.Reconstruct(payload, disclosures, true)
+	}
+	parsed := make([]josesdjwt.Disclosure, len(disclosures))
+	for i, d := range disclosures {
+		p, err := josesdjwt.ParseDisclosure(d)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse disclosure: %w", err)
+		}
+		parsed[i] = p
+	}
+	recreated, err := josesdjwt.Recreate(payload, parsed)
+	if err != nil {
+		return nil, err
+	}
+	return recreated.Claims, nil
 }
