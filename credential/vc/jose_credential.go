@@ -2,6 +2,9 @@ package vc
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,6 +18,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/jose"
@@ -33,6 +37,7 @@ type JOSECredential struct {
 	disclosures  []string       // SD-JWT disclosures, when the credential is secured that way
 	disclosable  bool           // Payload carries _sd digests, even if this holder reveals none
 	signingKey   jwt.SigningKey // Verification method the header names; zero for a parsed credential
+	kbJWT        string         // Key Binding JWT, if present (RFC 9901 §4.3)
 }
 
 var _ Credential = (*JOSECredential)(nil)
@@ -150,6 +155,17 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 	// against, and would have to guess one from validFrom — a different fact.
 	jwtutil.SetIssuedAt(vcMap, time.Now())
 
+	// RFC 9901 §4.1.2 / RFC 7800 §3.2: when the issuer supplies a holder key,
+	// put it in cnf.jwk so a verifier can require a Key Binding JWT signed by
+	// this key.
+	if options.confirmationKey != nil {
+		cnfJWK, err := ecPublicKeyToJWK(options.confirmationKey)
+		if err != nil {
+			return nil, fmt.Errorf("WithConfirmationKey: %w", err)
+		}
+		vcMap["cnf"] = map[string]interface{}{"jwk": cnfJWK}
+	}
+
 	payloadData := CredentialData(vcMap)
 
 	// Resolve the verification method the header will name, and keep it: every
@@ -220,6 +236,7 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	// empty disclosures and a missing trailing ~.
 	var issuerJWT string
 	var disclosures []string
+	var parsedKBJWT string
 	if strings.Contains(rawJWT, "~") {
 		ij, ds, kbJWT, serr := josesdjwt.Split(rawJWT)
 		if serr != nil {
@@ -227,10 +244,7 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		}
 		issuerJWT = ij
 		disclosures = ds
-		// The KB-JWT is accepted structurally but not verified here; the
-		// credential path has no holder key to verify it against. Full
-		// KB-JWT verification is a separate feature.
-		_ = kbJWT
+		parsedKBJWT = kbJWT
 	} else {
 		if !isJWTCredential(rawJWT) {
 			return nil, fmt.Errorf("invalid JWT or SD-JWT format")
@@ -360,6 +374,7 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		signature:    signature,
 		disclosures:  disclosures,
 		disclosable:  disclosable,
+		kbJWT:        parsedKBJWT,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -515,6 +530,11 @@ func (j *JOSECredential) Serialize() (any, error) {
 		sb.WriteString(d)
 	}
 	sb.WriteString("~")
+	// A Key Binding JWT goes after the trailing ~, turning the combined form
+	// into <issuerJWT>~<D.1>~…~<D.N>~<KB-JWT> (RFC 9901 §4).
+	if j.kbJWT != "" {
+		sb.WriteString(j.kbJWT)
+	}
 
 	return sb.String(), nil
 }
@@ -550,6 +570,62 @@ func (j *JOSECredential) Present(selectedDisclosures []string) (Credential, erro
 	}
 
 	return ParseJOSECredential(sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures))
+}
+
+// PresentWithKBJWT creates a selective-disclosure presentation of this
+// credential with a Key Binding JWT attached (RFC 9901 §4.3). The signer
+// holds the private key of holderKey, the key the credential's cnf.jwk names.
+// audience is the verifier the presentation is for, nonce is the value the
+// verifier gave for this transaction. The returned credential carries the
+// KB-JWT in its serialized form.
+//
+// The credential must be a vc+sd-jwt (disclosable), must be signed, and its
+// payload must have cnf.jwk — the issuer puts the holder's public key there
+// when issuing.
+func (j *JOSECredential) PresentWithKBJWT(
+	ctx context.Context,
+	selectedDisclosures []string,
+	kbSigner jws.Signer,
+	holderKey crypto.PublicKey,
+	audience, nonce string,
+) (*JOSECredential, error) {
+	if j.signature == "" {
+		return nil, fmt.Errorf("cannot present an unsigned credential")
+	}
+	if !j.disclosable {
+		return nil, fmt.Errorf("credential carries no disclosures; nothing to present selectively")
+	}
+	if kbSigner == nil {
+		return nil, fmt.Errorf("KB-JWT signer cannot be nil")
+	}
+	if audience == "" || nonce == "" {
+		return nil, fmt.Errorf("audience and nonce are required for KB-JWT")
+	}
+
+	issuerJWT := j.signingInput + "." + j.signature
+	sdJWTPresentation := sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures)
+
+	// sd_hash is computed over the SD-JWT as the verifier receives it, up to
+	// and including the last ~, without the KB-JWT (RFC 9901 §4.3.1).
+	sdHash := josesdjwt.SDHash(sdJWTPresentation)
+
+	kbToken, err := josesdjwt.NewKBJWT(ctx, kbSigner, holderKey, josesdjwt.KBClaims{
+		Audience: audience,
+		Nonce:    nonce,
+		IssuedAt: time.Now(),
+		SDHash:   sdHash,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KB-JWT: %w", err)
+	}
+
+	// Parse the SD-JWT+KB into a credential: the token is the SD-JWT
+	// presentation with the KB-JWT appended.
+	presented, err := ParseJOSECredential(sdJWTPresentation + kbToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse SD-JWT+KB presentation: %w", err)
+	}
+	return presented, nil
 }
 
 func (j *JOSECredential) Hash() (string, error) {
@@ -635,6 +711,15 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 		return fmt.Errorf("credential verification failed: %w", err)
 	}
 
+	// KB-JWT verification, after the issuer JWT is verified, as RFC 9901 §7.3
+	// step 5 specifies. When WithKBJWT is set, a KB-JWT is required; when not
+	// set, a KB-JWT is accepted but ignored.
+	if options.kbAudience != "" {
+		if err := j.verifyKBJWT(options); err != nil {
+			return fmt.Errorf("credential verification failed: %w", err)
+		}
+	}
+
 	if options.isCheckExpiration {
 		if err := checkExpiration(j.payloadData, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
@@ -642,6 +727,117 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	return nil
+}
+
+// verifyKBJWT verifies the Key Binding JWT of this credential against the
+// holder's key (cnf.jwk in the payload) and the verifier's expectations.
+func (j *JOSECredential) verifyKBJWT(options *credentialOptions) error {
+	if j.kbJWT == "" {
+		return fmt.Errorf("KB-JWT required but not present")
+	}
+	// Extract the holder's key from cnf.jwk in the signed payload.
+	holderKey, err := extractCNFKey(j.payloadData)
+	if err != nil {
+		return fmt.Errorf("KB-JWT: %w", err)
+	}
+	// sd_hash is computed over the SD-JWT as the verifier receives it,
+	// without the KB-JWT (RFC 9901 §4.3.1). Rebuild it from the signed form.
+	issuerJWT := j.signingInput + "." + j.signature
+	var sb strings.Builder
+	sb.WriteString(issuerJWT)
+	for _, d := range j.disclosures {
+		if d == "" {
+			continue
+		}
+		sb.WriteString("~")
+		sb.WriteString(d)
+	}
+	sb.WriteString("~")
+	expectedSDHash := josesdjwt.SDHash(sb.String())
+
+	maxAge := options.kbMaxAge
+	if maxAge <= 0 {
+		maxAge = 5 * time.Minute
+	}
+
+	_, err = josesdjwt.VerifyKBJWT(j.kbJWT, holderKey, josesdjwt.KBVerifyParams{
+		Audience:  options.kbAudience,
+		Nonce:     options.kbNonce,
+		SDHash:    expectedSDHash,
+		MaxAge:    maxAge,
+		ClockSkew: options.kbClockSkew,
+	})
+	if err != nil {
+		return fmt.Errorf("KB-JWT: %w", err)
+	}
+	return nil
+}
+
+// extractCNFKey reads the holder's public key from the cnf.jwk claim in a
+// credential payload (RFC 9901 §4.1.2, RFC 7800 §3.2).
+// ecPublicKeyToJWK serialises an ECDSA public key as a JWK map (RFC 7518 §6.2)
+// suitable for the cnf.jwk claim. Only P-256 and secp256k1 are supported.
+func ecPublicKeyToJWK(key crypto.PublicKey) (map[string]interface{}, error) {
+	pub, ok := key.(*ecdsa.PublicKey)
+	if !ok || pub == nil {
+		return nil, fmt.Errorf("confirmation key must be an *ecdsa.PublicKey")
+	}
+	var crv string
+	var size int
+	switch pub.Curve {
+	case elliptic.P256():
+		crv = "P-256"
+		size = 32
+	default:
+		// secp256k1 is not in crypto/elliptic but its BitSize is 256.
+		if pub.Curve != nil && pub.Curve.Params().BitSize == 256 {
+			crv = "secp256k1"
+			size = 32
+		} else {
+			return nil, fmt.Errorf("unsupported curve %v", pub.Curve)
+		}
+	}
+	xb := make([]byte, size)
+	yb := make([]byte, size)
+	pub.X.FillBytes(xb)
+	pub.Y.FillBytes(yb)
+	return map[string]interface{}{
+		"kty": "EC",
+		"crv": crv,
+		"x":   base64.RawURLEncoding.EncodeToString(xb),
+		"y":   base64.RawURLEncoding.EncodeToString(yb),
+	}, nil
+}
+
+func extractCNFKey(payload map[string]interface{}) (crypto.PublicKey, error) {
+	cnfRaw, ok := payload["cnf"]
+	if !ok {
+		return nil, fmt.Errorf("payload has no cnf claim; issuer must set cnf.jwk to bind a holder")
+	}
+	cnf, ok := cnfRaw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("cnf is %T, not a JSON object", cnfRaw)
+	}
+	jwkRaw, ok := cnf["jwk"]
+	if !ok {
+		return nil, fmt.Errorf("cnf has no jwk member")
+	}
+	jwkMap, ok := jwkRaw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("cnf.jwk is %T, not a JSON object", jwkRaw)
+	}
+	kty, _ := jwkMap["kty"].(string)
+	crv, _ := jwkMap["crv"].(string)
+	x, _ := jwkMap["x"].(string)
+	y, _ := jwkMap["y"].(string)
+	if kty == "" || crv == "" || x == "" || y == "" {
+		return nil, fmt.Errorf("cnf.jwk is missing kty, crv, x or y")
+	}
+	pub, err := vmpkg.ECPubFromJWK(&vmpkg.JWK{Kty: kty, Crv: crv, X: x, Y: y})
+	if err != nil {
+		return nil, fmt.Errorf("cnf.jwk: %w", err)
+	}
+	return pub, nil
 }
 
 // recreateSDPayload returns the claims of an SD-JWT payload with the
