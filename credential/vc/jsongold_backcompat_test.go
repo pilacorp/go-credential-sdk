@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/ecdsasd"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
@@ -66,17 +65,6 @@ func fixtureSecpResolver(t *testing.T) vmpkg.ResolverProvider {
 	)
 }
 
-func fixtureSecpPub(t *testing.T) *ecdsa.PublicKey {
-	t.Helper()
-	data, err := fixtureFS.ReadFile("testdata/jsongold-fixtures/keys.json")
-	require.NoError(t, err)
-	var keys map[string]string
-	require.NoError(t, json.Unmarshal(data, &keys))
-
-	priv, err := ethcrypto.HexToECDSA(keys["secp256k1_priv_hex"])
-	require.NoError(t, err)
-	return &priv.PublicKey
-}
 
 // TestBackcompat_VCsSignedOnMainStillVerify loads credentials signed on the
 // main branch (piprate/json-gold v0.7.0) and verifies they still pass with the
