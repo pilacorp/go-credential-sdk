@@ -11,6 +11,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -458,6 +459,31 @@ func TestJOSEStrict_SDHashAlgorithmsRoundTrip(t *testing.T) {
 			}
 			if _, err := vc.ParseCredential([]byte(s.(string)), vc.WithResolver(resolver), vc.WithVerifyProof()); err != nil {
 				t.Fatalf("parse %s SD-JWT: %v", alg, err)
+			}
+		})
+	}
+}
+
+// RFC 9901 section 4.2.1 refuses the claim names "_sd", "_sd_alg" and "..."
+// in a disclosure whatever hash the SD-JWT uses. The sha-384 and sha-512 path
+// reconstructs with the previous reader, so the names are checked before it.
+func TestJOSEStrict_ReservedDisclosureNameRefusedForSHA384(t *testing.T) {
+	did, _, resolver := joseSetup(t)
+	for _, name := range []string{"_sd_alg", "..."} {
+		t.Run(name, func(t *testing.T) {
+			b, err := json.Marshal([]interface{}{"c2FsdFpac2FsdFpac2FsdFpa", name, "x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := base64.RawURLEncoding.EncodeToString(b)
+			sum := sha512.Sum384([]byte(d))
+			contents := joseContents(did)
+			contents.Subject[0].CustomFields["_sd"] = []interface{}{base64.RawURLEncoding.EncodeToString(sum[:])}
+			_, err = vc.NewJOSECredential(contents,
+				vc.WithSDDisclosures([]string{d}), vc.WithSDHashAlgorithm("sha-384"),
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+			if err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("err = %v, want the disclosure name %q refused as reserved", err, name)
 			}
 		})
 	}

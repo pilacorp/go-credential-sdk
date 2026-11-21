@@ -655,9 +655,8 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 // sha-512 (section 4.1.1 allows any IANA hash), so those keep the reading
 // they had before the move to module jose.
 func recreateSDPayload(payload map[string]interface{}, disclosures []string) (map[string]interface{}, error) {
-	if alg, _ := payload["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
-		return sdjwt.Reconstruct(payload, disclosures, true)
-	}
+	// ParseDisclosure reads a disclosure's form and refuses the reserved claim
+	// names (RFC 9901 section 4.2.1) whatever hash the payload uses.
 	parsed := make([]josesdjwt.Disclosure, len(disclosures))
 	for i, d := range disclosures {
 		p, err := josesdjwt.ParseDisclosure(d)
@@ -665,6 +664,9 @@ func recreateSDPayload(payload map[string]interface{}, disclosures []string) (ma
 			return nil, fmt.Errorf("failed to parse disclosure: %w", err)
 		}
 		parsed[i] = p
+	}
+	if alg, _ := payload["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
+		return sdjwt.Reconstruct(payload, disclosures, true)
 	}
 	recreated, err := josesdjwt.Recreate(payload, parsed)
 	if err != nil {
