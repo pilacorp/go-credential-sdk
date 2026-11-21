@@ -173,6 +173,82 @@ func resignES256VP(t *testing.T, priv *ecdsa.PrivateKey, header []byte, payloadB
 	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
+// --- #99 item 5: enveloped credential id and @context ---
+
+// vpTokenWithEnvelopedVC builds a signed vp+jwt whose payload contains a
+// single enveloped credential entry with the given fields. The token is
+// structurally valid apart from whatever the caller tampers with.
+func vpTokenWithEnvelopedVC(t *testing.T, priv *ecdsa.PrivateKey, did string, entry map[string]interface{}) string {
+	t.Helper()
+	header := map[string]interface{}{
+		"typ": "vp+jwt",
+		"alg": "ES256",
+		"kid": did + "#key-1",
+	}
+	payload := map[string]interface{}{
+		"@context":               []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":                   []interface{}{"VerifiablePresentation"},
+		"holder":                 did,
+		"iss":                    did,
+		"verifiableCredential":   []interface{}{entry},
+	}
+	hJSON, _ := json.Marshal(header)
+	pJSON, _ := json.Marshal(payload)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(pJSON)
+	return resignES256VP(t, priv, hJSON, payloadB64)
+}
+
+func TestVPJOSEStrict_EnvelopedCredentialIDNotDataURL(t *testing.T) {
+	did, priv, _ := vpJoseSetup(t)
+	entry := map[string]interface{}{
+		"@context": "https://www.w3.org/ns/credentials/v2",
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "https://example.com/vc/1",
+	}
+	token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	_, err := vp.ParseJOSEPresentation(token)
+	if err == nil {
+		t.Fatal("accepted an enveloped credential whose id is not a data: URL")
+	}
+	if !strings.Contains(err.Error(), "data:") {
+		t.Fatalf("error = %v, want one mentioning data: URL", err)
+	}
+}
+
+func TestVPJOSEStrict_EnvelopedCredentialMissingContext(t *testing.T) {
+	did, priv, _ := vpJoseSetup(t)
+	entry := map[string]interface{}{
+		"type": "EnvelopedVerifiableCredential",
+		"id":   "data:application/vc+jwt,eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2ln",
+	}
+	token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	_, err := vp.ParseJOSEPresentation(token)
+	if err == nil {
+		t.Fatal("accepted an enveloped credential without @context")
+	}
+	if !strings.Contains(err.Error(), "@context") {
+		t.Fatalf("error = %v, want one mentioning @context", err)
+	}
+}
+
+func TestVPJOSEStrict_EnvelopedCredentialValidDataURL(t *testing.T) {
+	did, priv, resolver := vpJoseSetup(t)
+	entry := map[string]interface{}{
+		"@context": "https://www.w3.org/ns/credentials/v2",
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "data:application/vc+jwt,eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2ln",
+	}
+	token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	pres, err := vp.ParsePresentation([]byte(token), vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("ParsePresentation with valid enveloped credential: %v", err)
+	}
+	// Verify should work (signature is valid).
+	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
 // --- Hash and wire format stability ---
 
 func TestVPJOSEStrict_HashStability(t *testing.T) {

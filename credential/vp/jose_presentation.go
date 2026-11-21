@@ -311,9 +311,39 @@ func requireEnvelopedCredentials(m PresentationData) error {
 				"credential at index %d must be an %s; a %s carries credentials enveloped, not bare",
 				i, vc.TypeEnvelopedVC, TypeVPJWT)
 		}
+
+		// VCDM 2.0 §4.13: the envelope MUST carry the v2 @context.
+		if first := vcdm.FirstContext(entry["@context"]); first != vcdm.ContextV2 {
+			return fmt.Errorf(
+				"credential at index %d: enveloped credential @context must start with %s, got %q",
+				i, vcdm.ContextV2, first)
+		}
+
+		// VCDM 2.0 §4.13: id MUST be a data: URL whose media type names a
+		// secured credential scheme (application/vc+jwt or application/vc+sd-jwt).
+		id, _ := entry["id"].(string)
+		if !isEnvelopedDataURL(id) {
+			return fmt.Errorf(
+				"credential at index %d: enveloped credential id must be a data: URL "+
+					"with media type application/vc+jwt or application/vc+sd-jwt, got %q", i, id)
+		}
 	}
 
 	return nil
+}
+
+// isEnvelopedDataURL reports whether id is a valid data: URL for an enveloped
+// credential: data:application/vc+jwt,<token> or data:application/vc+sd-jwt,<token>.
+func isEnvelopedDataURL(id string) bool {
+	for _, prefix := range []string{
+		"data:application/vc+jwt,",
+		"data:application/vc+sd-jwt,",
+	} {
+		if strings.HasPrefix(id, prefix) && len(id) > len(prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // envelopeMediaType names the scheme that secured a token, for the data: URL an
