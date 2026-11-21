@@ -145,13 +145,22 @@ func TestStrictPurposeCheck(t *testing.T) {
 			wantErr:         "invalid proof.created timestamp",
 		},
 		{
-			// created is only parsed when there is a revocation to compare it
-			// against, so a live key is not held to the format. Documenting it
-			// rather than endorsing it: this is why the case above exists.
-			name:            "an unparseable proof.created on a live key is not reached",
+			// A revoked key needs created to show the proof came first.
+			name:            "a missing proof.created on a revoked key",
+			assertionMethod: []string{"#key-1"},
+			revoked:         "2026-06-01T00:00:00Z",
+			reason:          verificationmethod.ReasonSuperseded,
+			proofPurpose:    "assertionMethod",
+			wantErr:         "proof has no created",
+		},
+		{
+			// DI 1.0 §2.1: when created is present it is a dateTimeStamp,
+			// whether or not the key is revoked.
+			name:            "an unparseable proof.created on a live key",
 			assertionMethod: []string{"#key-1"},
 			proofPurpose:    "assertionMethod",
 			created:         "yesterday",
+			wantErr:         "invalid proof.created timestamp",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -86,7 +86,7 @@ func TestVC_RevokedVMRejectedAtSigning(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sign: %v", err)
 			}
-			if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+			if err := verifyAsHolder(t, cred, vc.WithResolver(resolver)); err != nil {
 				t.Fatalf("verify: %v", err)
 			}
 		})
@@ -104,9 +104,24 @@ func TestVC_RevokedVMRejectedAtSigning(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sign: %v", err)
 			}
-			if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+			if err := verifyAsHolder(t, cred, vc.WithResolver(resolver)); err != nil {
 				t.Fatalf("verify: %v", err)
 			}
 		})
 	}
+}
+
+// verifyAsHolder verifies cred the way a verifier receives it. An ecdsa-sd
+// base proof is refused at verification (DI ECDSA §3.5.8), so it is derived
+// first and the derived credential is verified.
+func verifyAsHolder(t *testing.T, cred vc.Credential, resolver vc.CredentialOpt) error {
+	t.Helper()
+	if base, ok := cred.(*vc.ECDSASDCredential); ok {
+		derived, err := base.Derive([]string{"credentialSubject.name"})
+		if err != nil {
+			t.Fatalf("derive: %v", err)
+		}
+		return derived.Verify(resolver)
+	}
+	return cred.Verify(resolver)
 }

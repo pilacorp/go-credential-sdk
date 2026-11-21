@@ -295,7 +295,7 @@ func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
 // signed. Those are refused rather than checked wrongly.
 //
 // The document is not modified, whatever the outcome.
-func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof) error {
+func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, opts ...ProofVerifyOpt) error {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
@@ -305,6 +305,14 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 	if resolver == nil {
 		return fmt.Errorf("jsonmap: document resolver is required")
 	}
+	attached, err := m.Proofs()
+	if err != nil {
+		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
+	}
+	if err := danglingPreviousProof(*proof, attached); err != nil {
+		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
+	}
+
 	if proof.Type != DataIntegrityProof || proof.Cryptosuite != ECDSARDFC2019 {
 		suite := proof.Type
 		if proof.Cryptosuite != "" {
@@ -315,7 +323,7 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 			suite, DataIntegrityProof, ECDSARDFC2019)
 	}
 
-	ok, err := m.verifyOneProof(resolver, proof)
+	ok, err := m.verifyOneProof(resolver, proof, proofVerifyConfigFrom(opts).expectedPurpose)
 	if err != nil {
 		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
 	}
@@ -340,7 +348,7 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 //
 // resolver is required; callers must construct it (e.g. via
 // verificationmethod.NewHTTPResolver(baseURL)) before invoking VerifyProof.
-func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targetVM string) (bool, error) {
+func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targetVM string, opts ...ProofVerifyOpt) (bool, error) {
 	if m == nil {
 		return false, fmt.Errorf("JSONMap is nil")
 	}
@@ -355,12 +363,16 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	if len(proofs) == 0 {
 		return false, fmt.Errorf("credential has no proof")
 	}
+	expectedPurpose := proofVerifyConfigFrom(opts).expectedPurpose
 
 	// Verify a single, caller-selected proof.
 	if targetVM != "" {
 		for i := range proofs {
 			if proofs[i].VerificationMethod == targetVM {
-				ok, err := m.verifyOneProof(resolver, &proofs[i])
+				if err := danglingPreviousProof(proofs[i], proofs); err != nil {
+					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
+				}
+				ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose)
 				if err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
@@ -373,7 +385,10 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	// W3C proof set: every proof must verify, each against its own
 	// verification method.
 	for i := range proofs {
-		ok, err := m.verifyOneProof(resolver, &proofs[i])
+		if err := danglingPreviousProof(proofs[i], proofs); err != nil {
+			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+		}
+		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose)
 		if err != nil {
 			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
 		}
@@ -386,7 +401,10 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 
 // verifyOneProof verifies a single proof against the DID document resolved from
 // that proof's own verification method.
-func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, expectedPurpose string) (bool, error) {
+	if err := proofPurposeDisagrees(proof, expectedPurpose); err != nil {
+		return false, err
+	}
 	signerDID, err := m.didForProof(proof)
 	if err != nil {
 		return false, err
@@ -617,6 +635,9 @@ func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, 
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
 	}
+	if err := verificationmethod.RequireController(doc, vm); err != nil {
+		return false, err
+	}
 	pub, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
 		return false, err
@@ -725,6 +746,75 @@ func DIDFromField(v interface{}) (string, bool) {
 	return "", false
 }
 
+// ProofVerifyOpt configures VerifyProof and VerifyDetachedProof.
+type ProofVerifyOpt func(*proofVerifyConfig)
+
+type proofVerifyConfig struct {
+	// expectedPurpose is the proof purpose the verifier is performing.
+	// Empty means the caller did not say, and the purpose written in the
+	// proof is the one that is checked.
+	expectedPurpose string
+}
+
+func proofVerifyConfigFrom(opts []ProofVerifyOpt) proofVerifyConfig {
+	var cfg proofVerifyConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return cfg
+}
+
+// WithExpectedProofPurpose is the expectedProofPurpose of Data Integrity 1.0
+// §4.4. When set, a Data Integrity proof whose proofPurpose differs is
+// refused before any DID is resolved. JwtProof2020 is left to its own check:
+// that suite does not carry the purpose in a field this comparison can read.
+func WithExpectedProofPurpose(purpose string) ProofVerifyOpt {
+	return func(cfg *proofVerifyConfig) {
+		if purpose == "" {
+			return
+		}
+		cfg.expectedPurpose = purpose
+	}
+}
+
+// danglingPreviousProof reports a previousProof value that is not the id of a
+// proof in the document. Data Integrity 1.0 §4.5 requires that error. An empty
+// previousProof is a proof set, not a chain, and is left alone.
+func danglingPreviousProof(proof dto.Proof, proofs []dto.Proof) error {
+	if len(proof.PreviousProof) == 0 {
+		return nil
+	}
+	ids := make(map[string]struct{}, len(proofs))
+	for i := range proofs {
+		if proofs[i].Id != "" {
+			ids[proofs[i].Id] = struct{}{}
+		}
+	}
+	for _, ref := range proof.PreviousProof {
+		if _, ok := ids[ref]; !ok {
+			return fmt.Errorf("proof previousProof %q does not match the id of a proof in the document", ref)
+		}
+	}
+	return nil
+}
+
+// proofPurposeDisagrees reports a Data Integrity proof whose proofPurpose is
+// not the one the verifier asked for. A verifier that passed no purpose does
+// not disagree with anything.
+func proofPurposeDisagrees(proof *dto.Proof, expected string) error {
+	if expected == "" || proof == nil || proof.Type == JwtProof2020 {
+		return nil
+	}
+	if proof.ProofPurpose == expected {
+		return nil
+	}
+	return fmt.Errorf(
+		"proof.proofPurpose %q does not match the proof purpose %q this verifier expects",
+		proof.ProofPurpose, expected)
+}
+
 // strictPurposeCheck enforces the post-crypto checks for multi-VM:
 //  1. Hard revocation reason → reject (key compromised, all signatures invalid).
 //  2. Revoked timestamp set and proof.created on/after revoked → reject.
@@ -737,11 +827,24 @@ func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmet
 		return fmt.Errorf("verification method '%s' revoked with hard reason '%s'", vm.ID, vm.RevocationReason)
 	}
 
-	if vm.Revoked != nil {
-		created, err := time.Parse(time.RFC3339, proofCreated)
+	// DI 1.0 §2.1: a present created must be a date-time. It is checked with
+	// time.RFC3339, not the full XML Schema dateTimeStamp grammar: a comma
+	// before the fraction is accepted, a year outside 0000-9999 and hour 24 are
+	// refused. A revoked key needs created to show the proof came first.
+	if proofCreated == "" && vm.Revoked != nil {
+		return fmt.Errorf("verification method '%s' was revoked at %s; the proof has no created to show it was made earlier",
+			vm.ID, vm.Revoked.UTC().Format(time.RFC3339))
+	}
+	var created time.Time
+	if proofCreated != "" {
+		parsed, err := time.Parse(time.RFC3339, proofCreated)
 		if err != nil {
 			return fmt.Errorf("invalid proof.created timestamp '%s': %w", proofCreated, err)
 		}
+		created = parsed
+	}
+
+	if vm.Revoked != nil {
 		if !created.Before(*vm.Revoked) {
 			return fmt.Errorf("verification method '%s' was revoked at %s; proof.created %s is not earlier",
 				vm.ID, vm.Revoked.UTC().Format(time.RFC3339), created.UTC().Format(time.RFC3339))
