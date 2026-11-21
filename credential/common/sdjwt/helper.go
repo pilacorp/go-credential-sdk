@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	josesdjwt "github.com/pilacorp/go-credential-sdk/jose/sdjwt"
 )
 
 // DecodedDisclosure represents a decoded disclosure that Holder can use to understand what it contains.
@@ -116,9 +118,33 @@ func BuildSDJWTPresentation(issuerSignedJWT string, selectedDisclosures []string
 }
 
 // DecodeDisclosures decodes disclosure strings into DecodedDisclosure so a
-// Holder can inspect each field name and value before selecting which to present.
+// Holder can inspect each field name and value before selecting which to
+// present. Each disclosure is decoded through jose/sdjwt.ParseDisclosure, which
+// rejects the reserved claim names "...", "_sd" and "_sd_alg" (RFC 9901
+// section 4.2.1, section 7.1 step 3c.ii.2). The sha-256 digest that
+// ParseDisclosure computes is not exposed in DecodedDisclosure; callers that
+// need a digest under a different algorithm (sha-384, sha-512) compute it
+// themselves from DecodedDisclosure.Disclosure.
 func DecodeDisclosures(disclosures []string) ([]DecodedDisclosure, error) {
-	return parseDisclosures(disclosures)
+	result := make([]DecodedDisclosure, 0, len(disclosures))
+	for _, disc := range disclosures {
+		if disc == "" {
+			continue
+		}
+		p, err := josesdjwt.ParseDisclosure(disc)
+		if err != nil {
+			return nil, fmt.Errorf("decode disclosure: %w", err)
+		}
+		dec := DecodedDisclosure{
+			Disclosure:  disc,
+			Salt:        p.Salt,
+			FieldName:   p.Name,
+			Value:       p.Value,
+			IsArrayElem: p.ArrayElement,
+		}
+		result = append(result, dec)
+	}
+	return result, nil
 }
 
 // parseDisclosures parses a slice of disclosure strings into DecodedDisclosure.
