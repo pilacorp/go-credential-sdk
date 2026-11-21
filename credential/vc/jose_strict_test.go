@@ -696,14 +696,18 @@ func TestJOSE_RelativeKid_WithIss(t *testing.T) {
 	parts := strings.SplitN(token, ".", 3)
 	headerBytes, _ := base64.RawURLEncoding.DecodeString(parts[0])
 	var header map[string]interface{}
-	json.Unmarshal(headerBytes, &header)
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		t.Fatal(err)
+	}
 	header["kid"] = "#key-1" // relative kid
 	newHeader, _ := json.Marshal(header)
 
 	// Ensure the payload has iss.
 	payloadBytes, _ := base64.RawURLEncoding.DecodeString(parts[1])
 	var payload map[string]interface{}
-	json.Unmarshal(payloadBytes, &payload)
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		t.Fatal(err)
+	}
 	payload["iss"] = did
 	newPayload, _ := json.Marshal(payload)
 	payloadB64 := base64.RawURLEncoding.EncodeToString(newPayload)
