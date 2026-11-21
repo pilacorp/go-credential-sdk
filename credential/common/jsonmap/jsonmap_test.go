@@ -1582,3 +1582,60 @@ func TestJSONMap_HasMultibaseProof(t *testing.T) {
 		t.Error("no proof: HasMultibaseProof must be false")
 	}
 }
+
+// When undefined-terms/v2 is the last @context entry, the data-integrity
+// context must be inserted before it (VCDM 2.0 §5.2).
+func TestEnsureDataIntegrityContext_InsertsBeforeUndefinedTerms(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ctx  interface{}
+		want []interface{}
+	}{
+		{
+			name: "undefined-terms/v2 last: DI context inserted before it",
+			ctx: []interface{}{
+				"https://example.org/v1",
+				undefinedTermsV2Context,
+			},
+			want: []interface{}{
+				"https://example.org/v1",
+				dataIntegrityV2Context,
+				undefinedTermsV2Context,
+			},
+		},
+		{
+			name: "undefined-terms/v2 not last: DI context appended",
+			ctx: []interface{}{
+				"https://example.org/v1",
+				undefinedTermsV2Context,
+				"https://example.org/extra",
+			},
+			want: []interface{}{
+				"https://example.org/v1",
+				undefinedTermsV2Context,
+				"https://example.org/extra",
+				dataIntegrityV2Context,
+			},
+		},
+		{
+			name: "no undefined-terms/v2: DI context appended",
+			ctx: []interface{}{
+				"https://example.org/v1",
+			},
+			want: []interface{}{
+				"https://example.org/v1",
+				dataIntegrityV2Context,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := JSONMap{"id": "urn:uuid:di-undefined-terms"}
+			m["@context"] = tc.ctx
+			(&m).ensureDataIntegrityContext()
+			got, _ := m["@context"].([]interface{})
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("@context = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
