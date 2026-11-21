@@ -127,7 +127,11 @@ func (r *resolver) assertionKeys(doc *verificationmethod.DIDDocument, did string
 		if vm == nil {
 			continue
 		}
-		if vm.Controller != did {
+		// CID §3.3, as didresolver applies it: the method lives in this
+		// document (its id is a fragment of the DID) and names it as
+		// controller. A method of another DID is not trusted on this
+		// document's word.
+		if !strings.HasPrefix(vm.ID, did+"#") || len(vm.ID) == len(did)+1 || vm.Controller != did {
 			continue
 		}
 		if vm.Expires != nil && !now.Before(*vm.Expires) {

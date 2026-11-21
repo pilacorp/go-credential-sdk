@@ -173,6 +173,17 @@
       },
       "in_assertion_method": true,
       "expect_accepted": true
+    },
+    {
+      "name": "key whose id is another DID's, controlled by this DID",
+      "vm": {
+        "id": "did:example:other#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"}
+      },
+      "in_assertion_method": true,
+      "expect_accepted": false
     }
   ]
 }
