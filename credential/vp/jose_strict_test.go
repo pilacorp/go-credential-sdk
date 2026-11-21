@@ -251,7 +251,9 @@ func TestVPJOSEStrict_EnvelopedCredentialValidDataURL(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParsePresentation with valid enveloped credential: %v", err)
 			}
-			if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+			// The enveloped VC tokens are dummy (not real VCs), so skip VC
+			// validation — this test checks the VP envelope structure, not inner VCs.
+			if err := pres.Verify(vp.WithResolver(resolver), vp.WithSkipVCValidation()); err != nil {
 				t.Fatalf("Verify: %v", err)
 			}
 		})

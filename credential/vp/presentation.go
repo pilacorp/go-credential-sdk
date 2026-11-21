@@ -124,10 +124,24 @@ func WithProofVerificationMethod(vm string) PresentationOpt {
 //
 // The presentation's resolver is passed along, so callers do not repeat
 // vc.WithResolver unless they want a different one for the credentials.
+//
+// Since the default is to verify inner credentials, calling WithVCValidation()
+// with no arguments is equivalent to omitting it. It is still useful for
+// forwarding vc options.
 func WithVCValidation(opts ...vc.CredentialOpt) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.isValidateVC = true
 		p.vcOpts = append(p.vcOpts, opts...)
+	}
+}
+
+// WithSkipVCValidation opts out of the default inner-credential verification.
+// Use it when the caller verifies each credential separately with its own
+// options (e.g. go-auth-sdk's VerifyPresentation). Without this option,
+// every embedded credential's proof is checked as part of VP verification.
+func WithSkipVCValidation() PresentationOpt {
+	return func(p *presentationOptions) {
+		p.isValidateVC = false
 	}
 }
 
@@ -322,6 +336,14 @@ func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt 
 // so the caller's slice is never written to.
 func signingOptions(opts []PresentationOpt) []PresentationOpt {
 	return append(opts[:len(opts):len(opts)], func(p *presentationOptions) { p.isVerifyProof = false })
+}
+
+// verifyOptions prepends WithVCValidation() so that inner credentials are
+// verified by default. The caller's options run after the default, so
+// WithSkipVCValidation() overrides it. WithVerifyProof is added by each
+// Verify method itself.
+func verifyOptions(opts []PresentationOpt) []PresentationOpt {
+	return append([]PresentationOpt{WithVCValidation()}, opts...)
 }
 
 func getOptions(opts ...PresentationOpt) *presentationOptions {

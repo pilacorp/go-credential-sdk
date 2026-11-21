@@ -319,8 +319,11 @@ func TestVPSecp256k1Suite_CarriesACredential(t *testing.T) {
 		vp.WithChallenge("nonce-with-vc")); err != nil {
 		t.Fatalf("sign presentation: %v", err)
 	}
+	// The VC issuer is not in holderResolver; this test checks the VP proof
+	// and the embedded credential separately below.
 	if err := pres.Verify(vp.WithResolver(holderResolver),
-		vp.WithExpectedChallenge("nonce-with-vc")); err != nil {
+		vp.WithExpectedChallenge("nonce-with-vc"),
+		vp.WithSkipVCValidation()); err != nil {
 		t.Fatalf("verify presentation: %v", err)
 	}
 

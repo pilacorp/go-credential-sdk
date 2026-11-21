@@ -134,14 +134,14 @@ func TestWithVCValidation_TamperedVCRejected(t *testing.T) {
 	}
 }
 
-// Without WithVCValidation embedded credentials are not inspected at all:
+// With WithSkipVCValidation embedded credentials are not inspected:
 // only the presentation proof is checked.
-func TestWithoutVCValidation_VCsNotChecked(t *testing.T) {
+func TestWithSkipVCValidation_VCsNotChecked(t *testing.T) {
 	pres, resolver := vpWithSignedVC(t, func(vcMap map[string]interface{}) {
 		vcMap["credentialSubject"].(map[string]interface{})["id"] = "did:example:someone-else"
 	})
-	if err := pres.Verify(WithResolver(resolver)); err != nil {
-		t.Fatalf("VC should not have been checked without WithVCValidation: %v", err)
+	if err := pres.Verify(WithResolver(resolver), WithSkipVCValidation()); err != nil {
+		t.Fatalf("VC should not have been checked with WithSkipVCValidation: %v", err)
 	}
 }
 

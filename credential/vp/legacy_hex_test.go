@@ -71,7 +71,9 @@ func TestVP_LegacyHexProofStillVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+	// The embedded credential's issuer is not in the resolver; this test checks
+	// the VP proof, not the inner VCs.
+	if err := pres.Verify(vp.WithResolver(resolver), vp.WithSkipVCValidation()); err != nil {
 		t.Fatalf("verify legacy hex presentation: %v", err)
 	}
 }

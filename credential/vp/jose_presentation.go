@@ -473,7 +473,7 @@ func (j *JOSEPresentation) GetSigningInput() ([]byte, error) {
 }
 
 func (j *JOSEPresentation) Verify(opts ...PresentationOpt) error {
-	opts = append(opts, WithVerifyProof())
+	opts = append(verifyOptions(opts), WithVerifyProof())
 	return j.executeOptions(opts...)
 }
 

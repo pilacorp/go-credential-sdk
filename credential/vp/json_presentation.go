@@ -207,7 +207,7 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 }
 
 func (e *JSONPresentation) Verify(opts ...PresentationOpt) error {
-	opts = append(opts, WithVerifyProof())
+	opts = append(verifyOptions(opts), WithVerifyProof())
 
 	return e.executeOptions(opts...)
 }
