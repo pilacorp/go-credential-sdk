@@ -85,9 +85,8 @@ var wellKnownContexts = map[string][]byte{
 	"https://www.w3.org/ns/credentials/v2.jsonld":          w3cCredentialV2Context,
 	"https://www.w3.org/ns/credentials/examples/v2":        w3cCredentialExamplesV2Context,
 	"https://www.w3.org/ns/credentials/examples/v2.jsonld": w3cCredentialExamplesV2Context,
-	// VCDM 2.0 §5.2: documents with terms no context defines MUST include
-	// undefined-terms/v2 as the last @context value. Functionally identical
-	// to examples/v2 (@vocab catch-all), but intended for production use.
+	// VCDM 2.0 §5.2: a document with terms no other context defines ends its
+	// @context with undefined-terms/v2.
 	"https://www.w3.org/ns/credentials/undefined-terms/v2":        w3cCredentialUndefinedTermsV2Context,
 	"https://www.w3.org/ns/credentials/undefined-terms/v2.jsonld": w3cCredentialUndefinedTermsV2Context,
 	"https://w3id.org/security/data-integrity/v2":                 w3cSecurityDataIntegrityV2Context,

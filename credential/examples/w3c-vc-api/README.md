@@ -50,9 +50,9 @@ The printed config tags the issuer/verifier `['ecdsa-sd-2023']`, the vcHolder
 - The verifier resolves any `did:key` P-256 method id in the proof, so it
   verifies both the credentials it issued and the suite's own derived ones.
 - The server needs outbound network only if a test credential references a
-  remote JSON-LD context that isn't bundled in `credential/common/processor`;
-  `credentials/v2`, `credentials/examples/v2`, and
-  `credentials/undefined-terms/v2` are all bundled and served offline.
+  remote JSON-LD context that isn't bundled in `credential/common/processor`
+  (e.g. `credentials/examples/v2`); the standard `credentials/v2` context is
+  bundled and served offline.
 - `options.mandatoryPointers` / `options.selectivePointers` arrive as JSON
   Pointers and are passed straight through to the suite.
 
