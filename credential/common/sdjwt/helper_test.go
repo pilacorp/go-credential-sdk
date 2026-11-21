@@ -232,3 +232,37 @@ func TestAppendSD_StringSlice(t *testing.T) {
 	require.True(t, ok)
 	assert.Len(t, sd, 2)
 }
+
+// DecodeDisclosures must reject the reserved claim names "...", "_sd" and
+// "_sd_alg". Before the fix it delegated to parseDisclosure, which does not
+// check names. After the fix it delegates to jose/sdjwt.ParseDisclosure, which
+// does. This is the regression test: it fails before the fix because
+// DecodeDisclosures accepted the reserved names.
+func TestDecodeDisclosures_RejectsReservedNames(t *testing.T) {
+	for _, name := range []string{"...", "_sd", "_sd_alg"} {
+		t.Run(name, func(t *testing.T) {
+			disc := encodeDisclosureForTest(t, []interface{}{"salt", name, "value"})
+			_, err := DecodeDisclosures([]string{disc})
+			if err == nil {
+				t.Fatalf("DecodeDisclosures accepted a disclosure named %q; want an error", name)
+			}
+			if !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("error = %v, want it to mention 'reserved'", err)
+			}
+		})
+	}
+}
+
+// sha-384 and sha-512 credentials carry the same disclosure format; only the
+// digest algorithm differs. DecodeDisclosures must still decode them because it
+// does not compute digests — it only reads the [salt, name, value] arrays.
+func TestDecodeDisclosures_WorksForNonSHA256(t *testing.T) {
+	disc := encodeDisclosureForTest(t, []interface{}{"salt-384", "email", "a@b.com"})
+	got, err := DecodeDisclosures([]string{disc})
+	if err != nil {
+		t.Fatalf("DecodeDisclosures: %v", err)
+	}
+	if len(got) != 1 || got[0].FieldName != "email" {
+		t.Fatalf("got %+v, want one disclosure with FieldName 'email'", got)
+	}
+}

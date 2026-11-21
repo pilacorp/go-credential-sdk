@@ -3,11 +3,12 @@ package jwt
 import (
 	"context"
 	"crypto/ecdsa"
-	"encoding/base64"
 	"fmt"
 
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/jose"
+	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
 
 // SigningKey is the verification method a JWT is issued under: the kid and alg
@@ -54,10 +55,12 @@ func (k SigningKey) Accept(signingInput string, signature []byte) (string, error
 	if n := len(signature); n != 64 {
 		return "", fmt.Errorf("signature must be 64-byte r||s (65 with a trailing recovery id is trimmed), got %d bytes: the signer returned another format, not a JWS signature", n)
 	}
+	encoded := jose.EncodeSegment(signature)
 	if k.PublicKey != nil {
-		if err := VerifyECDSA(signingInput, signature, k.PublicKey); err != nil {
+		compact := signingInput + "." + encoded
+		if _, _, err := jws.Verify(compact, k.PublicKey, []string{k.Alg}); err != nil {
 			return "", fmt.Errorf("the signature does not verify against verification method %q: it was made by another key or over data other than the signing input — to sign with another key, pass WithVerificationMethodKey to NewJWTCredential / NewJWTPresentation: %w", k.ID, err)
 		}
 	}
-	return base64.RawURLEncoding.EncodeToString(signature), nil
+	return encoded, nil
 }
