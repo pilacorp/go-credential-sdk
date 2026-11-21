@@ -352,7 +352,11 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 	}
 
 	if isJSONPresentation(rawPresentation) {
-		return ParseJSONPresentation(rawPresentation, opts...)
+		p, err := ParseJSONPresentation(rawPresentation, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
 
 	valStr := strings.TrimSpace(strings.Trim(string(rawPresentation), "\""))
@@ -364,13 +368,21 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 				if err := json.Unmarshal(headerBytes, &header); err == nil {
 					if typ, ok := header["typ"].(string); ok {
 						if isJOSEPresentationTyp(typ) {
-							return ParseJOSEPresentation(valStr, opts...)
+							p, err := ParseJOSEPresentation(valStr, opts...)
+							if err != nil {
+								return nil, err
+							}
+							return p, nil
 						}
 					}
 				}
 			}
 		}
-		return ParseJWTPresentation(valStr, opts...)
+		p, err := ParseJWTPresentation(valStr, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
 
 	if isSDJWTShaped(valStr) {

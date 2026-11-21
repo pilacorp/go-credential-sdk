@@ -450,11 +450,19 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 					// ParseCredential: the envelope is defined to hold a vc+jwt, so
 					// this refuses a VC 1.1 JWT hidden inside a v2 envelope, and
 					// keeps the nesting to one level.
-					return ParseJOSECredential(strings.TrimPrefix(idStr, prefix), opts...)
+					c, err := ParseJOSECredential(strings.TrimPrefix(idStr, prefix), opts...)
+					if err != nil {
+						return nil, err
+					}
+					return c, nil
 				}
 			}
 		}
-		return ParseJSONCredential(rawCredential, opts...)
+		c, err := ParseJSONCredential(rawCredential, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
 
 	valStr := strings.TrimSpace(strings.Trim(string(rawCredential), "\""))
@@ -484,13 +492,21 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 							return nil, fmt.Errorf("failed to parse credential: unsupported SD-JWT typ %q: only vc+sd-jwt is read", typ)
 						}
 						if isJOSECredentialTyp(typ) {
-							return ParseJOSECredential(valStr, opts...)
+							c, err := ParseJOSECredential(valStr, opts...)
+							if err != nil {
+								return nil, err
+							}
+							return c, nil
 						}
 					}
 				}
 			}
 		}
-		return ParseJWTCredential(valStr, opts...)
+		c, err := ParseJWTCredential(valStr, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
 
 	return nil, fmt.Errorf("failed to parse credential: not a valid JSON, SD-JWT, or JWT credential")

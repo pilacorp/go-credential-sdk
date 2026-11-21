@@ -327,3 +327,36 @@ func TestVPJOSEStrict_WireFormatUnchanged(t *testing.T) {
 		t.Fatalf("wire format changed after round-trip:\n  before: %s\n  after:  %s", wire1, wire2)
 	}
 }
+
+// --- #99 item 8: ParsePresentation returns untyped nil on error ---
+
+func TestParsePresentation_ReturnsUntypedNilOnError(t *testing.T) {
+	// A VC 1.1 JWT missing the vp claim reaches ParseJWTPresentation's error
+	// path through ParsePresentation. If the concrete nil leaks through, the
+	// caller gets a non-nil Presentation interface.
+	jwtHeader, _ := json.Marshal(map[string]interface{}{"alg": "ES256", "typ": "JWT"})
+	jwtPayload, _ := json.Marshal(map[string]interface{}{"iss": "did:example:123"})
+	jwtToken := base64.RawURLEncoding.EncodeToString(jwtHeader) + "." +
+		base64.RawURLEncoding.EncodeToString(jwtPayload) + ".fakesig"
+
+	cases := []struct {
+		name  string
+		input []byte
+	}{
+		{"empty", nil},
+		{"JWT missing vp claim", []byte(jwtToken)},
+		{"garbage", []byte(`not-a-presentation!!!`)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := vp.ParsePresentation(tc.input)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if p != nil {
+				t.Fatalf("ParsePresentation returned a non-nil Presentation (%T) on error", p)
+			}
+		})
+	}
+}

@@ -507,3 +507,32 @@ func TestJOSEStrict_SDHashAlgorithmsRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// --- #99 item 8: ParseCredential returns untyped nil on error ---
+
+func TestParseCredential_ReturnsUntypedNilOnError(t *testing.T) {
+	// Each input triggers a different concrete parser (JSON, JOSE, JWT) and
+	// must return an untyped nil Credential on the error path, not a typed
+	// (*ConcreteType)(nil) which would satisfy `c != nil`.
+	cases := []struct {
+		name  string
+		input []byte
+	}{
+		{"empty", nil},
+		{"invalid JSON object", []byte(`{"type": "not-a-credential"}`)},
+		{"invalid JWT", []byte(`eyJhbGciOiJub25lIn0.eyJpc3MiOiJ0ZXN0In0.`)},
+		{"garbage", []byte(`not-a-credential-at-all!!!`)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := vc.ParseCredential(tc.input)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if c != nil {
+				t.Fatalf("ParseCredential returned a non-nil Credential (%T) on error", c)
+			}
+		})
+	}
+}
