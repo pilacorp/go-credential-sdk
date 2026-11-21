@@ -10,6 +10,7 @@ import (
 
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
 
 // JWTVerifier handles JWT verification operations. It always enforces the
@@ -34,31 +35,22 @@ func NewJWTVerifier(
 	return v
 }
 
-// VerifyJWT verifies a JWT token
+// VerifyJWT verifies a JWT token. The cryptographic check goes through
+// jose/jws.Verify, which applies the stricter parsing the jose module
+// enforces: strict base64url (no pad-bit aliases), UTF-8 header, crit
+// rejection, and a header size bound.
 func (v *JWTVerifier) VerifyJWT(tokenString string) error {
-	parts := strings.Split(tokenString, ".")
-	if len(parts) != 3 {
-		return fmt.Errorf("invalid JWT format")
-	}
-
-	// Decode header to get kid
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	// Read the header before the crypto check to get kid and determine
+	// purpose and signer. jws.UnverifiedHeader applies the same structural
+	// checks jws.Verify does, so a token that passes here will not fail
+	// structurally at verification.
+	jwsHeader, err := jws.UnverifiedHeader(tokenString)
 	if err != nil {
-		return fmt.Errorf("invalid header: %w", err)
+		return fmt.Errorf("invalid JWT: %w", err)
 	}
 
-	var header map[string]interface{}
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return fmt.Errorf("invalid header: %w", err)
-	}
-
-	alg, ok := header["alg"].(string)
-	if !ok || (alg != AlgES256K && alg != AlgES256) {
-		return fmt.Errorf("unsupported algorithm: %v", header["alg"])
-	}
-
-	kid, ok := header["kid"].(string)
-	if !ok {
+	kid := jwsHeader.Kid()
+	if kid == "" {
 		return fmt.Errorf("kid not found in header")
 	}
 
@@ -66,19 +58,24 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("document resolver is not configured")
 	}
 
-	// Which purpose the token claims decides which property names its signer:
-	// a credential is signed by its issuer, a presentation by its holder. So
-	// the purpose has to be known before the signer can be read, and both are
-	// read before any key is resolved.
+	// Convert the jws.Header to the map form the existing helper functions
+	// expect. The header is untrusted until jws.Verify succeeds.
+	header := map[string]interface{}(jwsHeader)
+
+	// Read the payload for purpose and signer determination. The payload is
+	// base64url-decoded by jws and also read here from the raw token for the
+	// purpose helpers that expect the base64 segment; a future cleanup can
+	// unify this once the helpers take decoded bytes.
+	parts := strings.SplitN(tokenString, ".", 3)
+	if len(parts) < 2 {
+		return fmt.Errorf("invalid JWT format")
+	}
+
 	purpose, perr := jwtProofPurpose(header, parts[1])
 	if perr != nil {
 		return perr
 	}
 
-	// Resolve the document by the signer DID the JWT body names, not by the
-	// DID prefix of `kid`. The body is the authoritative identifier;
-	// FindVerificationMethod will reject if the kid does not actually belong
-	// to that signer's document.
 	issuer, derr := jwtSigner(parts[1], purpose)
 	if derr != nil {
 		return derr
@@ -92,8 +89,6 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 		return fmt.Errorf("failed to resolve verification method: %w", verr)
 	}
 
-	// The header must not claim an algorithm the verification method's key
-	// cannot produce, otherwise alg and key could be mixed.
 	kind, kok := verificationmethod.VMKeyKind(vm)
 	if !kok {
 		return fmt.Errorf("verification method '%s' has an unrecognized key type", vm.ID)
@@ -102,30 +97,23 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	if aerr != nil {
 		return fmt.Errorf("verification method '%s': %w", vm.ID, aerr)
 	}
-	if alg != wantAlg {
-		return fmt.Errorf("JWT alg %q does not match verification method '%s', which holds a %s key", alg, vm.ID, kind)
-	}
 
 	publicKey, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
 		return fmt.Errorf("invalid public key: %w", err)
 	}
 
-	signingString := parts[0] + "." + parts[1]
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return fmt.Errorf("invalid signature: %w", err)
-	}
-
-	// alg was matched to the VM's key above, so publicKey is already on the
-	// curve alg names; ES256K and ES256 share the same ECDSA check.
-	if err := VerifyECDSA(signingString, signature, publicKey); err != nil {
-		return err
+	// Cryptographic verification through jose/jws. This enforces crit
+	// rejection (RFC 7515 section 4.1.11), strict base64url (RFC 4648 section 3.5),
+	// UTF-8 header (RFC 7515 section 5.2 step 3), 64-byte r||s signature shape,
+	// and alg-key curve match. The allowed list is restricted to the alg the
+	// verification method's key requires.
+	if _, _, err := jws.Verify(tokenString, publicKey, []string{wantAlg}); err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
 	}
 
 	// Strict-purpose check (always on): JWT VCs use proofPurpose =
-	// assertionMethod, JWT VPs use authentication. purpose was resolved
-	// before the signer, above.
+	// assertionMethod, JWT VPs use authentication.
 	issuedAt, ierr := jwtIssuedAt(parts[1])
 	if ierr != nil {
 		return ierr

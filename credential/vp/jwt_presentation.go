@@ -2,7 +2,6 @@ package vp
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
@@ -200,8 +200,13 @@ func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opt
 		return err
 	}
 
-	digest := sha256.Sum256([]byte(signingInput))
-	raw, err := provider.Sign(digest[:])
+	// Sign through jose/jws: the adapter wraps the SignerProvider (which
+	// signs a digest) as a jws.Signer (which signs the signing input).
+	jwsSigner, err := joseadapter.NewSigner(j.signingKey.Alg, provider)
+	if err != nil {
+		return fmt.Errorf("failed to create JWS signer: %w", err)
+	}
+	raw, err := jwsSigner.Sign(context.Background(), []byte(signingInput))
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}

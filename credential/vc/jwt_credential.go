@@ -14,6 +14,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"golang.org/x/sync/errgroup"
 )
@@ -227,8 +228,13 @@ func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider,
 		return err
 	}
 
-	digest := sha256.Sum256([]byte(j.signingInput))
-	raw, err := signerProvider.Sign(digest[:])
+	// Sign through jose/jws: the adapter wraps the SignerProvider (which
+	// signs a digest) as a jws.Signer (which signs the signing input).
+	jwsSigner, err := joseadapter.NewSigner(j.signingKey.Alg, signerProvider)
+	if err != nil {
+		return fmt.Errorf("failed to create JWS signer: %w", err)
+	}
+	raw, err := jwsSigner.Sign(context.Background(), []byte(j.signingInput))
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}

@@ -15,7 +15,9 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	josesdjwt "github.com/pilacorp/go-credential-sdk/jose/sdjwt"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -210,18 +212,23 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential, error) {
 	rawJWT = strings.TrimSpace(strings.Trim(rawJWT, "\""))
 
-	// A tilde means disclosures follow the signature. The issuer-signed JWT is
-	// what the signature covers; the disclosures travel beside it and are folded
-	// back into the payload below.
+	// A tilde means disclosures follow the signature. jose/sdjwt.Split
+	// handles the combined form (RFC 9901 section 4), including the case where a
+	// Key Binding JWT trails the disclosures. It rejects duplicates,
+	// empty disclosures and a missing trailing ~.
 	var issuerJWT string
 	var disclosures []string
-	if sdjwt.IsSDJWT(rawJWT) {
-		parsed, perr := sdjwt.Parse(rawJWT)
-		if perr != nil {
-			return nil, fmt.Errorf("failed to parse SD-JWT: %w", perr)
+	if strings.Contains(rawJWT, "~") {
+		ij, ds, kbJWT, serr := josesdjwt.Split(rawJWT)
+		if serr != nil {
+			return nil, fmt.Errorf("failed to parse SD-JWT: %w", serr)
 		}
-		issuerJWT = parsed.BaseJWT
-		disclosures = parsed.Disclosures
+		issuerJWT = ij
+		disclosures = ds
+		// The KB-JWT is accepted structurally but not verified here; the
+		// credential path has no holder key to verify it against. Full
+		// KB-JWT verification is a separate feature.
+		_ = kbJWT
 	} else {
 		if !isJWTCredential(rawJWT) {
 			return nil, fmt.Errorf("invalid JWT or SD-JWT format")
@@ -307,18 +314,32 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	}
 
 	vcMap := payloadMap
-	// Reconstruct is also what strips the _sd arrays and _sd_alg, so it has to
-	// run whenever the token is an SD-JWT — not only when a disclosure arrived.
-	// A holder revealing nothing used to hand the caller a credentialSubject
-	// with a raw digest array sitting in it as though it were a claim, and
-	// schema validation then saw a property the schema does not know.
+	// jose/sdjwt.Recreate is also what strips the _sd arrays and _sd_alg, so
+	// it has to run whenever the token is an SD-JWT — not only when a
+	// disclosure arrived. A holder revealing nothing used to hand the caller a
+	// credentialSubject with a raw digest array sitting in it as though it
+	// were a claim, and schema validation then saw a property the schema does
+	// not know.
+	//
+	// Recreate applies the stricter rules of RFC 9901 section 7.1: undisclosed
+	// array elements are removed (not kept as {"...": digest}), disclosure
+	// names "...", "_sd" and "_sd_alg" are rejected, and duplicate digests
+	// across the whole payload are refused.
 	disclosable := declaredSD || combinedSD || hasSDAlg
 	if disclosable || len(disclosures) > 0 {
-		processed, rerr := sdjwt.Reconstruct(vcMap, disclosures, true)
+		parsed := make([]josesdjwt.Disclosure, len(disclosures))
+		for i, d := range disclosures {
+			p, perr := josesdjwt.ParseDisclosure(d)
+			if perr != nil {
+				return nil, fmt.Errorf("failed to parse disclosure: %w", perr)
+			}
+			parsed[i] = p
+		}
+		recreated, rerr := josesdjwt.Recreate(payloadMap, parsed)
 		if rerr != nil {
 			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rerr)
 		}
-		vcMap = processed
+		vcMap = recreated.Claims
 	}
 
 	// Reconstruct deep-copies, so payloadMap is still exactly what the signature
@@ -404,15 +425,20 @@ func (j *JOSECredential) AddProofByProvider(signerProvider signer.SignerProvider
 		return err
 	}
 
-	digest := sha256.Sum256([]byte(j.signingInput))
-	raw, err := signerProvider.Sign(digest[:])
+	// Sign through jose/jws: the adapter wraps the SignerProvider (which
+	// signs a digest) as a jws.Signer (which signs the signing input).
+	jwsSigner, err := joseadapter.NewSigner(j.signingKey.Alg, signerProvider)
+	if err != nil {
+		return fmt.Errorf("failed to create JWS signer: %w", err)
+	}
+	raw, err := jwsSigner.Sign(context.Background(), []byte(j.signingInput))
 	if err != nil {
 		return fmt.Errorf("failed to sign signing input: %w", err)
 	}
-	// Accept trims a trailing recovery id, checks the 64-byte r||s shape, and
-	// verifies the signature against the key the header names. Assigned only
-	// after all of that, so a failed call needs no rollback and cannot clear a
-	// signature the credential already had.
+	// Accept checks the 64-byte r||s shape and verifies the signature
+	// against the key the header names. Assigned only after all of that, so
+	// a failed call needs no rollback and cannot clear a signature the
+	// credential already had.
 	signature, err := j.signingKey.Accept(j.signingInput, raw)
 	if err != nil {
 		return err
