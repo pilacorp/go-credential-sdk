@@ -856,7 +856,12 @@ func TestSecp256k1Suite_RefusesWhenTheContextWouldChangeMeaning(t *testing.T) {
 	if err == nil {
 		t.Fatal("signed a document whose own proof term the suite context redefines")
 	}
-	if !strings.Contains(err.Error(), "changed what the document says") {
+	// The collision can manifest as either "changed what the document says"
+	// (old json-gold: both before and after canonicalize but differ) or
+	// "collides with one this document uses" (fork: the after
+	// canonicalization fails under stricter validation).
+	if !strings.Contains(err.Error(), "changed what the document says") &&
+		!strings.Contains(err.Error(), "collides with one this document uses") {
 		t.Fatalf("err = %v, want the collision named", err)
 	}
 	if cred.ExtractField("proof") != nil {

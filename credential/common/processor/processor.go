@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/piprate/json-gold/ld"
+	"github.com/pilacorp/json-gold/ld"
 )
 
 // ProcessorOpt represents an option for JSON-LD processing.
@@ -210,7 +210,39 @@ func standardizeForCanonicalization(input map[string]interface{}) (map[string]in
 		return nil, fmt.Errorf("failed to standardize to JSON-LD: input is nil")
 	}
 	out, _ := preserveNativeTypes(input).(map[string]interface{})
+	wrapGraphContainerStrings(out)
 	return out, nil
+}
+
+// wrapGraphContainerStrings replaces bare strings inside verifiableCredential
+// with EnvelopedVerifiableCredential objects so that json-gold's SafeMode does
+// not refuse them. The VCDM 2.0 @context declares verifiableCredential with
+// @container: @graph, so a string value (a JWT) has no RDF representation as a
+// graph — without wrapping it triggers "invalid value object" in safe mode.
+//
+// The wrapped form follows VCDM 2.0 §5.13.2 EnvelopedVerifiableCredential:
+// the string is placed in the data: URI of the node's @id. This produces the
+// same graph-link triple and no spurious triples, so the canonical N-Quads are
+// equivalent to what a non-safe-mode processor would emit (the link triple
+// only, the string itself having no RDF form).
+func wrapGraphContainerStrings(doc map[string]interface{}) {
+	vc, ok := doc["verifiableCredential"]
+	if !ok {
+		return
+	}
+	arr, ok := vc.([]interface{})
+	if !ok {
+		return
+	}
+	for i, item := range arr {
+		if s, ok := item.(string); ok {
+			arr[i] = map[string]interface{}{
+				"@context": "https://www.w3.org/ns/credentials/v2",
+				"type":     "EnvelopedVerifiableCredential",
+				"id":       "data:application/credential+jwt," + s,
+			}
+		}
+	}
 }
 
 func preserveNativeTypes(value interface{}) interface{} {

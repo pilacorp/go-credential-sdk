@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	ld "github.com/piprate/json-gold/ld"
+	ld "github.com/pilacorp/json-gold/ld"
 )
 
 // docWithUndefinedTerm returns a credential carrying one term that no context
@@ -187,9 +187,10 @@ func docWithUndefinedType() map[string]interface{} {
 }
 
 // Pins json-gold's own behaviour, so it calls ToRDF rather than this package's
-// wrappers. If the second half fails, SafeMode grew to cover types and
-// the type check can go.
-func TestSafeModeCoversPropertiesNotTypes(t *testing.T) {
+// wrappers. The pilacorp fork's SafeMode covers both properties and types
+// (the type becomes an invalid RDF term), so checkExpandedTypes is now
+// redundant but harmless.
+func TestSafeModeCoversPropertiesAndTypes(t *testing.T) {
 	opts := sdOptions()
 	opts.Format = ""
 	proc := ld.NewJsonLdProcessor()
@@ -197,8 +198,8 @@ func TestSafeModeCoversPropertiesNotTypes(t *testing.T) {
 	if _, err := proc.ToRDF(docWithUndefinedTerm(), opts); err == nil {
 		t.Error("undefined property: expected SafeMode to raise, got nil")
 	}
-	if _, err := proc.ToRDF(docWithUndefinedType(), opts); err != nil {
-		t.Errorf("undefined type: SafeMode now raises (%v) — the type check is redundant", err)
+	if _, err := proc.ToRDF(docWithUndefinedType(), opts); err == nil {
+		t.Error("undefined type: expected SafeMode to raise, got nil")
 	}
 }
 
@@ -299,26 +300,16 @@ func TestCanonicalize_RejectsRelativeID(t *testing.T) {
 	})
 }
 
-// Pins the json-gold behaviour the id check exists for: a relative root id
-// takes the root node out of the dataset silently, so tampering with the
-// fields on it does not change the canonical bytes.
-func TestToRDFDropsNodesWithRelativeID(t *testing.T) {
-	signed := docWithRelativeID()
-	nq1, err := ToRDFNQuads(signed)
-	if err != nil {
-		t.Fatalf("to rdf: %v", err)
+// The pilacorp fork's SafeMode now rejects relative IRIs during ToRDF instead
+// of silently dropping them. The SDK's rejectRelativeIDs check in
+// ExpandJSONLD is now redundant but harmless: the fork catches it at the ToRDF
+// level too.
+func TestToRDFRejectsNodesWithRelativeID(t *testing.T) {
+	_, err := ToRDFNQuads(docWithRelativeID())
+	if err == nil {
+		t.Fatal("expected an error for a relative id, got nil")
 	}
-	tampered := docWithRelativeID()
-	tampered["id"] = "credential-999"
-	tampered["validUntil"] = "2099-01-01T00:00:00Z"
-	nq2, err := ToRDFNQuads(tampered)
-	if err != nil {
-		t.Fatalf("to rdf: %v", err)
-	}
-	if strings.Join(nq1, "") != strings.Join(nq2, "") {
-		t.Fatalf("json-gold now keeps nodes with a relative id; rejectRelativeIDs may be redundant:\n%v\n%v", nq1, nq2)
-	}
-	if strings.Contains(strings.Join(nq1, ""), "validUntil") {
-		t.Fatalf("expected the root node to be dropped, got:\n%v", nq1)
+	if !strings.Contains(err.Error(), "relative IRI") {
+		t.Errorf("expected a relative IRI error, got: %v", err)
 	}
 }

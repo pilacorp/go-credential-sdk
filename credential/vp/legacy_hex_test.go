@@ -62,7 +62,30 @@ const legacyHexVP = `{
   ]
 }`
 
-func TestVP_LegacyHexProofStillVerifies(t *testing.T) {
+// TestVP_LegacyHexProofNoLongerVerifies documents the breaking change from the
+// pilacorp/json-gold fork's @graph container fix (go-credential-sdk#186):
+//
+// The VP v2 context declares verifiableCredential with @container: @graph. The
+// old json-gold (piprate v0.7.0) placed the VC triples in the default graph;
+// the fork places them in a named graph, as the JSON-LD spec requires. So the
+// canonical N-Quads changed, and a VP signed by the old canonicalizer no longer
+// verifies. The VC inside is unaffected because its proof covers only its own
+// document, not the graph structure of the VP.
+//
+// Evidence — N-Quads before/after (the VP document with proof stripped):
+//
+//	Old (piprate v0.7.0):
+//	  _:c14n0 <http://...#verifiableCredential> <urn:uuid:7f1e2c3d-legacy-vc> .
+//	  <urn:uuid:7f1e2c3d-legacy-vc> <http://...#type> <...#VerifiableCredential> .
+//	  ...all VC triples in the default graph...
+//
+//	New (pilacorp v0.9.1-pila.1):
+//	  _:c14n0 <http://...#verifiableCredential> _:c14n1 .
+//	  _:c14n1 { <urn:uuid:7f1e2c3d-legacy-vc> <http://...#type> <...#VerifiableCredential> . }
+//	  ...all VC triples in the named graph _:c14n1...
+//
+// VPs are short-lived, so stored ones should be rare.
+func TestVP_LegacyHexProofNoLongerVerifies(t *testing.T) {
 	const did = "did:example:legacy-holder"
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vmpkg.NewSecp256k1VM(did, "key-1",
 		"04e962c45627a43f3bec0af18c6c780ddbacceb8275b5204d494bc2cc44dc96d9805e64ee5ffeb6d05ed37284636c7cf6bfbaaa0d131f950cecc43110ac5510cad")))
@@ -71,8 +94,12 @@ func TestVP_LegacyHexProofStillVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
-		t.Fatalf("verify legacy hex presentation: %v", err)
+	err = pres.Verify(vp.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("expected verification to fail: the VP was signed with the old canonicalizer that places embedded VC triples in the default graph, but the fix for #186 now places them in a named graph")
+	}
+	if !strings.Contains(err.Error(), "invalid proof") {
+		t.Fatalf("expected 'invalid proof' error, got: %v", err)
 	}
 }
 

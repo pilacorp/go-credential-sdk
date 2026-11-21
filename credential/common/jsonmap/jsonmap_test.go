@@ -1228,11 +1228,13 @@ func TestCanonicalize_Errors(t *testing.T) {
 		wantErr string // substring the returned error must contain
 	}{
 		{
+			// SafeMode catches a node with no property as "would be dropped".
 			name:    "empty document",
 			doc:     `{}`,
-			wantErr: "canonicalization produced no N-Quads",
+			wantErr: "failed to canonicalize document",
 		},
 		{
+			// SafeMode catches a context-only document as "would be dropped".
 			name: "context but no terms",
 			doc: `{
 			"@context": [
@@ -1240,10 +1242,10 @@ func TestCanonicalize_Errors(t *testing.T) {
 				"https://www.w3.org/ns/credentials/examples/v2"
 			]
 		}`,
-			wantErr: "canonicalization produced no N-Quads",
+			wantErr: "failed to canonicalize document",
 		},
 		{
-			// An id alone states nothing about the subject.
+			// An id alone states nothing about the subject. SafeMode catches it.
 			name: "identifier only",
 			doc: `{
 			"@context": [
@@ -1252,7 +1254,7 @@ func TestCanonicalize_Errors(t *testing.T) {
 			],
 			"id": "urn:uuid:subject"
 		}`,
-			wantErr: "canonicalization produced no N-Quads",
+			wantErr: "failed to canonicalize document",
 		},
 		{
 			name: "no @context",

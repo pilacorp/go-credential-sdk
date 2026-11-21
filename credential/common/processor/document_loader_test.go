@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piprate/json-gold/ld"
+	"github.com/pilacorp/json-gold/ld"
 )
 
 func contextServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
@@ -506,7 +506,8 @@ func TestContextErrors_AreReachable(t *testing.T) {
 			fmt.Fprintf(w, `{"@context":"http://%s/"}`, r.Host)
 		})
 		useTestClient(t, srv)
-		if _, err := Canonicalize(docUsing(srv.URL+"/", "term")); !errors.Is(err, ErrContextOverflow) {
+		_, err := Canonicalize(docUsing(srv.URL+"/", "term"))
+		if !isContextOverflow(err) {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -557,7 +558,7 @@ func TestCanonicalize_ContextIncludingItselfStopsAtTheByteLimit(t *testing.T) {
 	opts := sdOptions()
 	opts.DocumentLoader = budget
 	_, err := ld.NewJsonLdProcessor().Expand(docUsing(srv.URL+"/", "term"), opts)
-	if !errors.Is(err, ErrContextOverflow) {
+	if !isContextOverflow(err) {
 		t.Fatalf("got %v", err)
 	}
 	if want := maxContextBytesPerOperation/pad + 1; budget.loads > want {
@@ -594,14 +595,28 @@ func TestLoadDocument_RefusesUnparsableAlternate(t *testing.T) {
 	}
 }
 
-// The same nil dereference with no server: every other entry already recovers.
-func TestToNQuads_RecoversFromPanic(t *testing.T) {
+// isContextOverflow returns true if err is a context overflow, whether from the
+// SDK's contextBudget or from json-gold's own MaxRemoteContexts limit. The fork
+// may return its own JsonLdError before the SDK's budget is reached.
+func isContextOverflow(err error) bool {
+	if errors.Is(err, ErrContextOverflow) {
+		return true
+	}
+	var ldErr *ld.JsonLdError
+	return errors.As(err, &ldErr) && ldErr.Code == ld.ContextOverflow
+}
+
+// A malformed URL that used to crash the old json-gold now returns an error.
+// The fork's context loader returns a proper error instead of panicking.
+func TestToNQuads_MalformedContextURLReturnsError(t *testing.T) {
 	doc := map[string]interface{}{
 		"@context": []interface{}{map[string]interface{}{"@base": "http://example.org/", "p": "https://example.org/p"}, "%zz"},
 		"@id":      "urn:x",
 		"p":        "v",
 	}
-	if _, err := ToNQuads(doc); err == nil || !strings.Contains(err.Error(), "malformed JSON-LD input") {
-		t.Fatalf("got %v", err)
+	_, err := ToNQuads(doc)
+	if err == nil {
+		t.Fatal("expected an error for a malformed context URL, got nil")
 	}
+	t.Logf("error: %v", err)
 }

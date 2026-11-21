@@ -2369,11 +2369,11 @@ func TestTermsOfUse_CanonicalizationProducesAbsoluteIRIs(t *testing.T) {
 			"canonicalized n-quads must not contain relative IRIs")
 	})
 
-	t.Run("control: an undeclared policy type degrades to a relative IRI", func(t *testing.T) {
-		// This is the trap the README warns about. Asserting it explicitly keeps
-		// the invariant above meaningful: if a future context change silently
-		// started declaring the term, this test would catch that the two cases
-		// are no longer distinct.
+	t.Run("control: an undeclared policy type is dropped from the RDF output", func(t *testing.T) {
+		// The pilacorp json-gold fork (like the JSON-LD 1.1 spec §8.1) writes
+		// only well-formed statements: a relative IRI is not RFC 3987
+		// well-formed, so the type triple is omitted entirely. With the old
+		// library it degraded to a bare <PresentationRequiredPolicy>.
 		doc := contentsWithContext([]interface{}{
 			"https://www.w3.org/ns/credentials/v2",
 		})
@@ -2381,8 +2381,8 @@ func TestTermsOfUse_CanonicalizationProducesAbsoluteIRIs(t *testing.T) {
 		nq, err := processor.CanonicalizeDocument(doc)
 		assert.NoError(t, err)
 
-		assert.Contains(t, string(nq), "<PresentationRequiredPolicy>")
-		assert.Regexp(t, relativeIRIPattern, string(nq))
+		assert.NotContains(t, string(nq), "PresentationRequiredPolicy",
+			"the undeclared type should not appear in the RDF output at all")
 	})
 }
 

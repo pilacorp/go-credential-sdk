@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	ld "github.com/piprate/json-gold/ld"
+	ld "github.com/pilacorp/json-gold/ld"
 )
 
 var linkContext = map[string]interface{}{
@@ -175,7 +175,9 @@ func TestCanonicalizeDocument_MatchesNormalize(t *testing.T) {
 	opts.Format = "application/n-quads"
 	opts.Algorithm = ld.AlgorithmURDNA2015
 	opts.DocumentLoader = defaultDocumentLoader
-	opts.SafeMode = true
+	// CanonicalizeDocument does not set SafeMode, so Normalize here must not
+	// either. Before the pilacorp fork, Normalize ignored SafeMode anyway; now
+	// it forwards it, so this must match CanonicalizeDocument's setting.
 	want, err := ld.NewJsonLdProcessor().Normalize(standardized, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +191,7 @@ func TestCanonicalizeDocument_MatchesNormalize(t *testing.T) {
 // URDNA2015 suite. go test puts the go tool on PATH.
 func normalizationInputs(t *testing.T) []string {
 	t.Helper()
-	dir, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/piprate/json-gold").Output()
+	dir, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/pilacorp/json-gold").Output()
 	if err != nil {
 		t.Fatal(err)
 	}

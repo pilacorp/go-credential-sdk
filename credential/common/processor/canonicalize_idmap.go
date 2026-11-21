@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	ld "github.com/piprate/json-gold/ld"
+	ld "github.com/pilacorp/json-gold/ld"
 )
 
 // CanonicalizeWithIdMap canonicalizes a JSON-LD document with URDNA2015 and

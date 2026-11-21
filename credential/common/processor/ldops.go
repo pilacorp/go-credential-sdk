@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/piprate/json-gold/ld"
+	"github.com/pilacorp/json-gold/ld"
 )
 
 // ToNQuads serializes a JSON-LD document (compact or expanded) to a sorted slice

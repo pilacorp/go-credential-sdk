@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/piprate/json-gold/ld"
+	"github.com/pilacorp/json-gold/ld"
 )
 
 // Bounds on remote @context fetches. A document under verification names its
@@ -79,7 +79,7 @@ var (
 	ErrContextAddress  = errors.New("context address is not public")
 	ErrContextScheme   = errors.New("context URL is not http or https")
 	ErrContextRequests = errors.New("context fetch made too many requests")
-	ErrContextOverflow = ld.NewJsonLdError(ld.ErrorCode("context overflow"), "the operation's context budget is used up")
+	ErrContextOverflow = ld.NewJsonLdError(ld.ContextOverflow, "the operation's context budget is used up")
 )
 
 // Refusals of what a document's contexts define, ahead of json-gold.
