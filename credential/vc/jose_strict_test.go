@@ -10,6 +10,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -227,27 +228,21 @@ func TestJOSEStrict_ForbiddenDisclosureNameRejected(t *testing.T) {
 // The check lives in jws.UnverifiedHeader / jws.Verify (jose module).
 func TestJOSEStrict_NonUTF8HeaderRejected(t *testing.T) {
 	did, priv, resolver := joseSetup(t)
-	token := signedJOSEToken(t, did, priv, resolver)
-
-	// Craft a header with an invalid UTF-8 byte in a string value.
-	// Build it by hand since json.Marshal refuses invalid UTF-8.
-	parts := strings.SplitN(token, ".", 3)
-	headerBytes, _ := base64.RawURLEncoding.DecodeString(parts[0])
-	// Inject invalid UTF-8 directly into the JSON bytes.
-	// Replace the closing } with ,"x-note":"\xff"} which has an invalid byte.
-	tampered_header := headerBytes[:len(headerBytes)-1]
-	tampered_header = append(tampered_header, []byte(",\"x-note\":\"\xff\"}")...)
-	tampered := base64.RawURLEncoding.EncodeToString(tampered_header) + "." + parts[1] + "." + parts[2]
-
-	// Parse may succeed; the UTF-8 check is in jws, so test through Verify.
-	cred, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
+	parts := strings.SplitN(signedJOSEToken(t, did, priv, resolver), ".", 3)
+	header, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		// Parse rejecting it also satisfies the test.
-		return
+		t.Fatal(err)
 	}
-	err = cred.Verify(vc.WithResolver(resolver))
+	// json.Marshal refuses invalid UTF-8, so the byte is written by hand.
+	header = append(header[:len(header)-1], []byte(`,"x-note":"`+"\xff"+`"}`)...)
+	tampered := resignES256(t, priv, header, parts[1])
+
+	cred, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
 	if err == nil {
-		t.Fatal("accepted a token with non-UTF-8 header; want rejection")
+		err = cred.Verify(vc.WithResolver(resolver))
+	}
+	if err == nil {
+		t.Fatal("accepted a signed token whose header is not UTF-8; want rejection")
 	}
 }
 
@@ -258,40 +253,48 @@ func TestJOSEStrict_NonUTF8HeaderRejected(t *testing.T) {
 // The check is in jose.DecodeSegment used by jws.Verify.
 func TestJOSEStrict_PadBitAliasRejected(t *testing.T) {
 	did, priv, resolver := joseSetup(t)
-	token := signedJOSEToken(t, did, priv, resolver)
+	parts := strings.SplitN(signedJOSEToken(t, did, priv, resolver), ".", 3)
+	tampered := parts[0] + "." + parts[1] + "." + padBitAlias(t, parts[2])
 
-	parts := strings.SplitN(token, ".", 3)
-	sig := parts[2]
-
-	// A 64-byte ECDSA signature encodes to 86 base64url characters.
-	// 86 * 6 = 516 bits, but only 512 are payload, leaving 4 padding bits.
-	// The last character encodes those 4 bits in its high bits; flipping
-	// a low bit creates a pad-bit alias that decodes to the same bytes
-	// under lenient decoding but is rejected by strict decoding.
-	lastByte := sig[len(sig)-1]
-	// XOR with 1 flips the lowest bit of the base64url character value.
-	flipped := lastByte ^ 1
-	// Ensure the flipped byte is still a valid base64url character.
-	if !isBase64URL(flipped) {
-		// If XOR with 1 leaves the base64url charset, XOR with 2 instead.
-		flipped = lastByte ^ 2
-	}
-	tampered := parts[0] + "." + parts[1] + "." + sig[:len(sig)-1] + string(flipped)
-
-	// Parse may succeed; the strict base64url check is in jws.Verify.
 	cred, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
-	if err != nil {
-		// Parse rejecting it also satisfies the test.
-		return
-	}
-	err = cred.Verify(vc.WithResolver(resolver))
 	if err == nil {
-		t.Fatal("accepted a token with non-strict base64url signature; want rejection")
+		err = cred.Verify(vc.WithResolver(resolver))
+	}
+	if err == nil {
+		t.Fatal("accepted a signature segment with unused bits set; want rejection")
 	}
 }
 
-func isBase64URL(b byte) bool {
-	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-' || b == '_'
+// resignES256 signs header and payload with priv, so a test can change the
+// header and still carry a valid ES256 signature: the token is then refused
+// only for the property under test, not for a broken signature.
+func resignES256(t *testing.T, priv *ecdsa.PrivateKey, header []byte, payloadB64 string) string {
+	t.Helper()
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + payloadB64
+	digest := sha256.Sum256([]byte(input))
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+// padBitAlias sets the lowest unused bit of the last character of an
+// unpadded base64url segment whose length is 2 mod 4 (a 64-byte signature
+// is 86 characters, the last one carrying 4 unused bits). A lenient decoder
+// returns the same bytes; RFC 7515 base64url with unused bits set is not
+// the canonical encoding and a strict decoder refuses it.
+func padBitAlias(t *testing.T, seg string) string {
+	t.Helper()
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	v := strings.IndexByte(alphabet, seg[len(seg)-1])
+	if v < 0 || v&0x0f != 0 {
+		t.Fatalf("last character %q is not a canonical 4-unused-bit character", seg[len(seg)-1])
+	}
+	return seg[:len(seg)-1] + string(alphabet[v|1])
 }
 
 // --- #99 item 12: KB-JWT acceptance ---

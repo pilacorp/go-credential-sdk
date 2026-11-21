@@ -92,23 +92,31 @@ func TestVPJOSEStrict_CritHeaderRejected(t *testing.T) {
 
 func TestVPJOSEStrict_PadBitAliasRejected(t *testing.T) {
 	did, priv, resolver := vpJoseSetup(t)
-	token := signedJOSEPresentation(t, did, priv, resolver)
+	parts := strings.SplitN(signedJOSEPresentation(t, did, priv, resolver), ".", 3)
+	tampered := parts[0] + "." + parts[1] + "." + padBitAlias(t, parts[2])
 
-	parts := strings.SplitN(token, ".", 3)
-	sig := parts[2]
-	lastChar := sig[len(sig)-1]
-	flipped := lastChar ^ 1
-	tampered := parts[0] + "." + parts[1] + "." + sig[:len(sig)-1] + string(flipped)
-
-	// Parse may succeed; the strict base64url check is in jws.Verify.
 	pres, err := vp.ParsePresentation([]byte(tampered), vp.WithResolver(resolver))
-	if err != nil {
-		return // Parse rejecting it also satisfies the test.
-	}
-	err = pres.Verify(vp.WithResolver(resolver))
 	if err == nil {
-		t.Fatal("accepted a VP with non-strict base64url signature; want rejection")
+		err = pres.Verify(vp.WithResolver(resolver))
 	}
+	if err == nil {
+		t.Fatal("accepted a VP signature segment with unused bits set; want rejection")
+	}
+}
+
+// padBitAlias sets the lowest unused bit of the last character of an
+// unpadded base64url segment whose length is 2 mod 4 (a 64-byte signature
+// is 86 characters, the last one carrying 4 unused bits). A lenient decoder
+// returns the same bytes; RFC 7515 base64url with unused bits set is not
+// the canonical encoding and a strict decoder refuses it.
+func padBitAlias(t *testing.T, seg string) string {
+	t.Helper()
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	v := strings.IndexByte(alphabet, seg[len(seg)-1])
+	if v < 0 || v&0x0f != 0 {
+		t.Fatalf("last character %q is not a canonical 4-unused-bit character", seg[len(seg)-1])
+	}
+	return seg[:len(seg)-1] + string(alphabet[v|1])
 }
 
 // --- Hash and wire format stability ---
