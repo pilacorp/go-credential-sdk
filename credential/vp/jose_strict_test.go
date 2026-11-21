@@ -233,19 +233,28 @@ func TestVPJOSEStrict_EnvelopedCredentialMissingContext(t *testing.T) {
 
 func TestVPJOSEStrict_EnvelopedCredentialValidDataURL(t *testing.T) {
 	did, priv, resolver := vpJoseSetup(t)
-	entry := map[string]interface{}{
-		"@context": "https://www.w3.org/ns/credentials/v2",
-		"type":     "EnvelopedVerifiableCredential",
-		"id":       "data:application/vc+jwt,eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2ln",
-	}
-	token := vpTokenWithEnvelopedVC(t, priv, did, entry)
-	pres, err := vp.ParsePresentation([]byte(token), vp.WithResolver(resolver))
-	if err != nil {
-		t.Fatalf("ParsePresentation with valid enveloped credential: %v", err)
-	}
-	// Verify should work (signature is valid).
-	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
-		t.Fatalf("Verify: %v", err)
+	// The scheme and media type of a data: URL are case-insensitive
+	// (RFC 2397, RFC 2045 section 5.1), so another implementation's
+	// capitalization is accepted too.
+	for _, id := range []string{
+		"data:application/vc+jwt,eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2ln",
+		"DATA:Application/VC+JWT,eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2ln",
+	} {
+		t.Run(id[:24], func(t *testing.T) {
+			entry := map[string]interface{}{
+				"@context": "https://www.w3.org/ns/credentials/v2",
+				"type":     "EnvelopedVerifiableCredential",
+				"id":       id,
+			}
+			token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+			pres, err := vp.ParsePresentation([]byte(token), vp.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("ParsePresentation with valid enveloped credential: %v", err)
+			}
+			if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+		})
 	}
 }
 

@@ -334,12 +334,14 @@ func requireEnvelopedCredentials(m PresentationData) error {
 
 // isEnvelopedDataURL reports whether id is a valid data: URL for an enveloped
 // credential: data:application/vc+jwt,<token> or data:application/vc+sd-jwt,<token>.
+// The scheme (RFC 3986 section 3.1) and the media type (RFC 2397, RFC 2045
+// section 5.1) are case-insensitive; the token after the comma is not.
 func isEnvelopedDataURL(id string) bool {
 	for _, prefix := range []string{
 		"data:application/vc+jwt,",
 		"data:application/vc+sd-jwt,",
 	} {
-		if strings.HasPrefix(id, prefix) && len(id) > len(prefix) {
+		if len(id) > len(prefix) && strings.EqualFold(id[:len(prefix)], prefix) {
 			return true
 		}
 	}

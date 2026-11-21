@@ -555,44 +555,56 @@ func extractS(t *testing.T, token string) *big.Int {
 	return new(big.Int).SetBytes(sigBytes[32:])
 }
 
-func TestJOSE_LowS_P256(t *testing.T) {
+// signer.NewP256Provider already normalizes s, so the P-256 case uses a
+// signer that returns high-S, as a Vault or KMS signer may. The token must
+// carry the low-S form and still verify.
+func TestJOSE_LowS_P256_HighSInput(t *testing.T) {
 	const did = "did:example:lows-p256"
-	halfN := new(big.Int).Rsh(elliptic.P256().Params().N, 1)
+	n := elliptic.P256().Params().N
+	halfN := new(big.Int).Rsh(n, 1)
 
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, err := signer.NewP256Provider(priv)
+	inner, err := signer.NewP256Provider(priv)
 	if err != nil {
 		t.Fatal(err)
 	}
+	highS := &highSSecp256k1Signer{inner: inner, n: n}
 	resolver := vmpkg.NewStaticResolver(
 		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
 
-	// Sign 1000 times and verify every signature has s <= n/2.
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 20; i++ {
 		cred, err := vc.NewJOSECredential(joseContents(did),
 			vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		if err := cred.AddProofByProvider(highS, vc.WithResolver(resolver)); err != nil {
 			t.Fatal(err)
 		}
 		ser, err := cred.Serialize()
 		if err != nil {
 			t.Fatal(err)
 		}
-		s := extractS(t, ser.(string))
-		if s.Cmp(halfN) > 0 {
-			t.Fatalf("iteration %d: s > n/2 (high-S signature)", i)
+		token := ser.(string)
+		if s := extractS(t, token); s.Cmp(halfN) > 0 {
+			t.Fatalf("iteration %d: the token carries a high-S signature", i)
+		}
+		parsed, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("verify: %v", err)
 		}
 	}
 }
 
 // highSSecp256k1Signer wraps a real signer and flips every signature to high-S
-// before returning it.
+// before returning it. n is the order of the signer's curve, so it serves
+// P-256 too.
 type highSSecp256k1Signer struct {
 	inner signer.SignerProvider
 	n     *big.Int
