@@ -62,6 +62,10 @@ func checkExpiration(p PresentationData, leeway time.Duration) error {
 // verifyCredentials verifies every embedded credential's proof, plus whatever
 // vc options WithVCValidation forwarded. The presentation resolver and leeway
 // go first so a caller-supplied vc.WithResolver or vc.WithLeeway overrides them.
+//
+// An empty or absent verifiableCredential is accepted: VCDM 2.0 says
+// "The verifiableCredential property MAY be present", so a VP with no
+// credentials is structurally valid.
 func verifyCredentials(jsonPresentation PresentationData, options *presentationOptions) error {
 	contents, err := parsePresentationContents(jsonPresentation)
 	if err != nil {
@@ -69,10 +73,6 @@ func verifyCredentials(jsonPresentation PresentationData, options *presentationO
 	}
 
 	vcs := contents.VerifiableCredentials
-
-	if vcs == nil {
-		return fmt.Errorf("credential input is nil")
-	}
 
 	vcOpts := make([]vc.CredentialOpt, 0, 2+len(options.vcOpts))
 	vcOpts = append(vcOpts, vc.WithResolver(options.resolver), vc.WithLeeway(options.leeway))
