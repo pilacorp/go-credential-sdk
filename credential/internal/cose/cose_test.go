@@ -240,7 +240,7 @@ func TestW3CTestVector_CredentialCOSEMinimal(t *testing.T) {
 	//   content_type: "application/vc"
 	//   kid: bstr "73voMXFNmNlOEpuYCSJlh8eN0dscykoO6gBukgRS1uU"
 	//   typ: "application/vc+cose"
-	const vectorB64 = "0oRYVqQBJgNuYXBwbGljYXRpb24vdmMEWCs3M3ZvTVhGTm1ObE9FcHVZQ1NKbGg4ZU4wZHNjeWtvTzZnQnVrZ1JTMXVVEHNhcHBsaWNhdGlvbi92Yytjb3NloFkB8nsiQGNvbnRleHQiOlsiaHR0cHM6Ly93d3cudzMub3JnL25zL2NyZWRlbnRpYWxzL3YyIiwiaHR0cHM6Ly93d3cudzMub3JnL25zL2NyZWRlbnRpYWxzL2V4YW1wbGVzL3YyIl0sInR5cGUiOlsiVmVyaWZpYWJsZUNyZWRlbnRpYWwiLCJFeGFtcGxlQWx1bW5pQ3JlZGVudGlhbCJdLCJpZCI6Imh0dHA6Ly91bml2ZXJzaXR5LmV4YW1wbGUvY3JlZGVudGlhbHMvMTg3MiIsImlzc3VlciI6Imh0dHBzOi8vZXhhbXBsZS5pc3N1ZXIvdmMtam9zZS1jb3NlIiwidmFsaWRGcm9tIjoiMjAxMC0wMS0wMVQxOToyMzoyNFoiLCJjcmVkZW50aWFsU3ViamVjdCI6eyJkZWdyZWUiOnsibmFtZSI6IkJhY2hlbG9yIG9mIFNjaWVuY2UgYW5kIEFydHMiLCJ0eXBlIjoiQmFjaGVsb3JEZWdyZWUifSwiaWQiOiJkaWQ6ZXhhbXBsZToxMjMifSwiY3JlZGVudGlhbFNjaGVtYSI6eyJpZCI6Imh0dHBzOi8vZXhhbXBsZS5vcmcvZXhhbXBsZXMvZGVncmVlLmpzb24iLCJ0eXBlIjoiSnNvblNjaGVtYSJ9fVhAs3W1WN83yVu/HoEyYMy7Tcmub9zL55PDnfcx5yG42BTe0gdQ+E0V9B3B1gMZyt9dDEGZVJynd8vztWVr7d4Kkw"
+	vectorB64 := w3cCOSEMinimalVector
 
 	// P-256 public key from vm-p256.json (JWK x, y coordinates, base64url).
 	pubKey := w3cP256PubKey(t)
@@ -421,3 +421,22 @@ func TestProtected_Deterministic(t *testing.T) {
 func generateSecp256k1Key() (*ecdsa.PrivateKey, error) {
 	return crypto.GenerateKey()
 }
+
+// The minimal W3C vector with one bit of its signature flipped must fail
+// Verify1 with the published key: the bad-signature vector of the test suite
+// fails on its alg (-8) before any signature is compared, so it does not show
+// that a wrong ES256 signature is refused.
+func TestW3CTestVector_FlippedSignatureBitRefused(t *testing.T) {
+	data := decodeTestVector(t, w3cCOSEMinimalVector)
+	if _, _, err := Verify1(data, w3cP256PubKey(t), []int{AlgES256}); err != nil {
+		t.Fatalf("unmodified vector: %v", err)
+	}
+	tampered := append([]byte(nil), data...)
+	tampered[len(tampered)-1] ^= 0x01 // last byte of the 64-byte signature bstr
+	if _, _, err := Verify1(tampered, w3cP256PubKey(t), []int{AlgES256}); err == nil {
+		t.Fatal("Verify1 accepted the W3C vector with a flipped signature bit")
+	}
+}
+
+// w3cCOSEMinimalVector is credential-cose-minimal.txt of the w3c/vc-jose-cose-test-suite.
+const w3cCOSEMinimalVector = "0oRYVqQBJgNuYXBwbGljYXRpb24vdmMEWCs3M3ZvTVhGTm1ObE9FcHVZQ1NKbGg4ZU4wZHNjeWtvTzZnQnVrZ1JTMXVVEHNhcHBsaWNhdGlvbi92Yytjb3NloFkB8nsiQGNvbnRleHQiOlsiaHR0cHM6Ly93d3cudzMub3JnL25zL2NyZWRlbnRpYWxzL3YyIiwiaHR0cHM6Ly93d3cudzMub3JnL25zL2NyZWRlbnRpYWxzL2V4YW1wbGVzL3YyIl0sInR5cGUiOlsiVmVyaWZpYWJsZUNyZWRlbnRpYWwiLCJFeGFtcGxlQWx1bW5pQ3JlZGVudGlhbCJdLCJpZCI6Imh0dHA6Ly91bml2ZXJzaXR5LmV4YW1wbGUvY3JlZGVudGlhbHMvMTg3MiIsImlzc3VlciI6Imh0dHBzOi8vZXhhbXBsZS5pc3N1ZXIvdmMtam9zZS1jb3NlIiwidmFsaWRGcm9tIjoiMjAxMC0wMS0wMVQxOToyMzoyNFoiLCJjcmVkZW50aWFsU3ViamVjdCI6eyJkZWdyZWUiOnsibmFtZSI6IkJhY2hlbG9yIG9mIFNjaWVuY2UgYW5kIEFydHMiLCJ0eXBlIjoiQmFjaGVsb3JEZWdyZWUifSwiaWQiOiJkaWQ6ZXhhbXBsZToxMjMifSwiY3JlZGVudGlhbFNjaGVtYSI6eyJpZCI6Imh0dHBzOi8vZXhhbXBsZS5vcmcvZXhhbXBsZXMvZGVncmVlLmpzb24iLCJ0eXBlIjoiSnNvblNjaGVtYSJ9fVhAs3W1WN83yVu/HoEyYMy7Tcmub9zL55PDnfcx5yG42BTe0gdQ+E0V9B3B1gMZyt9dDEGZVJynd8vztWVr7d4Kkw"
