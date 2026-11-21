@@ -80,6 +80,17 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	if derr != nil {
 		return derr
 	}
+
+	// VC-JOSE-COSE: a relative kid (#fragment) is resolved against iss when
+	// present. Without iss, a relative kid cannot name a verification method.
+	if strings.HasPrefix(kid, "#") {
+		iss := jwtIss(parts[1])
+		if iss == "" {
+			return fmt.Errorf("relative kid %q requires an iss claim", kid)
+		}
+		kid = iss + kid
+	}
+
 	doc, derr := v.docResolver.ResolveDocument(context.Background(), issuer)
 	if derr != nil {
 		return fmt.Errorf("failed to resolve DID document for issuer '%s': %w", issuer, derr)
@@ -338,6 +349,21 @@ func didFromClaim(v interface{}) string {
 		}
 	}
 	return ""
+}
+
+// jwtIss returns the iss claim from the base64url-encoded payload, or "" when
+// absent or unreadable.
+func jwtIss(payloadB64 string) string {
+	raw, err := base64.RawURLEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return ""
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return ""
+	}
+	iss, _ := body["iss"].(string)
+	return iss
 }
 
 // jwtIssuedAt extracts iat (issued at) as UTC time when present, and returns

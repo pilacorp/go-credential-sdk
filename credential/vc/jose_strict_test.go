@@ -664,3 +664,99 @@ func TestJOSE_LowS_Secp256k1_HighSInput(t *testing.T) {
 		t.Fatalf("verify: %v", err)
 	}
 }
+
+// --- #99 item 18: relative kid resolution ---
+
+// resignES256VC signs header||payload with a P-256 key and returns a compact JWS.
+func resignES256VC(t *testing.T, priv *ecdsa.PrivateKey, header []byte, payloadB64 string) string {
+	t.Helper()
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + payloadB64
+	digest := sha256.Sum256([]byte(input))
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func TestJOSE_RelativeKid_WithIss(t *testing.T) {
+	const did = "did:example:rel-kid"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	// Issue a valid token, then rewrite kid to relative form and re-sign.
+	token := signedJOSEToken(t, did, priv, resolver)
+	parts := strings.SplitN(token, ".", 3)
+	headerBytes, _ := base64.RawURLEncoding.DecodeString(parts[0])
+	var header map[string]interface{}
+	json.Unmarshal(headerBytes, &header)
+	header["kid"] = "#key-1" // relative kid
+	newHeader, _ := json.Marshal(header)
+
+	// Ensure the payload has iss.
+	payloadBytes, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	var payload map[string]interface{}
+	json.Unmarshal(payloadBytes, &payload)
+	payload["iss"] = did
+	newPayload, _ := json.Marshal(payload)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(newPayload)
+
+	tampered := resignES256VC(t, priv, newHeader, payloadB64)
+	cred, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("parse with relative kid: %v", err)
+	}
+	if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify with relative kid and iss: %v", err)
+	}
+}
+
+func TestJOSE_RelativeKid_WithoutIss_Rejected(t *testing.T) {
+	const did = "did:example:rel-kid-no-iss"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	// Build a vc+jwt payload WITHOUT iss, relying only on the issuer property.
+	header := map[string]interface{}{
+		"typ": "vc+jwt",
+		"alg": "ES256",
+		"kid": "#key-1", // relative
+	}
+	payload := map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            did,
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+	}
+	hJSON, _ := json.Marshal(header)
+	pJSON, _ := json.Marshal(payload)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(pJSON)
+	token := resignES256VC(t, priv, hJSON, payloadB64)
+
+	cred, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+	if err != nil {
+		// Rejected at parse; that is fine.
+		if !strings.Contains(err.Error(), "relative kid") {
+			t.Fatalf("rejected for wrong reason: %v", err)
+		}
+		return
+	}
+	err = cred.Verify(vc.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("accepted a relative kid without iss")
+	}
+	if !strings.Contains(err.Error(), "relative kid") {
+		t.Fatalf("rejected for wrong reason: %v", err)
+	}
+}
