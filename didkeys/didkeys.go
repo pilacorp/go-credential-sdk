@@ -13,8 +13,9 @@
 //   - A key revoked for any other reason, or with no stated reason, is
 //     included: the signing-time comparison, when needed, is the verifier's
 //     responsibility — the adapter does not know when a credential was signed.
-//   - Keys on curves the SDK cannot verify with (P-384, RSA) are excluded via
-//     the optional KeyFilter.
+//   - A key module jose cannot verify with (P-384, RSA) is excluded, so the
+//     DC verifier reports no usable key instead of a policy error. A KeyFilter
+//     narrows this further.
 //
 // A caller can tell "DID not found / deactivated" from "resolver unreachable":
 // an error from ResolverProvider that wraps verificationmethod.ErrDIDNotFound
@@ -32,12 +33,12 @@ import (
 
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/digitalcredential/issuerkey"
+	"github.com/pilacorp/go-credential-sdk/jose/jwk"
 )
 
 // KeyFilter decides whether a public key extracted from a verification method
-// should be returned. The default filter accepts every key. Use it to reject
-// keys on curves the verifier cannot handle (e.g. P-384 when only ES256 and
-// ES256K are supported).
+// should be returned. It runs after the default check that module jose can
+// verify with the key, so it can only narrow the set.
 type KeyFilter func(pub crypto.PublicKey) bool
 
 // Config configures an Adapter.
@@ -46,8 +47,7 @@ type Config struct {
 	Provider verificationmethod.ResolverProvider
 
 	// KeyFilter, when non-nil, is called for each key the adapter would
-	// return. Only keys for which it returns true are included. Use it to
-	// drop curves the verifier cannot handle.
+	// return. Only keys for which it returns true are included.
 	KeyFilter KeyFilter
 }
 
@@ -85,6 +85,9 @@ func NewResolverWithConfig(cfg Config) (issuerkey.Resolver, error) {
 //     deactivated (the ResolverProvider returned ErrDIDNotFound), or the
 //     document has no usable key;
 //   - any other error: the document could not be fetched.
+//
+// A document whose keys are all excluded gives an empty slice and no error,
+// as issuerkey.Resolver allows; issuerkey.Select reports that case.
 func (r *resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey, error) {
 	if iss == "" {
 		return nil, fmt.Errorf("%w: didkeys: credential has no iss", issuerkey.ErrIssuerNotSupported)
@@ -133,6 +136,10 @@ func (r *resolver) assertionKeys(doc *verificationmethod.DIDDocument, did string
 		}
 		pub, err := verificationmethod.ECPubFromVM(vm)
 		if err != nil {
+			continue
+		}
+		// jwk.FromPublicKey applies the key check jws.Verify does.
+		if _, err := jwk.FromPublicKey(pub); err != nil {
 			continue
 		}
 		if r.keyFilter != nil && !r.keyFilter(pub) {

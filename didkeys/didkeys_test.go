@@ -301,6 +301,46 @@ func TestKeyFilter(t *testing.T) {
 	}
 }
 
+// The DC path verifies with module jose, which takes ES256 and ES256K only.
+// A P-384 key is not returned by default: handed to jws it fails as a policy
+// error rather than as "no usable key". authen-service's adapter dropped such
+// keys the same way.
+func TestKeyJOSECannotUseExcludedByDefault(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xb := make([]byte, 48)
+	yb := make([]byte, 48)
+	priv.X.FillBytes(xb)
+	priv.Y.FillBytes(yb)
+	p384 := verificationmethod.VerificationMethodEntry{
+		ID:         testDID + "#key-384",
+		Type:       "JsonWebKey2020",
+		Controller: testDID,
+		PublicKeyJwk: &verificationmethod.JWK{
+			Kty: "EC",
+			Crv: "P-384",
+			X:   base64.RawURLEncoding.EncodeToString(xb),
+			Y:   base64.RawURLEncoding.EncodeToString(yb),
+		},
+	}
+	p256 := p256VM(testDID, "key-1")
+	doc := newDoc(testDID, []verificationmethod.VerificationMethodEntry{p384, p256},
+		[]string{testDID + "#key-384", testDID + "#key-1"})
+	r, err := NewResolver(&staticResolver{docs: map[string]*verificationmethod.DIDDocument{testDID: doc}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := r.Keys(context.Background(), testDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0].KID != testDID+"#key-1" {
+		t.Fatalf("keys = %+v, want only the P-256 key", keys)
+	}
+}
+
 // Multiple keys: rotation scenario with one superseded and one active.
 func TestRotationScenario(t *testing.T) {
 	old := p256VM(testDID, "key-1")
