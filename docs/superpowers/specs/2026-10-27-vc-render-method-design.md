@@ -347,7 +347,7 @@ The issuer creates the credential with render methods already attached:
 credential, err := vc.NewJSONCredential(vc.CredentialContents{
 	Context: []interface{}{
 		"https://www.w3.org/ns/credentials/v2",
-		"https://www.w3.org/ns/credentials/examples/v2",
+		"https://www.w3.org/ns/credentials/undefined-terms/v2",
 	},
 	Types:   []string{"VerifiableCredential", "UniversityDegreeCredential"},
 	Issuer:  "did:example:issuer",
@@ -551,7 +551,7 @@ go vet ./...
 ## 14. References
 
 - W3C Verifiable Credential Rendering Methods v1.0, Working Draft 2026-10-13: https://www.w3.org/TR/2026/WD-vc-render-method-20261013/
-- W3C Credentials Examples vocabulary v2: https://www.w3.org/ns/credentials/examples/v2
+- W3C Undefined Terms vocabulary v2 (VCDM 2.0 §5.2): https://www.w3.org/ns/credentials/undefined-terms/v2
 - W3C Verifiable Credentials Data Model v2.0: https://www.w3.org/TR/vc-data-model-2.0/
 - W3C Verifiable Credential Data Integrity 1.0: https://www.w3.org/TR/vc-data-integrity/
 - RFC 6901 JSON Pointer: https://www.rfc-editor.org/rfc/rfc6901

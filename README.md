@@ -976,9 +976,7 @@ func main() {
 		Context: []interface{}{
 			"https://www.w3.org/ns/credentials/v2",
 			map[string]interface{}{
-				// Define a namespace for your custom terms
-				"@vocab": "https://schema.org/version/latest/schemaorg-all-https.jsonld",
-				// Map your custom terms to that namespace
+				// Map custom terms to explicit IRIs when you need a specific namespace.
 				"VerifiableAttestation":      "ex:VerifiableAttestation",
 				"VerifiableEducationalID":    "ex:VerifiableEducationalID",
 				"eduPersonScopedAffiliation": "ex:eduPersonScopedAffiliation",
