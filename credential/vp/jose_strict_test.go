@@ -186,11 +186,11 @@ func vpTokenWithEnvelopedVC(t *testing.T, priv *ecdsa.PrivateKey, did string, en
 		"kid": did + "#key-1",
 	}
 	payload := map[string]interface{}{
-		"@context":               []interface{}{"https://www.w3.org/ns/credentials/v2"},
-		"type":                   []interface{}{"VerifiablePresentation"},
-		"holder":                 did,
-		"iss":                    did,
-		"verifiableCredential":   []interface{}{entry},
+		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":                 []interface{}{"VerifiablePresentation"},
+		"holder":               did,
+		"iss":                  did,
+		"verifiableCredential": []interface{}{entry},
 	}
 	hJSON, _ := json.Marshal(header)
 	pJSON, _ := json.Marshal(payload)
