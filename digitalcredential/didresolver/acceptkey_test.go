@@ -35,6 +35,8 @@ func TestDefaultAcceptKey(t *testing.T) {
 		"superseded, revoked at": {KeyInfo{At: at, Revoked: at, RevocationReason: "superseded"}, true},
 		"superseded, expired":    {KeyInfo{At: at, Revoked: before, Expires: before, RevocationReason: "superseded"}, false},
 		"compromised, revoked":   {KeyInfo{At: at, Revoked: before, RevocationReason: "keyCompromise"}, false},
+		"compromised, no time":   {KeyInfo{At: at, RevocationReason: "keyCompromise"}, false},
+		"compromised, later":     {KeyInfo{At: at, Revoked: after, RevocationReason: "keyCompromise"}, false},
 		"no reason, revoked":     {KeyInfo{At: at, Revoked: before}, true},
 		"other reason, revoked":  {KeyInfo{At: at, Revoked: before, RevocationReason: "cessationOfOperation"}, true},
 		"other reason, expired":  {KeyInfo{At: at, Revoked: before, Expires: before, RevocationReason: "cessationOfOperation"}, false},

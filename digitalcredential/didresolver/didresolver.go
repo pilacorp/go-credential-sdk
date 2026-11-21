@@ -105,9 +105,9 @@ func DefaultAcceptKey(k KeyInfo) bool {
 	if !k.Expires.IsZero() && !k.At.Before(k.Expires) {
 		return false
 	}
-	if k.Revoked.IsZero() || k.At.Before(k.Revoked) {
-		return true
-	}
+	// The reason is read whatever revoked says, as IsHardRevocationReason is
+	// on the VC path: a compromised key is refused even when the document
+	// gives no revoked time or one still ahead.
 	return k.RevocationReason != reasonKeyCompromise
 }
 

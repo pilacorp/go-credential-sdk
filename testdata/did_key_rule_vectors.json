@@ -136,6 +136,31 @@
       },
       "in_assertion_method": true,
       "expect_accepted": true
+    },
+    {
+      "name": "key revoked as keyCompromise with no revoked time",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "revocationReason": "keyCompromise"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": false
+    },
+    {
+      "name": "key revoked as keyCompromise with a revoked time after the reference time",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "revoked": "2026-12-01T00:00:00Z",
+        "revocationReason": "keyCompromise"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": false
     }
   ]
 }
