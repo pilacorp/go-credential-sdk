@@ -93,23 +93,21 @@ func TestJOSECredential_DisclosureListIntegrity(t *testing.T) {
 		{
 			name:    "a fabricated disclosure alone",
 			token:   base + "~" + fake + "~",
-			wantErr: "matches nothing in the payload",
+			wantErr: "no digest references disclosure",
 		},
 		{
 			name:    "a fabricated disclosure beside the real one",
 			token:   base + "~" + real + "~" + fake + "~",
-			wantErr: "matches nothing in the payload",
+			wantErr: "no digest references disclosure",
 		},
 		{
 			name:    "the real disclosure sent twice",
 			token:   base + "~" + real + "~" + real + "~",
-			wantErr: "sent more than once",
+			wantErr: "given twice",
 		},
-		{
-			name:    "a key binding JWT appended",
-			token:   base + "~" + real + "~" + kb,
-			wantErr: "key binding JWT",
-		},
+		// A key binding JWT is now accepted (jose/sdjwt.Split accepts it
+		// per RFC 9901); verification of its signature is out of scope.
+		{name: "a key binding JWT appended", token: base + "~" + real + "~" + kb},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parsed, err := vc.ParseCredential([]byte(tc.token), vc.WithResolver(resolver))
@@ -1019,14 +1017,29 @@ func TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused(t *testing.T) {
 					mangle: func(t *testing.T, _ map[string]interface{}, ds []string) []string {
 						return append(ds, rawDisclosure(t, "c2FsdFhYc2FsdFhYc2FsdFhY", "nickname", "Al"))
 					},
-					wantErr: "matches nothing in the payload",
+					wantErr: "no digest references disclosure",
 				},
 				{
 					name: "the same disclosure twice",
 					mangle: func(_ *testing.T, _ map[string]interface{}, ds []string) []string {
 						return append(ds, ds[0])
 					},
-					wantErr: "sent more than once",
+					wantErr: "given twice",
+				},
+				{
+					// RFC 9901 section 4.2.1: the claim name of a disclosure
+					// must not be "_sd", "_sd_alg" or "...". The builder
+					// refuses it by the rule the parser applies.
+					name: "a disclosure named _sd",
+					mangle: func(t *testing.T, custom map[string]interface{}, ds []string) []string {
+						d := rawDisclosure(t, "c2FsdFlZc2FsdFlZc2FsdFlZ", "_sd", "x")
+						sum := sha256.Sum256([]byte(d))
+						sd, _ := custom["_sd"].([]interface{})
+						custom["_sd"] = append(sd, base64.RawURLEncoding.EncodeToString(sum[:]))
+
+						return append(ds, d)
+					},
+					wantErr: "is reserved",
 				},
 				{
 					name: "a disclosure for a digest the caller never carried",
@@ -1035,7 +1048,7 @@ func TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused(t *testing.T) {
 
 						return ds
 					},
-					wantErr: "matches nothing in the payload",
+					wantErr: "no digest references disclosure",
 				},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
@@ -1321,16 +1334,10 @@ func TestSDJWT_NestedDisclosureKeepsItsWithheldElement(t *testing.T) {
 			if !ok {
 				t.Fatalf("skills is %T, want an array — the revealed claim should be back", subject["skills"])
 			}
-			if len(skills) != 2 || skills[0] != "go" {
-				t.Fatalf("skills = %v, want the revealed claim with its first element", skills)
-			}
-			// The withheld element stays a placeholder: that is what hiding it means.
-			placeholder, ok := skills[1].(map[string]interface{})
-			if !ok || len(placeholder) != 1 {
-				t.Fatalf("skills[1] = %v, want the {\"...\": digest} placeholder", skills[1])
-			}
-			if _, ok := placeholder["..."]; !ok {
-				t.Errorf("skills[1] = %v, want it still withheld", placeholder)
+			// jose/sdjwt.Recreate removes undisclosed array elements (RFC 9901
+			// section 7.1), so the array holds only the disclosed element.
+			if len(skills) != 1 || skills[0] != "go" {
+				t.Fatalf("skills = %v, want [go] with the withheld element removed", skills)
 			}
 		})
 	}

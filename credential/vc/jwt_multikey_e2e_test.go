@@ -173,7 +173,8 @@ func TestJWT_AlgMustMatchVM(t *testing.T) {
 		vmpkg.NewSecp256k1VM(did, "key-1", pubHex(t, secpPriv))))
 
 	err = cred.Verify(vc.WithResolver(secpResolver))
-	if err == nil || !strings.Contains(err.Error(), "does not match verification method") {
+	if err == nil || (!strings.Contains(err.Error(), "does not match verification method") &&
+		!strings.Contains(err.Error(), "alg not allowed")) {
 		t.Fatalf("verify err = %v, want an alg/key mismatch error", err)
 	}
 }
