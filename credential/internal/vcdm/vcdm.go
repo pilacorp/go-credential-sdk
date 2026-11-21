@@ -20,6 +20,11 @@ const ContextV2 = "https://www.w3.org/ns/credentials/v2"
 // ContextV1 is the VC 1.1 base context. Recognised, never written.
 const ContextV1 = "https://www.w3.org/2018/credentials/v1"
 
+// ContextUndefinedTermsV2 is the @vocab catch-all VCDM 2.0 §5.2 says MUST be
+// the last value of @context when a document uses terms no other context
+// defines. It replaces examples/v2 for production credentials.
+const ContextUndefinedTermsV2 = "https://www.w3.org/ns/credentials/undefined-terms/v2"
+
 // HasType reports whether a type property names want. The data model defines the
 // property as an array, but a single type is commonly written as a bare string,
 // so both shapes are read.

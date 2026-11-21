@@ -463,6 +463,78 @@ func TestEnsureSecp256k1SuiteContext_Shapes(t *testing.T) {
 	}
 }
 
+// When undefined-terms/v2 is the last @context entry, the suite context must be
+// inserted before it (VCDM 2.0 §5.2).
+func TestEnsureSecp256k1SuiteContext_InsertsBeforeUndefinedTerms(t *testing.T) {
+	const narrow = secp256k1SuiteContextNarrow
+
+	for _, tc := range []struct {
+		name string
+		ctx  interface{}
+		want []interface{}
+	}{
+		{
+			name: "undefined-terms/v2 last: suite inserted before it",
+			ctx: []interface{}{
+				"https://www.w3.org/ns/credentials/v2",
+				undefinedTermsV2Context,
+			},
+			want: []interface{}{
+				"https://www.w3.org/ns/credentials/v2",
+				narrow,
+				undefinedTermsV2Context,
+			},
+		},
+		{
+			name: "undefined-terms/v2 not last: suite appended at end",
+			ctx: []interface{}{
+				"https://www.w3.org/ns/credentials/v2",
+				undefinedTermsV2Context,
+				map[string]interface{}{"@vocab": "https://example.org/v#"},
+			},
+			want: []interface{}{
+				"https://www.w3.org/ns/credentials/v2",
+				undefinedTermsV2Context,
+				map[string]interface{}{"@vocab": "https://example.org/v#"},
+				narrow,
+			},
+		},
+		{
+			name: "examples/v2 last: suite appended at end (no special treatment)",
+			ctx: []interface{}{
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2",
+			},
+			want: []interface{}{
+				"https://www.w3.org/ns/credentials/v2",
+				"https://www.w3.org/ns/credentials/examples/v2",
+				narrow,
+			},
+		},
+		{
+			name: "[]string with undefined-terms/v2 last",
+			ctx:  []string{"https://www.w3.org/ns/credentials/v2", undefinedTermsV2Context},
+			want: []interface{}{
+				"https://www.w3.org/ns/credentials/v2",
+				narrow,
+				undefinedTermsV2Context,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := JSONMap{"id": "urn:uuid:undefined-terms"}
+			m["@context"] = tc.ctx
+			if err := (&m).ensureSecp256k1SuiteContext(); err != nil {
+				t.Fatalf("ensure: %v", err)
+			}
+			got, _ := m["@context"].([]interface{})
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("@context = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
 // elliptic.Curve is an interface, so comparing it with != compares the dynamic
 // type and pointer. go-ethereum parses a secp256k1 key into
 // *secp256k1.BitCurve and btcec/decred into *secp256k1.KoblitzCurve — the same
