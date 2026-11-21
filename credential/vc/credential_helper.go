@@ -544,7 +544,16 @@ func parseStringField(obj CredentialData, fieldName string) (string, error) {
 	return "", nil
 }
 
+// knownSchemaType reports whether the SDK implements a credentialSchema type.
+func knownSchemaType(t string) bool {
+	return t == "JsonSchema" || t == "JsonSchemaValidator2018"
+}
+
 // validateCredential validates the Credential against its schema.
+// Only schema entries with a known type are validated; unknown types are
+// silently skipped (VC-JOSE-COSE: schema entries with an unknown type MUST
+// be ignored). If WithSchemaValidation is set and no entry has a known type,
+// an error is returned.
 func validateCredential(m CredentialData, opts *credentialOptions) error {
 	copyMap := util.ShallowCopyObj(m)
 
@@ -561,6 +570,7 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 		}
 	}
 
+	validated := 0
 	for _, schema := range schemaList {
 		var schemaMap map[string]interface{}
 
@@ -571,6 +581,11 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 		err = json.Unmarshal(marshalJsonMap, &schemaMap)
 		if err != nil {
 			return fmt.Errorf("failed to unmarshal schema: %w", err)
+		}
+
+		typ, _ := schemaMap["type"].(string)
+		if !knownSchemaType(typ) {
+			continue
 		}
 
 		if schemaMap["id"] == nil {
@@ -605,6 +620,11 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 		if !result.Valid() {
 			return fmt.Errorf("credential validation failed: %v", result.Errors())
 		}
+		validated++
+	}
+
+	if validated == 0 {
+		return fmt.Errorf("no known schema type to validate against (credentialSchema entries present but all have unknown types)")
 	}
 
 	return nil
