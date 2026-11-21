@@ -1,0 +1,430 @@
+// Tests for the stricter checks the jose module enforces once the VC/VP paths
+// route through jose/jws and jose/sdjwt. Each test exercises one item from
+// issue #99. The jose module's strict checks (crit, UTF-8, strict base64url)
+// are enforced in jws.Verify, which runs during Verify(), not during Parse().
+// SD-JWT structural checks (array element removal, forbidden disclosure
+// names, KB-JWT acceptance) are enforced by jose/sdjwt during Parse().
+package vc_test
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
+	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/vc"
+)
+
+// signedJOSEToken issues a vc+jwt credential and returns its compact
+// serialization as a string.
+func signedJOSEToken(t *testing.T, did string, priv *ecdsa.PrivateKey, resolver vmpkg.ResolverProvider) string {
+	t.Helper()
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+	cred, err := vc.NewJOSECredential(joseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jose credential: %v", err)
+	}
+	if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	return serialized.(string)
+}
+
+// signedSDJWTToken issues a vc+sd-jwt credential and returns it.
+func signedSDJWTToken(t *testing.T, did string, priv *ecdsa.PrivateKey, resolver vmpkg.ResolverProvider) string {
+	t.Helper()
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+	contents := joseContents(did)
+	contents.Subject = []vc.Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{
+		"name": "Alice", "secret": "hidden",
+	}}}
+	cred, err := vc.NewJOSECredential(contents,
+		vc.WithSDSelectivePaths([]string{"credentialSubject.secret"}),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new sd-jwt credential: %v", err)
+	}
+	if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	return serialized.(string)
+}
+
+func joseSetup(t *testing.T) (string, *ecdsa.PrivateKey, vmpkg.ResolverProvider) {
+	t.Helper()
+	const did = "did:example:jose-strict"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen p256: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+	return did, priv, resolver
+}
+
+// --- #99 item 1: crit header rejection ---
+
+// TestJOSEStrict_CritHeaderRejected checks that a VC with a "crit" claim in
+// the JOSE header is rejected at verification time (RFC 7515 section 4.1.11).
+// The crit check lives in jws.Verify, which runs during Verify(), not Parse().
+func TestJOSEStrict_CritHeaderRejected(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	token := signedJOSEToken(t, did, priv, resolver)
+
+	// Inject crit into the header. The signature will not match, but
+	// jws.UnverifiedHeader (called in jwt.VerifyJWT before the crypto
+	// check) rejects crit per RFC 7515 section 4.1.11.
+	parts := strings.SplitN(token, ".", 3)
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		t.Fatal(err)
+	}
+	header["crit"] = []string{"urn:example:unsupported"}
+	header["urn:example:unsupported"] = true
+	newHeader, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := base64.RawURLEncoding.EncodeToString(newHeader) + "." + parts[1] + "." + parts[2]
+
+	// Parse may succeed (it does not check crit), so test through Verify.
+	cred, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
+	if err != nil {
+		// If parse itself rejects it, that also satisfies the check.
+		if strings.Contains(err.Error(), "crit") {
+			return
+		}
+		t.Fatalf("parse failed for a reason other than crit: %v", err)
+	}
+	err = cred.Verify(vc.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("accepted a token with crit in header; want rejection")
+	}
+	if !strings.Contains(err.Error(), "crit") {
+		t.Fatalf("err = %v, want one mentioning crit", err)
+	}
+}
+
+// --- #99 item 2: undisclosed array element removed ---
+
+// TestJOSEStrict_UndisclosedArrayElementRemoved checks that an SD-JWT with an
+// undisclosed array element produces a shorter array, not one with a
+// {"...": digest} placeholder (RFC 9901 section 7.1).
+func TestJOSEStrict_UndisclosedArrayElementRemoved(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	contents := joseContents(did)
+	contents.Subject = []vc.Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{
+		"skills": []interface{}{"go", "rust", "python"},
+	}}}
+	cred, err := vc.NewJOSECredential(contents,
+		vc.WithSDSelectivePaths([]string{"credentialSubject.skills[1]"}),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use Present with no disclosures to withhold the array element.
+	presented, err := cred.Present(nil)
+	if err != nil {
+		t.Fatalf("present: %v", err)
+	}
+	serialized, err := presented.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := vc.ParseCredential([]byte(serialized.(string)), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	subject, ok := parsed.ExtractField("credentialSubject").(map[string]interface{})
+	if !ok {
+		t.Fatal("credentialSubject not an object")
+	}
+	skills, ok := subject["skills"].([]interface{})
+	if !ok {
+		t.Fatalf("skills is %T, want []interface{}", subject["skills"])
+	}
+
+	// With the jose module, the undisclosed element is removed entirely.
+	// On main (old common/sdjwt.Reconstruct), it stayed as {"...": digest},
+	// so len(skills) would be 3.
+	if len(skills) != 2 {
+		t.Fatalf("len(skills) = %d, want 2 (undisclosed element removed); skills = %v", len(skills), skills)
+	}
+	// First element "go" and third "python" should remain; "rust" was withheld.
+	if skills[0] != "go" || skills[1] != "python" {
+		t.Fatalf("skills = %v, want [go python]", skills)
+	}
+}
+
+// --- #99 item 3: forbidden disclosure names ---
+
+// TestJOSEStrict_ForbiddenDisclosureNameRejected checks that disclosures with
+// reserved claim names (_sd, _sd_alg, ...) are rejected by jose/sdjwt.
+func TestJOSEStrict_ForbiddenDisclosureNameRejected(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	token := signedSDJWTToken(t, did, priv, resolver)
+
+	for _, name := range []string{"_sd", "_sd_alg", "..."} {
+		t.Run(name, func(t *testing.T) {
+			// Build the disclosure JSON manually and encode with
+			// base64.RawURLEncoding to match the jose module's encoding.
+			fakeArr, _ := json.Marshal([]interface{}{"c2FsdA", name, "value"})
+			fakeDisc := base64.RawURLEncoding.EncodeToString(fakeArr)
+
+			// The token already ends with ~, so append the fake disclosure.
+			tampered := token + fakeDisc + "~"
+
+			_, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
+			if err == nil {
+				t.Fatal("accepted a disclosure with reserved name; want rejection")
+			}
+			if !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("err = %v, want one mentioning reserved", err)
+			}
+		})
+	}
+}
+
+// --- #99 item 6: non-UTF-8 header ---
+
+// TestJOSEStrict_NonUTF8HeaderRejected checks that a token whose header
+// contains invalid UTF-8 bytes (after base64url decoding) is rejected.
+// The check lives in jws.UnverifiedHeader / jws.Verify (jose module).
+func TestJOSEStrict_NonUTF8HeaderRejected(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	token := signedJOSEToken(t, did, priv, resolver)
+
+	// Craft a header with an invalid UTF-8 byte in a string value.
+	// Build it by hand since json.Marshal refuses invalid UTF-8.
+	parts := strings.SplitN(token, ".", 3)
+	headerBytes, _ := base64.RawURLEncoding.DecodeString(parts[0])
+	// Inject invalid UTF-8 directly into the JSON bytes.
+	// Replace the closing } with ,"x-note":"\xff"} which has an invalid byte.
+	tampered_header := headerBytes[:len(headerBytes)-1]
+	tampered_header = append(tampered_header, []byte(",\"x-note\":\"\xff\"}")...)
+	tampered := base64.RawURLEncoding.EncodeToString(tampered_header) + "." + parts[1] + "." + parts[2]
+
+	// Parse may succeed; the UTF-8 check is in jws, so test through Verify.
+	cred, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
+	if err != nil {
+		// Parse rejecting it also satisfies the test.
+		return
+	}
+	err = cred.Verify(vc.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("accepted a token with non-UTF-8 header; want rejection")
+	}
+}
+
+// --- #99 item 7: non-strict base64url ---
+
+// TestJOSEStrict_PadBitAliasRejected checks that a token whose signature
+// segment has trailing pad bits set (aliasing) is rejected.
+// The check is in jose.DecodeSegment used by jws.Verify.
+func TestJOSEStrict_PadBitAliasRejected(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	token := signedJOSEToken(t, did, priv, resolver)
+
+	parts := strings.SplitN(token, ".", 3)
+	sig := parts[2]
+
+	// A 64-byte ECDSA signature encodes to 86 base64url characters.
+	// 86 * 6 = 516 bits, but only 512 are payload, leaving 4 padding bits.
+	// The last character encodes those 4 bits in its high bits; flipping
+	// a low bit creates a pad-bit alias that decodes to the same bytes
+	// under lenient decoding but is rejected by strict decoding.
+	lastByte := sig[len(sig)-1]
+	// XOR with 1 flips the lowest bit of the base64url character value.
+	flipped := lastByte ^ 1
+	// Ensure the flipped byte is still a valid base64url character.
+	if !isBase64URL(flipped) {
+		// If XOR with 1 leaves the base64url charset, XOR with 2 instead.
+		flipped = lastByte ^ 2
+	}
+	tampered := parts[0] + "." + parts[1] + "." + sig[:len(sig)-1] + string(flipped)
+
+	// Parse may succeed; the strict base64url check is in jws.Verify.
+	cred, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
+	if err != nil {
+		// Parse rejecting it also satisfies the test.
+		return
+	}
+	err = cred.Verify(vc.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("accepted a token with non-strict base64url signature; want rejection")
+	}
+}
+
+func isBase64URL(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-' || b == '_'
+}
+
+// --- #99 item 12: KB-JWT acceptance ---
+
+// TestJOSEStrict_KBJWTAccepted checks that an SD-JWT with a trailing Key
+// Binding JWT is accepted (jose/sdjwt.Split accepts it per RFC 9901), not
+// rejected as the old common/sdjwt.Parse did.
+func TestJOSEStrict_KBJWTAccepted(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	token := signedSDJWTToken(t, did, priv, resolver)
+
+	// Build a fake KB-JWT (not cryptographically valid, but structurally
+	// correct): header.payload.signature.
+	kbHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"typ":"kb+jwt","alg":"ES256"}`))
+	kbPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"nonce":"n","aud":"a","iat":1700000000}`))
+	kbSig := base64.RawURLEncoding.EncodeToString(make([]byte, 64))
+	kb := kbHeader + "." + kbPayload + "." + kbSig
+
+	// The token already ends with ~, so just append the KB-JWT.
+	withKB := token + kb
+
+	// Parse should succeed: the KB-JWT is accepted but not verified.
+	_, err := vc.ParseCredential([]byte(withKB), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("rejected SD-JWT with KB-JWT: %v", err)
+	}
+}
+
+// --- Hash stability ---
+
+// TestJOSEStrict_HashStability issues a credential, records its hash, then
+// re-parses the serialized form and checks that Hash() returns the same value.
+// This confirms that the jose migration did not change Serialize() output.
+func TestJOSEStrict_HashStability(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		opts []vc.CredentialOpt
+	}{
+		{name: "plain vc+jwt"},
+		{name: "vc+sd-jwt",
+			opts: []vc.CredentialOpt{vc.WithSDSelectivePaths([]string{"credentialSubject.name"})}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append([]vc.CredentialOpt{
+				vc.WithVerificationMethodKey("key-1"),
+				vc.WithResolver(resolver),
+			}, tc.opts...)
+			cred, err := vc.NewJOSECredential(joseContents(did), opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+				t.Fatal(err)
+			}
+			hash1, err := cred.Hash()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			serialized, err := cred.Serialize()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			parsed, err := vc.ParseCredential([]byte(serialized.(string)), vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			hash2, err := parsed.Hash()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hash1 != hash2 {
+				t.Fatalf("hash changed after round-trip: %s -> %s", hash1, hash2)
+			}
+		})
+	}
+}
+
+// TestJOSEStrict_WireFormatUnchanged issues a credential, serializes it, then
+// re-parses and re-serializes, and checks byte equality.
+func TestJOSEStrict_WireFormatUnchanged(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		opts []vc.CredentialOpt
+	}{
+		{name: "plain vc+jwt"},
+		{name: "vc+sd-jwt",
+			opts: []vc.CredentialOpt{vc.WithSDSelectivePaths([]string{"credentialSubject.name"})}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append([]vc.CredentialOpt{
+				vc.WithVerificationMethodKey("key-1"),
+				vc.WithResolver(resolver),
+			}, tc.opts...)
+			cred, err := vc.NewJOSECredential(joseContents(did), opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+				t.Fatal(err)
+			}
+			ser1, err := cred.Serialize()
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire1 := ser1.(string)
+
+			parsed, err := vc.ParseCredential([]byte(wire1), vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			ser2, err := parsed.Serialize()
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire2 := ser2.(string)
+
+			if wire1 != wire2 {
+				t.Fatalf("wire format changed after round-trip:\n  before: %s\n  after:  %s", wire1, wire2)
+			}
+		})
+	}
+}

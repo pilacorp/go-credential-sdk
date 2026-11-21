@@ -93,23 +93,21 @@ func TestJOSECredential_DisclosureListIntegrity(t *testing.T) {
 		{
 			name:    "a fabricated disclosure alone",
 			token:   base + "~" + fake + "~",
-			wantErr: "matches nothing in the payload",
+			wantErr: "no digest references disclosure",
 		},
 		{
 			name:    "a fabricated disclosure beside the real one",
 			token:   base + "~" + real + "~" + fake + "~",
-			wantErr: "matches nothing in the payload",
+			wantErr: "no digest references disclosure",
 		},
 		{
 			name:    "the real disclosure sent twice",
 			token:   base + "~" + real + "~" + real + "~",
-			wantErr: "sent more than once",
+			wantErr: "given twice",
 		},
-		{
-			name:    "a key binding JWT appended",
-			token:   base + "~" + real + "~" + kb,
-			wantErr: "key binding JWT",
-		},
+		// A key binding JWT is now accepted (jose/sdjwt.Split accepts it
+		// per RFC 9901); verification of its signature is out of scope.
+		{name: "a key binding JWT appended", token: base + "~" + real + "~" + kb},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parsed, err := vc.ParseCredential([]byte(tc.token), vc.WithResolver(resolver))
@@ -1321,16 +1319,10 @@ func TestSDJWT_NestedDisclosureKeepsItsWithheldElement(t *testing.T) {
 			if !ok {
 				t.Fatalf("skills is %T, want an array — the revealed claim should be back", subject["skills"])
 			}
-			if len(skills) != 2 || skills[0] != "go" {
-				t.Fatalf("skills = %v, want the revealed claim with its first element", skills)
-			}
-			// The withheld element stays a placeholder: that is what hiding it means.
-			placeholder, ok := skills[1].(map[string]interface{})
-			if !ok || len(placeholder) != 1 {
-				t.Fatalf("skills[1] = %v, want the {\"...\": digest} placeholder", skills[1])
-			}
-			if _, ok := placeholder["..."]; !ok {
-				t.Errorf("skills[1] = %v, want it still withheld", placeholder)
+			// jose/sdjwt.Recreate removes undisclosed array elements (RFC 9901
+			// section 7.1), so the array holds only the disclosed element.
+			if len(skills) != 1 || skills[0] != "go" {
+				t.Fatalf("skills = %v, want [go] with the withheld element removed", skills)
 			}
 		})
 	}
