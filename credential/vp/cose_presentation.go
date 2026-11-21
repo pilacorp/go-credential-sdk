@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -220,7 +219,7 @@ func requireEnvelopedCredentialsCOSE(m PresentationData) error {
 		}
 
 		id, _ := entry["id"].(string)
-		if !isEnvelopedDataURL(id) && !isEnvelopedCOSEDataURL(id) {
+		if !isEnvelopedDataURL(id) {
 			return fmt.Errorf(
 				"credential at index %d: enveloped credential id must be a data: URL "+
 					"with media type application/vc+jwt, application/vc+sd-jwt, or application/vc+cose, got %q", i, id)
@@ -228,13 +227,6 @@ func requireEnvelopedCredentialsCOSE(m PresentationData) error {
 	}
 
 	return nil
-}
-
-// isEnvelopedCOSEDataURL reports whether id is a data: URL for a COSE-secured
-// credential: data:application/vc+cose;base64,<base64-encoded-bytes>.
-func isEnvelopedCOSEDataURL(id string) bool {
-	prefix := "data:application/" + vc.TypeVCCOSE + ";base64,"
-	return len(id) > len(prefix) && strings.EqualFold(id[:len(prefix)], prefix)
 }
 
 // Deprecated: prefer AddProofByProvider.
@@ -340,6 +332,12 @@ func (p *COSEPresentation) ExtractField(path string) any {
 func (p *COSEPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
+	if options.isValidateVC {
+		if err := verifyCredentials(p.payloadData, options); err != nil {
+			return fmt.Errorf("verify credentials: %w", err)
+		}
+	}
+
 	if options.isVerifyProof {
 		if err := p.verifyCOSEProof(options); err != nil {
 			return err
@@ -375,7 +373,7 @@ func (p *COSEPresentation) verifyCOSEProof(options *presentationOptions) error {
 		return fmt.Errorf("invalid payload JSON: %w", err)
 	}
 
-	holder := didFromPayload(body, "holder")
+	holder := vcdm.DidFromPayload(body, "holder")
 	if holder == "" {
 		return fmt.Errorf("COSE presentation has no holder")
 	}
@@ -424,19 +422,32 @@ func (p *COSEPresentation) verifyCOSEProof(options *presentationOptions) error {
 		return fmt.Errorf("COSE signature verification failed: %w", verr)
 	}
 
+	// Same post-crypto checks as the JOSE path: purpose and revocation.
+	issuedAt, ierr := jwt.IssuedAtFromPayload(body)
+	if ierr != nil {
+		return ierr
+	}
+	if err := jwt.StrictPurposeCheck(doc, vm, "authentication", issuedAt); err != nil {
+		return err
+	}
+
+	// Challenge / domain (nonce / aud) — same check as the JOSE VP.
+	if err := p.checkChallengeAndDomain(options); err != nil {
+		return err
+	}
+
 	return nil
 }
 
-// didFromPayload extracts a DID from a payload field that may be a string or
-// an object with an id.
-func didFromPayload(body map[string]interface{}, field string) string {
-	switch v := body[field].(type) {
-	case string:
-		return v
-	case map[string]interface{}:
-		if id, ok := v["id"].(string); ok {
-			return id
+// checkChallengeAndDomain enforces the nonce/aud values in the payload against
+// the expected challenge/domain the verifier supplied. Same logic as the JOSE
+// presentation's checkChallengeAndDomain.
+func (p *COSEPresentation) checkChallengeAndDomain(options *presentationOptions) error {
+	if options.expectedChallenge != "" {
+		nonce, _ := p.payloadData["nonce"].(string)
+		if nonce != options.expectedChallenge {
+			return fmt.Errorf("nonce %q does not match expected challenge %q", nonce, options.expectedChallenge)
 		}
 	}
-	return ""
+	return checkAudience(p.payloadData["aud"], options)
 }

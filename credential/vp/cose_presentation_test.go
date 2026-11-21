@@ -363,6 +363,364 @@ func TestCOSEPresentation_TamperedPayload_Rejected(t *testing.T) {
 	}
 }
 
+func TestCOSEPresentation_AuthOnlyKey_ForVP_Passes(t *testing.T) {
+	// B1: a VP key listed only under authentication (not assertionMethod) must
+	// be ACCEPTED because VP uses authentication purpose.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-auth"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	sigResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	pres, err := vp.NewCOSEPresentation(coseVPContents(did),
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(sigResolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := pres.AddProofByProvider(provider); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	serialized, err := pres.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	vpBytes := serialized.([]byte)
+
+	// Verify with doc that has the key ONLY under authentication.
+	authOnlyDoc := &vmpkg.DIDDocument{
+		ID:                 did,
+		VerificationMethod: []vmpkg.VerificationMethodEntry{vm},
+		Authentication:     []string{vm.ID},
+		AssertionMethod:    []string{}, // empty
+	}
+	authOnlyResolver := vmpkg.NewStaticResolver(authOnlyDoc)
+
+	parsed, err := vp.ParseCOSEPresentation(vpBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := parsed.Verify(vp.WithResolver(authOnlyResolver)); err != nil {
+		t.Fatalf("expected VP verification to pass with auth-only key, got: %v", err)
+	}
+}
+
+func TestCOSEPresentation_AssertionOnlyKey_ForVP_Refused(t *testing.T) {
+	// B1: a VP key listed only under assertionMethod (not authentication)
+	// must be refused for a COSE VP.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-assert"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	sigResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	pres, err := vp.NewCOSEPresentation(coseVPContents(did),
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(sigResolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := pres.AddProofByProvider(provider); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	serialized, err := pres.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	vpBytes := serialized.([]byte)
+
+	// Verify with doc that has the key ONLY under assertionMethod.
+	assertOnlyDoc := &vmpkg.DIDDocument{
+		ID:                 did,
+		VerificationMethod: []vmpkg.VerificationMethodEntry{vm},
+		AssertionMethod:    []string{vm.ID},
+		Authentication:     []string{}, // empty
+	}
+	assertOnlyResolver := vmpkg.NewStaticResolver(assertOnlyDoc)
+
+	parsed, err := vp.ParseCOSEPresentation(vpBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = parsed.Verify(vp.WithResolver(assertOnlyResolver))
+	if err == nil {
+		t.Fatal("expected verification to fail: key is not under authentication")
+	}
+	if !strings.Contains(err.Error(), "authentication") {
+		t.Fatalf("expected authentication error, got: %v", err)
+	}
+}
+
+func TestCOSEPresentation_HardRevoked_Refused(t *testing.T) {
+	// B1: keyCompromise revocation on VP key must be refused.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-revoked"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	sigResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	pres, err := vp.NewCOSEPresentation(coseVPContents(did),
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(sigResolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := pres.AddProofByProvider(provider); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	serialized, err := pres.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	vpBytes := serialized.([]byte)
+
+	revokedVM := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	revokedVM.RevocationReason = "keyCompromise"
+	revokedDoc := &vmpkg.DIDDocument{
+		ID:                 did,
+		VerificationMethod: []vmpkg.VerificationMethodEntry{revokedVM},
+		AssertionMethod:    []string{revokedVM.ID},
+		Authentication:     []string{revokedVM.ID},
+	}
+	revokedResolver := vmpkg.NewStaticResolver(revokedDoc)
+
+	parsed, err := vp.ParseCOSEPresentation(vpBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = parsed.Verify(vp.WithResolver(revokedResolver))
+	if err == nil {
+		t.Fatal("expected VP verification to fail: key is hard-revoked")
+	}
+	if !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("expected revocation error, got: %v", err)
+	}
+}
+
+func TestCOSEPresentation_WithVCValidation_TamperedInnerVC(t *testing.T) {
+	// B2: a COSE VP carrying a tampered COSE VC must fail with WithVCValidation.
+	const (
+		issuerDID = "did:example:cose-b2-issuer"
+		holderDID = "did:example:cose-b2-holder"
+	)
+
+	issuerKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen issuer P-256: %v", err)
+	}
+	holderKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen holder P-256: %v", err)
+	}
+
+	issuerVM := mustP256VM(t, issuerDID, "key-1", &issuerKey.PublicKey)
+	holderVM := mustP256VM(t, holderDID, "key-1", &holderKey.PublicKey)
+
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(issuerDID, issuerVM),
+		vmpkg.NewDIDDocument(holderDID, holderVM),
+	)
+
+	issuerProv, err := signer.NewP256Provider(issuerKey)
+	if err != nil {
+		t.Fatalf("issuer provider: %v", err)
+	}
+	holderProv, err := signer.NewP256Provider(holderKey)
+	if err != nil {
+		t.Fatalf("holder provider: %v", err)
+	}
+
+	// Create and sign a COSE VC.
+	cred, err := vc.NewCOSECredential(vc.CredentialContents{
+		Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:        "urn:uuid:cose-b2-vc",
+		Types:     []string{"VerifiableCredential"},
+		Issuer:    issuerDID,
+		ValidFrom: time.Now().Add(-time.Hour),
+		Subject:   []vc.Subject{{ID: "did:example:subject"}},
+	}, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new cred: %v", err)
+	}
+	if err := cred.AddProofByProvider(issuerProv); err != nil {
+		t.Fatalf("sign cred: %v", err)
+	}
+
+	// Create VP with the good credential.
+	vpWithVC := vp.PresentationContents{
+		Context:               []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:                    "urn:uuid:cose-b2-vp-good",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                holderDID,
+		VerifiableCredentials: []vc.Credential{cred},
+	}
+	goodPres, err := vp.NewCOSEPresentation(vpWithVC,
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new good pres: %v", err)
+	}
+	if err := goodPres.AddProofByProvider(holderProv); err != nil {
+		t.Fatalf("sign good pres: %v", err)
+	}
+
+	// Verify the VP proof (without VC validation) → should pass.
+	goodBytes, _ := goodPres.Serialize()
+	parsedGood, err := vp.ParseCOSEPresentation(goodBytes.([]byte))
+	if err != nil {
+		t.Fatalf("parse good: %v", err)
+	}
+	if err := parsedGood.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify good VP (no VC validation): %v", err)
+	}
+
+	// Now verify with WithVCValidation but using a wrong resolver for the VC
+	// (so inner VC verification fails).
+	wrongIssuerKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	wrongIssuerVM := mustP256VM(t, issuerDID, "key-1", &wrongIssuerKey.PublicKey)
+	wrongResolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(issuerDID, wrongIssuerVM),
+		vmpkg.NewDIDDocument(holderDID, holderVM),
+	)
+	err = parsedGood.Verify(vp.WithResolver(wrongResolver), vp.WithVCValidation())
+	if err == nil {
+		t.Fatal("expected verification to fail: inner COSE VC should not verify with wrong issuer key")
+	}
+
+	// Also verify that WithVCValidation with correct resolver passes.
+	parsedGood2, _ := vp.ParseCOSEPresentation(goodBytes.([]byte))
+	if err := parsedGood2.Verify(vp.WithResolver(resolver), vp.WithVCValidation()); err != nil {
+		t.Fatalf("expected VP+VC validation to pass with correct resolver, got: %v", err)
+	}
+
+}
+
+func TestCOSEPresentation_WrongChallenge_Refused(t *testing.T) {
+	// S2: wrong challenge must be refused.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-challenge"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	pres, err := vp.NewCOSEPresentation(coseVPContents(did),
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver),
+		vp.WithChallenge("correct-nonce"))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := pres.AddProofByProvider(provider); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	serialized, err := pres.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	vpBytes := serialized.([]byte)
+
+	parsed, err := vp.ParseCOSEPresentation(vpBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// Verify with wrong challenge.
+	err = parsed.Verify(vp.WithResolver(resolver), vp.WithExpectedChallenge("wrong-nonce"))
+	if err == nil {
+		t.Fatal("expected verification to fail: wrong challenge")
+	}
+	if !strings.Contains(err.Error(), "nonce") && !strings.Contains(err.Error(), "challenge") {
+		t.Fatalf("expected nonce/challenge error, got: %v", err)
+	}
+
+	// Verify with correct challenge → passes.
+	parsed2, _ := vp.ParseCOSEPresentation(vpBytes)
+	if err := parsed2.Verify(vp.WithResolver(resolver), vp.WithExpectedChallenge("correct-nonce")); err != nil {
+		t.Fatalf("expected verification to pass with correct challenge, got: %v", err)
+	}
+}
+
+func TestCOSEPresentation_WrongDomain_Refused(t *testing.T) {
+	// S2: wrong domain must be refused.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-domain"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	pres, err := vp.NewCOSEPresentation(coseVPContents(did),
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver),
+		vp.WithDomain("correct-domain.example.com"))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := pres.AddProofByProvider(provider); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	serialized, err := pres.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	vpBytes := serialized.([]byte)
+
+	parsed, err := vp.ParseCOSEPresentation(vpBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// Verify with wrong domain.
+	err = parsed.Verify(vp.WithResolver(resolver), vp.WithExpectedDomain("wrong-domain.example.com"))
+	if err == nil {
+		t.Fatal("expected verification to fail: wrong domain")
+	}
+
+	// Verify with correct domain → passes.
+	parsed2, _ := vp.ParseCOSEPresentation(vpBytes)
+	if err := parsed2.Verify(vp.WithResolver(resolver), vp.WithExpectedDomain("correct-domain.example.com")); err != nil {
+		t.Fatalf("expected verification to pass with correct domain, got: %v", err)
+	}
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

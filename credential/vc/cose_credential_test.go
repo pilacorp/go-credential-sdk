@@ -364,6 +364,373 @@ func TestCOSECredential_EnvelopedInJSON(t *testing.T) {
 	}
 }
 
+func TestCOSECredential_AuthOnlyKey_Refused(t *testing.T) {
+	// B1: a key listed only under authentication (not assertionMethod) must be
+	// refused for a COSE VC.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-authonly"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+
+	// Sign with a resolver that has the key under both purposes.
+	sigResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	cred, err := vc.NewCOSECredential(coseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(sigResolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := cred.AddProofByProvider(provider); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	coseBytes := serialized.([]byte)
+
+	// Verify against a resolver where the key is ONLY under authentication.
+	authOnlyDoc := &vmpkg.DIDDocument{
+		ID:                 did,
+		VerificationMethod: []vmpkg.VerificationMethodEntry{vm},
+		Authentication:     []string{vm.ID},
+		AssertionMethod:    []string{}, // empty
+	}
+	authOnlyResolver := vmpkg.NewStaticResolver(authOnlyDoc)
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = parsed.Verify(vc.WithResolver(authOnlyResolver))
+	if err == nil {
+		t.Fatal("expected verification to fail: key is not under assertionMethod")
+	}
+	if !strings.Contains(err.Error(), "assertionMethod") {
+		t.Fatalf("expected assertionMethod error, got: %v", err)
+	}
+}
+
+func TestCOSECredential_HardRevoked_Refused(t *testing.T) {
+	// B1: keyCompromise revocation must be refused.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-revoked"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+
+	// Sign with a clean resolver.
+	sigResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	cred, err := vc.NewCOSECredential(coseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(sigResolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := cred.AddProofByProvider(provider); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	coseBytes := serialized.([]byte)
+
+	// Verify against a resolver where the key is hard-revoked (keyCompromise).
+	revokedVM := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	revokedVM.RevocationReason = "keyCompromise"
+	revokedDoc := &vmpkg.DIDDocument{
+		ID:                 did,
+		VerificationMethod: []vmpkg.VerificationMethodEntry{revokedVM},
+		AssertionMethod:    []string{revokedVM.ID},
+		Authentication:     []string{revokedVM.ID},
+	}
+	revokedResolver := vmpkg.NewStaticResolver(revokedDoc)
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = parsed.Verify(vc.WithResolver(revokedResolver))
+	if err == nil {
+		t.Fatal("expected verification to fail: key is hard-revoked")
+	}
+	if !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("expected revocation error, got: %v", err)
+	}
+}
+
+func TestCOSECredential_SoftRevoked_BeforeIAT_Accepted(t *testing.T) {
+	// B1: soft-revoked after iat → accepted (credential was signed before revocation).
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-softrev"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+
+	// Sign with a clean resolver.
+	sigResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	cred, err := vc.NewCOSECredential(coseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(sigResolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := cred.AddProofByProvider(provider); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	coseBytes := serialized.([]byte)
+
+	// Verify against a resolver with soft revocation AFTER iat (iat = now, revoked = now+1h).
+	softVM := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	future := time.Now().Add(time.Hour)
+	softVM.Revoked = &future
+	softDoc := &vmpkg.DIDDocument{
+		ID:                 did,
+		VerificationMethod: []vmpkg.VerificationMethodEntry{softVM},
+		AssertionMethod:    []string{softVM.ID},
+		Authentication:     []string{softVM.ID},
+	}
+	softResolver := vmpkg.NewStaticResolver(softDoc)
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// iat is now, revoked in the future → accepted
+	if err := parsed.Verify(vc.WithResolver(softResolver)); err != nil {
+		t.Fatalf("expected acceptance (soft-revoked after iat), got: %v", err)
+	}
+}
+
+func TestCOSECredential_SoftRevoked_AfterIAT_Refused(t *testing.T) {
+	// B1: soft-revoked before iat → refused.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-softrev-fail"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+
+	// Sign with a clean resolver.
+	sigResolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	cred, err := vc.NewCOSECredential(coseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(sigResolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := cred.AddProofByProvider(provider); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	coseBytes := serialized.([]byte)
+
+	// Verify against a resolver with soft revocation BEFORE iat (iat = now, revoked = now-1h).
+	softVM := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	past := time.Now().Add(-time.Hour)
+	softVM.Revoked = &past
+	softDoc := &vmpkg.DIDDocument{
+		ID:                 did,
+		VerificationMethod: []vmpkg.VerificationMethodEntry{softVM},
+		AssertionMethod:    []string{softVM.ID},
+		Authentication:     []string{softVM.ID},
+	}
+	softResolver := vmpkg.NewStaticResolver(softDoc)
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = parsed.Verify(vc.WithResolver(softResolver))
+	if err == nil {
+		t.Fatal("expected verification to fail: soft-revoked before iat")
+	}
+	if !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("expected revocation error, got: %v", err)
+	}
+}
+
+func TestCOSECredential_IssuerBinding_KidMismatch_Refused(t *testing.T) {
+	// B1: a COSE VC with issuer A but kid belonging to DID B must be refused.
+	keyA, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256 A: %v", err)
+	}
+	keyB, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256 B: %v", err)
+	}
+
+	didA := "did:example:issuerA"
+	didB := "did:example:issuerB"
+	vmA := mustP256VM(t, didA, "key-1", &keyA.PublicKey)
+	vmB := mustP256VM(t, didB, "key-1", &keyB.PublicKey)
+
+	// Signing resolver: has didA's doc for key resolution at signing time.
+	sigResolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(didA, vmA),
+		vmpkg.NewDIDDocument(didB, vmB),
+	)
+
+	// Verification resolver: has both docs, but B's key is used for signing
+	// while A is the issuer in the payload.
+	verifyResolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(didA, vmA),
+		vmpkg.NewDIDDocument(didB, vmB),
+	)
+
+	providerB, err := signer.NewP256Provider(keyB)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	// Create credential with issuer A but sign with B's key.
+	// Use didB's VM for signing (kid will be didB#key-1) but payload says issuer didA.
+	cred, err := vc.NewCOSECredential(coseContents(didB),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(sigResolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	// Modify the payload to say issuer A (forgery attempt).
+	// We need to sign, then tamper.
+	if err := cred.AddProofByProvider(providerB); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+
+	// The kid is didB#key-1 and the issuer is didB — this should verify.
+	// But if we build a credential with issuer A, resolve A's key for signing,
+	// but the kid points to B, it should fail.
+	// Let me construct this differently using the internal cose package directly.
+	issuerA := coseContents(didA)
+	credA, err := vc.NewCOSECredential(issuerA,
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(sigResolver))
+	if err != nil {
+		t.Fatalf("new credA: %v", err)
+	}
+	// Signing with provider A's key will work and kid will be didA#key-1
+	providerA, err := signer.NewP256Provider(keyA)
+	if err != nil {
+		t.Fatalf("providerA: %v", err)
+	}
+	if err := credA.AddProofByProvider(providerA); err != nil {
+		t.Fatalf("sign A: %v", err)
+	}
+	serialized, err := credA.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	coseBytes := serialized.([]byte)
+
+	// Now verify with a resolver that returns B's key for A's DID.
+	// This simulates kid = didA#key-1 but the DID doc for A has B's key.
+	tamperDoc := &vmpkg.DIDDocument{
+		ID:                 didA,
+		VerificationMethod: []vmpkg.VerificationMethodEntry{vmB},
+		AssertionMethod:    []string{vmB.ID},
+	}
+	// This won't work because vmB.ID is didB#key-1, not didA#key-1.
+	// The resolution would fail on FindVerificationMethod.
+	// What we actually want: verify with a correct resolver, the kid resolves,
+	// but the key doesn't match → already covered by WrongKey test.
+	// The real binding test: issuer in payload must match the DID part of kid.
+	// Let's verify with the normal resolver — kid is didA#key-1 → resolves
+	// against issuer didA → finds keyA → verifies. That's correct.
+	// The dangerous case: kid is didB#key-1 (absolute) while issuer says didA.
+	// The verifier should refuse because kid doesn't belong to the issuer's DID.
+	_ = coseBytes
+	_ = verifyResolver
+	_ = tamperDoc
+
+	// Use the internal cose package to construct a forged credential:
+	// issuer = didA in payload, kid = didB#key-1 in protected header, signed with keyB.
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context":  []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":      []interface{}{"VerifiableCredential"},
+		"id":        "urn:uuid:forged-001",
+		"issuer":    didA,
+		"validFrom": time.Now().Add(-time.Hour).Format(time.RFC3339),
+		"iat":       time.Now().Unix(),
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:subject",
+		},
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vc",
+		Kid:         didB + "#key-1", // kid of B, not A
+		Typ:         "application/vc+cose",
+	}
+	signFn := func(digest []byte) ([]byte, error) {
+		r, s, serr := ecdsa.Sign(rand.Reader, keyB, digest)
+		if serr != nil {
+			return nil, serr
+		}
+		rBytes := r.Bytes()
+		sBytes := s.Bytes()
+		sig := make([]byte, 64)
+		copy(sig[32-len(rBytes):32], rBytes)
+		copy(sig[64-len(sBytes):64], sBytes)
+		return sig, nil
+	}
+	forgedBytes, err := cose.Sign1(prot, payloadJSON, signFn)
+	if err != nil {
+		t.Fatalf("sign1 forged: %v", err)
+	}
+
+	parsed, err := vc.ParseCOSECredential(forgedBytes)
+	if err != nil {
+		t.Fatalf("parse forged: %v", err)
+	}
+	// Verify with resolver that has both A and B.
+	// kid is didB#key-1, issuer is didA. The verifier should refuse because
+	// it resolves didA's doc but won't find didB#key-1 in it.
+	err = parsed.Verify(vc.WithResolver(verifyResolver))
+	if err == nil {
+		t.Fatal("expected verification to fail: kid belongs to a different DID than issuer")
+	}
+}
+
 func TestCOSECredential_DisallowedAlg(t *testing.T) {
 	// Verify that Parse1 with disallowed alg rejects
 	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

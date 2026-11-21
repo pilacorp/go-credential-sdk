@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -228,8 +229,11 @@ func TestAlgMapping(t *testing.T) {
 
 func TestW3CTestVector_CredentialCOSEMinimal(t *testing.T) {
 	// W3C vc-jose-cose-test-suite: tests/input/credential-cose-minimal.txt
-	// Source: https://github.com/w3c/vc-jose-cose-test-suite
-	// SHA-256 of this base64url string: checked at fetch time (2026-11-21).
+	// Source: https://raw.githubusercontent.com/w3c/vc-jose-cose-test-suite/main/tests/input/credential-cose-minimal.txt
+	// SHA-256 of file: 9fcf0feca6d3a7b4f30c0ea05b9c28ca937c5c85804d535f9ba26db187898858
+	//
+	// Key: tests/input/vm-p256.json
+	// Source: https://raw.githubusercontent.com/w3c/vc-jose-cose-test-suite/main/tests/input/vm-p256.json
 	//
 	// Protected header:
 	//   alg: -7 (ES256)
@@ -237,6 +241,9 @@ func TestW3CTestVector_CredentialCOSEMinimal(t *testing.T) {
 	//   kid: bstr "73voMXFNmNlOEpuYCSJlh8eN0dscykoO6gBukgRS1uU"
 	//   typ: "application/vc+cose"
 	const vectorB64 = "0oRYVqQBJgNuYXBwbGljYXRpb24vdmMEWCs3M3ZvTVhGTm1ObE9FcHVZQ1NKbGg4ZU4wZHNjeWtvTzZnQnVrZ1JTMXVVEHNhcHBsaWNhdGlvbi92Yytjb3NloFkB8nsiQGNvbnRleHQiOlsiaHR0cHM6Ly93d3cudzMub3JnL25zL2NyZWRlbnRpYWxzL3YyIiwiaHR0cHM6Ly93d3cudzMub3JnL25zL2NyZWRlbnRpYWxzL2V4YW1wbGVzL3YyIl0sInR5cGUiOlsiVmVyaWZpYWJsZUNyZWRlbnRpYWwiLCJFeGFtcGxlQWx1bW5pQ3JlZGVudGlhbCJdLCJpZCI6Imh0dHA6Ly91bml2ZXJzaXR5LmV4YW1wbGUvY3JlZGVudGlhbHMvMTg3MiIsImlzc3VlciI6Imh0dHBzOi8vZXhhbXBsZS5pc3N1ZXIvdmMtam9zZS1jb3NlIiwidmFsaWRGcm9tIjoiMjAxMC0wMS0wMVQxOToyMzoyNFoiLCJjcmVkZW50aWFsU3ViamVjdCI6eyJkZWdyZWUiOnsibmFtZSI6IkJhY2hlbG9yIG9mIFNjaWVuY2UgYW5kIEFydHMiLCJ0eXBlIjoiQmFjaGVsb3JEZWdyZWUifSwiaWQiOiJkaWQ6ZXhhbXBsZToxMjMifSwiY3JlZGVudGlhbFNjaGVtYSI6eyJpZCI6Imh0dHBzOi8vZXhhbXBsZS5vcmcvZXhhbXBsZXMvZGVncmVlLmpzb24iLCJ0eXBlIjoiSnNvblNjaGVtYSJ9fVhAs3W1WN83yVu/HoEyYMy7Tcmub9zL55PDnfcx5yG42BTe0gdQ+E0V9B3B1gMZyt9dDEGZVJynd8vztWVr7d4Kkw"
+
+	// P-256 public key from vm-p256.json (JWK x, y coordinates, base64url).
+	pubKey := w3cP256PubKey(t)
 
 	data := decodeTestVector(t, vectorB64)
 
@@ -269,6 +276,60 @@ func TestW3CTestVector_CredentialCOSEMinimal(t *testing.T) {
 	}
 	if body["issuer"] != "https://example.issuer/vc-jose-cose" {
 		t.Errorf("issuer = %v", body["issuer"])
+	}
+
+	// S1: Verify the signature against the test suite's P-256 public key.
+	_, _, err = Verify1(data, pubKey, []int{AlgES256})
+	if err != nil {
+		t.Fatalf("Verify1 against W3C test suite P-256 key: %v", err)
+	}
+}
+
+func TestW3CTestVector_CredentialCOSEBadSignature(t *testing.T) {
+	// W3C vc-jose-cose-test-suite: tests/input/credential-cose-bad-signature.txt
+	// Source: https://raw.githubusercontent.com/w3c/vc-jose-cose-test-suite/main/tests/input/credential-cose-bad-signature.txt
+	// SHA-256 of file: a639313a3fc839af7db9fdd7e1eac8f1f52ec4fefba142f937d3d5589c8c8b32
+	//
+	// This vector uses alg -8 (EdDSA, not ES256), so it should fail when
+	// we try to verify with the P-256 key (alg mismatch or signature failure).
+	const vectorB64 = "0oRYVqQBJwNuYXBwbGljYXRpb24vdmMEWCsyYU9IYVF4c1dWVDRtTHNVa2R0bENuVVYtYXUwQkJSLTV5UFlhUGFDYzVrEHNhcHBsaWNhdGlvbi92Yytjb3NloFkB8nsiQGNvbnRleHQiOlsiaHR0cHM6Ly93d3cudzMub3JnL25zL2NyZWRlbnRpYWxzL3YyIiwiaHR0cHM6Ly93d3cudzMub3JnL25zL2NyZWRlbnRpYWxzL2V4YW1wbGVzL3YyIl0sInR5cGUiOlsiVmVyaWZpYWJsZUNyZWRlbnRpYWwiLCJFeGFtcGxlQWx1bW5pQ3JlZGVudGlhbCJdLCJpZCI6Imh0dHA6Ly91bml2ZXJzaXR5LmV4YW1wbGUvY3JlZGVudGlhbHMvMTg3MiIsImlzc3VlciI6Imh0dHBzOi8vZXhhbXBsZS5pc3N1ZXIvdmMtam9zZS1jb3NlIiwidmFsaWRGcm9tIjoiMjAxMC0wMS0wMVQxOToyMzoyNFoiLCJjcmVkZW50aWFsU3ViamVjdCI6eyJkZWdyZWUiOnsibmFtZSI6IkJhY2hlbG9yIG9mIFNjaWVuY2UgYW5kIEFydHMiLCJ0eXBlIjoiQmFjaGVsb3JEZWdyZWUifSwiaWQiOiJkaWQ6ZXhhbXBsZToxMjMifSwiY3JlZGVudGlhbFNjaGVtYSI6eyJpZCI6Imh0dHBzOi8vZXhhbXBsZS5vcmcvZXhhbXBsZXMvZGVncmVlLmpzb24iLCJ0eXBlIjoiSnNvblNjaGVtYSJ9fVhAtLDz68qCDkCrNpejCv8h3QI4ArJlsbea2TqHGAGAjHAvCvG-mntYFHN4ONiqhn_U8NHUQ-h8e5SY1gI7o7R1BA"
+
+	pubKey := w3cP256PubKey(t)
+	data := decodeTestVector(t, vectorB64)
+
+	// S1: Verify1 must fail — either the alg is not in the allowed set, or
+	// the signature itself fails because this vector was signed with a
+	// different key / alg (-8 = EdDSA).
+	_, _, err := Verify1(data, pubKey, []int{AlgES256})
+	if err == nil {
+		t.Fatal("expected Verify1 to fail on credential-cose-bad-signature vector")
+	}
+}
+
+// w3cP256PubKey builds the P-256 public key from the W3C test suite's
+// vm-p256.json JWK coordinates (base64url).
+func w3cP256PubKey(t *testing.T) *ecdsa.PublicKey {
+	t.Helper()
+	// From https://raw.githubusercontent.com/w3c/vc-jose-cose-test-suite/main/tests/input/vm-p256.json
+	xB64 := "WfTi93YuhsQxKbD0ftnjOXJndqhnJ5kgDV-ZDGyrhBQ"
+	yB64 := "qUd_55EjX0mjKZ6W6mF4UXVYTQ41K6jfdnYFwN5uPyk"
+
+	xBytes, err := base64.RawURLEncoding.DecodeString(xB64)
+	if err != nil {
+		t.Fatalf("decode x: %v", err)
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(yB64)
+	if err != nil {
+		t.Fatalf("decode y: %v", err)
+	}
+
+	x := new(big.Int).SetBytes(xBytes)
+	y := new(big.Int).SetBytes(yBytes)
+
+	return &ecdsa.PublicKey{
+		Curve: elliptic.P256(),
+		X:     x,
+		Y:     y,
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	coseinternal "github.com/pilacorp/go-credential-sdk/credential/internal/cose"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
 // COSECredential implements W3C VC 2.0 Securing Verifiable Credentials using
@@ -291,7 +292,7 @@ func (c *COSECredential) verifyCOSEProof(options *credentialOptions) error {
 		return fmt.Errorf("invalid payload JSON: %w", err)
 	}
 
-	issuer := didFromPayload(body, "issuer")
+	issuer := vcdm.DidFromPayload(body, "issuer")
 	if issuer == "" {
 		return fmt.Errorf("COSE credential has no issuer")
 	}
@@ -341,19 +342,14 @@ func (c *COSECredential) verifyCOSEProof(options *credentialOptions) error {
 		return fmt.Errorf("COSE signature verification failed: %w", verr)
 	}
 
-	return nil
-}
-
-// didFromPayload extracts a DID from a payload field that may be a string or
-// an object with an id.
-func didFromPayload(body map[string]interface{}, field string) string {
-	switch v := body[field].(type) {
-	case string:
-		return v
-	case map[string]interface{}:
-		if id, ok := v["id"].(string); ok {
-			return id
-		}
+	// Same post-crypto checks as the JOSE path: purpose and revocation.
+	issuedAt, ierr := jwt.IssuedAtFromPayload(body)
+	if ierr != nil {
+		return ierr
 	}
-	return ""
+	if err := jwt.StrictPurposeCheck(doc, vm, "assertionMethod", issuedAt); err != nil {
+		return err
+	}
+
+	return nil
 }

@@ -66,6 +66,21 @@ func FirstContext(v interface{}) string {
 	return ""
 }
 
+// DidFromPayload extracts a DID from a payload field that may be a string or
+// an object with an id. Used by the COSE VC and VP verification paths to read
+// issuer/holder from the payload map.
+func DidFromPayload(body map[string]interface{}, field string) string {
+	switch v := body[field].(type) {
+	case string:
+		return v
+	case map[string]interface{}:
+		if id, ok := v["id"].(string); ok {
+			return id
+		}
+	}
+	return ""
+}
+
 // CheckValidityPeriod enforces a document's validFrom/validUntil (RFC 3339
 // strings, empty when absent) at the current time, widened by leeway on both
 // sides. what names the document in the error ("credential", "presentation").
