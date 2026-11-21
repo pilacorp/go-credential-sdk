@@ -12,6 +12,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	coseinternal "github.com/pilacorp/go-credential-sdk/credential/internal/cose"
 )
 
 // ErrSDJWTRequiresJOSE is returned when selective disclosure is asked of the VC
@@ -426,6 +427,11 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 		return nil, fmt.Errorf("JSON string is empty")
 	}
 
+	// COSE_Sign1 detection: CBOR tag 18 starts with 0xd2.
+	if coseinternal.IsCOSESign1(rawCredential) {
+		return ParseCOSECredential(rawCredential, opts...)
+	}
+
 	if isJSONCredential(rawCredential) {
 		// Check for EnvelopedVerifiableCredential data URI per W3C VC 2.0 / vc-jose-cose.
 		//
@@ -455,6 +461,20 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 						return nil, err
 					}
 					return c, nil
+				}
+
+				// COSE envelope: data:application/vc+cose;base64,<b64>
+				cosePrefix := "data:application/" + TypeVCCOSE + ";base64,"
+				if strings.HasPrefix(idStr, cosePrefix) {
+					if !hasType(peek["type"], TypeEnvelopedVC) {
+						return nil, fmt.Errorf("credential carries a %s id but its type is not %s", cosePrefix, TypeEnvelopedVC)
+					}
+					coseB64 := strings.TrimPrefix(idStr, cosePrefix)
+					coseBytes, err := base64.StdEncoding.DecodeString(coseB64)
+					if err != nil {
+						return nil, fmt.Errorf("failed to decode COSE envelope base64: %w", err)
+					}
+					return ParseCOSECredential(coseBytes, opts...)
 				}
 			}
 		}
@@ -509,7 +529,7 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 		return c, nil
 	}
 
-	return nil, fmt.Errorf("failed to parse credential: not a valid JSON, SD-JWT, or JWT credential")
+	return nil, fmt.Errorf("failed to parse credential: not a valid JSON, SD-JWT, JWT, or COSE credential")
 }
 
 // ParseCredentialWithValidation parses a credential from various formats into a Credential with validation.
