@@ -1,0 +1,141 @@
+{
+  "_comment": "Shared test vectors for the unified DID key rule (#178). Both the root module (didkeys, verification-method) and the digitalcredential module (didresolver) run these and assert the same outcomes. Keys use JWK P-256 format readable by both modules.",
+  "reference_time": "2026-11-05T12:00:00Z",
+  "did": "did:example:test",
+  "vectors": [
+    {
+      "name": "active key",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"}
+      },
+      "in_assertion_method": true,
+      "expect_accepted": true
+    },
+    {
+      "name": "key revoked as keyCompromise",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "revoked": "2026-11-01T00:00:00Z",
+        "revocationReason": "keyCompromise"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": false
+    },
+    {
+      "name": "key revoked as superseded",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "revoked": "2026-11-01T00:00:00Z",
+        "revocationReason": "superseded"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": true
+    },
+    {
+      "name": "key revoked with no reason",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "revoked": "2026-11-01T00:00:00Z"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": true
+    },
+    {
+      "name": "key revoked as cessationOfOperation",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "revoked": "2026-11-01T00:00:00Z",
+        "revocationReason": "cessationOfOperation"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": true
+    },
+    {
+      "name": "key expired",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "expires": "2026-11-01T00:00:00Z"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": false
+    },
+    {
+      "name": "key expires in the future",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "expires": "2027-01-01T00:00:00Z"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": true
+    },
+    {
+      "name": "key revoked superseded and expired",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "revoked": "2026-11-01T00:00:00Z",
+        "revocationReason": "superseded",
+        "expires": "2026-11-01T00:00:00Z"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": false
+    },
+    {
+      "name": "key not in assertionMethod",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"}
+      },
+      "in_assertion_method": false,
+      "expect_accepted": false
+    },
+    {
+      "name": "key controlled by another DID",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:other",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"}
+      },
+      "in_assertion_method": true,
+      "expect_accepted": false
+    },
+    {
+      "name": "key revoked later than reference time",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "revoked": "2026-12-01T00:00:00Z"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": true
+    }
+  ]
+}
