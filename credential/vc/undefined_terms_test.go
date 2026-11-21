@@ -232,12 +232,6 @@ func TestUndefinedTermsV2_P256_SignVerify_NoNetwork(t *testing.T) {
 }
 
 func TestUndefinedTermsV2_Secp256k1_SignVerify_NoNetwork(t *testing.T) {
-	secpPriv, err := ethcrypto.HexToECDSA(fixtureSecpKey)
-	if err != nil {
-		t.Fatalf("secp key: %v", err)
-	}
-	_ = secpPriv
-
 	prov, err := signer.NewDefaultProvider(fixtureSecpKey)
 	if err != nil {
 		t.Fatalf("secp provider: %v", err)
@@ -311,61 +305,6 @@ func TestUndefinedTermsV2_Secp256k1_SignVerify_NoNetwork(t *testing.T) {
 	})
 }
 
-// --- VP tests with undefined-terms/v2 ---
-
-func TestUndefinedTermsV2_VP_P256_SignVerify_NoNetwork(t *testing.T) {
-	// VP tests live in the vp package; this test verifies a credential with
-	// undefined-terms/v2 round-trips through the VC sign path with P-256 and
-	// no network, which also exercises the Data Integrity context insertion.
-	// A full VP signing test is in the vp package's test file.
-
-	prov, err := signer.NewP256Provider(fixtureP256Key())
-	if err != nil {
-		t.Fatalf("p256 provider: %v", err)
-	}
-	resolver := fixtureP256Resolver(t)
-
-	vcc := CredentialContents{
-		Context: []interface{}{
-			"https://www.w3.org/ns/credentials/v2",
-			undefinedTermsV2,
-		},
-		ID:     "urn:uuid:test-undefined-terms-vp-p256",
-		Types:  []string{"VerifiableCredential"},
-		Issuer: fixtureIssuer,
-		ValidFrom: func() time.Time {
-			t, _ := time.Parse(time.RFC3339, "2024-01-01T00:00:00Z")
-			return t
-		}(),
-		ValidUntil: func() time.Time {
-			t, _ := time.Parse(time.RFC3339, "2099-12-31T23:59:59Z")
-			return t
-		}(),
-		Subject: []Subject{{
-			ID:           "did:nda:testnet:test-subject",
-			CustomFields: map[string]interface{}{"name": "Test"},
-		}},
-	}
-
-	withNoNetwork(t, func() {
-		cred, err := NewJSONCredential(vcc)
-		if err != nil {
-			t.Fatalf("new credential: %v", err)
-		}
-		err = cred.AddProofByProvider(prov,
-			WithVerificationMethodKey("key-p256"),
-			WithResolver(resolver))
-		if err != nil {
-			t.Fatalf("sign: %v", err)
-		}
-		if err := cred.Verify(WithResolver(resolver)); err != nil {
-			t.Fatalf("verify: %v", err)
-		}
-	})
-}
-
-// extractContextStrings reads @context from the credential's serialized form
-// and returns its string entries in order.
 func extractContextStrings(t *testing.T, cred *JSONCredential) []string {
 	t.Helper()
 	raw, err := cred.GetContents()
