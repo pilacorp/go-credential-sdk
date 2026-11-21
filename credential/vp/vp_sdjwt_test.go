@@ -192,7 +192,9 @@ func TestVPSDJWT_SelectivePresent(t *testing.T) {
 	// The withheld claim should not appear in the reconstructed payload.
 	contents, _ := reparsed.GetContents()
 	var payload map[string]interface{}
-	json.Unmarshal(contents, &payload)
+	if err := json.Unmarshal(contents, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	toa, _ := payload["termsOfAgreement"].(map[string]interface{})
 	if _, found := toa["consentedTo"]; found {
 		t.Fatal("consentedTo should be withheld when presenting with no disclosures")
