@@ -360,6 +360,11 @@ func (m *JSONMap) addSuiteContextWithoutChangingMeaning() error {
 	return nil
 }
 
+// undefinedTermsV2Context is the @vocab catch-all VCDM 2.0 §5.2 says MUST be
+// the last value of @context. When it is the trailing entry the suite context
+// is inserted before it, not appended after.
+const undefinedTermsV2Context = "https://www.w3.org/ns/credentials/undefined-terms/v2"
+
 // ensureSecp256k1SuiteContext makes the document's @context define the suite,
 // adding the narrow suite context when it does not.
 //
@@ -371,6 +376,9 @@ func (m *JSONMap) addSuiteContextWithoutChangingMeaning() error {
 // Integrity only, so the suite context is appended; that combination
 // canonicalizes cleanly and keeps every 2.0 property, credentialStatus
 // included.
+//
+// VCDM 2.0 §5.2 requires undefined-terms/v2 to be the last @context entry.
+// When it is the trailing element, the suite context is inserted before it.
 func (m *JSONMap) ensureSecp256k1SuiteContext() error {
 	if m == nil {
 		return fmt.Errorf("JSONMap is nil")
@@ -387,18 +395,35 @@ func (m *JSONMap) ensureSecp256k1SuiteContext() error {
 	case string:
 		(*m)["@context"] = []interface{}{c, secp256k1SuiteContextNarrow}
 	case []interface{}:
-		(*m)["@context"] = append(append([]interface{}{}, c...), secp256k1SuiteContextNarrow)
+		(*m)["@context"] = insertBeforeUndefinedTerms(c, secp256k1SuiteContextNarrow)
 	case []string:
 		out := make([]interface{}, 0, len(c)+1)
 		for _, s := range c {
 			out = append(out, s)
 		}
-		(*m)["@context"] = append(out, secp256k1SuiteContextNarrow)
+		(*m)["@context"] = insertBeforeUndefinedTerms(out, secp256k1SuiteContextNarrow)
 	default:
 		return fmt.Errorf("document @context has unexpected type %T", c)
 	}
 
 	return nil
+}
+
+// insertBeforeUndefinedTerms appends entry to contexts, except when the last
+// element is undefined-terms/v2 — then it inserts entry before that element so
+// undefined-terms/v2 stays last (VCDM 2.0 §5.2).
+func insertBeforeUndefinedTerms(contexts []interface{}, entry string) []interface{} {
+	out := append([]interface{}{}, contexts...)
+	if n := len(out); n > 0 {
+		if last, ok := out[n-1].(string); ok && last == undefinedTermsV2Context {
+			// Insert before the trailing undefined-terms/v2.
+			out = append(out, "")
+			copy(out[n:], out[n-1:])
+			out[n-1] = entry
+			return out
+		}
+	}
+	return append(out, entry)
 }
 
 // definesSecp256k1Suite reports whether the document's @context defines
