@@ -36,6 +36,11 @@ func TestSharedVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	refTime, err := time.Parse(time.RFC3339, vf.ReferenceTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	for _, v := range vf.Vectors {
 		t.Run(v.Name, func(t *testing.T) {
 			vm := vmFromMap(t, v.VM, vf.DID)
@@ -56,6 +61,7 @@ func TestSharedVectors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			r.(*resolver).clock = func() time.Time { return refTime }
 			keys, err := r.Keys(context.Background(), vf.DID)
 			if err != nil {
 				t.Fatal(err)

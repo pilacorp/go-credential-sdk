@@ -55,6 +55,7 @@ type Config struct {
 type resolver struct {
 	provider  verificationmethod.ResolverProvider
 	keyFilter KeyFilter
+	clock     func() time.Time
 }
 
 var _ issuerkey.Resolver = (*resolver)(nil)
@@ -73,6 +74,7 @@ func NewResolverWithConfig(cfg Config) (issuerkey.Resolver, error) {
 	return &resolver{
 		provider:  cfg.Provider,
 		keyFilter: cfg.KeyFilter,
+		clock:     time.Now,
 	}, nil
 }
 
@@ -116,7 +118,7 @@ func (r *resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 
 // assertionKeys walks assertionMethod and returns eligible keys.
 func (r *resolver) assertionKeys(doc *verificationmethod.DIDDocument, did string) ([]issuerkey.PublicKey, error) {
-	now := time.Now()
+	now := r.clock()
 	keys := make([]issuerkey.PublicKey, 0)
 
 	for _, ref := range doc.AssertionMethod {
