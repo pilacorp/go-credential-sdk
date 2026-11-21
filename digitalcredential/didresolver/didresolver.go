@@ -88,23 +88,19 @@ type AcceptKeyFunc func(KeyInfo) bool
 // reasonKeyCompromise is the revocationReason of a key that leaked or may have.
 const reasonKeyCompromise = "keyCompromise"
 
-// DefaultAcceptKey is the rule of W3C CID with one exception. A key verifies
-// until its revoked or expires time, and not at or after it (CID §2.2), but a
-// key revoked for a stated reason other than keyCompromise verifies until it
-// expires: its issuer retired it and did not lose it, and refusing it would
-// end every credential it signed.
+// DefaultAcceptKey is the unified key rule of the SDK, aligned with the VC
+// path's IsHardRevocationReason. A key verifies until its expires time, and
+// not at or after it (CID §2.2). A key revoked as keyCompromise is refused
+// unconditionally. A key revoked for any other stated reason, or with no
+// stated reason, is accepted: its issuer retired or replaced it, so the key
+// may still verify credentials signed before the revocation time. Keys does
+// not see when a token was signed and compares no iat; the signing-time
+// comparison, when needed, is the verifier's responsibility.
 //
-// The exception goes beyond CID, which expects no proof to verify at or after
-// the revoked time. Keys does not see when a token was signed and compares no
-// iat, which an issuer may conceal and the key's holder may write, so such a
-// key also verifies tokens signed after it was revoked. A key revoked as
-// keyCompromise, or with no reason, fails for every token, those signed before
-// it was revoked included: without a reliable time of signing, CID §5.5.1
-// leaves only the present moment to judge by. The reason is compared as
-// written, so another spelling of keyCompromise counts as another reason.
+// The reason is compared as written, so another spelling of keyCompromise
+// counts as another reason.
 //
-// An AcceptKeyFunc of the caller's may decide otherwise. To apply CID with no
-// exception, clear RevocationReason and call DefaultAcceptKey.
+// An AcceptKeyFunc of the caller's may decide otherwise.
 func DefaultAcceptKey(k KeyInfo) bool {
 	if !k.Expires.IsZero() && !k.At.Before(k.Expires) {
 		return false
@@ -112,7 +108,7 @@ func DefaultAcceptKey(k KeyInfo) bool {
 	if k.Revoked.IsZero() || k.At.Before(k.Revoked) {
 		return true
 	}
-	return k.RevocationReason != "" && k.RevocationReason != reasonKeyCompromise
+	return k.RevocationReason != reasonKeyCompromise
 }
 
 // Resolver returns the signing keys the DID document of an issuer lists.

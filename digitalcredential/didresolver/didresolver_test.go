@@ -310,8 +310,8 @@ func TestKeysReturnsOnlyAssertionMethods(t *testing.T) {
 		"no fragment":           {document(nil, []any{multikeyVM("id", testDID+"#")}), nil},
 		"another controller":    {document([]any{multikeyVM("controller", other)}, []any{vmID}), nil},
 		"no controller":         {document([]any{multikeyVM("controller", nil)}, []any{vmID}), nil},
-		"revoked":               {document([]any{multikeyVM("revoked", past)}, []any{vmID}), nil},
-		"revoked now":           {document([]any{multikeyVM("revoked", now.Format(time.RFC3339))}, []any{vmID}), nil},
+		"revoked":               {document([]any{multikeyVM("revoked", past)}, []any{vmID}), []string{vmID}},
+		"revoked now":           {document([]any{multikeyVM("revoked", now.Format(time.RFC3339))}, []any{vmID}), []string{vmID}},
 		"revoked later":         {document([]any{multikeyVM("revoked", future)}, []any{vmID}), []string{vmID}},
 		"expired":               {document([]any{multikeyVM("expires", past)}, []any{vmID}), nil},
 		"expires now":           {document([]any{multikeyVM("expires", now.Format(time.RFC3339))}, []any{vmID}), nil},
@@ -654,7 +654,7 @@ func TestKeysReadsEmbeddedMethodAsWritten(t *testing.T) {
 		"same copy twice, one reference":      {document([]any{multikeyVM(), multikeyVM()}, []any{vmID}), 1},
 		"reference and same copy":             {document([]any{multikeyVM()}, []any{vmID, multikeyVM()}), 1},
 		"clean embedded, revoked in the list": {document([]any{multikeyVM("revoked", past)}, []any{multikeyVM()}), 1},
-		"revoked embedded, clean in the list": {document([]any{multikeyVM()}, []any{multikeyVM("revoked", past)}), 0},
+		"revoked embedded, clean in the list": {document([]any{multikeyVM()}, []any{multikeyVM("revoked", past)}), 1},
 	} {
 		keys, err := keysOf(t, tt.doc, now)
 		if err != nil || len(keys) != tt.want {
