@@ -4,7 +4,6 @@ package joseadapter
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
@@ -31,13 +30,4 @@ func NewSigner(alg string, sp signer.SignerProvider) (jws.Signer, error) {
 		}
 		return jwtutil.TrimRecoveryByte(raw), nil
 	})
-}
-
-// VerifyCompact checks a compact JWS with jws.Verify and returns the
-// jws.Header and the original payload bytes. It is the single point where the
-// credential and presentation paths call into the jose module for
-// cryptographic verification, so every stricter check the jose module
-// performs (crit, strict base64url, UTF-8) is applied here.
-func VerifyCompact(compact string, pub *ecdsa.PublicKey, allowed []string) (jws.Header, []byte, error) {
-	return jws.Verify(compact, pub, allowed)
 }

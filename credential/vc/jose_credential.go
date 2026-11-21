@@ -17,6 +17,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/jose"
 	josesdjwt "github.com/pilacorp/go-credential-sdk/jose/sdjwt"
 	"golang.org/x/sync/errgroup"
 )
@@ -244,7 +245,7 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		signature = parts[2]
 	}
 
-	headerBytes, err := base64.RawURLEncoding.DecodeString(headerEncoded)
+	headerBytes, err := jose.DecodeSegment(headerEncoded)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode header: %w", err)
 	}
@@ -258,7 +259,7 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 			typ, TypeVCJWT, TypeVCSDJWT)
 	}
 
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadEncoded)
+	payloadBytes, err := jose.DecodeSegment(payloadEncoded)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode payload: %w", err)
 	}

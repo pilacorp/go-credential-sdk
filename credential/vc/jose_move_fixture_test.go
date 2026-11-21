@@ -28,7 +28,7 @@ func fixture152Keys(t *testing.T) (*signer.DefaultProvider, *signer.P256Provider
 	d := new(big.Int).SetBytes([]byte("fixture-152-p256-key-scalar-0001"))
 	p := &ecdsa.PrivateKey{D: d}
 	p.Curve = elliptic.P256()
-	p.X, p.Y = p.Curve.ScalarBaseMult(d.Bytes())
+	p.X, p.Y = p.ScalarBaseMult(d.Bytes())
 	p256, err := signer.NewP256Provider(p)
 	if err != nil {
 		t.Fatal(err)
