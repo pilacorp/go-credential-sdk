@@ -63,6 +63,11 @@ var w3cSecurityV2Context []byte
 //go:embed w3c.security.secp256k1-2019.v1.json
 var w3cSecuritySecp256k1V1Context []byte
 
+// Fetched 2026-11-21; sha256 82dab514ba44eb18f5d1b0f638c5e140c6a556fbfb5089601bdc0fa5eb8b2581.
+//
+//go:embed w3c.credential.undefined-terms.v2.json
+var w3cCredentialUndefinedTermsV2Context []byte
+
 // Well-known W3C context URLs mapped to their embedded JSON bytes. These are
 // frozen, immutable published contexts, so serving them from embedded copies is
 // byte-for-byte equivalent to fetching them — it only removes the network
@@ -80,7 +85,12 @@ var wellKnownContexts = map[string][]byte{
 	"https://www.w3.org/ns/credentials/v2.jsonld":          w3cCredentialV2Context,
 	"https://www.w3.org/ns/credentials/examples/v2":        w3cCredentialExamplesV2Context,
 	"https://www.w3.org/ns/credentials/examples/v2.jsonld": w3cCredentialExamplesV2Context,
-	"https://w3id.org/security/data-integrity/v2":          w3cSecurityDataIntegrityV2Context,
+	// VCDM 2.0 §5.2: documents with terms no context defines MUST include
+	// undefined-terms/v2 as the last @context value. Functionally identical
+	// to examples/v2 (@vocab catch-all), but intended for production use.
+	"https://www.w3.org/ns/credentials/undefined-terms/v2":        w3cCredentialUndefinedTermsV2Context,
+	"https://www.w3.org/ns/credentials/undefined-terms/v2.jsonld": w3cCredentialUndefinedTermsV2Context,
+	"https://w3id.org/security/data-integrity/v2":                 w3cSecurityDataIntegrityV2Context,
 	// security/v1 and /v2 define the Linked Data Signature terms
 	// (EcdsaSecp256k1Signature2019, jws, proofPurpose, challenge, domain).
 	// The SDK never writes either onto a document — it writes the narrow suite
