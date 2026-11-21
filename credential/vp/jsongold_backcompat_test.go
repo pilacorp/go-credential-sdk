@@ -63,7 +63,7 @@ func TestBackcompat_VP20EmbeddedJSONLD_BreakingChange(t *testing.T) {
 	err = pres.Verify(vp.WithResolver(vpFixtureResolver(t)))
 
 	// The VP does NOT verify because the canonical N-Quads changed.
-	assert.Error(t, err, "a VP v2 with an embedded VC signed by the old canonicalizer should no longer verify")
+	require.Error(t, err, "a VP v2 with an embedded VC signed by the old canonicalizer should no longer verify")
 	assert.True(t, strings.Contains(err.Error(), "invalid proof"),
 		"expected 'invalid proof', got: %v", err)
 
