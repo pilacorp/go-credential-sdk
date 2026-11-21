@@ -13,9 +13,9 @@ func keysWith(t *testing.T, v any, accept AcceptKeyFunc) ([]issuerkey.PublicKey,
 	return keysAt(t, v, now, accept)
 }
 
-// The rule of CID §2.2, a key verifies before its revoked and expires times and
-// not at or after them, except that a key revoked for a stated reason other
-// than keyCompromise outlives its revoked time.
+// A key verifies before its expires time and not at or after it (CID §2.2). A
+// key revoked as keyCompromise is refused unconditionally. A key revoked for
+// any other reason, or with no stated reason, is accepted.
 func TestDefaultAcceptKey(t *testing.T) {
 	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	before, after := at.Add(-time.Second), at.Add(time.Second)

@@ -148,8 +148,8 @@ func New(cfg Config) (*Resolver, error) {
 // are those of issuerkey.Resolver:
 //   - the keys, possibly none. A verification method is skipped when it does
 //     not belong to this document, is not accepted by Config.AcceptKey
-//     (DefaultAcceptKey: expired, or revoked as keyCompromise or with no
-//     reason), or holds no single key this SDK reads. The key is read from
+//     (DefaultAcceptKey: expired, or revoked as keyCompromise), or holds no
+//     single key this SDK reads. The key is read from
 //     its material property, whatever the method's type: publicKeyMultibase
 //     holding a P-256 Multikey, publicKeyJwk holding a P-256 or secp256k1
 //     public JWK, or publicKeyHex, read only when the type is
