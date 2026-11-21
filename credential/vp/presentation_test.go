@@ -890,9 +890,12 @@ func TestJSONPresentationFlow(t *testing.T) {
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
 	// Create both JSON and JWT credentials
-	jsonVC, jwtVC := createTestCredentials(t, issuerDID, privateKeyHex)
+	jsonVC, _ := createTestCredentials(t, issuerDID, privateKeyHex)
 
-	// 1. Create JSON VP with both JSON VC and JWT VC
+	// A JSON-LD VP embeds only JSON-LD credentials. JWT VCs are carried in
+	// JWT or JOSE VPs; embedding a bare JWT string in a JSON-LD VP is
+	// rejected at canonicalization time — see
+	// TestJSONPresentation_RejectsBareJWTString below.
 	presentationContents := vp.PresentationContents{
 		Context: []interface{}{
 			"https://www.w3.org/ns/credentials/v2",
@@ -901,7 +904,7 @@ func TestJSONPresentationFlow(t *testing.T) {
 		ID:                    "urn:uuid:json-vp-test-12345678",
 		Types:                 []string{"VerifiablePresentation"},
 		Holder:                holderDID,
-		VerifiableCredentials: []vc.Credential{jsonVC, jwtVC},
+		VerifiableCredentials: []vc.Credential{jsonVC, jsonVC},
 	}
 
 	presentation, err := vp.NewJSONPresentation(presentationContents)
@@ -946,6 +949,53 @@ func TestJSONPresentationFlow(t *testing.T) {
 	// Compare the JSON data (should be identical)
 	if string(jsonData) != string(parsedJSONData) {
 		t.Fatal("Original and parsed presentation JSON should be identical")
+	}
+}
+
+// A bare JWT string under verifiableCredential has no RDF representation in
+// @container: @graph. Rather than silently rewriting the document (which would
+// change the signed dataset), canonicalization rejects the shape and asks the
+// caller to wrap the JWT as an EnvelopedVerifiableCredential per VCDM 2.0
+// §5.13.2.
+//
+// authen-service and go-auth-sdk are not affected: authen-service passes
+// parsed JSON-LD objects, and go-auth-sdk uses JWT VPs exclusively.
+func TestJSONPresentation_RejectsBareJWTString(t *testing.T) {
+	vp.Init("https://auth-dev.pila.vn/api/v1/did")
+	vc.Init("https://auth-dev.pila.vn/api/v1/did")
+
+	privateKeyHex := "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a"
+	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
+
+	jsonVC, jwtVC := createTestCredentials(t, issuerDID, privateKeyHex)
+
+	presentationContents := vp.PresentationContents{
+		Context: []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		ID:                    "urn:uuid:json-vp-test-jwt-reject",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                holderDID,
+		VerifiableCredentials: []vc.Credential{jsonVC, jwtVC},
+	}
+
+	presentation, err := vp.NewJSONPresentation(presentationContents)
+	if err != nil {
+		t.Fatalf("unexpected error creating presentation: %v", err)
+	}
+
+	// Signing triggers canonicalization, which rejects the bare JWT string.
+	err = presentation.AddProofByProvider(mustP256Signer(t),
+		vp.WithResolver(testResolver(t)),
+		vp.WithVerificationMethodKey(holderDID+"#key-2"),
+	)
+	if err == nil {
+		t.Fatal("expected an error for bare JWT string in verifiableCredential")
+	}
+	if !strings.Contains(err.Error(), "bare string") {
+		t.Fatalf("expected 'bare string' in error, got: %v", err)
 	}
 }
 
