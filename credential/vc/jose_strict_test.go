@@ -431,3 +431,34 @@ func TestJOSEStrict_WireFormatUnchanged(t *testing.T) {
 		})
 	}
 }
+
+// WithSDHashAlgorithm accepts sha-384 and sha-512 (RFC 9901 section 4.1.1
+// allows any IANA hash). module jose recreates sha-256 payloads only, so a
+// credential the SDK issued with another hash must still parse and verify.
+func TestJOSEStrict_SDHashAlgorithmsRoundTrip(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, alg := range []string{"sha-256", "sha-384", "sha-512"} {
+		t.Run(alg, func(t *testing.T) {
+			cred, err := vc.NewJOSECredential(joseContents(did),
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver),
+				vc.WithSDSelectivePaths([]string{"credentialSubject.name"}), vc.WithSDHashAlgorithm(alg))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+				t.Fatal(err)
+			}
+			s, err := cred.Serialize()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := vc.ParseCredential([]byte(s.(string)), vc.WithResolver(resolver), vc.WithVerifyProof()); err != nil {
+				t.Fatalf("parse %s SD-JWT: %v", alg, err)
+			}
+		})
+	}
+}

@@ -327,7 +327,17 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	// names "...", "_sd" and "_sd_alg" are rejected, and duplicate digests
 	// across the whole payload are refused.
 	disclosable := declaredSD || combinedSD || hasSDAlg
-	if disclosable || len(disclosures) > 0 {
+	if sdAlg, _ := payloadMap["_sd_alg"].(string); (disclosable || len(disclosures) > 0) && sdAlg != "" && sdAlg != sdjwt.DefaultHashAlgorithm {
+		// module jose recreates sha-256 payloads only, while
+		// WithSDHashAlgorithm issues sha-384 and sha-512 too (RFC 9901
+		// section 4.1.1 allows any IANA hash). Those keep the reading they
+		// had before the move, so credentials already issued with them parse.
+		processed, rerr := sdjwt.Reconstruct(payloadMap, disclosures, true)
+		if rerr != nil {
+			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rerr)
+		}
+		vcMap = processed
+	} else if disclosable || len(disclosures) > 0 {
 		parsed := make([]josesdjwt.Disclosure, len(disclosures))
 		for i, d := range disclosures {
 			p, perr := josesdjwt.ParseDisclosure(d)
