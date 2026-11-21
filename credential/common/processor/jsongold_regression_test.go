@@ -194,11 +194,11 @@ func TestIssue192_RelativeImportInRemoteContext(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ctx/a.jsonld", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/ld+json")
-		fmt.Fprint(w, `{"@context": {"@version": 1.1, "@import": "b.jsonld", "y": "https://example.org/y"}}`)
+		_, _ = fmt.Fprint(w, `{"@context": {"@version": 1.1, "@import": "b.jsonld", "y": "https://example.org/y"}}`)
 	})
 	mux.HandleFunc("/ctx/b.jsonld", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/ld+json")
-		fmt.Fprint(w, `{"@context": {"@version": 1.1, "x": "https://example.org/x"}}`)
+		_, _ = fmt.Fprint(w, `{"@context": {"@version": 1.1, "x": "https://example.org/x"}}`)
 	})
 	srv := contextServer(t, mux.ServeHTTP)
 	useTestClient(t, srv)

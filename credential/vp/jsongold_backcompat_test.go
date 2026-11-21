@@ -32,7 +32,7 @@ func vpFixtureResolver(t *testing.T) vmpkg.ResolverProvider {
 	key := new(ecdsa.PrivateKey)
 	key.Curve = elliptic.P256()
 	key.D = new(big.Int).SetBytes(privBytes)
-	key.PublicKey.X, key.PublicKey.Y = key.Curve.ScalarBaseMult(privBytes)
+	key.X, key.Y = elliptic.P256().ScalarBaseMult(privBytes)
 
 	issuerVM, err := vmpkg.NewP256VM("did:example:fixture-issuer", "key-1", &key.PublicKey)
 	require.NoError(t, err)

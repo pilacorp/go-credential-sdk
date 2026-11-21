@@ -34,7 +34,7 @@ func fixtureKeys(t *testing.T) (priv *ecdsa.PrivateKey, pub *ecdsa.PublicKey) {
 	key := new(ecdsa.PrivateKey)
 	key.Curve = elliptic.P256()
 	key.D = new(big.Int).SetBytes(privBytes)
-	key.PublicKey.X, key.PublicKey.Y = key.Curve.ScalarBaseMult(privBytes)
+	key.X, key.Y = elliptic.P256().ScalarBaseMult(privBytes)
 	return key, &key.PublicKey
 }
 
