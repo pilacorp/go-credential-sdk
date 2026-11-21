@@ -432,6 +432,51 @@ func TestJOSEStrict_WireFormatUnchanged(t *testing.T) {
 	}
 }
 
+// --- #99 item 4: case-insensitive typ ---
+
+// TestJOSEStrict_TypCaseInsensitive checks that ParseCredential routes a
+// token with an uppercase or mixed-case typ to the JOSE parser (RFC 7515
+// section 4.1.9: media type values are case-insensitive).
+func TestJOSEStrict_TypCaseInsensitive(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	token := signedJOSEToken(t, did, priv, resolver)
+
+	for _, tc := range []struct {
+		name string
+		typ  string
+	}{
+		{"uppercase VC+JWT", "VC+JWT"},
+		{"full prefix Application/vc+jwt", "Application/vc+jwt"},
+		{"application/VC+JWT", "application/VC+JWT"},
+		{"mixed Vc+Jwt", "Vc+Jwt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Rewrite the header with the new typ and re-sign so the token
+			// verifies.
+			parts := strings.SplitN(token, ".", 3)
+			headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var header map[string]interface{}
+			if err := json.Unmarshal(headerBytes, &header); err != nil {
+				t.Fatal(err)
+			}
+			header["typ"] = tc.typ
+			newHeader, _ := json.Marshal(header)
+			tampered := resignES256(t, priv, newHeader, parts[1])
+
+			cred, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("ParseCredential with typ %q: %v", tc.typ, err)
+			}
+			if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+				t.Fatalf("Verify with typ %q: %v", tc.typ, err)
+			}
+		})
+	}
+}
+
 // WithSDHashAlgorithm accepts sha-384 and sha-512 (RFC 9901 section 4.1.1
 // allows any IANA hash). module jose recreates sha-256 payloads only, so a
 // credential the SDK issued with another hash must still parse and verify.

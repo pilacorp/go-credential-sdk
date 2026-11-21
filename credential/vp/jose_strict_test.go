@@ -8,6 +8,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -117,6 +118,59 @@ func padBitAlias(t *testing.T, seg string) string {
 		t.Fatalf("last character %q is not a canonical 4-unused-bit character", seg[len(seg)-1])
 	}
 	return seg[:len(seg)-1] + string(alphabet[v|1])
+}
+
+// --- #99 item 4: case-insensitive typ ---
+
+func TestVPJOSEStrict_TypCaseInsensitive(t *testing.T) {
+	did, priv, resolver := vpJoseSetup(t)
+	token := signedJOSEPresentation(t, did, priv, resolver)
+
+	for _, tc := range []struct {
+		name string
+		typ  string
+	}{
+		{"uppercase VP+JWT", "VP+JWT"},
+		{"full prefix Application/vp+jwt", "Application/vp+jwt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := strings.SplitN(token, ".", 3)
+			headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var header map[string]interface{}
+			if err := json.Unmarshal(headerBytes, &header); err != nil {
+				t.Fatal(err)
+			}
+			header["typ"] = tc.typ
+			newHeader, _ := json.Marshal(header)
+			tampered := resignES256VP(t, priv, newHeader, parts[1])
+
+			pres, err := vp.ParsePresentation([]byte(tampered), vp.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("ParsePresentation with typ %q: %v", tc.typ, err)
+			}
+			if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+				t.Fatalf("Verify with typ %q: %v", tc.typ, err)
+			}
+		})
+	}
+}
+
+// resignES256VP signs header and payload with priv for VP tests.
+func resignES256VP(t *testing.T, priv *ecdsa.PrivateKey, header []byte, payloadB64 string) string {
+	t.Helper()
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + payloadB64
+	digest := sha256.Sum256([]byte(input))
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
 // --- Hash and wire format stability ---

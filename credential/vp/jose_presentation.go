@@ -20,6 +20,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/jose"
+	"github.com/pilacorp/go-credential-sdk/jose/jws"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -243,13 +244,15 @@ const TypeJOSE = "JOSE"
 const typeVerifiablePresentation = "VerifiablePresentation"
 
 // isJOSEPresentationTyp reports whether typ names a presentation secured the
-// way vc-jose-cose defines, in either media type spelling.
+// way vc-jose-cose defines. The comparison is case-insensitive and treats a
+// value without "/" as "application/" + value, per RFC 7515 section 4.1.9.
 //
 // jwt.purposeFromTyp has to recognise every value accepted here, or a token this
 // function routes would have its kind decided by its own payload. Adding one
 // means adding it there.
 func isJOSEPresentationTyp(typ string) bool {
-	return typ == TypeVPJWT || typ == "application/"+TypeVPJWT
+	h := jws.Header{"typ": typ}
+	return h.TypIs(TypeVPJWT)
 }
 
 // requireJOSEPresentation checks the payload really is the VC 2.0 presentation

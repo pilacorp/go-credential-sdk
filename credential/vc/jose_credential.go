@@ -18,6 +18,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/jose"
+	"github.com/pilacorp/go-credential-sdk/jose/jws"
 	josesdjwt "github.com/pilacorp/go-credential-sdk/jose/sdjwt"
 	"golang.org/x/sync/errgroup"
 )
@@ -380,17 +381,15 @@ const (
 const TypeJOSE = "JOSE"
 
 // isJOSECredentialTyp reports whether typ names a credential secured the way
-// vc-jose-cose defines, in either the short or the full media type spelling.
+// vc-jose-cose defines. The comparison is case-insensitive and treats a value
+// without "/" as "application/" + value, per RFC 7515 section 4.1.9.
 //
 // jwt.purposeFromTyp has to recognise every value accepted here, or a token this
 // function routes would have its kind decided by its own payload. Adding one
 // means adding it there.
 func isJOSECredentialTyp(typ string) bool {
-	switch typ {
-	case TypeVCJWT, "application/" + TypeVCJWT, TypeVCSDJWT, "application/" + TypeVCSDJWT:
-		return true
-	}
-	return false
+	h := jws.Header{"typ": typ}
+	return h.TypIs(TypeVCJWT) || h.TypIs(TypeVCSDJWT)
 }
 
 // Deprecated: prefer AddProofByProvider with a signer provider; this legacy signing helper may be removed in a future release.

@@ -163,6 +163,8 @@ func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, 
 
 // purposeFromTyp reads the media types vc-jose-cose gives the two document
 // kinds. Anything else — including VC 1.1's "JWT" — says nothing and yields "".
+// The comparison is case-insensitive and treats a value without "/" as
+// "application/" + value, per RFC 7515 section 4.1.9.
 //
 // This list must cover every typ the parsers accept: vc.isJOSECredentialTyp and
 // vp.isJOSEPresentationTyp. A typ they route but this one does not know yields
@@ -176,11 +178,11 @@ func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, 
 // either: a presentation secured as an SD-JWT needs a key binding JWT, which
 // this package does not check, so neither end claims support it.
 func purposeFromTyp(header map[string]interface{}) string {
-	typ, _ := header["typ"].(string)
-	switch typ {
-	case "vc+jwt", "application/vc+jwt", "vc+sd-jwt", "application/vc+sd-jwt":
+	h := jws.Header(header)
+	switch {
+	case h.TypIs("vc+jwt") || h.TypIs("vc+sd-jwt"):
 		return "assertionMethod"
-	case "vp+jwt", "application/vp+jwt":
+	case h.TypIs("vp+jwt"):
 		return "authentication"
 	}
 	return ""
