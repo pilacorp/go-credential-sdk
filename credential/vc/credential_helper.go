@@ -625,51 +625,73 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 	return vcdm.CheckValidityPeriod("credential", validFrom, validUntil, leeway)
 }
 
-// checkRevocation checks that credentialStatus is present and, if using a
-// status list, verifies the credential is not revoked.
+// knownStatusType reports whether the SDK implements a credentialStatus type.
+func knownStatusType(t string) bool {
+	return t == "BitstringStatusListEntry" || t == "StatusList2021Entry"
+}
+
+// checkRevocation checks every credentialStatus entry the SDK understands
+// and skips entries with unknown types (VC-JOSE-COSE: "If the extension
+// mechanism type is not understood, this property MUST be ignored").
+//
+// credentialStatus may be a single object or an array of objects
+// (VCDM 2.0 §4.4).
 func checkRevocation(c CredentialData) error {
-	// If there's no credentialStatus at all, treat as not using revocation → no error.
 	rawStatus, ok := c["credentialStatus"]
 	if !ok || rawStatus == nil {
 		return nil
 	}
 
-	statusMap, ok := rawStatus.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("credentialStatus must be an object")
-	}
+	entries := convertToArray(rawStatus)
+	for i, entry := range entries {
+		statusMap, ok := entry.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("credentialStatus[%d] must be an object", i)
+		}
+		if len(statusMap) == 0 {
+			continue
+		}
 
-	// If credentialStatus is an empty object, also treat it as "no revocation info".
-	if len(statusMap) == 0 {
-		return nil
-	}
+		typ, _ := statusMap["type"].(string)
+		if !knownStatusType(typ) {
+			continue
+		}
 
+		if err := checkStatusEntry(statusMap, i); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkStatusEntry validates and checks a single credentialStatus entry of a
+// known type.
+func checkStatusEntry(statusMap map[string]interface{}, index int) error {
 	rawStatusListCredential, ok := statusMap["statusListCredential"]
 	if !ok || rawStatusListCredential == nil {
-		return fmt.Errorf("credentialStatus.statusListCredential is required")
+		return fmt.Errorf("credentialStatus[%d].statusListCredential is required", index)
 	}
 
 	statusListCredential, ok := rawStatusListCredential.(string)
 	if !ok || statusListCredential == "" {
-		return fmt.Errorf("credentialStatus.statusListCredential must be a non-empty string")
+		return fmt.Errorf("credentialStatus[%d].statusListCredential must be a non-empty string", index)
 	}
 
 	rawStatusListIndex, ok := statusMap["statusListIndex"]
 	if !ok || rawStatusListIndex == nil {
-		return fmt.Errorf("credentialStatus.statusListIndex is required")
+		return fmt.Errorf("credentialStatus[%d].statusListIndex is required", index)
 	}
 
 	statusListIndex, ok := rawStatusListIndex.(string)
 	if !ok || statusListIndex == "" {
-		return fmt.Errorf("credentialStatus.statusListIndex must be a non-empty string")
+		return fmt.Errorf("credentialStatus[%d].statusListIndex must be a non-empty string", index)
 	}
 
 	position, err := strconv.Atoi(statusListIndex)
 	if err != nil {
-		return fmt.Errorf("invalid credentialStatus.statusListIndex: %w", err)
+		return fmt.Errorf("invalid credentialStatus[%d].statusListIndex: %w", index, err)
 	}
 
-	// Call status list API and check revocation based on encodedList bits.
 	isRevoked, err := credentialstatus.FetchAndCheckRevocation(statusListCredential, position)
 	if err != nil {
 		return fmt.Errorf("failed to check revocation: %w", err)
