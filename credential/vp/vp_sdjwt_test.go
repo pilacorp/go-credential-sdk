@@ -267,3 +267,64 @@ func TestVPSDJWT_EnvelopedCredentialMediaTypes(t *testing.T) {
 		t.Fatalf("credential id should use vc+jwt media type, got %q", id[:min(len(id), 40)])
 	}
 }
+
+// S1: A raw vp+sd-jwt token whose payload carries _sd at the root (disclosable
+// holder) must be rejected by the parser, regardless of whether the token is
+// otherwise well-formed. This pins the security rule at the parser level.
+func TestVPSDJWT_ParserRejectsSDAtRoot(t *testing.T) {
+	// Build a minimal vp+sd-jwt token by hand with _sd at the root.
+	header := map[string]interface{}{
+		"typ": "vp+sd-jwt",
+		"alg": "ES256",
+		"kid": "did:example:holder#key-1",
+	}
+	payload := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiablePresentation"},
+		"_sd_alg":  "sha-256",
+		"_sd":      []interface{}{"WyJzYWx0IiwgImhvbGRlciIsICJkaWQ6ZXhhbXBsZTpob2xkZXIiXQ"},
+	}
+	hBytes, _ := json.Marshal(header)
+	pBytes, _ := json.Marshal(payload)
+	token := base64.RawURLEncoding.EncodeToString(hBytes) + "." +
+		base64.RawURLEncoding.EncodeToString(pBytes) + ".fake-sig~"
+
+	_, err := vp.ParseJOSEPresentation(token)
+	if err == nil {
+		t.Fatal("expected error for _sd at the root of a vp+sd-jwt payload")
+	}
+	if !strings.Contains(err.Error(), "_sd") || !strings.Contains(err.Error(), "selective disclosure") {
+		t.Fatalf("error should mention _sd and selective disclosure: %v", err)
+	}
+}
+
+// S1: A raw vp+sd-jwt token where _sd is nested inside "holder" (a secured
+// property) must be rejected.
+func TestVPSDJWT_ParserRejectsSDInsideHolder(t *testing.T) {
+	header := map[string]interface{}{
+		"typ": "vp+sd-jwt",
+		"alg": "ES256",
+		"kid": "did:example:holder#key-1",
+	}
+	payload := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiablePresentation"},
+		"_sd_alg":  "sha-256",
+		"holder": map[string]interface{}{
+			"id":  "did:example:holder",
+			"_sd": []interface{}{"fake-digest"},
+		},
+	}
+	hBytes, _ := json.Marshal(header)
+	pBytes, _ := json.Marshal(payload)
+	token := base64.RawURLEncoding.EncodeToString(hBytes) + "." +
+		base64.RawURLEncoding.EncodeToString(pBytes) + ".fake-sig~"
+
+	_, err := vp.ParseJOSEPresentation(token)
+	if err == nil {
+		t.Fatal("expected error for _sd nested inside holder")
+	}
+	if !strings.Contains(err.Error(), "selective disclosure") {
+		t.Fatalf("error should mention selective disclosure: %v", err)
+	}
+}

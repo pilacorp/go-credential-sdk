@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
@@ -159,6 +161,15 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 	// put it in cnf.jwk so a verifier can require a Key Binding JWT signed by
 	// this key.
 	if options.confirmationKey != nil {
+		// KB-JWT (RFC 9901 §4.3.1) computes sd_hash with the hash algorithm of
+		// the disclosures. The SDK's SDHash is sha-256 only, so a credential
+		// whose _sd_alg is not sha-256 cannot produce or verify a valid KB-JWT.
+		// Refuse at issuance so the holder does not discover the problem at
+		// presentation time.
+		if alg, _ := vcMap["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
+			return nil, fmt.Errorf("WithConfirmationKey requires sha-256 disclosures; _sd_alg is %q, "+
+				"and the SDK cannot compute sd_hash for a Key Binding JWT with another algorithm", alg)
+		}
 		cnfJWK, err := ecPublicKeyToJWK(options.confirmationKey)
 		if err != nil {
 			return nil, fmt.Errorf("WithConfirmationKey: %w", err)
@@ -601,6 +612,12 @@ func (j *JOSECredential) PresentWithKBJWT(
 	if audience == "" || nonce == "" {
 		return nil, fmt.Errorf("audience and nonce are required for KB-JWT")
 	}
+	// SDHash is sha-256 only (RFC 9901 §4.3.1). A credential whose _sd_alg is
+	// another algorithm would produce a wrong sd_hash and the verifier would
+	// reject the KB-JWT.
+	if alg, _ := j.payloadData["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
+		return nil, fmt.Errorf("KB-JWT requires sha-256 disclosures; credential _sd_alg is %q", alg)
+	}
 
 	issuerJWT := j.signingInput + "." + j.signature
 	sdJWTPresentation := sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures)
@@ -735,6 +752,11 @@ func (j *JOSECredential) verifyKBJWT(options *credentialOptions) error {
 	if j.kbJWT == "" {
 		return fmt.Errorf("KB-JWT required but not present")
 	}
+	// SDHash is sha-256 only. A credential whose _sd_alg is another algorithm
+	// cannot produce the right sd_hash, so the KB-JWT would never verify.
+	if alg, _ := j.payloadData["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
+		return fmt.Errorf("KB-JWT requires sha-256 disclosures; credential _sd_alg is %q", alg)
+	}
 	// Extract the holder's key from cnf.jwk in the signed payload.
 	holderKey, err := extractCNFKey(j.payloadData)
 	if err != nil {
@@ -773,8 +795,6 @@ func (j *JOSECredential) verifyKBJWT(options *credentialOptions) error {
 	return nil
 }
 
-// extractCNFKey reads the holder's public key from the cnf.jwk claim in a
-// credential payload (RFC 9901 §4.1.2, RFC 7800 §3.2).
 // ecPublicKeyToJWK serialises an ECDSA public key as a JWK map (RFC 7518 §6.2)
 // suitable for the cnf.jwk claim. Only P-256 and secp256k1 are supported.
 func ecPublicKeyToJWK(key crypto.PublicKey) (map[string]interface{}, error) {
@@ -789,8 +809,9 @@ func ecPublicKeyToJWK(key crypto.PublicKey) (map[string]interface{}, error) {
 		crv = "P-256"
 		size = 32
 	default:
-		// secp256k1 is not in crypto/elliptic but its BitSize is 256.
-		if pub.Curve != nil && pub.Curve.Params().BitSize == 256 {
+		// secp256k1 is not in crypto/elliptic; compare by curve parameters
+		// (P and N), the same way jose/internal/ec.kindOf does it.
+		if pub.Curve != nil && isSecp256k1(pub.Params()) {
 			crv = "secp256k1"
 			size = 32
 		} else {
@@ -809,6 +830,17 @@ func ecPublicKeyToJWK(key crypto.PublicKey) (map[string]interface{}, error) {
 	}, nil
 }
 
+// isSecp256k1 reports whether the curve parameters match the secp256k1 curve by
+// comparing P and N, the same way jose/internal/ec.sameCurve does. BitSize alone
+// is unreliable: P-256 and secp256k1 share the same bit size.
+func isSecp256k1(p *elliptic.CurveParams) bool {
+	ref := secp256k1.S256().Params()
+	return p.P != nil && p.N != nil &&
+		p.P.Cmp(ref.P) == 0 && p.N.Cmp(ref.N) == 0
+}
+
+// extractCNFKey reads the holder's public key from the cnf.jwk claim in a
+// credential payload (RFC 9901 §4.1.2, RFC 7800 §3.2).
 func extractCNFKey(payload map[string]interface{}) (crypto.PublicKey, error) {
 	cnfRaw, ok := payload["cnf"]
 	if !ok {

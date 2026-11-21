@@ -535,11 +535,21 @@ func TestParsePresentation_RejectsSDJWTShape(t *testing.T) {
 
 	// A vp+jwt token with disclosures glued on is still rejected: it either
 	// fails the typ/format consistency check or the SD-JWT split.
-	for _, suffix := range []string{"~", "~WyJhIiwgImIiXQ", "~junk!!!"} {
-		t.Run("suffix "+suffix, func(t *testing.T) {
-			_, err := vp.ParsePresentation([]byte(token+suffix), vp.WithResolver(resolver))
+	for _, tc := range []struct {
+		suffix  string
+		wantSub string // substring the error must contain
+	}{
+		{"~", "typ"},                        // typ vp+jwt does not match SD-JWT format
+		{"~WyJhIiwgImIiXQ", "split SD-JWT"}, // Split sees a KB-JWT shape and refuses
+		{"~junk!!!", "split SD-JWT"},        // josesdjwt.Split refuses the bad segment
+	} {
+		t.Run("suffix "+tc.suffix, func(t *testing.T) {
+			_, err := vp.ParsePresentation([]byte(token+tc.suffix), vp.WithResolver(resolver))
 			if err == nil {
 				t.Fatal("expected an error for a vp+jwt with disclosures appended")
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("error should contain %q: %v", tc.wantSub, err)
 			}
 		})
 	}

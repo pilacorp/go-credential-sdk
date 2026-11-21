@@ -170,6 +170,52 @@ func TestAudContains(t *testing.T) {
 	}
 }
 
+// S3: CustomFields must reject reserved VCDM 2.0 keys.
+func TestValidateCustomFields_RejectsReserved(t *testing.T) {
+	for _, key := range []string{
+		"@context", "type", "id", "holder",
+		"validFrom", "validUntil", "verifiableCredential", "proof",
+	} {
+		t.Run(key, func(t *testing.T) {
+			err := validateCustomFields(map[string]interface{}{key: "anything"})
+			if err == nil {
+				t.Fatalf("expected error for reserved key %q", key)
+			}
+			if !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("error should mention %q and reserved: %v", key, err)
+			}
+		})
+	}
+}
+
+// S3: CustomFields with non-reserved keys must be accepted.
+func TestValidateCustomFields_AcceptsCustom(t *testing.T) {
+	err := validateCustomFields(map[string]interface{}{
+		"termsOfAgreement": "value",
+		"customClaim":      42,
+	})
+	if err != nil {
+		t.Fatalf("expected no error for custom keys: %v", err)
+	}
+}
+
+// S3: serializePresentationContents propagates the reserved-key error.
+func TestSerializePresentationContents_RejectsReservedCustomFields(t *testing.T) {
+	vpc := &PresentationContents{
+		Context:      []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		Types:        []string{"VerifiablePresentation"},
+		Holder:       "did:example:holder",
+		CustomFields: map[string]interface{}{"holder": "did:example:attacker"},
+	}
+	_, err := serializePresentationContents(vpc)
+	if err == nil {
+		t.Fatal("expected error for reserved CustomFields key 'holder'")
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("error should mention reserved: %v", err)
+	}
+}
+
 // mustP256VM builds a P-256 JsonWebKey2020 VM or fails the test.
 func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) vmpkg.VerificationMethodEntry {
 	t.Helper()
