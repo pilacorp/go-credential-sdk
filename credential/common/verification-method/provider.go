@@ -3,12 +3,18 @@ package verificationmethod
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"time"
 )
+
+// ErrDIDNotFound is returned by a ResolverProvider when the DID does not
+// exist or has been deactivated. Callers can distinguish this from a
+// transport failure using errors.Is.
+var ErrDIDNotFound = errors.New("verificationmethod: DID not found or deactivated")
 
 // ResolverProvider resolves a DID Document by DID.
 //
@@ -84,6 +90,9 @@ func (r *HTTPResolver) ResolveDocument(ctx context.Context, did string) (*DIDDoc
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return nil, fmt.Errorf("%w: DID resolver returned %s", ErrDIDNotFound, resp.Status)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("DID resolver API returned non-200 status: %s", resp.Status)
 	}

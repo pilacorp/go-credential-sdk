@@ -4,6 +4,7 @@ import (
 	"crypto/elliptic"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // KeyKind identifies the key type a verification method holds, so VM selection
@@ -151,9 +152,13 @@ func selectLatestActiveVM(doc *DIDDocument, purpose string, match func(*Verifica
 
 	var bestVM *VerificationMethodEntry
 	bestN := -1
+	now := time.Now()
 	for i := range doc.VerificationMethod {
 		vm := &doc.VerificationMethod[i]
 		if vm.Revoked != nil {
+			continue
+		}
+		if vm.Expires != nil && !now.Before(*vm.Expires) {
 			continue
 		}
 		if !idInPurposeArray(vm.ID, doc.ID, purposeArr) {

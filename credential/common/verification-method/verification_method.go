@@ -28,6 +28,7 @@ type VerificationMethodEntry struct {
 	PublicKeyMultibase string     `json:"publicKeyMultibase,omitempty"`
 	Revoked            *time.Time `json:"revoked,omitempty"`
 	RevocationReason   string     `json:"revocationReason,omitempty"`
+	Expires            *time.Time `json:"expires,omitempty"`
 }
 
 // DIDDocument represents the structure of a resolved DID Document. Only
