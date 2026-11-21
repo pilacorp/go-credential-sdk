@@ -32,6 +32,10 @@ func TestSigningKeyAccept(t *testing.T) {
 	p256Input := signingInputFor(t, AlgES256)
 	secpInput := signingInputFor(t, AlgES256K)
 
+	mismatchedAlgInput := signingInputFor(t, AlgES256K)
+	critHdr, _ := json.Marshal(map[string]interface{}{"alg": AlgES256, "crit": []string{"urn:x"}, "urn:x": true})
+	critInput := base64.RawURLEncoding.EncodeToString(critHdr) + "." + strings.SplitN(p256Input, ".", 2)[1]
+
 	p256Digest := sha256.Sum256([]byte(p256Input))
 	secpDigest := sha256.Sum256([]byte(secpInput))
 
@@ -73,6 +77,11 @@ func TestSigningKeyAccept(t *testing.T) {
 		{"63 bytes", p256SigningKey, p256Input, make([]byte, 63), "got 63 bytes"},
 		{"72 bytes (DER)", p256SigningKey, p256Input, make([]byte, 72), "got 72 bytes"},
 		{"256 bytes (RSA)", p256SigningKey, p256Input, make([]byte, 256), "got 256 bytes"},
+		// The self-check is jws.Verify on the finished token, so a header the
+		// token could not be verified with is refused even though the
+		// signature itself is valid for the key.
+		{"header alg differs from the key's", p256SigningKey, mismatchedAlgInput, rs(p256Key, mismatchedAlgInput), "does not verify against verification method"},
+		{"header carries crit", p256SigningKey, critInput, rs(p256Key, critInput), "does not verify against verification method"},
 		{"parsed token: no key, another key's signature", SigningKey{}, p256Input, rs(other, p256Input), ""},
 		{"parsed token: no key, wrong length", SigningKey{}, p256Input, make([]byte, 72), "got 72 bytes"},
 	}
