@@ -533,11 +533,13 @@ func TestParsePresentation_RejectsSDJWTShape(t *testing.T) {
 		t.Fatalf("the unmodified presentation must still parse: %v", err)
 	}
 
+	// A vp+jwt token with disclosures glued on is still rejected: it either
+	// fails the typ/format consistency check or the SD-JWT split.
 	for _, suffix := range []string{"~", "~WyJhIiwgImIiXQ", "~junk!!!"} {
 		t.Run("suffix "+suffix, func(t *testing.T) {
 			_, err := vp.ParsePresentation([]byte(token+suffix), vp.WithResolver(resolver))
-			if err == nil || !strings.Contains(err.Error(), "SD-JWT disclosures, which are not supported") {
-				t.Fatalf("error = %v, want the disclosures to be named while parsing", err)
+			if err == nil {
+				t.Fatal("expected an error for a vp+jwt with disclosures appended")
 			}
 		})
 	}

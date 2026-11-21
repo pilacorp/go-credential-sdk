@@ -48,13 +48,14 @@ type PresentationData jsonmap.JSONMap
 
 // PresentationContents represents the structured contents of a Presentation.
 type PresentationContents struct {
-	Context               []interface{}   `json:"context,omitempty"`
-	ID                    string          `json:"id,omitempty"`
-	Types                 []string        `json:"type,omitempty"`
-	Holder                string          `json:"holder,omitempty"`
-	ValidFrom             time.Time       `json:"validFrom,omitempty"`  // Issuance date
-	ValidUntil            time.Time       `json:"validUntil,omitempty"` // Expiration date
-	VerifiableCredentials []vc.Credential `json:"verifiableCredential,omitempty"`
+	Context               []interface{}          `json:"context,omitempty"`
+	ID                    string                 `json:"id,omitempty"`
+	Types                 []string               `json:"type,omitempty"`
+	Holder                string                 `json:"holder,omitempty"`
+	ValidFrom             time.Time              `json:"validFrom,omitempty"`  // Issuance date
+	ValidUntil            time.Time              `json:"validUntil,omitempty"` // Expiration date
+	VerifiableCredentials []vc.Credential        `json:"verifiableCredential,omitempty"`
+	CustomFields          map[string]interface{} `json:"customFields,omitempty"` // Additional VP-level claims
 }
 
 // ErrAudienceUnbound is returned by Verify when WithRequireAudience is set
@@ -105,6 +106,10 @@ type presentationOptions struct {
 	requireAudience bool
 	// Signing: allow a signing call to replace a signature already present.
 	replaceProof bool
+	// SD-JWT options (vp+sd-jwt): paths that become selectively disclosable.
+	sdSelectivePaths []string
+	sdAlg            string
+	sdShuffle        bool
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -313,6 +318,24 @@ func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt 
 	}
 }
 
+// WithSDSelectivePaths (issuing, vp+sd-jwt) makes the named fields selectively
+// disclosable in a vp+sd-jwt presentation. Only claims that a verifier does NOT
+// need to decide on are eligible: @context, type, holder, verifiableCredential
+// and the structural properties are never disclosable.
+func WithSDSelectivePaths(paths []string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.sdSelectivePaths = paths
+	}
+}
+
+// WithSDHashAlgorithm (issuing, vp+sd-jwt) selects the hash algorithm for
+// SD-JWT digests. Defaults to sha-256 (RFC 9901 §4.1.1).
+func WithSDHashAlgorithm(alg string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.sdAlg = alg
+	}
+}
+
 // signingOptions returns opts for a signing call, minus proof verification:
 // there is no signature to verify before signing, and the signing paths check
 // the fresh signature against the verification method's key. The other
@@ -386,7 +409,11 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 	}
 
 	if isSDJWTShaped(valStr) {
-		return nil, fmt.Errorf("presentation carries SD-JWT disclosures, which are not supported for presentations")
+		p, err := ParseJOSEPresentation(valStr, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
 
 	return nil, fmt.Errorf("failed to parse presentation")

@@ -124,6 +124,10 @@ func serializePresentationContents(vpc *PresentationContents) (PresentationData,
 	if !vpc.ValidUntil.IsZero() {
 		vpJSON["validUntil"] = vpc.ValidUntil.Format(time.RFC3339)
 	}
+	for k, v := range vpc.CustomFields {
+		vpJSON[k] = v
+	}
+
 	if len(vpc.VerifiableCredentials) > 0 {
 		// Serialize credentials for presentation storage
 		credentialList := make([]interface{}, len(vpc.VerifiableCredentials))
