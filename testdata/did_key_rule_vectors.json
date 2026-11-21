@@ -161,6 +161,18 @@
       },
       "in_assertion_method": true,
       "expect_accepted": false
+    },
+    {
+      "name": "key expires a few days after the reference time",
+      "vm": {
+        "id": "did:example:test#key-1",
+        "type": "JsonWebKey2020",
+        "controller": "did:example:test",
+        "publicKeyJwk": {"kty": "EC", "crv": "P-256", "x": "LQjPqkNFY_XEmPCYQSdPKSPhTBy3iZ6FnxrWcCCjzRw", "y": "zeVQSLWpgkL2XFeKzq7kxWg_PYuArJ44HRxe3-WwQAw"},
+        "expires": "2026-11-10T00:00:00Z"
+      },
+      "in_assertion_method": true,
+      "expect_accepted": true
     }
   ]
 }
