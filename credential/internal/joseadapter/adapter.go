@@ -28,6 +28,7 @@ func NewSigner(alg string, sp signer.SignerProvider) (jws.Signer, error) {
 		if err != nil {
 			return nil, err
 		}
-		return jwtutil.TrimRecoveryByte(raw), nil
+		sig := jwtutil.TrimRecoveryByte(raw)
+		return jwtutil.NormalizeLowS(alg, sig), nil
 	})
 }

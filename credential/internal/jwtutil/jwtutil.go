@@ -8,9 +8,13 @@
 package jwtutil
 
 import (
+	"crypto/elliptic"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"time"
+
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 )
 
 // SetIssuedAt records when the signing input was fixed — which is when the
@@ -96,4 +100,44 @@ func TrimRecoveryByte(signature []byte) []byte {
 	}
 
 	return signature
+}
+
+// curveOrder returns the order n of the curve named by alg ("ES256" → P-256,
+// "ES256K" → secp256k1). Unknown algorithms return nil and the caller skips
+// normalization.
+func curveOrder(alg string) *big.Int {
+	switch alg {
+	case "ES256":
+		return elliptic.P256().Params().N
+	case "ES256K":
+		return secp256k1.S256().N
+	}
+	return nil
+}
+
+// NormalizeLowS ensures the s component of a 64-byte ECDSA signature (r||s)
+// satisfies s <= n/2 (the "low-S" form). ECDSA produces two equally valid
+// signatures for any message: (r, s) and (r, n-s). Canonicalizing to low-S
+// prevents signature malleability from changing Hash() on the same token.
+//
+// alg names the JWS algorithm ("ES256" or "ES256K"). An unrecognised alg is
+// returned unchanged — an extra algorithm does not break existing signatures.
+func NormalizeLowS(alg string, sig []byte) []byte {
+	if len(sig) != 64 {
+		return sig
+	}
+	n := curveOrder(alg)
+	if n == nil {
+		return sig
+	}
+	halfN := new(big.Int).Rsh(n, 1) // n/2
+	s := new(big.Int).SetBytes(sig[32:])
+	if s.Cmp(halfN) > 0 {
+		s.Sub(n, s)
+		out := make([]byte, 64)
+		copy(out[:32], sig[:32])
+		s.FillBytes(out[32:])
+		return out
+	}
+	return sig
 }

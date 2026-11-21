@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -534,5 +535,132 @@ func TestParseCredential_ReturnsUntypedNilOnError(t *testing.T) {
 				t.Fatalf("ParseCredential returned a non-nil Credential (%T) on error", c)
 			}
 		})
+	}
+}
+
+// --- #99 item 14: low-S normalization ---
+
+// extractS returns the s component from a 64-byte ECDSA signature embedded in
+// a vc+jwt token's third segment.
+func extractS(t *testing.T, token string) *big.Int {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[len(parts)-1])
+	if err != nil {
+		t.Fatalf("decode sig: %v", err)
+	}
+	if len(sigBytes) != 64 {
+		t.Fatalf("sig length = %d, want 64", len(sigBytes))
+	}
+	return new(big.Int).SetBytes(sigBytes[32:])
+}
+
+func TestJOSE_LowS_P256(t *testing.T) {
+	const did = "did:example:lows-p256"
+	halfN := new(big.Int).Rsh(elliptic.P256().Params().N, 1)
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	// Sign 1000 times and verify every signature has s <= n/2.
+	for i := 0; i < 1000; i++ {
+		cred, err := vc.NewJOSECredential(joseContents(did),
+			vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+			t.Fatal(err)
+		}
+		ser, err := cred.Serialize()
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := extractS(t, ser.(string))
+		if s.Cmp(halfN) > 0 {
+			t.Fatalf("iteration %d: s > n/2 (high-S signature)", i)
+		}
+	}
+}
+
+// highSSecp256k1Signer wraps a real signer and flips every signature to high-S
+// before returning it.
+type highSSecp256k1Signer struct {
+	inner signer.SignerProvider
+	n     *big.Int
+}
+
+func (h *highSSecp256k1Signer) Sign(digest []byte) ([]byte, error) {
+	raw, err := h.inner.Sign(digest)
+	if err != nil {
+		return nil, err
+	}
+	// Trim recovery byte if present.
+	sig := raw
+	if len(sig) == 65 {
+		sig = sig[:64]
+	}
+	halfN := new(big.Int).Rsh(h.n, 1)
+	s := new(big.Int).SetBytes(sig[32:])
+	if s.Cmp(halfN) <= 0 {
+		// Flip to high-S.
+		s.Sub(h.n, s)
+		s.FillBytes(sig[32:])
+	}
+	return sig, nil
+}
+
+func TestJOSE_LowS_Secp256k1_HighSInput(t *testing.T) {
+	const (
+		did  = "did:example:lows-secp"
+		priv = "57600b3f2b7e1054094e14cd85c72a40dc74c4ee062bb381cea604b55ce56aec"
+	)
+
+	inner, err := signer.NewDefaultProvider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// secp256k1 order from decred
+	n, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16)
+	highS := &highSSecp256k1Signer{inner: inner, n: n}
+	halfN := new(big.Int).Rsh(n, 1)
+
+	vm := vmpkg.NewSecp256k1VM(did, "key-1", pubHex(t, priv))
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	cred, err := vc.NewJOSECredential(joseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cred.AddProofByProvider(highS, vc.WithResolver(resolver)); err != nil {
+		t.Fatal(err)
+	}
+	ser, err := cred.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := ser.(string)
+
+	s := extractS(t, token)
+	if s.Cmp(halfN) > 0 {
+		t.Fatal("adapter did not normalize high-S to low-S")
+	}
+
+	// The normalized token must still verify.
+	parsed, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify: %v", err)
 	}
 }
