@@ -197,8 +197,8 @@ func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used
 
 						info, exists := disclosureMap[h]
 						if !exists {
-							// Placeholder without disclosure - keep it to preserve array structure
-							out = append(out, map[string]interface{}{"...": h})
+							// RFC 9901 section 7.1 step 3d: an element whose digest has
+							// no disclosure is removed, not kept as {"...": digest}.
 							continue
 						}
 

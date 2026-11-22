@@ -698,11 +698,11 @@ func TestReconstruct_DisclosedClaimHoldingAnUnrevealedElement(t *testing.T) {
 		},
 		{
 			// The case that regressed. skills comes back; the element inside
-			// stays a placeholder, because that is what withholding it means.
+			// is removed, because that is what withholding it means
+			// (RFC 9901 section 7.1 step 3d).
 			name:        "the claim revealed, the element inside withheld",
 			disclosures: []string{skills},
-			wantSkills: []interface{}{"go",
-				map[string]interface{}{"...": digestFor(rust)}},
+			wantSkills:  []interface{}{"go"},
 		},
 		{
 			name:        "neither revealed",
