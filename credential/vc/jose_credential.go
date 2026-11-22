@@ -20,9 +20,9 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
-	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/kbjwt"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 	josesdjwt "github.com/pilacorp/go-credential-sdk/jose/sdjwt"
@@ -749,50 +749,13 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 // verifyKBJWT verifies the Key Binding JWT of this credential against the
 // holder's key (cnf.jwk in the payload) and the verifier's expectations.
 func (j *JOSECredential) verifyKBJWT(options *credentialOptions) error {
-	if j.kbJWT == "" {
-		return fmt.Errorf("KB-JWT required but not present")
-	}
-	// SDHash is sha-256 only. A credential whose _sd_alg is another algorithm
-	// cannot produce the right sd_hash, so the KB-JWT would never verify.
-	if alg, _ := j.payloadData["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
-		return fmt.Errorf("KB-JWT requires sha-256 disclosures; credential _sd_alg is %q", alg)
-	}
-	// Extract the holder's key from cnf.jwk in the signed payload.
-	holderKey, err := ExtractCNFKey(j.payloadData)
-	if err != nil {
-		return fmt.Errorf("KB-JWT: %w", err)
-	}
-	// sd_hash is computed over the SD-JWT as the verifier receives it,
-	// without the KB-JWT (RFC 9901 §4.3.1). Rebuild it from the signed form.
-	issuerJWT := j.signingInput + "." + j.signature
-	var sb strings.Builder
-	sb.WriteString(issuerJWT)
-	for _, d := range j.disclosures {
-		if d == "" {
-			continue
-		}
-		sb.WriteString("~")
-		sb.WriteString(d)
-	}
-	sb.WriteString("~")
-	expectedSDHash := josesdjwt.SDHash(sb.String())
-
-	maxAge := options.kbMaxAge
-	if maxAge <= 0 {
-		maxAge = 5 * time.Minute
-	}
-
-	_, err = josesdjwt.VerifyKBJWT(j.kbJWT, holderKey, josesdjwt.KBVerifyParams{
-		Audience:  options.kbAudience,
-		Nonce:     options.kbNonce,
-		SDHash:    expectedSDHash,
-		MaxAge:    maxAge,
-		ClockSkew: options.kbClockSkew,
-	})
-	if err != nil {
-		return fmt.Errorf("KB-JWT: %w", err)
-	}
-	return nil
+	return kbjwt.Verify("credential", j.payloadData, j.signingInput, j.signature,
+		j.disclosures, j.kbJWT, kbjwt.Params{
+			Audience:  options.kbAudience,
+			Nonce:     options.kbNonce,
+			MaxAge:    options.kbMaxAge,
+			ClockSkew: options.kbClockSkew,
+		})
 }
 
 // ecPublicKeyToJWK serialises an ECDSA public key as a JWK map (RFC 7518 §6.2)
@@ -837,40 +800,6 @@ func isSecp256k1(p *elliptic.CurveParams) bool {
 	ref := secp256k1.S256().Params()
 	return p.P != nil && p.N != nil &&
 		p.P.Cmp(ref.P) == 0 && p.N.Cmp(ref.N) == 0
-}
-
-// ExtractCNFKey reads the holder's public key from the cnf.jwk claim in a
-// payload (RFC 9901 §4.1.2, RFC 7800 §3.2). The VP KB-JWT path uses the same
-// extraction, so it is exported.
-func ExtractCNFKey(payload map[string]interface{}) (crypto.PublicKey, error) {
-	cnfRaw, ok := payload["cnf"]
-	if !ok {
-		return nil, fmt.Errorf("payload has no cnf claim; issuer must set cnf.jwk to bind a holder")
-	}
-	cnf, ok := cnfRaw.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("cnf is %T, not a JSON object", cnfRaw)
-	}
-	jwkRaw, ok := cnf["jwk"]
-	if !ok {
-		return nil, fmt.Errorf("cnf has no jwk member")
-	}
-	jwkMap, ok := jwkRaw.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("cnf.jwk is %T, not a JSON object", jwkRaw)
-	}
-	kty, _ := jwkMap["kty"].(string)
-	crv, _ := jwkMap["crv"].(string)
-	x, _ := jwkMap["x"].(string)
-	y, _ := jwkMap["y"].(string)
-	if kty == "" || crv == "" || x == "" || y == "" {
-		return nil, fmt.Errorf("cnf.jwk is missing kty, crv, x or y")
-	}
-	pub, err := vmpkg.ECPubFromJWK(&vmpkg.JWK{Kty: kty, Crv: crv, X: x, Y: y})
-	if err != nil {
-		return nil, fmt.Errorf("cnf.jwk: %w", err)
-	}
-	return pub, nil
 }
 
 // recreateSDPayload delegates to sdjwt.RecreatePayload, which validates

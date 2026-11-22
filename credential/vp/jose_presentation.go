@@ -17,6 +17,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/kbjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/jose"
@@ -769,50 +770,13 @@ func (j *JOSEPresentation) executeOptions(opts ...PresentationOpt) error {
 // verifyKBJWT verifies the Key Binding JWT of this presentation against the
 // holder's key (cnf.jwk in the payload) and the verifier's expectations.
 func (j *JOSEPresentation) verifyKBJWT(options *presentationOptions) error {
-	if j.kbJWT == "" {
-		return fmt.Errorf("KB-JWT required but not present")
-	}
-	// SDHash is sha-256 only (RFC 9901 §4.3.1). A presentation whose _sd_alg
-	// is another algorithm cannot produce the right sd_hash.
-	if alg, _ := j.payloadData["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
-		return fmt.Errorf("KB-JWT requires sha-256 disclosures; presentation _sd_alg is %q", alg)
-	}
-	// Extract the holder's key from cnf.jwk in the signed payload.
-	holderKey, err := vc.ExtractCNFKey(j.payloadData)
-	if err != nil {
-		return fmt.Errorf("KB-JWT: %w", err)
-	}
-	// sd_hash is computed over the SD-JWT as the verifier receives it,
-	// without the KB-JWT (RFC 9901 §4.3.1). Rebuild it from the signed form.
-	issuerJWT := j.signingInput + "." + j.signature
-	var sb strings.Builder
-	sb.WriteString(issuerJWT)
-	for _, d := range j.disclosures {
-		if d == "" {
-			continue
-		}
-		sb.WriteString("~")
-		sb.WriteString(d)
-	}
-	sb.WriteString("~")
-	expectedSDHash := josesdjwt.SDHash(sb.String())
-
-	maxAge := options.kbMaxAge
-	if maxAge <= 0 {
-		maxAge = 5 * time.Minute
-	}
-
-	_, err = josesdjwt.VerifyKBJWT(j.kbJWT, holderKey, josesdjwt.KBVerifyParams{
-		Audience:  options.kbAudience,
-		Nonce:     options.kbNonce,
-		SDHash:    expectedSDHash,
-		MaxAge:    maxAge,
-		ClockSkew: options.kbClockSkew,
-	})
-	if err != nil {
-		return fmt.Errorf("KB-JWT: %w", err)
-	}
-	return nil
+	return kbjwt.Verify("presentation", j.payloadData, j.signingInput, j.signature,
+		j.disclosures, j.kbJWT, kbjwt.Params{
+			Audience:  options.kbAudience,
+			Nonce:     options.kbNonce,
+			MaxAge:    options.kbMaxAge,
+			ClockSkew: options.kbClockSkew,
+		})
 }
 
 // pendingChallengeDomain returns the payload and signing input that this call's
