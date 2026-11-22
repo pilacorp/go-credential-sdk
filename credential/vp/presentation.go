@@ -110,6 +110,12 @@ type presentationOptions struct {
 	sdSelectivePaths []string
 	sdAlg            string
 	sdShuffle        bool
+	// KB-JWT verification (RFC 9901 §7.3): when kbAudience is non-empty, a
+	// Key Binding JWT is required and verified.
+	kbAudience  string
+	kbNonce     string
+	kbMaxAge    time.Duration
+	kbClockSkew time.Duration
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -333,6 +339,38 @@ func WithSDSelectivePaths(paths []string) PresentationOpt {
 func WithSDHashAlgorithm(alg string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.sdAlg = alg
+	}
+}
+
+// WithKBJWT (verifying) requires a Key Binding JWT (RFC 9901 §7.3) on a
+// vp+sd-jwt presentation. The audience is this verifier's identifier, the nonce
+// was given to the holder for this transaction. Without this option a KB-JWT
+// is accepted but ignored, as RFC 9901 §7.3 requires: "Whether to require Key
+// Binding is up to the Verifier's policy and MUST NOT be based on whether or
+// not a Key Binding JWT is provided in the presentation."
+//
+// Implies WithVerifyProof.
+func WithKBJWT(audience, nonce string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.kbAudience = audience
+		p.kbNonce = nonce
+		p.isVerifyProof = true
+	}
+}
+
+// WithKBJWTMaxAge sets the maximum age of the iat claim in the KB-JWT. The
+// default is 5 minutes.
+func WithKBJWTMaxAge(d time.Duration) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.kbMaxAge = d
+	}
+}
+
+// WithKBJWTClockSkew sets the clock skew tolerance for KB-JWT time checks (iat,
+// exp, nbf). The default is zero.
+func WithKBJWTClockSkew(d time.Duration) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.kbClockSkew = d
 	}
 }
 

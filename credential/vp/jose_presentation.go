@@ -35,6 +35,7 @@ type JOSEPresentation struct {
 	signingKey   jwt.SigningKey   // Verification method the header names; zero for a parsed presentation
 	disclosures  []string         // SD-JWT disclosures (vp+sd-jwt); nil for vp+jwt
 	disclosable  bool             // true when the payload was secured as an SD-JWT
+	kbJWT        string           // Key Binding JWT, if present (RFC 9901 §4.3)
 }
 
 var _ Presentation = (*JOSEPresentation)(nil)
@@ -200,20 +201,19 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 	rawJWT = strings.TrimSpace(strings.Trim(rawJWT, "\""))
 
 	// Split SD-JWT combined format when present. For plain JWS the split
-	// gives issuerJWT = rawJWT, no disclosures, no kbJWT.
+	// gives issuerJWT = rawJWT, no disclosures, no parsedKBJWT.
 	var issuerJWT string
 	var disclosures []string
+	var parsedKBJWT string
 	if sdjwt.IsSDJWT(rawJWT) {
-		var kbJWT string
 		var sErr error
-		issuerJWT, disclosures, kbJWT, sErr = josesdjwt.Split(rawJWT)
+		issuerJWT, disclosures, parsedKBJWT, sErr = josesdjwt.Split(rawJWT)
 		if sErr != nil {
 			return nil, fmt.Errorf("failed to split SD-JWT presentation: %w", sErr)
 		}
-		// KB-JWT on a VP is not specified in vc-jose-cose; refuse it.
-		if kbJWT != "" {
-			return nil, fmt.Errorf("vp+sd-jwt does not support a key binding JWT")
-		}
+		// RFC 9901 §7.3 step 1: acceptance MUST NOT be based on whether or not
+		// a Key Binding JWT is provided. The KB-JWT is stored and verified only
+		// when the verifier's policy requires it (WithKBJWT).
 	} else {
 		if !isJWTPresentation(rawJWT) {
 			return nil, fmt.Errorf("invalid JWT format")
@@ -314,6 +314,7 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 		signature:    signature,
 		disclosures:  disclosures,
 		disclosable:  disclosable,
+		kbJWT:        parsedKBJWT,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -658,6 +659,11 @@ func (j *JOSEPresentation) Serialize() (any, error) {
 	token := j.signingInput + "." + j.signature
 	if j.disclosable {
 		token = sdjwt.BuildSDJWTPresentation(token, j.disclosures)
+		// A Key Binding JWT goes after the trailing ~, turning the combined form
+		// into <issuerJWT>~<D.1>~…~<D.N>~<KB-JWT> (RFC 9901 §4).
+		if j.kbJWT != "" {
+			token += j.kbJWT
+		}
 	}
 	return token, nil
 }
@@ -742,12 +748,70 @@ func (j *JOSEPresentation) executeOptions(opts ...PresentationOpt) error {
 		return fmt.Errorf("presentation verification failed: %w", err)
 	}
 
+	// KB-JWT verification, after the issuer JWT is verified, as RFC 9901 §7.3
+	// step 5 specifies. When WithKBJWT is set, a KB-JWT is required; when not
+	// set, a KB-JWT is accepted but ignored.
+	if options.kbAudience != "" {
+		if err := j.verifyKBJWT(options); err != nil {
+			return fmt.Errorf("presentation verification failed: %w", err)
+		}
+	}
+
 	if options.isCheckExpiration {
 		if err := checkExpiration(j.payloadData, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 
+	return nil
+}
+
+// verifyKBJWT verifies the Key Binding JWT of this presentation against the
+// holder's key (cnf.jwk in the payload) and the verifier's expectations.
+func (j *JOSEPresentation) verifyKBJWT(options *presentationOptions) error {
+	if j.kbJWT == "" {
+		return fmt.Errorf("KB-JWT required but not present")
+	}
+	// SDHash is sha-256 only (RFC 9901 §4.3.1). A presentation whose _sd_alg
+	// is another algorithm cannot produce the right sd_hash.
+	if alg, _ := j.payloadData["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
+		return fmt.Errorf("KB-JWT requires sha-256 disclosures; presentation _sd_alg is %q", alg)
+	}
+	// Extract the holder's key from cnf.jwk in the signed payload.
+	holderKey, err := vc.ExtractCNFKey(j.payloadData)
+	if err != nil {
+		return fmt.Errorf("KB-JWT: %w", err)
+	}
+	// sd_hash is computed over the SD-JWT as the verifier receives it,
+	// without the KB-JWT (RFC 9901 §4.3.1). Rebuild it from the signed form.
+	issuerJWT := j.signingInput + "." + j.signature
+	var sb strings.Builder
+	sb.WriteString(issuerJWT)
+	for _, d := range j.disclosures {
+		if d == "" {
+			continue
+		}
+		sb.WriteString("~")
+		sb.WriteString(d)
+	}
+	sb.WriteString("~")
+	expectedSDHash := josesdjwt.SDHash(sb.String())
+
+	maxAge := options.kbMaxAge
+	if maxAge <= 0 {
+		maxAge = 5 * time.Minute
+	}
+
+	_, err = josesdjwt.VerifyKBJWT(j.kbJWT, holderKey, josesdjwt.KBVerifyParams{
+		Audience:  options.kbAudience,
+		Nonce:     options.kbNonce,
+		SDHash:    expectedSDHash,
+		MaxAge:    maxAge,
+		ClockSkew: options.kbClockSkew,
+	})
+	if err != nil {
+		return fmt.Errorf("KB-JWT: %w", err)
+	}
 	return nil
 }
 

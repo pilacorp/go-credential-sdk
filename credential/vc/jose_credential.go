@@ -758,7 +758,7 @@ func (j *JOSECredential) verifyKBJWT(options *credentialOptions) error {
 		return fmt.Errorf("KB-JWT requires sha-256 disclosures; credential _sd_alg is %q", alg)
 	}
 	// Extract the holder's key from cnf.jwk in the signed payload.
-	holderKey, err := extractCNFKey(j.payloadData)
+	holderKey, err := ExtractCNFKey(j.payloadData)
 	if err != nil {
 		return fmt.Errorf("KB-JWT: %w", err)
 	}
@@ -839,9 +839,10 @@ func isSecp256k1(p *elliptic.CurveParams) bool {
 		p.P.Cmp(ref.P) == 0 && p.N.Cmp(ref.N) == 0
 }
 
-// extractCNFKey reads the holder's public key from the cnf.jwk claim in a
-// credential payload (RFC 9901 §4.1.2, RFC 7800 §3.2).
-func extractCNFKey(payload map[string]interface{}) (crypto.PublicKey, error) {
+// ExtractCNFKey reads the holder's public key from the cnf.jwk claim in a
+// payload (RFC 9901 §4.1.2, RFC 7800 §3.2). The VP KB-JWT path uses the same
+// extraction, so it is exported.
+func ExtractCNFKey(payload map[string]interface{}) (crypto.PublicKey, error) {
 	cnfRaw, ok := payload["cnf"]
 	if !ok {
 		return nil, fmt.Errorf("payload has no cnf claim; issuer must set cnf.jwk to bind a holder")
