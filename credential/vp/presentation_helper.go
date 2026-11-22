@@ -63,9 +63,6 @@ func checkExpiration(p PresentationData, leeway time.Duration) error {
 // vc options WithVCValidation forwarded. The presentation resolver and leeway
 // go first so a caller-supplied vc.WithResolver or vc.WithLeeway overrides them.
 //
-// verifyCredentials verifies every embedded credential's proof, plus whatever
-// vc options WithVCValidation forwarded.
-//
 // An absent verifiableCredential is accepted: VCDM 2.0 §4.13 says the
 // property MAY be present. A present-but-empty array is rejected: §4.13
 // requires "one or more verifiable credential … objects" when the property

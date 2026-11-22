@@ -621,10 +621,6 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 		}
 	}
 
-	// VC-JOSE-COSE §5.4: unknown extension types MUST be ignored. When every
-	// credentialSchema entry has a type the SDK does not implement, validation
-	// succeeds — there is nothing to reject.
-
 	return nil
 }
 
