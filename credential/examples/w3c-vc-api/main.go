@@ -22,23 +22,19 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mr-tron/base58"
-
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vm "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
-// p256MulticodecPrefix is varint(0x1200) — the multicodec for a p256-pub key.
-var p256MulticodecPrefix = []byte{0x80, 0x24}
-
 // didKeyFromP256 encodes a P-256 public key as a did:key plus its multibase key
 // string (the part after "did:key:", also used as the VM fragment).
-func didKeyFromP256(pub *ecdsa.PublicKey) (did, multibaseKey string) {
-	compressed := elliptic.MarshalCompressed(elliptic.P256(), pub.X, pub.Y)
-	raw := append(append([]byte{}, p256MulticodecPrefix...), compressed...)
-	multibaseKey = "z" + base58.Encode(raw)
-	return "did:key:" + multibaseKey, multibaseKey
+func didKeyFromP256(pub *ecdsa.PublicKey) (did, multibaseKey string, err error) {
+	multibaseKey, err = vm.EncodePubMultibase(pub)
+	if err != nil {
+		return "", "", err
+	}
+	return "did:key:" + multibaseKey, multibaseKey, nil
 }
 
 // p256FromDIDKey decodes the P-256 public key from a did:key (with or without a
@@ -48,21 +44,14 @@ func p256FromDIDKey(did string) (*ecdsa.PublicKey, string, error) {
 	if i := strings.IndexByte(s, '#'); i >= 0 {
 		s = s[:i]
 	}
-	if !strings.HasPrefix(s, "z") {
-		return nil, "", fmt.Errorf("did:key: expected base58btc 'z' multibase: %q", did)
-	}
-	raw, err := base58.Decode(s[1:])
+	pub, err := vm.ECPubFromMultibase(s)
 	if err != nil {
-		return nil, "", fmt.Errorf("did:key: decode multibase: %w", err)
+		return nil, "", fmt.Errorf("did:key %q: %w", did, err)
 	}
-	if len(raw) < len(p256MulticodecPrefix) || raw[0] != p256MulticodecPrefix[0] || raw[1] != p256MulticodecPrefix[1] {
+	if pub.Curve != elliptic.P256() {
 		return nil, "", fmt.Errorf("did:key: not a p256-pub multikey: %q", did)
 	}
-	x, y := elliptic.UnmarshalCompressed(elliptic.P256(), raw[len(p256MulticodecPrefix):])
-	if x == nil {
-		return nil, "", fmt.Errorf("did:key: invalid P-256 point: %q", did)
-	}
-	return &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, s, nil
+	return pub, s, nil
 }
 
 // didKeyResolver resolves any P-256 did:key into a DID document with a single
@@ -113,8 +102,10 @@ func main() {
 		if err != nil {
 			log.Fatalf("generate issuer key: %v", err)
 		}
-		b := make([]byte, 32)
-		priv.D.FillBytes(b)
+		b, err := priv.Bytes()
+		if err != nil {
+			log.Fatalf("encode issuer key: %v", err)
+		}
 		issuerHex = hex.EncodeToString(b)
 	}
 
@@ -122,7 +113,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("load issuer key: %v", err)
 	}
-	issuerDID, multibaseKey := didKeyFromP256(prov.Public())
+	issuerDID, multibaseKey, err := didKeyFromP256(prov.Public())
+	if err != nil {
+		log.Fatalf("encode issuer did:key: %v", err)
+	}
 
 	s := &server{
 		issuer:      prov,
