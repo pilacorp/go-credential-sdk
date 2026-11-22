@@ -1,25 +1,53 @@
 package verificationmethod
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
-	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/eckey"
 )
 
 // --- helpers ---
 
+// pointOf returns pub as a SEC 1 uncompressed point (0x04 || X || Y).
+func pointOf(t *testing.T, pub *ecdsa.PublicKey) []byte {
+	t.Helper()
+	point, err := eckey.UncompressedBytes(pub)
+	if err != nil {
+		t.Fatalf("UncompressedBytes: %v", err)
+	}
+	return point
+}
+
+// coordinates splits pub's point into X and Y, each the field size.
+func coordinates(t *testing.T, pub *ecdsa.PublicKey) (x, y []byte) {
+	t.Helper()
+	point := pointOf(t, pub)
+	size := (len(point) - 1) / 2
+	return point[1 : 1+size], point[1+size:]
+}
+
+// samePoint reports whether two keys hold the same point.
+func samePoint(t *testing.T, a, b *ecdsa.PublicKey) bool {
+	t.Helper()
+	return bytes.Equal(pointOf(t, a), pointOf(t, b))
+}
+
 // jwkFor builds an EC JWK with coordinates left-padded to size (RFC 7518).
-func jwkFor(crv string, pub *ecdsa.PublicKey, size int) *JWK {
+func jwkFor(t *testing.T, crv string, pub *ecdsa.PublicKey, size int) *JWK {
+	t.Helper()
+	x, y := coordinates(t, pub)
 	xb := make([]byte, size)
 	yb := make([]byte, size)
-	pub.X.FillBytes(xb)
-	pub.Y.FillBytes(yb)
+	copy(xb[size-len(x):], x)
+	copy(yb[size-len(y):], y)
 	return &JWK{
 		Kty: "EC",
 		Crv: crv,
@@ -80,23 +108,17 @@ func TestECPubFromJWK_AllCurves(t *testing.T) {
 		t.Run(crv, func(t *testing.T) {
 			pub, size := genKey(t, crv)
 
-			got, err := ECPubFromJWK(jwkFor(crv, pub, size))
+			got, err := ECPubFromJWK(jwkFor(t, crv, pub, size))
 			if err != nil {
 				t.Fatalf("ECPubFromJWK: %v", err)
 			}
 
-			raw := marshalUncompressed(got)
+			raw := pointOf(t, got)
 			if want := 1 + 2*size; len(raw) != want {
 				t.Fatalf("len = %d bytes, want %d", len(raw), want)
 			}
-			if raw[0] != 0x04 {
-				t.Errorf("first byte = %#x, want 0x04 (uncompressed)", raw[0])
-			}
-			if x := new(big.Int).SetBytes(raw[1 : 1+size]); x.Cmp(pub.X) != 0 {
-				t.Errorf("X coordinate did not round-trip")
-			}
-			if y := new(big.Int).SetBytes(raw[1+size:]); y.Cmp(pub.Y) != 0 {
-				t.Errorf("Y coordinate did not round-trip")
+			if !bytes.Equal(raw, pointOf(t, pub)) {
+				t.Errorf("point did not round-trip")
 			}
 		})
 	}
@@ -105,7 +127,7 @@ func TestECPubFromJWK_AllCurves(t *testing.T) {
 // The old version hard-coded secp256k1; a P-256 JWK must keep its curve.
 func TestECPubFromJWK_KeepsCurve(t *testing.T) {
 	pub, size := genKey(t, "P-256")
-	got, err := ECPubFromJWK(jwkFor("P-256", pub, size))
+	got, err := ECPubFromJWK(jwkFor(t, "P-256", pub, size))
 	if err != nil {
 		t.Fatalf("ECPubFromJWK: %v", err)
 	}
@@ -115,13 +137,17 @@ func TestECPubFromJWK_KeepsCurve(t *testing.T) {
 }
 
 func TestECPubFromJWK_RejectsOffCurvePoint(t *testing.T) {
-	pub, size := genKey(t, "P-256")
-	bad := &ecdsa.PublicKey{
-		Curve: pub.Curve,
-		X:     pub.X,
-		Y:     new(big.Int).Add(pub.Y, big.NewInt(1)), // off-curve
+	pub, _ := genKey(t, "P-256")
+	x, y := coordinates(t, pub)
+	offCurve := append([]byte{}, y...)
+	offCurve[len(offCurve)-1] ^= 1 // Y±1 is not on the curve
+	bad := &JWK{
+		Kty: "EC",
+		Crv: "P-256",
+		X:   base64.RawURLEncoding.EncodeToString(x),
+		Y:   base64.RawURLEncoding.EncodeToString(offCurve),
 	}
-	if _, err := ECPubFromJWK(jwkFor("P-256", bad, size)); err == nil {
+	if _, err := ECPubFromJWK(bad); err == nil {
 		t.Fatal("ECPubFromJWK accepted an off-curve point, want error")
 	}
 }
@@ -130,14 +156,14 @@ func TestECPubFromJWK_RejectsBadInput(t *testing.T) {
 	pub, size := genKey(t, "P-256")
 
 	t.Run("unsupported curve", func(t *testing.T) {
-		jwk := jwkFor("P-521", pub, size)
+		jwk := jwkFor(t, "P-521", pub, size)
 		if _, err := ECPubFromJWK(jwk); err == nil {
 			t.Fatal("accepted crv=P-521, want error")
 		}
 	})
 
 	t.Run("unsupported kty", func(t *testing.T) {
-		jwk := jwkFor("P-256", pub, size)
+		jwk := jwkFor(t, "P-256", pub, size)
 		jwk.Kty = "OKP"
 		if _, err := ECPubFromJWK(jwk); err == nil {
 			t.Fatal("accepted kty=OKP, want error")
@@ -145,7 +171,7 @@ func TestECPubFromJWK_RejectsBadInput(t *testing.T) {
 	})
 
 	t.Run("oversized coordinate", func(t *testing.T) {
-		jwk := jwkFor("P-256", pub, 48) // oversized for a 32-byte curve
+		jwk := jwkFor(t, "P-256", pub, 48) // oversized for a 32-byte curve
 		if _, err := ECPubFromJWK(jwk); err == nil {
 			t.Fatal("accepted a 48-byte coordinate on P-256, want error")
 		}
@@ -166,7 +192,7 @@ func TestECPubFromJWK_AcceptsShortCoordinate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("generate P-256: %v", err)
 		}
-		if len(priv.PublicKey.X.Bytes()) < 32 { // X has a leading zero byte
+		if x, _ := coordinates(t, &priv.PublicKey); x[0] == 0 { // X has a leading zero byte
 			pub = &priv.PublicKey
 		}
 	}
@@ -174,24 +200,25 @@ func TestECPubFromJWK_AcceptsShortCoordinate(t *testing.T) {
 		t.Fatal("no P-256 key with a short X coordinate found in 3000 tries")
 	}
 
+	x, y := coordinates(t, pub)
 	jwk := &JWK{
 		Kty: "EC",
 		Crv: "P-256",
-		X:   base64.RawURLEncoding.EncodeToString(pub.X.Bytes()),
-		Y:   base64.RawURLEncoding.EncodeToString(pub.Y.Bytes()),
+		X:   base64.RawURLEncoding.EncodeToString(bytes.TrimLeft(x, "\x00")),
+		Y:   base64.RawURLEncoding.EncodeToString(bytes.TrimLeft(y, "\x00")),
 	}
 	got, err := ECPubFromJWK(jwk)
 	if err != nil {
 		t.Fatalf("ECPubFromJWK on a short coordinate: %v", err)
 	}
-	if got.X.Cmp(pub.X) != 0 || got.Y.Cmp(pub.Y) != 0 {
+	if !samePoint(t, got, pub) {
 		t.Error("short coordinate did not round-trip")
 	}
 }
 
 func TestP256PubKeyFromJWK_RejectsOtherCurves(t *testing.T) {
 	pub, size := genKey(t, "P-384")
-	if _, err := P256PubKeyFromJWK(jwkFor("P-384", pub, size)); err == nil {
+	if _, err := P256PubKeyFromJWK(jwkFor(t, "P-384", pub, size)); err == nil {
 		t.Fatal("P256PubKeyFromJWK accepted a P-384 JWK, want error")
 	}
 }
@@ -208,10 +235,10 @@ func TestECPubFromMultibase_NISTCurves(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ECPubFromMultibase: %v", err)
 			}
-			if len(marshalUncompressed(got)) != 1+2*size {
+			if len(pointOf(t, got)) != 1+2*size {
 				t.Fatalf("decoded on the wrong curve: %s", got.Curve.Params().Name)
 			}
-			if got.X.Cmp(pub.X) != 0 || got.Y.Cmp(pub.Y) != 0 {
+			if !samePoint(t, got, pub) {
 				t.Error("key did not round-trip")
 			}
 		})
@@ -242,10 +269,7 @@ func TestECPubFromVM_HexAndJWK(t *testing.T) {
 	priv := newSecp256k1Key(t)
 	pub := &priv.PublicKey
 
-	xb := make([]byte, 32)
-	yb := make([]byte, 32)
-	pub.X.FillBytes(xb)
-	pub.Y.FillBytes(yb)
+	xb, yb := coordinates(t, pub)
 
 	cases := []struct {
 		name string
@@ -253,7 +277,7 @@ func TestECPubFromVM_HexAndJWK(t *testing.T) {
 	}{
 		{
 			name: "publicKeyHex",
-			vm:   VerificationMethodEntry{ID: "did:example:1#k", PublicKeyHex: "0x" + hex.EncodeToString(marshalUncompressed(pub))},
+			vm:   VerificationMethodEntry{ID: "did:example:1#k", PublicKeyHex: "0x" + hex.EncodeToString(pointOf(t, pub))},
 		},
 		{
 			name: "publicKeyJwk",
@@ -272,7 +296,7 @@ func TestECPubFromVM_HexAndJWK(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ECPubFromVM: %v", err)
 			}
-			if got.X.Cmp(pub.X) != 0 || got.Y.Cmp(pub.Y) != 0 {
+			if !samePoint(t, got, pub) {
 				t.Error("key did not round-trip")
 			}
 		})
@@ -292,7 +316,7 @@ func TestECPubFromVM_CompressedHex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ECPubFromVM: %v", err)
 	}
-	if got.X.Cmp(pub.X) != 0 || got.Y.Cmp(pub.Y) != 0 {
+	if !samePoint(t, got, pub) {
 		t.Error("compressed hex did not round-trip")
 	}
 }
@@ -300,13 +324,13 @@ func TestECPubFromVM_CompressedHex(t *testing.T) {
 // A P-256 JWK passes through, on its own curve.
 func TestECPubFromVM_P256JWK(t *testing.T) {
 	pub, size := genKey(t, "P-256")
-	vm := VerificationMethodEntry{ID: "did:example:1#k", PublicKeyJwk: jwkFor("P-256", pub, size)}
+	vm := VerificationMethodEntry{ID: "did:example:1#k", PublicKeyJwk: jwkFor(t, "P-256", pub, size)}
 
 	got, err := ECPubFromVM(&vm)
 	if err != nil {
 		t.Fatalf("ECPubFromVM: %v", err)
 	}
-	if got.Curve != elliptic.P256() || got.X.Cmp(pub.X) != 0 || got.Y.Cmp(pub.Y) != 0 {
+	if got.Curve != elliptic.P256() || !samePoint(t, got, pub) {
 		t.Error("key did not round-trip on P-256")
 	}
 }
@@ -327,7 +351,7 @@ func TestECPubFromVM_P256Multikey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ECPubFromVM: %v", err)
 	}
-	if got.Curve != elliptic.P256() || got.X.Cmp(pub.X) != 0 || got.Y.Cmp(pub.Y) != 0 {
+	if got.Curve != elliptic.P256() || !samePoint(t, got, pub) {
 		t.Error("key did not round-trip on P-256")
 	}
 }
@@ -377,5 +401,16 @@ func TestECPubFromVM_NoKeyMaterial(t *testing.T) {
 	vm := VerificationMethodEntry{ID: "did:example:1#k"}
 	if _, err := ECPubFromVM(&vm); err == nil {
 		t.Fatal("ECPubFromVM on an empty VM returned no error")
+	}
+}
+
+// A P-256 key built by hand without its point is refused, not dereferenced.
+func TestP256KeyWithoutPointIsRefused(t *testing.T) {
+	noPoint := &ecdsa.PublicKey{Curve: elliptic.P256()}
+	if _, err := NewP256VM("did:example:1", "key-1", noPoint); err == nil {
+		t.Error("NewP256VM accepted a key with no point")
+	}
+	if _, err := PubToMultikeyBytes(noPoint); err == nil {
+		t.Error("PubToMultikeyBytes accepted a key with no point")
 	}
 }
