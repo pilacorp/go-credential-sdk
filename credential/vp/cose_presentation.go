@@ -386,6 +386,9 @@ func (p *COSEPresentation) verifyCOSEProof(options *presentationOptions) error {
 		if iss == "" {
 			return fmt.Errorf("relative kid %q requires an iss claim", kid)
 		}
+		if iss != holder {
+			return fmt.Errorf("iss %q does not match holder %q", iss, holder)
+		}
 		kid = iss + kid
 	}
 

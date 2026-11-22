@@ -20,7 +20,7 @@ import (
 // COSE header labels (RFC 9052 §3.1, IANA COSE Header Parameters).
 const (
 	HeaderAlg         = 1
-	HeaderCrit        = 2  // Critical headers (RFC 9052 §3.1)
+	HeaderCrit        = 2 // Critical headers (RFC 9052 §3.1)
 	HeaderContentType = 3
 	HeaderKid         = 4
 	HeaderTyp         = 16 // CoAP Content-Format / "typ" per RFC 9596

@@ -926,3 +926,49 @@ func TestCOSECredential_DisallowedAlg(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestCOSECredential_RelativeKid_IssNotIssuer_Rejected(t *testing.T) {
+	// iss names another DID. Even when the issuer's document happens to list
+	// a method under that DID, a relative kid must not resolve against it.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-kid-iss-mismatch"
+	other := "did:example:someone-else"
+	vm := mustP256VM(t, other, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context":  []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":      []interface{}{"VerifiableCredential"},
+		"id":        "urn:uuid:kid-iss-mismatch-001",
+		"issuer":    did,
+		"iss":       other,
+		"validFrom": time.Now().Add(-time.Hour).Format(time.RFC3339),
+		"iat":       time.Now().Unix(),
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:subject",
+		},
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vc",
+		Kid:         "#key-1",
+		Typ:         "application/vc+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = parsed.Verify(vc.WithResolver(resolver))
+	if err == nil || !strings.Contains(err.Error(), "does not match issuer") {
+		t.Fatalf("Verify error = %v, want iss/issuer mismatch", err)
+	}
+}

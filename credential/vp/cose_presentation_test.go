@@ -859,3 +859,43 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+func TestCOSEPresentation_RelativeKid_IssNotHolder_Rejected(t *testing.T) {
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-kid-iss-mismatch"
+	other := "did:example:someone-else"
+	vm := mustP256VM(t, other, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiablePresentation"},
+		"id":       "urn:uuid:vp-kid-iss-mismatch-001",
+		"holder":   did,
+		"iss":      other,
+		"iat":      time.Now().Unix(),
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vp",
+		Kid:         "#key-1",
+		Typ:         "application/vp+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vp.ParseCOSEPresentation(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = parsed.Verify(vp.WithResolver(resolver))
+	if err == nil || !strings.Contains(err.Error(), "does not match holder") {
+		t.Fatalf("Verify error = %v, want iss/holder mismatch", err)
+	}
+}

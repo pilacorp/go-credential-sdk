@@ -305,6 +305,9 @@ func (c *COSECredential) verifyCOSEProof(options *credentialOptions) error {
 		if iss == "" {
 			return fmt.Errorf("relative kid %q requires an iss claim", kid)
 		}
+		if iss != issuer {
+			return fmt.Errorf("iss %q does not match issuer %q", iss, issuer)
+		}
 		kid = iss + kid
 	}
 
