@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -420,6 +421,147 @@ func TestProtected_Deterministic(t *testing.T) {
 // generateSecp256k1Key generates a random secp256k1 private key.
 func generateSecp256k1Key() (*ecdsa.PrivateKey, error) {
 	return crypto.GenerateKey()
+}
+
+// TestVerifyECDSA_ES256K_StrictSecp256k1 verifies that ES256K (-47) accepts
+// only secp256k1, not any 256-bit curve that happens not to be P-256.
+// RFC 8812 §3.2: secp256k1 MUST be used only with ES256K.
+func TestVerifyECDSA_ES256K_StrictSecp256k1(t *testing.T) {
+	// stubCurve256 is a 256-bit elliptic curve that is NOT secp256k1.
+	// It wraps P-256 with a different name to prove the implementation
+	// checks curve identity, not just bit size.
+	stub := &stubCurve256{Curve: elliptic.P256()}
+	key, err := ecdsa.GenerateKey(stub, rand.Reader)
+	if err != nil {
+		t.Fatalf("gen key on stub curve: %v", err)
+	}
+
+	// Build a fake 64-byte signature (content doesn't matter — we expect
+	// rejection before the crypto check).
+	digest := sha256.Sum256([]byte("test"))
+	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+
+	err = verifyECDSA(&key.PublicKey, digest[:], sig, AlgES256K)
+	if err == nil {
+		t.Fatal("expected verifyECDSA to reject a non-secp256k1 256-bit key with ES256K")
+	}
+	if !strings.Contains(err.Error(), "secp256k1") {
+		t.Fatalf("expected secp256k1 error, got: %v", err)
+	}
+}
+
+// stubCurve256 wraps an elliptic.Curve with a different Params().Name
+// to create a distinct 256-bit curve that is not secp256k1.
+type stubCurve256 struct {
+	elliptic.Curve
+}
+
+func (c *stubCurve256) Params() *elliptic.CurveParams {
+	p := *c.Curve.Params()
+	p.Name = "stub-256"
+	return &p
+}
+
+// --- crit header tests (Finding 2: RFC 9052 §3.1) ---
+
+// encodeCBORMap is a helper that encodes a CBOR map for protected headers.
+func encodeCBORMap(t *testing.T, m map[int]interface{}) []byte {
+	t.Helper()
+	b, err := encMode.Marshal(m)
+	if err != nil {
+		t.Fatalf("encode CBOR map: %v", err)
+	}
+	return b
+}
+
+func TestDecodeProtected_CritKnownAndPresent(t *testing.T) {
+	// crit lists labels that are present and that we process → accepted.
+	m := map[int]interface{}{
+		HeaderAlg:         AlgES256,
+		HeaderContentType: "application/vc",
+		HeaderKid:         []byte("did:example:1#key-1"),
+		HeaderTyp:         "application/vc+cose",
+		HeaderCrit:        []interface{}{HeaderContentType, HeaderTyp},
+	}
+	data := encodeCBORMap(t, m)
+	prot, err := decodeProtected(data)
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if prot.Alg != AlgES256 {
+		t.Errorf("alg = %d, want %d", prot.Alg, AlgES256)
+	}
+}
+
+func TestDecodeProtected_CritUnknownLabel(t *testing.T) {
+	// crit names a label (99) this implementation does not process → rejected.
+	m := map[int]interface{}{
+		HeaderAlg:  AlgES256,
+		HeaderCrit: []interface{}{99},
+		99:         "some-extension",
+	}
+	data := encodeCBORMap(t, m)
+	_, err := decodeProtected(data)
+	if err == nil {
+		t.Fatal("expected rejection for crit naming an unprocessed label")
+	}
+	if !strings.Contains(err.Error(), "crit") {
+		t.Fatalf("expected crit error, got: %v", err)
+	}
+}
+
+func TestDecodeProtected_CritLabelMissingFromProtected(t *testing.T) {
+	// crit names label 3 (content_type) but it is absent from the protected header → rejected.
+	m := map[int]interface{}{
+		HeaderAlg:  AlgES256,
+		HeaderCrit: []interface{}{HeaderContentType},
+	}
+	data := encodeCBORMap(t, m)
+	_, err := decodeProtected(data)
+	if err == nil {
+		t.Fatal("expected rejection for crit naming a label not in the protected header")
+	}
+	if !strings.Contains(err.Error(), "crit") {
+		t.Fatalf("expected crit error, got: %v", err)
+	}
+}
+
+func TestDecodeProtected_CritEmptyArray(t *testing.T) {
+	// RFC 9052 §3.1: "An empty list is not valid."
+	m := map[int]interface{}{
+		HeaderAlg:  AlgES256,
+		HeaderCrit: []interface{}{},
+	}
+	data := encodeCBORMap(t, m)
+	_, err := decodeProtected(data)
+	if err == nil {
+		t.Fatal("expected rejection for empty crit array")
+	}
+	if !strings.Contains(err.Error(), "crit") {
+		t.Fatalf("expected crit error, got: %v", err)
+	}
+}
+
+func TestDecodeProtected_CritNotArray(t *testing.T) {
+	// crit is a string instead of an array → rejected.
+	m := map[int]interface{}{
+		HeaderAlg:  AlgES256,
+		HeaderCrit: "not-an-array",
+	}
+	data := encodeCBORMap(t, m)
+	_, err := decodeProtected(data)
+	if err == nil {
+		t.Fatal("expected rejection for non-array crit")
+	}
+	if !strings.Contains(err.Error(), "crit") {
+		t.Fatalf("expected crit error, got: %v", err)
+	}
 }
 
 // The minimal W3C vector with one bit of its signature flipped must fail

@@ -13,12 +13,14 @@ import (
 	"fmt"
 	"math/big"
 
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/fxamacker/cbor/v2"
 )
 
 // COSE header labels (RFC 9052 §3.1, IANA COSE Header Parameters).
 const (
 	HeaderAlg         = 1
+	HeaderCrit        = 2  // Critical headers (RFC 9052 §3.1)
 	HeaderContentType = 3
 	HeaderKid         = 4
 	HeaderTyp         = 16 // CoAP Content-Format / "typ" per RFC 9596
@@ -105,7 +107,48 @@ func decodeProtected(data []byte) (Protected, error) {
 		p.Typ = typ
 	}
 
+	// RFC 9052 §3.1: if crit (label 2) is present, every listed label must
+	// be present in the protected bucket AND processed by this implementation.
+	// An empty or malformed crit is a fatal error.
+	if v, ok := raw[HeaderCrit]; ok {
+		if err := validateCrit(v, raw); err != nil {
+			return Protected{}, err
+		}
+	}
+
 	return p, nil
+}
+
+// processedLabels is the set of protected-header labels this implementation
+// processes. Used by validateCrit to enforce RFC 9052 §3.1.
+var processedLabels = map[int]bool{
+	HeaderAlg:         true,
+	HeaderCrit:        true,
+	HeaderContentType: true,
+	HeaderKid:         true,
+	HeaderTyp:         true,
+}
+
+// validateCrit enforces RFC 9052 §3.1 for the crit parameter: the value must
+// be a non-empty array of integers; every listed label must be present in the
+// protected bucket and processed by this implementation.
+func validateCrit(critRaw cbor.RawMessage, protMap map[int]cbor.RawMessage) error {
+	var labels []int
+	if err := decMode.Unmarshal(critRaw, &labels); err != nil {
+		return fmt.Errorf("crit (label 2): must be an array of integers: %w", err)
+	}
+	if len(labels) == 0 {
+		return fmt.Errorf("crit (label 2): empty array is not valid (RFC 9052 §3.1)")
+	}
+	for _, label := range labels {
+		if !processedLabels[label] {
+			return fmt.Errorf("crit (label 2): label %d is not processed by this implementation", label)
+		}
+		if _, present := protMap[label]; !present {
+			return fmt.Errorf("crit (label 2): label %d is listed but not present in the protected header", label)
+		}
+	}
+	return nil
 }
 
 // SignFunc signs a SHA-256 digest and returns the raw signature (64-byte r||s).
@@ -294,8 +337,11 @@ func verifyECDSA(key *ecdsa.PublicKey, digest, sig []byte, alg int) error {
 			return fmt.Errorf("alg ES256 (-7) requires a P-256 key, got %s", key.Curve.Params().Name)
 		}
 	case AlgES256K:
-		// secp256k1 has BitSize 256 and Name "secp256k1" (via go-ethereum).
-		if key.Curve.Params().BitSize != 256 || key.Curve.Params().Name == "P-256" {
+		// RFC 8812 §3.2: ES256K needs key type EC2 and curve secp256k1;
+		// secp256k1 MUST be used only with ES256K. Exact curve comparison
+		// against the go-ethereum singleton avoids accepting any other
+		// 256-bit curve that just happens not to be P-256.
+		if key.Curve != ethcrypto.S256() {
 			return fmt.Errorf("alg ES256K (-47) requires a secp256k1 key")
 		}
 	default:
