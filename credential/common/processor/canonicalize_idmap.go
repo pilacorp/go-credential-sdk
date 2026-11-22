@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	ld "github.com/piprate/json-gold/ld"
+	ld "github.com/pilacorp/json-gold/ld"
 )
 
 // CanonicalizeWithIdMap canonicalizes a JSON-LD document with URDNA2015 and
@@ -17,7 +17,7 @@ func CanonicalizeWithIdMap(doc map[string]interface{}) (nquads []string, idMap m
 	if doc == nil {
 		return nil, nil, fmt.Errorf("canonicalize: document is nil")
 	}
-	defer recoverJSONLD(&err, "canonicalize with id map")
+	defer finishJSONLD(&err, "canonicalize with id map")
 	dataset, err := toRDFDataset(doc)
 	if err != nil {
 		return nil, nil, err
@@ -69,9 +69,9 @@ func canonicalizeNQuads(doc map[string]interface{}) (nquads []string, err error)
 	if doc == nil {
 		return nil, fmt.Errorf("canonicalize: document is nil")
 	}
-	defer recoverJSONLD(&err, "canonicalize")
-	// toRDFDataset rather than Normalize, which rebuilds options and drops
-	// SafeMode.
+	defer finishJSONLD(&err, "canonicalize")
+	// toRDFDataset rather than Normalize, whose two steps cannot stop between
+	// them to check the dataset's cost.
 	dataset, err := toRDFDataset(doc)
 	if err != nil {
 		return nil, err
@@ -86,7 +86,8 @@ func canonicalizeNQuads(doc map[string]interface{}) (nquads []string, err error)
 
 // CanonicalizeNQuadsWithIdMap canonicalizes an N-Quads dataset (the form used
 // by the selective-disclosure label-replacement step).
-func CanonicalizeNQuadsWithIdMap(nquads []string) ([]string, map[string]string, error) {
+func CanonicalizeNQuadsWithIdMap(nquads []string) (canonical []string, idMap map[string]string, err error) {
+	defer finishJSONLD(&err, "canonicalize")
 	dataset, err := ld.ParseNQuads(strings.Join(nquads, ""))
 	if err != nil {
 		return nil, nil, fmt.Errorf("canonicalize: parse nquads: %w", err)
@@ -274,7 +275,7 @@ func masked(n ld.Node, id string) interface{} {
 
 // ExpandJSONLD expands a compact JSON-LD document.
 func ExpandJSONLD(doc map[string]interface{}) (result []interface{}, err error) {
-	defer recoverJSONLD(&err, "expand")
+	defer finishJSONLD(&err, "expand")
 	std, err := standardizeForCanonicalization(doc)
 	if err != nil {
 		return nil, fmt.Errorf("expand: standardize: %w", err)
@@ -300,7 +301,7 @@ func ExpandJSONLD(doc map[string]interface{}) (result []interface{}, err error) 
 
 // CompactJSONLD compacts an expanded JSON-LD document against ctx.
 func CompactJSONLD(expanded []interface{}, ctx interface{}) (result map[string]interface{}, err error) {
-	defer recoverJSONLD(&err, "compact")
+	defer finishJSONLD(&err, "compact")
 	out, err := ld.NewJsonLdProcessor().Compact(expanded, ctx, sdOptions())
 	if err != nil {
 		return nil, fmt.Errorf("compact: %w", err)
@@ -311,7 +312,7 @@ func CompactJSONLD(expanded []interface{}, ctx interface{}) (result map[string]i
 // ToRDFNQuads converts a JSON-LD document to N-Quads (each ending in "\n"),
 // in toRDF order (not canonicalized).
 func ToRDFNQuads(doc interface{}) (result []string, err error) {
-	defer recoverJSONLD(&err, "to rdf")
+	defer finishJSONLD(&err, "to rdf")
 	opts := sdOptions()
 	opts.Format = "application/n-quads"
 	if err := limitInlineContexts(opts, doc); err != nil {
@@ -361,7 +362,8 @@ func splitNQuadsKeepNL(s string) []string {
 	return out
 }
 
-// checkExpandedTypes reports `type` values RDF conversion would drop.
+// checkExpandedTypes reports `type` values RDF conversion would drop. json-gold's
+// SafeMode refuses them too; this check runs first so the error names the type.
 func checkExpandedTypes(expanded interface{}) error {
 	if dropped := relativeKeywordValues(expanded, "@type", nil); len(dropped) > 0 {
 		return fmt.Errorf("json-ld: type %q is not defined by @context and would be dropped, leaving it unsigned", dropped[0])
@@ -372,7 +374,9 @@ func checkExpandedTypes(expanded interface{}) error {
 // rejectRelativeIDs reports `id` values RDF conversion would drop. Expansion
 // resolves @id against the base IRI, and with none set a relative id stays
 // relative; ToRDF then skips the node, taking every statement about it (on the
-// root: type, issuer, validUntil, ...) out of the signed bytes.
+// root: type, issuer, validUntil, ...) out of the signed bytes. json-gold's
+// SafeMode refuses such a subject too; this check runs first so the error names
+// the id.
 func rejectRelativeIDs(expanded interface{}) error {
 	if dropped := relativeKeywordValues(expanded, "@id", nil); len(dropped) > 0 {
 		return fmt.Errorf("json-ld: id %q is not an absolute IRI and would be dropped, leaving the node unsigned", dropped[0])

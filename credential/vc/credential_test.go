@@ -2369,11 +2369,12 @@ func TestTermsOfUse_CanonicalizationProducesAbsoluteIRIs(t *testing.T) {
 			"canonicalized n-quads must not contain relative IRIs")
 	})
 
-	t.Run("control: an undeclared policy type degrades to a relative IRI", func(t *testing.T) {
+	t.Run("control: an undeclared policy type has no RDF form", func(t *testing.T) {
 		// This is the trap the README warns about. Asserting it explicitly keeps
 		// the invariant above meaningful: if a future context change silently
 		// started declaring the term, this test would catch that the two cases
-		// are no longer distinct.
+		// are no longer distinct. The legacy canonicalizer drops the relative
+		// IRI; earlier json-gold releases kept it in the signed bytes.
 		doc := contentsWithContext([]interface{}{
 			"https://www.w3.org/ns/credentials/v2",
 		})
@@ -2381,8 +2382,8 @@ func TestTermsOfUse_CanonicalizationProducesAbsoluteIRIs(t *testing.T) {
 		nq, err := processor.CanonicalizeDocument(doc)
 		assert.NoError(t, err)
 
-		assert.Contains(t, string(nq), "<PresentationRequiredPolicy>")
-		assert.Regexp(t, relativeIRIPattern, string(nq))
+		assert.NotContains(t, string(nq), "PresentationRequiredPolicy")
+		assert.NotRegexp(t, relativeIRIPattern, string(nq))
 	})
 }
 

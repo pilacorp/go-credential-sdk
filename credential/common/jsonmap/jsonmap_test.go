@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -1228,9 +1229,11 @@ func TestCanonicalize_Errors(t *testing.T) {
 		wantErr string // substring the returned error must contain
 	}{
 		{
+			// SafeMode refuses a node object that states nothing, before
+			// canonicalization could come out empty.
 			name:    "empty document",
 			doc:     `{}`,
-			wantErr: "canonicalization produced no N-Quads",
+			wantErr: "has no subject and would be dropped",
 		},
 		{
 			name: "context but no terms",
@@ -1240,7 +1243,7 @@ func TestCanonicalize_Errors(t *testing.T) {
 				"https://www.w3.org/ns/credentials/examples/v2"
 			]
 		}`,
-			wantErr: "canonicalization produced no N-Quads",
+			wantErr: "has no subject and would be dropped",
 		},
 		{
 			// An id alone states nothing about the subject.
@@ -1252,7 +1255,7 @@ func TestCanonicalize_Errors(t *testing.T) {
 			],
 			"id": "urn:uuid:subject"
 		}`,
-			wantErr: "canonicalization produced no N-Quads",
+			wantErr: "has no subject and would be dropped",
 		},
 		{
 			name: "no @context",
@@ -1295,10 +1298,8 @@ func TestCanonicalize_Errors(t *testing.T) {
 	}
 }
 
-// TestCanonicalize_RejectsNonJSONInput covers the inputs that cannot be
-// written as JSON: a nil map, and Go types json.Unmarshal never produces.
-// Those panic inside the JSON-LD processor and come back as an error, so
-// callers must round-trip through JSON first, as bodyWithoutProof does.
+// TestCanonicalize_RejectsNonJSONInput covers the inputs that have no JSON
+// form: a nil map, a channel and NaN. Each comes back as an error.
 func TestCanonicalize_RejectsNonJSONInput(t *testing.T) {
 	t.Run("nil document", func(t *testing.T) {
 		got, err := processor.Canonicalize(nil)
@@ -1314,26 +1315,55 @@ func TestCanonicalize_RejectsNonJSONInput(t *testing.T) {
 		name  string
 		value interface{}
 	}{
-		{"int", int(42)},
-		{"int64", int64(42)},
-		{"float32", float32(1.5)},
 		{"channel", make(chan int)},
+		{"NaN", math.NaN()},
 	} {
 		t.Run(tc.name+" value", func(t *testing.T) {
-			doc := map[string]interface{}{
-				"@context": []interface{}{
-					"https://www.w3.org/ns/credentials/v2",
-					"https://www.w3.org/ns/credentials/examples/v2",
-				},
-				"id":    "urn:uuid:subject",
-				"value": tc.value,
-			}
-			got, err := processor.Canonicalize(doc)
+			got, err := processor.Canonicalize(documentWithValue(tc.value))
 			if err == nil {
 				t.Fatalf("expected an error for a %s value, got:\n%s", tc.name, got)
 			}
 			if !strings.Contains(err.Error(), "failed to canonicalize document") {
 				t.Fatalf("error = %q, want it wrapped as a canonicalization failure", err)
+			}
+		})
+	}
+}
+
+// documentWithValue is a credential whose value property is set to value.
+func documentWithValue(value interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		"id":    "urn:uuid:subject",
+		"value": value,
+	}
+}
+
+// A Go number gives the N-Quads of the JSON text it marshals to.
+func TestCanonicalize_ReadsGoNumbersAsJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value interface{}
+		json  float64
+	}{
+		{"int", int(42), 42},
+		{"int64", int64(42), 42},
+		{"float32", float32(1.5), 1.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := processor.Canonicalize(documentWithValue(tc.value))
+			if err != nil {
+				t.Fatalf("Canonicalize of a %s value: %v", tc.name, err)
+			}
+			want, err := processor.Canonicalize(documentWithValue(tc.json))
+			if err != nil {
+				t.Fatalf("Canonicalize of the JSON number: %v", err)
+			}
+			if string(got) != string(want) {
+				t.Fatalf("N-Quads = %q, want %q", got, want)
 			}
 		})
 	}

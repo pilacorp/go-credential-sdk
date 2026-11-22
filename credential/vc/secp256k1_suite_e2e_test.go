@@ -826,13 +826,23 @@ func TestSecp256k1Suite_JWSSignatureMustBe64Bytes(t *testing.T) {
 // The suite's context defines proof at the document root, while credentials/v2
 // scopes that term to the credential. A document using its own term of that
 // name would therefore be signed with a different meaning than it was built
-// with, so signing is refused and the document is left untouched.
+// with, so signing is refused and the document is left untouched. As a graph
+// container, proof moves an object's statements into a named graph, and it
+// cannot hold a bare IRI at all.
 func TestSecp256k1Suite_RefusesWhenTheContextWouldChangeMeaning(t *testing.T) {
 	const did = "did:example:secp-suite-collide"
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did,
 		vmpkg.NewSecp256k1VM(did, "key-1", pubHex(t, suiteSecpPriv))))
 
-	raw := []byte(fmt.Sprintf(`{
+	for name, tc := range map[string]struct {
+		proof   string
+		wantErr string
+	}{
+		"object": {`{"id": "https://notary.example/record/1", "note": "notarised"}`, "changed what the document says"},
+		"IRI":    {`"https://notary.example/record/1"`, "stopped the document from canonicalizing"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := []byte(fmt.Sprintf(`{
       "@context": [
         "https://www.w3.org/ns/credentials/v2",
         {"@vocab": "https://example.org/vocab#"}
@@ -843,38 +853,40 @@ func TestSecp256k1Suite_RefusesWhenTheContextWouldChangeMeaning(t *testing.T) {
       "validFrom": "2026-01-01T00:00:00Z",
       "credentialSubject": {
         "id": "did:example:subject",
-        "proof": "https://notary.example/record/1"
+        "proof": %s
       }
-    }`, did))
+    }`, did, tc.proof))
 
-	cred, err := vc.ParseJSONCredential(raw)
-	if err != nil {
-		t.Fatalf("parse credential: %v", err)
-	}
-	err = cred.AddProofByProvider(secpProvider(t),
-		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
-	if err == nil {
-		t.Fatal("signed a document whose own proof term the suite context redefines")
-	}
-	if !strings.Contains(err.Error(), "changed what the document says") {
-		t.Fatalf("err = %v, want the collision named", err)
-	}
-	if cred.ExtractField("proof") != nil {
-		t.Fatal("a refused signature must not be attached")
-	}
+			cred, err := vc.ParseJSONCredential(raw)
+			if err != nil {
+				t.Fatalf("parse credential: %v", err)
+			}
+			err = cred.AddProofByProvider(secpProvider(t),
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+			if err == nil {
+				t.Fatal("signed a document whose own proof term the suite context redefines")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+			if cred.ExtractField("proof") != nil {
+				t.Fatal("a refused signature must not be attached")
+			}
 
-	// The document must come back exactly as the caller built it.
-	after, err := cred.GetContents()
-	if err != nil {
-		t.Fatalf("contents: %v", err)
-	}
-	var doc map[string]interface{}
-	if err := json.Unmarshal(after, &doc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	ctx, ok := doc["@context"].([]interface{})
-	if !ok || len(ctx) != 2 {
-		t.Fatalf("@context was left modified: %v", doc["@context"])
+			// The document must come back exactly as the caller built it.
+			after, err := cred.GetContents()
+			if err != nil {
+				t.Fatalf("contents: %v", err)
+			}
+			var doc map[string]interface{}
+			if err := json.Unmarshal(after, &doc); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			ctx, ok := doc["@context"].([]interface{})
+			if !ok || len(ctx) != 2 {
+				t.Fatalf("@context was left modified: %v", doc["@context"])
+			}
+		})
 	}
 }
 

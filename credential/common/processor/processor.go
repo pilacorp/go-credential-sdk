@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/piprate/json-gold/ld"
+	"github.com/pilacorp/json-gold/ld"
 )
 
 // ProcessorOpt represents an option for JSON-LD processing.
@@ -141,15 +141,17 @@ func init() {
 	SetDocumentLoaderHTTPClient(nil)
 }
 
-// recoverJSONLD converts a panic from the json-gold library (e.g. its unchecked
-// `@protected.(bool)` assertion on a malformed @context) into an error, so
-// adversarial input cannot crash the process. A well-formed document never
-// panics here, so this is a pure safety net: it does not change the result for
-// any valid document.
-func recoverJSONLD(err *error, op string) {
+// finishJSONLD runs deferred at every entry into json-gold. It converts a panic
+// from the library into an error, so adversarial input cannot crash the
+// process, and marks json-gold's own limit on remote contexts as
+// ErrContextOverflow, so callers check one sentinel whichever limit stopped the
+// operation.
+func finishJSONLD(err *error, op string) {
 	if r := recover(); r != nil {
 		*err = fmt.Errorf("%s: malformed JSON-LD input: %v", op, r)
+		return
 	}
+	*err = markContextOverflow(*err)
 }
 
 // CanonicalizeDocument canonicalizes a document using JSON-LD processing.
@@ -157,11 +159,11 @@ func CanonicalizeDocument(doc map[string]interface{}) (out []byte, err error) {
 	if doc == nil {
 		return nil, fmt.Errorf("failed to canonicalize document: document is nil")
 	}
-	defer recoverJSONLD(&err, "canonicalize document")
+	defer finishJSONLD(&err, "canonicalize document")
 	processor := ld.NewJsonLdProcessor()
 	// The two steps of processor.Normalize, which cannot stop between them to
-	// check the cost. Like it, this leaves SafeMode off: see
-	// TestCanonicalizeDocument_SilentlyDropsUndefinedTerm.
+	// check the cost. SafeMode stays off, as legacy signatures were made that
+	// way: see TestCanonicalizeDocument_SilentlyDropsUndefinedTerm.
 	jsonldOptions := ld.NewJsonLdOptions("")
 	jsonldOptions.DocumentLoader = newContextBudget()
 
