@@ -47,8 +47,7 @@ func vpSuiteDoc(holder string) []byte {
 		"@context": ["https://www.w3.org/ns/credentials/v2"],
 		"id": "urn:uuid:vp-secp-suite-001",
 		"type": ["VerifiablePresentation"],
-		"holder": "` + holder + `",
-		"verifiableCredential": []
+		"holder": "` + holder + `"
 	}`)
 }
 
@@ -166,7 +165,6 @@ func TestVPSecp256k1Suite_ValidityPeriodIsExtensible(t *testing.T) {
 			  "id": "urn:uuid:vp-extensible-001",
 			  "type": ["VerifiablePresentation"],
 			  "holder": "` + holder + `",
-			  "verifiableCredential": [],
 			  "validUntil": "2027-09-21T00:00:00Z"}`)
 
 			pres, err := vp.ParseJSONPresentation(doc)
@@ -207,8 +205,7 @@ func TestVPSecp256k1Suite_SignsVC2Presentation(t *testing.T) {
 		"@context": ["https://www.w3.org/ns/credentials/v2"],
 		"id": "urn:uuid:vp-secp-suite-vc2-001",
 		"type": ["VerifiablePresentation"],
-		"holder": "` + holder + `",
-		"verifiableCredential": []
+		"holder": "` + holder + `"
 	}`)
 
 	pres, err := vp.ParseJSONPresentation(raw)

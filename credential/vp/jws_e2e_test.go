@@ -72,8 +72,7 @@ func vpDoc(holder string) []byte {
 		"@context": ["https://www.w3.org/ns/credentials/v2"],
 		"id": "urn:uuid:vp-jws-001",
 		"type": ["VerifiablePresentation"],
-		"holder": "` + holder + `",
-		"verifiableCredential": []
+		"holder": "` + holder + `"
 	}`)
 }
 

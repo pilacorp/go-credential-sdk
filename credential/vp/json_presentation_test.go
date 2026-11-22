@@ -31,8 +31,7 @@ func TestVP_HolderObject_SignAndVerify(t *testing.T) {
 		"@context": ["https://www.w3.org/ns/credentials/v2"],
 		"id": "urn:uuid:vp-holder-object",
 		"type": ["VerifiablePresentation"],
-		"holder": {"id": "` + holder + `", "name": "Alice"},
-		"verifiableCredential": []
+		"holder": {"id": "` + holder + `", "name": "Alice"}
 	}`)
 
 	pres, err := vp.ParseJSONPresentation(doc)
@@ -61,8 +60,7 @@ func TestVP_HolderObjectWithoutID_RejectedAtSigning(t *testing.T) {
 	pres, err := vp.ParseJSONPresentation([]byte(`{
 		"@context": ["https://www.w3.org/ns/credentials/v2"],
 		"type": ["VerifiablePresentation"],
-		"holder": {"name": "Alice"},
-		"verifiableCredential": []
+		"holder": {"name": "Alice"}
 	}`))
 	if err != nil {
 		t.Fatalf("parse vp: %v", err)
