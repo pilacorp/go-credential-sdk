@@ -378,8 +378,15 @@ func (p *COSEPresentation) verifyCOSEProof(options *presentationOptions) error {
 		return fmt.Errorf("COSE presentation has no holder")
 	}
 
+	// VC-JOSE-COSE §4.1.2: resolve a relative kid (#fragment) only when iss
+	// is present and identifies the same entity as holder. When iss is absent,
+	// the kid MUST be an absolute URL.
 	if len(kid) > 0 && kid[0] == '#' {
-		kid = holder + kid
+		iss, _ := body["iss"].(string)
+		if iss == "" {
+			return fmt.Errorf("relative kid %q requires an iss claim", kid)
+		}
+		kid = iss + kid
 	}
 
 	if options.resolver == nil {

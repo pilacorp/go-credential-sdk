@@ -731,6 +731,159 @@ func TestCOSECredential_IssuerBinding_KidMismatch_Refused(t *testing.T) {
 	}
 }
 
+// --- Finding 1: kid resolution with iss (VC-JOSE-COSE §4.1.2) ---
+
+// signP256COSE is a convenience sign function for COSE tests.
+func signP256COSE(key *ecdsa.PrivateKey) func([]byte) ([]byte, error) {
+	return func(digest []byte) ([]byte, error) {
+		r, s, err := ecdsa.Sign(rand.Reader, key, digest)
+		if err != nil {
+			return nil, err
+		}
+		sig := make([]byte, 64)
+		r.FillBytes(sig[:32])
+		s.FillBytes(sig[32:])
+		return sig, nil
+	}
+}
+
+func TestCOSECredential_RelativeKid_NoIss_Rejected(t *testing.T) {
+	// A COSE VC with a relative kid (#fragment) and no iss claim in the
+	// payload must be rejected per VC-JOSE-COSE §4.1.2.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-kid-noiss"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	// Build a COSE_Sign1 with a relative kid (#key-1) and NO iss in payload.
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context":  []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":      []interface{}{"VerifiableCredential"},
+		"id":        "urn:uuid:kid-noiss-001",
+		"issuer":    did,
+		"validFrom": time.Now().Add(-time.Hour).Format(time.RFC3339),
+		"iat":       time.Now().Unix(),
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:subject",
+		},
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vc",
+		Kid:         "#key-1", // relative kid
+		Typ:         "application/vc+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = parsed.Verify(vc.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("expected rejection: relative kid without iss")
+	}
+	if !strings.Contains(err.Error(), "iss") {
+		t.Fatalf("expected iss-related error, got: %v", err)
+	}
+}
+
+func TestCOSECredential_RelativeKid_MatchingIss_Accepted(t *testing.T) {
+	// A COSE VC with a relative kid and an iss claim matching issuer must be
+	// accepted.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-kid-iss"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context":  []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":      []interface{}{"VerifiableCredential"},
+		"id":        "urn:uuid:kid-iss-001",
+		"issuer":    did,
+		"iss":       did, // iss matches issuer
+		"validFrom": time.Now().Add(-time.Hour).Format(time.RFC3339),
+		"iat":       time.Now().Unix(),
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:subject",
+		},
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vc",
+		Kid:         "#key-1", // relative kid
+		Typ:         "application/vc+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("expected acceptance: relative kid with matching iss, got: %v", err)
+	}
+}
+
+func TestCOSECredential_AbsoluteKid_NoIss_Accepted(t *testing.T) {
+	// An absolute kid requires no iss — this is the standard case the SDK
+	// produces, and already tested by the round-trip tests. This test makes
+	// the expectation explicit.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-abs-kid"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context":  []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":      []interface{}{"VerifiableCredential"},
+		"id":        "urn:uuid:abs-kid-001",
+		"issuer":    did,
+		"validFrom": time.Now().Add(-time.Hour).Format(time.RFC3339),
+		"iat":       time.Now().Unix(),
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:subject",
+		},
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vc",
+		Kid:         did + "#key-1", // absolute kid
+		Typ:         "application/vc+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// No iss in payload, but kid is absolute → fine
+	if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("expected acceptance: absolute kid, got: %v", err)
+	}
+}
+
 func TestCOSECredential_DisallowedAlg(t *testing.T) {
 	// Verify that Parse1 with disallowed alg rejects
 	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

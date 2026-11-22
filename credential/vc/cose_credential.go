@@ -297,9 +297,15 @@ func (c *COSECredential) verifyCOSEProof(options *credentialOptions) error {
 		return fmt.Errorf("COSE credential has no issuer")
 	}
 
-	// Resolve relative kid (VC-JOSE-COSE §4.1.2).
+	// VC-JOSE-COSE §4.1.2: resolve a relative kid (#fragment) only when iss
+	// is present and identifies the same entity as issuer. When iss is absent,
+	// the kid MUST be an absolute URL.
 	if len(kid) > 0 && kid[0] == '#' {
-		kid = issuer + kid
+		iss, _ := body["iss"].(string)
+		if iss == "" {
+			return fmt.Errorf("relative kid %q requires an iss claim", kid)
+		}
+		kid = iss + kid
 	}
 
 	if options.resolver == nil {

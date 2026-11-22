@@ -721,6 +721,138 @@ func TestCOSEPresentation_WrongDomain_Refused(t *testing.T) {
 	}
 }
 
+// --- Finding 1: kid resolution with iss (VC-JOSE-COSE §4.1.2) ---
+
+// signP256COSE is a convenience sign function for COSE tests.
+func signP256COSE(key *ecdsa.PrivateKey) func([]byte) ([]byte, error) {
+	return func(digest []byte) ([]byte, error) {
+		r, s, err := ecdsa.Sign(rand.Reader, key, digest)
+		if err != nil {
+			return nil, err
+		}
+		sig := make([]byte, 64)
+		r.FillBytes(sig[:32])
+		s.FillBytes(sig[32:])
+		return sig, nil
+	}
+}
+
+func TestCOSEPresentation_RelativeKid_NoIss_Rejected(t *testing.T) {
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-kid-noiss"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiablePresentation"},
+		"id":       "urn:uuid:vp-kid-noiss-001",
+		"holder":   did,
+		"iat":      time.Now().Unix(),
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vp",
+		Kid:         "#key-1", // relative kid
+		Typ:         "application/vp+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vp.ParseCOSEPresentation(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = parsed.Verify(vp.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("expected rejection: relative kid without iss")
+	}
+	if !strings.Contains(err.Error(), "iss") {
+		t.Fatalf("expected iss-related error, got: %v", err)
+	}
+}
+
+func TestCOSEPresentation_RelativeKid_MatchingIss_Accepted(t *testing.T) {
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-kid-iss"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiablePresentation"},
+		"id":       "urn:uuid:vp-kid-iss-001",
+		"holder":   did,
+		"iss":      did, // iss matches holder
+		"iat":      time.Now().Unix(),
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vp",
+		Kid:         "#key-1",
+		Typ:         "application/vp+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vp.ParseCOSEPresentation(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := parsed.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("expected acceptance: relative kid with matching iss, got: %v", err)
+	}
+}
+
+func TestCOSEPresentation_AbsoluteKid_NoIss_Accepted(t *testing.T) {
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-abs-kid"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiablePresentation"},
+		"id":       "urn:uuid:vp-abs-kid-001",
+		"holder":   did,
+		"iat":      time.Now().Unix(),
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vp",
+		Kid:         did + "#key-1", // absolute kid
+		Typ:         "application/vp+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vp.ParseCOSEPresentation(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := parsed.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("expected acceptance: absolute kid, got: %v", err)
+	}
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
