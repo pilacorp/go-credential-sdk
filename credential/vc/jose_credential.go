@@ -113,20 +113,6 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 		}
 	}
 
-	// Same rule the parse side applies: nothing outside credentialSubject may be
-	// disclosable. Reachable here through WithSDSelectivePaths naming a path
-	// outside the subject, or WithSDDecoyDigests with a root path. The subject
-	// itself is exempt — hiding claims in there is the feature.
-	if err := requireDisclosableAtTopLevel(vcMap, true); err != nil {
-		return nil, err
-	}
-
-	// Reconstruct deep-copies, so this validates without touching what gets
-	// signed.
-	if _, rerr := sdjwt.Reconstruct(vcMap, disclosures, true); rerr != nil {
-		return nil, fmt.Errorf("invalid SD-JWT disclosures: %w", rerr)
-	}
-
 	// Read from the payload, which is the same question ParseJOSECredential asks
 	// of the same bytes. Deriving it from len(disclosures) instead made the two
 	// ends disagree about decoys-only credentials — BuildDisclosures writes
@@ -135,6 +121,34 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 	// _sd_alg, folded the digests out and put the "~" back. Same credential, two
 	// byte forms, two Hash values.
 	_, disclosable := vcMap["_sd_alg"]
+
+	// The checks below read the JSON that gets signed, decoded the way
+	// ParseJOSECredential decodes it. Walking the Go map missed digests held in
+	// a typed value (a map[string][]string, a json.RawMessage, a struct), which
+	// marshal to the same JSON (#105). Only the decoded copy is looked at: what
+	// gets signed stays vcMap.
+	checked, err := decodedJSONView(vcMap)
+	if err != nil {
+		return nil, err
+	}
+
+	// Same rule the parse side applies: nothing outside credentialSubject may be
+	// disclosable. Reachable here through WithSDSelectivePaths naming a path
+	// outside the subject, or WithSDDecoyDigests with a root path. The subject
+	// is exempt only when the token is an SD-JWT — hiding claims in there is the
+	// feature. The parser exempts it when typ is vc+sd-jwt, and typ follows
+	// disclosable, so the two ends ask the same question (#105). Asking
+	// "was an SD option passed" instead let WithSDHashAlgorithm alone build a
+	// vc+jwt with digests in the subject, which the parser then refused.
+	if err := requireDisclosableAtTopLevel(checked, disclosable); err != nil {
+		return nil, err
+	}
+
+	// Reconstruct deep-copies, so this validates without touching what gets
+	// signed.
+	if _, rerr := sdjwt.Reconstruct(checked, disclosures, true); rerr != nil {
+		return nil, fmt.Errorf("invalid SD-JWT disclosures: %w", rerr)
+	}
 
 	// Per W3C vc-jose-cose Section 1.1.2.1:
 	// "The JWT Claim Names vc and vp MUST NOT be present in any JWT Claims Set that

@@ -186,13 +186,35 @@ func requireDisclosableAtTopLevel(m map[string]interface{}, subjectMayDisclose b
 		if name == credentialSubjectProperty && subjectMayDisclose {
 			continue
 		}
-		if carriesSDMachinery(value) {
-			return fmt.Errorf("selective disclosure is not permitted in %q; "+
-				"only claims inside %s may be withheld", name, credentialSubjectProperty)
+		if !carriesSDMachinery(value) {
+			continue
 		}
+		if name == credentialSubjectProperty {
+			return fmt.Errorf("selective disclosure is not permitted in %q: the token does not "+
+				"declare SD-JWT (typ is not %s), so %s may not carry digests either",
+				credentialSubjectProperty, TypeVCSDJWT, credentialSubjectProperty)
+		}
+		return fmt.Errorf("selective disclosure is not permitted in %q; "+
+			"only claims inside %s may be withheld", name, credentialSubjectProperty)
 	}
 
 	return nil
+}
+
+// decodedJSONView returns m as the parser will see it: marshalled to JSON and
+// decoded into a fresh map. It is for checking only; signing m itself keeps
+// the bytes, where re-encoding the decoded map would turn large integers into
+// float64.
+func decodedJSONView(m map[string]interface{}) (map[string]interface{}, error) {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, fmt.Errorf("failed to decode payload: %w", err)
+	}
+	return decoded, nil
 }
 
 // credentialSubjectProperty is the one subtree selective disclosure belongs to.
