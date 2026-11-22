@@ -551,9 +551,9 @@ func knownSchemaType(t string) bool {
 
 // validateCredential validates the Credential against its schema.
 // Only schema entries with a known type are validated; unknown types are
-// silently skipped (VC-JOSE-COSE: schema entries with an unknown type MUST
-// be ignored). If WithSchemaValidation is set and no entry has a known type,
-// an error is returned.
+// silently skipped (VC-JOSE-COSE §5.4: "If the extension mechanism type is
+// not understood, this property MUST be ignored"). If every entry has an
+// unknown type, validation succeeds — there is nothing to reject.
 func validateCredential(m CredentialData, opts *credentialOptions) error {
 	copyMap := util.ShallowCopyObj(m)
 
@@ -570,7 +570,6 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 		}
 	}
 
-	validated := 0
 	for _, schema := range schemaList {
 		var schemaMap map[string]interface{}
 
@@ -620,12 +619,11 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 		if !result.Valid() {
 			return fmt.Errorf("credential validation failed: %v", result.Errors())
 		}
-		validated++
 	}
 
-	if validated == 0 {
-		return fmt.Errorf("no known schema type to validate against (credentialSchema entries present but all have unknown types)")
-	}
+	// VC-JOSE-COSE §5.4: unknown extension types MUST be ignored. When every
+	// credentialSchema entry has a type the SDK does not implement, validation
+	// succeeds — there is nothing to reject.
 
 	return nil
 }

@@ -40,9 +40,10 @@ func TestValidateCredential_UnknownSchemaTypeSkipped(t *testing.T) {
 	}
 }
 
-// TC-B03 / AC-B04: when ALL schemas have unknown types, WithSchemaValidation
-// must error because there is nothing to validate against.
-func TestValidateCredential_AllUnknownSchemaTypesError(t *testing.T) {
+// TC-B03 / AC-B04: when ALL schemas have unknown types, validation succeeds.
+// VC-JOSE-COSE §5.4: "If the extension mechanism type is not understood, this
+// property MUST be ignored." — there is nothing to reject.
+func TestValidateCredential_AllUnknownSchemaTypesSucceeds(t *testing.T) {
 	c := CredentialData{
 		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
 		"type":              []interface{}{"VerifiableCredential"},
@@ -53,19 +54,14 @@ func TestValidateCredential_AllUnknownSchemaTypesError(t *testing.T) {
 			"id":   "https://example.org/schema/1",
 		},
 	}
-	// Use a loader that would succeed; the error should come from the type
-	// filter, not from a failed fetch.
+	// Use a loader that would succeed; the unknown type is skipped entirely.
 	opts := &credentialOptions{
 		loadedSchemaLoader: func(id string) ([]byte, error) {
 			return []byte(`{"type": "object"}`), nil
 		},
 	}
-	err := validateCredential(c, opts)
-	if err == nil {
-		t.Fatal("validateCredential with all unknown schema types should error")
-	}
-	if !strings.Contains(err.Error(), "no known schema type") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := validateCredential(c, opts); err != nil {
+		t.Fatalf("validateCredential with all unknown schema types = %v, want nil", err)
 	}
 }
 
