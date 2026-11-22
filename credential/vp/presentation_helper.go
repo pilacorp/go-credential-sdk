@@ -63,10 +63,24 @@ func checkExpiration(p PresentationData, leeway time.Duration) error {
 // vc options WithVCValidation forwarded. The presentation resolver and leeway
 // go first so a caller-supplied vc.WithResolver or vc.WithLeeway overrides them.
 //
-// An empty or absent verifiableCredential is accepted: VCDM 2.0 says
-// "The verifiableCredential property MAY be present", so a VP with no
-// credentials is structurally valid.
+// verifyCredentials verifies every embedded credential's proof, plus whatever
+// vc options WithVCValidation forwarded.
+//
+// An absent verifiableCredential is accepted: VCDM 2.0 §4.13 says the
+// property MAY be present. A present-but-empty array is rejected: §4.13
+// requires "one or more verifiable credential … objects" when the property
+// exists.
 func verifyCredentials(jsonPresentation PresentationData, options *presentationOptions) error {
+	// Distinguish absent key from present-and-empty. After JSON decoding an
+	// absent key yields a nil interface{} (map miss) whereas an explicit "[]"
+	// yields a non-nil []interface{} with length 0.
+	if raw, exists := jsonPresentation["verifiableCredential"]; exists {
+		if arr, ok := raw.([]interface{}); ok && len(arr) == 0 {
+			return fmt.Errorf("verifiableCredential is present but empty; " +
+				"VCDM 2.0 §4.13 requires one or more credentials when the property exists")
+		}
+	}
+
 	contents, err := parsePresentationContents(jsonPresentation)
 	if err != nil {
 		return fmt.Errorf("failed to parse presentation contents: %w", err)

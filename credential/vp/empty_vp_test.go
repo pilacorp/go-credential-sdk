@@ -1,6 +1,7 @@
 package vp_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
@@ -64,5 +65,35 @@ func TestEmptyVP_NoVerifiableCredentialKey(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("ParsePresentation(no VC key + WithVCValidation) = %v, want nil", err)
+	}
+}
+
+// TC-B07: a VP with verifiableCredential present as an empty array must be
+// rejected. VCDM 2.0 §4.13: "The value MUST be one or more verifiable
+// credential … objects." — present-and-empty violates the lower bound.
+func TestEmptyVP_EmptyArrayRejected(t *testing.T) {
+	const did = "did:example:empty-array-vp"
+	resolver, prov := joseVPFixture(t, did)
+	kid := did + "#key-1"
+
+	// Build a VP payload by hand with an explicit empty array.
+	payload := map[string]interface{}{
+		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":                 []interface{}{"VerifiablePresentation"},
+		"holder":               did,
+		"verifiableCredential": []interface{}{},
+	}
+	token := signJOSEVP(t, prov, kid, payload)
+
+	_, err := vp.ParsePresentation([]byte(token),
+		vp.WithVCValidation(),
+		vp.WithVerifyProof(),
+		vp.WithResolver(resolver),
+	)
+	if err == nil {
+		t.Fatal("ParsePresentation(empty array VC) should error")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("unexpected error: %v (want message about empty verifiableCredential)", err)
 	}
 }
