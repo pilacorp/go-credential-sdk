@@ -264,8 +264,11 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 	}
 
 	// Determine whether this token is an SD-JWT from both header and format.
+	// RFC 7515 §4.1.9: typ is case-insensitive and "application/" is implied
+	// when there is no "/". Use jws.Header.TypIs, as isJOSEPresentationTyp
+	// already does, so VP+SD-JWT and application/vp+sd-jwt are accepted.
 	_, hasSDAlg := payloadMap["_sd_alg"]
-	declaredSD := strings.TrimPrefix(typ, "application/") == TypeVPSDJWT
+	declaredSD := (jws.Header{"typ": typ}).TypIs(TypeVPSDJWT)
 	combinedSD := sdjwt.IsSDJWT(rawJWT)
 
 	if !declaredSD && (combinedSD || hasSDAlg) {
@@ -280,10 +283,14 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 	}
 
 	// Reconstruct SD-JWT payload: fold disclosures back in and strip _sd/_sd_alg.
+	// RecreatePayload applies the same rules as the VC path: every disclosure goes
+	// through jose/sdjwt.ParseDisclosure (refusing reserved names _sd, ...,
+	// _sd_alg and non-strict base64url), sha-256 uses jose/sdjwt.Recreate,
+	// sha-384/512 use Reconstruct — all remove undisclosed array elements.
 	vpMap := payloadMap
 	disclosable := declaredSD || combinedSD || hasSDAlg
 	if disclosable || len(disclosures) > 0 {
-		recreated, rErr := sdjwt.Reconstruct(payloadMap, disclosures, true)
+		recreated, rErr := sdjwt.RecreatePayload(payloadMap, disclosures)
 		if rErr != nil {
 			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rErr)
 		}

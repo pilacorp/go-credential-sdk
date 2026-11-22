@@ -872,32 +872,11 @@ func extractCNFKey(payload map[string]interface{}) (crypto.PublicKey, error) {
 	return pub, nil
 }
 
-// recreateSDPayload returns the claims of an SD-JWT payload with the
-// disclosures put back, without changing payload. Issuance and parsing both
-// call it, so a credential that signs is read by the same rules when it is
-// parsed. A sha-256 payload goes through module jose, which applies RFC 9901
-// section 7.1: undisclosed array elements are removed, the names "...", "_sd"
-// and "_sd_alg" are refused, and a digest used twice is refused. module jose
-// recreates sha-256 only, while WithSDHashAlgorithm also issues sha-384 and
-// sha-512 (section 4.1.1 allows any IANA hash), so those go through
-// common/sdjwt.Reconstruct, which also removes undisclosed array elements.
+// recreateSDPayload delegates to sdjwt.RecreatePayload, which validates
+// disclosures through jose/sdjwt.ParseDisclosure (refusing reserved names and
+// non-strict base64url), routes sha-256 through jose/sdjwt.Recreate, and
+// sha-384/512 through common/sdjwt.Reconstruct. Both the VC and VP parse
+// paths call RecreatePayload, so the same rules apply everywhere.
 func recreateSDPayload(payload map[string]interface{}, disclosures []string) (map[string]interface{}, error) {
-	// ParseDisclosure reads a disclosure's form and refuses the reserved claim
-	// names (RFC 9901 section 4.2.1) whatever hash the payload uses.
-	parsed := make([]josesdjwt.Disclosure, len(disclosures))
-	for i, d := range disclosures {
-		p, err := josesdjwt.ParseDisclosure(d)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse disclosure: %w", err)
-		}
-		parsed[i] = p
-	}
-	if alg, _ := payload["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
-		return sdjwt.Reconstruct(payload, disclosures, true)
-	}
-	recreated, err := josesdjwt.Recreate(payload, parsed)
-	if err != nil {
-		return nil, err
-	}
-	return recreated.Claims, nil
+	return sdjwt.RecreatePayload(payload, disclosures)
 }
