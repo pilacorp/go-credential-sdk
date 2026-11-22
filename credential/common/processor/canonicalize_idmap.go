@@ -386,11 +386,13 @@ func rejectRelativeIDs(expanded interface{}) error {
 
 // relativeKeywordValues collects the string values of keyword (@type or @id)
 // that RDF conversion would drop: not a keyword, blank node, or absolute IRI,
-// the same test json-gold applies before emitting a quad.
+// the same test json-gold applies before emitting a quad. It walks keys in
+// sorted order, so the callers name the same value on every run.
 func relativeKeywordValues(v interface{}, keyword string, out []string) []string {
 	switch t := v.(type) {
 	case map[string]interface{}:
-		for k, val := range t {
+		for _, k := range ld.GetOrderedKeys(t) {
+			val := t[k]
 			if k != keyword {
 				out = relativeKeywordValues(val, keyword, out)
 				continue

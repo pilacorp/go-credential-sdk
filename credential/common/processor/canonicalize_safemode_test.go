@@ -308,3 +308,21 @@ func TestToRDFRefusesNodesWithRelativeID(t *testing.T) {
 		t.Fatal("to rdf: a relative subject must be refused, not dropped")
 	}
 }
+
+// A document with several values the checks refuse gets the same error on every
+// run: the checks walk properties in sorted order and name the first value.
+func TestRelativeValueErrorIsStable(t *testing.T) {
+	expanded := []interface{}{map[string]interface{}{
+		"@id":              "https://ex.com/s",
+		"https://ex.com/b": []interface{}{map[string]interface{}{"@id": "d", "@type": []interface{}{"d"}}},
+		"https://ex.com/a": []interface{}{map[string]interface{}{"@id": "c", "@type": []interface{}{"c"}}},
+	}}
+	for i := 0; i < 50; i++ {
+		if err := checkExpandedTypes(expanded); err == nil || !strings.Contains(err.Error(), `type "c"`) {
+			t.Fatalf("run %d: checkExpandedTypes = %v, want the error to name type \"c\"", i, err)
+		}
+		if err := rejectRelativeIDs(expanded); err == nil || !strings.Contains(err.Error(), `id "c"`) {
+			t.Fatalf("run %d: rejectRelativeIDs = %v, want the error to name id \"c\"", i, err)
+		}
+	}
+}
