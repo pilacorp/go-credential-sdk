@@ -11,6 +11,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
@@ -135,7 +136,8 @@ func TestJOSEStrict_CritHeaderRejected(t *testing.T) {
 
 // TestJOSEStrict_UndisclosedArrayElementRemoved checks that an SD-JWT with an
 // undisclosed array element produces a shorter array, not one with a
-// {"...": digest} placeholder (RFC 9901 section 7.1).
+// {"...": digest} placeholder (RFC 9901 section 7.1 step 3d), whatever hash
+// the payload declares in _sd_alg.
 func TestJOSEStrict_UndisclosedArrayElementRemoved(t *testing.T) {
 	did, priv, resolver := joseSetup(t)
 	prov, err := signer.NewP256Provider(priv)
@@ -143,53 +145,51 @@ func TestJOSEStrict_UndisclosedArrayElementRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	contents := joseContents(did)
-	contents.Subject = []vc.Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{
-		"skills": []interface{}{"go", "rust", "python"},
-	}}}
-	cred, err := vc.NewJOSECredential(contents,
-		vc.WithSDSelectivePaths([]string{"credentialSubject.skills[1]"}),
-		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
-		t.Fatal(err)
-	}
+	for _, alg := range []string{"sha-256", "sha-384", "sha-512"} {
+		t.Run(alg, func(t *testing.T) {
+			contents := joseContents(did)
+			contents.Subject = []vc.Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{
+				"skills": []interface{}{"go", "rust", "python"},
+			}}}
+			cred, err := vc.NewJOSECredential(contents,
+				vc.WithSDSelectivePaths([]string{"credentialSubject.skills[1]"}), vc.WithSDHashAlgorithm(alg),
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+				t.Fatal(err)
+			}
 
-	// Use Present with no disclosures to withhold the array element.
-	presented, err := cred.Present(nil)
-	if err != nil {
-		t.Fatalf("present: %v", err)
-	}
-	serialized, err := presented.Serialize()
-	if err != nil {
-		t.Fatal(err)
-	}
+			// Present with no disclosures withholds the array element.
+			presented, err := cred.Present(nil)
+			if err != nil {
+				t.Fatalf("present: %v", err)
+			}
+			serialized, err := presented.Serialize()
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	parsed, err := vc.ParseCredential([]byte(serialized.(string)), vc.WithResolver(resolver))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+			parsed, err := vc.ParseCredential([]byte(serialized.(string)), vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
 
-	subject, ok := parsed.ExtractField("credentialSubject").(map[string]interface{})
-	if !ok {
-		t.Fatal("credentialSubject not an object")
-	}
-	skills, ok := subject["skills"].([]interface{})
-	if !ok {
-		t.Fatalf("skills is %T, want []interface{}", subject["skills"])
-	}
-
-	// With the jose module, the undisclosed element is removed entirely.
-	// On main (old common/sdjwt.Reconstruct), it stayed as {"...": digest},
-	// so len(skills) would be 3.
-	if len(skills) != 2 {
-		t.Fatalf("len(skills) = %d, want 2 (undisclosed element removed); skills = %v", len(skills), skills)
-	}
-	// First element "go" and third "python" should remain; "rust" was withheld.
-	if skills[0] != "go" || skills[1] != "python" {
-		t.Fatalf("skills = %v, want [go python]", skills)
+			subject, ok := parsed.ExtractField("credentialSubject").(map[string]interface{})
+			if !ok {
+				t.Fatal("credentialSubject not an object")
+			}
+			skills, ok := subject["skills"].([]interface{})
+			if !ok {
+				t.Fatalf("skills is %T, want []interface{}", subject["skills"])
+			}
+			// The withheld element is removed, so "rust" and its {"...": digest}
+			// placeholder are both gone.
+			if len(skills) != 2 || skills[0] != "go" || skills[1] != "python" {
+				t.Fatalf("skills = %v, want [go python]", skills)
+			}
+		})
 	}
 }
 
@@ -774,5 +774,30 @@ func TestJOSE_RelativeKid_WithoutIss_Rejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "relative kid") {
 		t.Fatalf("rejected for wrong reason: %v", err)
+	}
+}
+
+// RFC 9901 section 4.2.1 refuses the claim names "_sd", "_sd_alg" and "..."
+// in a disclosure whatever hash the SD-JWT uses. The sha-384 and sha-512 path
+// reconstructs with the previous reader, so the names are checked before it.
+func TestJOSEStrict_ReservedDisclosureNameRefusedForSHA384(t *testing.T) {
+	did, _, resolver := joseSetup(t)
+	for _, name := range []string{"_sd_alg", "..."} {
+		t.Run(name, func(t *testing.T) {
+			b, err := json.Marshal([]interface{}{"c2FsdFpac2FsdFpac2FsdFpa", name, "x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := base64.RawURLEncoding.EncodeToString(b)
+			sum := sha512.Sum384([]byte(d))
+			contents := joseContents(did)
+			contents.Subject[0].CustomFields["_sd"] = []interface{}{base64.RawURLEncoding.EncodeToString(sum[:])}
+			_, err = vc.NewJOSECredential(contents,
+				vc.WithSDDisclosures([]string{d}), vc.WithSDHashAlgorithm("sha-384"),
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+			if err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("err = %v, want the disclosure name %q refused as reserved", err, name)
+			}
+		})
 	}
 }
