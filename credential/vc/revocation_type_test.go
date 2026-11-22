@@ -1,6 +1,13 @@
 package vc
 
-import "testing"
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/util"
+)
 
 // TC-B02: a credentialStatus with an unknown type is ignored by
 // checkRevocation. The old code required statusListCredential, failing with
@@ -18,23 +25,56 @@ func TestCheckRevocation_UnknownTypeSingleObject(t *testing.T) {
 }
 
 // TC-B01: an array with one known and one unknown type. The unknown entry is
-// skipped; the known entry would be checked (but here we pass a known type
-// with invalid fields — it should NOT error on the unknown one; the error, if
-// any, comes from the known one). We verify that the unknown entry does not
-// cause "must be an object".
+// skipped; the known entry is checked normally. We verify that the unknown
+// entry does not cause "must be an object" and that the known entry's
+// revocation check succeeds.
 func TestCheckRevocation_ArrayWithUnknownType(t *testing.T) {
+	srv := notRevokedStatusListServer(t)
+	defer srv.Close()
+
 	c := CredentialData{
 		"credentialStatus": []interface{}{
 			map[string]interface{}{
 				"type": "UnknownStatusType",
 				"id":   "https://example.org/status/x",
 			},
+			map[string]interface{}{
+				"type":                 "BitstringStatusListEntry",
+				"id":                   srv.URL + "/status/0#1",
+				"statusListCredential": srv.URL,
+				"statusListIndex":      "1",
+				"statusPurpose":        "revocation",
+			},
 		},
 	}
-	// An array of only unknown types should pass.
 	if err := checkRevocation(c); err != nil {
-		t.Fatalf("checkRevocation (all unknown) = %v, want nil", err)
+		t.Fatalf("checkRevocation (known + unknown) = %v, want nil", err)
 	}
+}
+
+// notRevokedStatusListServer returns an httptest server that serves a status
+// list with no bits set (nothing revoked). Same shape as the one in
+// sdjwt_integrity_test.go, but with all bits clear.
+func notRevokedStatusListServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	bits := make([]byte, 16) // all zero — nothing revoked
+	encoded, err := util.CompressToBase64URL(bits)
+	if err != nil {
+		t.Fatalf("compress status list: %v", err)
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"credentialSubject": map[string]interface{}{
+					"statusPurpose": "revocation",
+					"encodedList":   encoded,
+				},
+			},
+		}); err != nil {
+			t.Errorf("encode status list: %v", err)
+		}
+	}))
 }
 
 // The old code rejected an array outright: "credentialStatus must be an object".
