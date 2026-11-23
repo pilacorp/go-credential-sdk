@@ -149,7 +149,14 @@ func parseDisclosureProofValue(proofValue string) (*specDerivedProof, error) {
 
 func compressLabelMap(labelMap map[string]string) (map[uint64][]byte, error) {
 	out := make(map[uint64][]byte, len(labelMap))
-	for k, v := range labelMap {
+	// Sorted, so a malformed label map names the same entry on every run.
+	keys := make([]string, 0, len(labelMap))
+	for k := range labelMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := labelMap[k]
 		num, err := strconv.ParseUint(strings.TrimPrefix(k, "c14n"), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("ecdsasd: label map key %q: %w", k, err)

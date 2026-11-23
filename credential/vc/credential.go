@@ -148,8 +148,10 @@ type credentialOptions struct {
 	loadedSchemaLoader      SchemaLoaderFunc
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
-	replaceProof            bool
-	jsonldLimits            processor.JSONLDLimits
+	// expectedProofPurpose overrides the assertionMethod a VC verifier expects.
+	expectedProofPurpose string
+	replaceProof         bool
+	jsonldLimits         processor.JSONLDLimits
 }
 
 // WithReplaceProof (signing) lets a signing call replace a signature the
@@ -203,6 +205,27 @@ func refuseReplaceOnJSONLD(options *credentialOptions) error {
 // fields so a new sd* field is added here too.
 func (o *credentialOptions) hasSDOptions() bool {
 	return len(o.sdDisclosures) > 0 || len(o.sdSelectivePaths) > 0 || o.sdAlg != "" || o.sdShuffle || len(o.sdDecoys) > 0
+}
+
+// WithExpectedProofPurpose tells Verify to expect this proof purpose instead of
+// assertionMethod. Data Integrity 1.0 §4.4 requires the comparison: a proof
+// that names another purpose is refused even when the key is granted that
+// other purpose. An empty purpose leaves the default in place.
+func WithExpectedProofPurpose(purpose string) CredentialOpt {
+	return func(c *credentialOptions) {
+		if purpose == "" {
+			return
+		}
+		c.expectedProofPurpose = purpose
+	}
+}
+
+// diProofPurpose is the purpose a VC verifier compares with proof.proofPurpose.
+func (o *credentialOptions) diProofPurpose() string {
+	if o.expectedProofPurpose != "" {
+		return o.expectedProofPurpose
+	}
+	return "assertionMethod"
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
