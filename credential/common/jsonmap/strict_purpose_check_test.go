@@ -192,8 +192,9 @@ func TestStrictPurposeCheck(t *testing.T) {
 			if err == nil {
 				t.Fatalf("accepted, want an error mentioning %q", tc.wantErr)
 			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v, want one mentioning %q", err, tc.wantErr)
+			// The error names the field and the value once (#199 review).
+			if n := strings.Count(err.Error(), tc.wantErr); n != 1 {
+				t.Fatalf("err = %v, want %q exactly once, got %d", err, tc.wantErr, n)
 			}
 		})
 	}

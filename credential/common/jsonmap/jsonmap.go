@@ -857,9 +857,10 @@ func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmet
 	}
 	var created time.Time
 	if proofCreated != "" {
+		// parseCreated's error already names the field and the value.
 		parsed, err := parseCreated(proofCreated)
 		if err != nil {
-			return fmt.Errorf("invalid proof.created timestamp '%s': %w", proofCreated, err)
+			return err
 		}
 		created = parsed
 	}
