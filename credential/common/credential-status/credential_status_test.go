@@ -1155,3 +1155,46 @@ func TestReadStatusList_ArraySubjectType(t *testing.T) {
 	_, err := readStatusList(m, "revocation")
 	assert.NoError(t, err)
 }
+
+// authen-service stamps validFrom with its own clock when it serves the list.
+// A verifier a few seconds behind must still read it; one far ahead is still
+// refused (#203 review).
+func TestVerifyAndCheckStatus_ValidFromClockSkew(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	encoded := buildLegacyEncodedList(t, 128, []int{})
+	for name, tc := range map[string]struct {
+		ahead   time.Duration
+		wantErr bool
+	}{
+		"validFrom 30s ahead": {ahead: 30 * time.Second},
+		"validFrom 2m ahead":  {ahead: 2 * time.Minute, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			vc := jsonmap.JSONMap{
+				"@context":  []interface{}{"https://www.w3.org/ns/credentials/v2"},
+				"type":      []interface{}{"VerifiableCredential", "BitstringStatusListCredential"},
+				"id":        testIssuerDID + "/status/0",
+				"issuer":    testIssuerDID,
+				"validFrom": time.Now().UTC().Add(tc.ahead).Format(time.RFC3339),
+				"credentialSubject": map[string]interface{}{
+					"type":          "BitstringStatusList",
+					"statusPurpose": "revocation",
+					"encodedList":   encoded,
+				},
+			}
+			sp, err := signer.NewP256Provider(priv)
+			require.NoError(t, err)
+			require.NoError(t, vc.AddECDSAProof(sp, testVMID, "assertionMethod"))
+			server := serveStatusList(t, map[string]interface{}(vc))
+
+			client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
+			err = client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "not valid yet")
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}

@@ -243,8 +243,10 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 		}
 	}
 
-	// Verify validity period.
-	if err := vcdm.CheckValidityPeriod("status list credential", sl.validFrom, sl.validUntil, 0); err != nil {
+	// Verify validity period, allowing for clock drift between the list's
+	// issuer, which stamps validFrom when it serves the list, and this
+	// verifier: with no leeway a verifier a second behind refused a fresh list.
+	if err := vcdm.CheckValidityPeriod("status list credential", sl.validFrom, sl.validUntil, statusListClockSkew); err != nil {
 		return err
 	}
 
@@ -333,6 +335,11 @@ func readStatusList(m jsonmap.JSONMap, entryPurpose string) (statusListView, err
 
 	return sl, nil
 }
+
+// statusListClockSkew is the leeway on the status list credential's validity
+// period. authen-service sets validFrom to its own clock, in whole seconds,
+// each time it serves the list.
+const statusListClockSkew = time.Minute
 
 // clip truncates a string to at most 256 bytes for safe inclusion in error
 // messages. Values echoed in errors come from the fetched list and are bounded
