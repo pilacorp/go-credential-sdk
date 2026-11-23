@@ -212,24 +212,24 @@ func TestParseCreated(t *testing.T) {
 		{"2026-01-01T00:00:00-05:30", true},
 		{"2026-01-01T00:00:00.123Z", true},
 		{"2026-01-01T00:00:00.123456789Z", true},
-		{"2026-01-01T24:00:00Z", true},           // end of day is valid
-		{"2026-01-01T24:00:00.0Z", true},          // end of day with zero fraction
-		{"2026-01-01T00:00:00+14:00", true},        // max offset
-		{"2026-01-01T00:00:00-00:00", true},        // negative zero offset
+		{"2026-01-01T24:00:00Z", true},      // end of day is valid
+		{"2026-01-01T24:00:00.0Z", true},    // end of day with zero fraction
+		{"2026-01-01T00:00:00+14:00", true}, // max offset
+		{"2026-01-01T00:00:00-00:00", true}, // negative zero offset
 
-		{"2026-01-01T00:00:00,5Z", false},          // comma fraction: not dateTimeStamp
-		{"2026-01-01T00:00:00+14:01", false},       // offset past +14:00
-		{"2026-01-01T00:00:00+23:59", false},       // RFC3339 accepts; dateTimeStamp refuses
-		{"2026-01-01T00:00:00", false},              // missing time zone
-		{"not-a-date", false},                       // garbage
-		{"yesterday", false},                        // word
-		{"", false},                                 // empty
-		{"2026-01-01", false},                       // date only
-		{"2026-01-01T24:00:01Z", false},             // past end of day
-		{"2026-01-01T24:01:00Z", false},             // past end of day
-		{"2026-01-01T25:00:00Z", false},             // hour 25
-		{"2026-01-01T00:60:00Z", false},             // minute 60
-		{"2026-01-01T00:00:60Z", false},             // second 60
+		{"2026-01-01T00:00:00,5Z", false},    // comma fraction: not dateTimeStamp
+		{"2026-01-01T00:00:00+14:01", false}, // offset past +14:00
+		{"2026-01-01T00:00:00+23:59", false}, // RFC3339 accepts; dateTimeStamp refuses
+		{"2026-01-01T00:00:00", false},       // missing time zone
+		{"not-a-date", false},                // garbage
+		{"yesterday", false},                 // word
+		{"", false},                          // empty
+		{"2026-01-01", false},                // date only
+		{"2026-01-01T24:00:01Z", false},      // past end of day
+		{"2026-01-01T24:01:00Z", false},      // past end of day
+		{"2026-01-01T25:00:00Z", false},      // hour 25
+		{"2026-01-01T00:60:00Z", false},      // minute 60
+		{"2026-01-01T00:00:60Z", false},      // second 60
 	} {
 		_, err := parseCreated(tc.input)
 		if tc.ok && err != nil {
