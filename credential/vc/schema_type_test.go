@@ -108,3 +108,34 @@ func TestValidateCredential_KnownTypeJsonSchemaValidator2018(t *testing.T) {
 		t.Fatalf("validateCredential with JsonSchemaValidator2018 = %v, want nil", err)
 	}
 }
+
+// type may be written as an array. A known type in that form is still known:
+// the schema is validated and the status entry is checked, not skipped as
+// unknown (#213 review).
+func TestKnownTypes_ArrayFormIsKnown(t *testing.T) {
+	c := CredentialData{
+		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            "did:example:issuer",
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+		"credentialSchema": map[string]interface{}{
+			"type": []interface{}{"JsonSchema"},
+			"id":   "https://example.org/schema/known",
+		},
+	}
+	opts := &credentialOptions{
+		loadedSchemaLoader: func(string) ([]byte, error) {
+			return nil, fmt.Errorf("schema loader reached")
+		},
+	}
+	if err := validateCredential(c, opts); err == nil || !strings.Contains(err.Error(), "schema loader reached") {
+		t.Fatalf("validateCredential = %v, want the array-typed JsonSchema validated", err)
+	}
+
+	status := CredentialData{"credentialStatus": map[string]interface{}{
+		"type": []interface{}{"BitstringStatusListEntry"},
+	}}
+	if err := checkRevocation(status); err == nil {
+		t.Fatal("checkRevocation skipped an array-typed BitstringStatusListEntry as unknown")
+	}
+}

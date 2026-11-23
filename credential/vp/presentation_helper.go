@@ -73,8 +73,8 @@ func verifyCredentials(jsonPresentation PresentationData, options *presentationO
 	// yields a non-nil []interface{} with length 0.
 	if raw, exists := jsonPresentation["verifiableCredential"]; exists {
 		if arr, ok := raw.([]interface{}); ok && len(arr) == 0 {
-			return fmt.Errorf("verifiableCredential is present but empty; " +
-				"VCDM 2.0 §4.13 requires one or more credentials when the property exists")
+			return fmt.Errorf("verifiableCredential is present but empty: " +
+				"send at least one credential or leave the property out")
 		}
 	}
 

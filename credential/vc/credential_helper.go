@@ -545,8 +545,8 @@ func parseStringField(obj CredentialData, fieldName string) (string, error) {
 }
 
 // knownSchemaType reports whether the SDK implements a credentialSchema type.
-func knownSchemaType(t string) bool {
-	return t == "JsonSchema" || t == "JsonSchemaValidator2018"
+func knownSchemaType(t interface{}) bool {
+	return hasType(t, "JsonSchema") || hasType(t, "JsonSchemaValidator2018")
 }
 
 // validateCredential validates the Credential against its schema.
@@ -582,8 +582,9 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 			return fmt.Errorf("failed to unmarshal schema: %w", err)
 		}
 
-		typ, _ := schemaMap["type"].(string)
-		if !knownSchemaType(typ) {
+		// type may be a string or an array; reading only the string form
+		// skipped an array-typed JsonSchema as unknown.
+		if !knownSchemaType(schemaMap["type"]) {
 			continue
 		}
 
@@ -640,8 +641,8 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 }
 
 // knownStatusType reports whether the SDK implements a credentialStatus type.
-func knownStatusType(t string) bool {
-	return t == "BitstringStatusListEntry" || t == "StatusList2021Entry"
+func knownStatusType(t interface{}) bool {
+	return hasType(t, "BitstringStatusListEntry") || hasType(t, "StatusList2021Entry")
 }
 
 // checkRevocation checks every credentialStatus entry the SDK understands
@@ -666,8 +667,9 @@ func checkRevocation(c CredentialData) error {
 			continue
 		}
 
-		typ, _ := statusMap["type"].(string)
-		if !knownStatusType(typ) {
+		// type may be a string or an array; reading only the string form
+		// skipped an array-typed entry and read no list at all.
+		if !knownStatusType(statusMap["type"]) {
 			continue
 		}
 
