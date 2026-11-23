@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -33,7 +34,9 @@ const (
 // RFC 1918, link-local, etc.) the same way the @context document loader does.
 // Tests that need to reach httptest servers on 127.0.0.1 must pass
 // WithHTTPClient to supply a client without the restriction.
-var defaultHTTPClient = newDefaultHTTPClient()
+var defaultHTTPClient atomic.Pointer[http.Client]
+
+func init() { defaultHTTPClient.Store(newDefaultHTTPClient()) }
 
 // newDefaultHTTPClient bounds the whole request, body read included, at 10
 // seconds: the public-only transport bounds only the dial and the handshake.
@@ -44,8 +47,9 @@ func newDefaultHTTPClient() *http.Client {
 }
 
 type Client struct {
-	client   *http.Client
-	resolver verificationmethod.ResolverProvider
+	client           *http.Client
+	resolver         verificationmethod.ResolverProvider
+	acceptLegacyList bool
 }
 
 type Option func(*Client)
@@ -80,12 +84,18 @@ func SetDefaultHTTPClient(c *http.Client) {
 	if c == nil {
 		c = newDefaultHTTPClient()
 	}
-	defaultHTTPClient = c
+	defaultHTTPClient.Store(c)
+}
+
+// WithLegacyStatusList lets VerifyAndCheckStatus read authen-service's
+// legacy lists (no multibase prefix, least significant bit first).
+func WithLegacyStatusList() Option {
+	return func(c *Client) { c.acceptLegacyList = true }
 }
 
 func NewClient(options ...Option) *Client {
 	client := &Client{
-		client: defaultHTTPClient,
+		client: defaultHTTPClient.Load(),
 	}
 
 	for _, option := range options {
@@ -118,22 +128,9 @@ func (c *Client) FetchStatusListCredential(statusListCredentialURL string) (*Sta
 		return nil, fmt.Errorf("statusListCredential URL is empty")
 	}
 
-	resp, err := c.client.Get(statusListCredentialURL)
+	body, err := c.fetchStatusListBody(statusListCredentialURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to call status list credential endpoint: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status list credential API returned non-200 status: %s", resp.Status)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize+1))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read status list credential response body: %w", err)
-	}
-	if int64(len(body)) > maxResponseBodySize {
-		return nil, fmt.Errorf("status list response exceeds %d bytes", maxResponseBodySize)
+		return nil, err
 	}
 
 	var result StatusListCredentialResponse
@@ -142,6 +139,27 @@ func (c *Client) FetchStatusListCredential(statusListCredentialURL string) (*Sta
 	}
 
 	return &result, nil
+}
+
+// fetchStatusListBody fetches the status list credential body from the given
+// URL. The HTTP response body is capped at maxResponseBodySize.
+func (c *Client) fetchStatusListBody(url string) ([]byte, error) {
+	resp, err := c.client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call status list credential endpoint: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status list credential API returned non-200 status: %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read status list credential response body: %w", err)
+	}
+	if int64(len(body)) > maxResponseBodySize {
+		return nil, fmt.Errorf("status list response exceeds %d bytes", maxResponseBodySize)
+	}
+	return body, nil
 }
 
 // VerifyAndCheckStatus fetches the status list credential, verifies its proof,
@@ -153,8 +171,9 @@ func (c *Client) FetchStatusListCredential(statusListCredentialURL string) (*Sta
 // returns an error. The deprecated FetchAndCheckRevocation path does not
 // require a resolver.
 //
-// The status list credential response must have the shape {"data": <VC>}, the
-// format authen-service uses. The VC inside "data" is verified as a whole.
+// The status list credential response may be served as the credential itself
+// (has @context) or wrapped as {"data": <credential>} the way authen-service
+// serves it.
 //
 // The HTTP response body is capped at 16 MiB; decompressed bitstrings are
 // capped at 16 MiB.
@@ -163,47 +182,29 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 		return fmt.Errorf("resolver is required for VerifyAndCheckStatus: use WithResolver when creating the client")
 	}
 
+	// Refuse unsupported purposes before fetching.
+	switch entryPurpose {
+	case "revocation", "suspension":
+	default:
+		return fmt.Errorf("statusPurpose %q is not supported: only revocation and suspension are", entryPurpose)
+	}
+
 	if statusListCredentialURL == "" {
 		return fmt.Errorf("statusListCredential URL is empty")
 	}
 
-	resp, err := c.client.Get(statusListCredentialURL)
+	body, err := c.fetchStatusListBody(statusListCredentialURL)
 	if err != nil {
-		return fmt.Errorf("failed to call status list credential endpoint: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("status list credential API returned non-200 status: %s", resp.Status)
+		return err
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize+1))
+	// Accept the credential served as is, or wrapped as {"data": <credential>}.
+	vcMap, err := statusListFromBody(body)
 	if err != nil {
-		return fmt.Errorf("failed to read status list credential response body: %w", err)
-	}
-	if int64(len(body)) > maxResponseBodySize {
-		return fmt.Errorf("status list response exceeds %d bytes", maxResponseBodySize)
-	}
-
-	// Parse the wrapper to get the raw VC for proof verification.
-	var wrapper struct {
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(body, &wrapper); err != nil {
-		return fmt.Errorf("failed to unmarshal status list credential response: %w", err)
-	}
-
-	// Parse the VC into the structured type.
-	var slCredential StatusListCredential
-	if err := json.Unmarshal(wrapper.Data, &slCredential); err != nil {
-		return fmt.Errorf("failed to unmarshal status list credential: %w", err)
+		return err
 	}
 
 	// Verify the status list credential's proof.
-	var vcMap jsonmap.JSONMap
-	if err := json.Unmarshal(wrapper.Data, (*map[string]interface{})(&vcMap)); err != nil {
-		return fmt.Errorf("failed to unmarshal status list credential for proof verification: %w", err)
-	}
 	ok, err := vcMap.VerifyProof(c.resolver, "")
 	if err != nil {
 		return fmt.Errorf("status list credential proof verification failed: %w", err)
@@ -212,19 +213,22 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 		return fmt.Errorf("status list credential proof is invalid")
 	}
 
-	// Verify the issuer matches the credential being checked.
-	if slCredential.Issuer.DID == "" {
-		return fmt.Errorf("status list credential has no issuer")
-	}
-	if slCredential.Issuer.DID != issuerDID {
-		return fmt.Errorf("status list credential issuer %q does not match credential issuer %q", slCredential.Issuer.DID, issuerDID)
+	// Read status fields from the verified map, not from a separate struct
+	// decode that could read case-variant sibling keys the proof did not cover.
+	sl, err := readStatusList(vcMap, entryPurpose)
+	if err != nil {
+		return err
 	}
 
-	// Verify that every proof was signed by the issuer: the DID in each
-	// proof's verificationMethod must equal the status list issuer.
-	// VerifyProof checks the cryptographic signature but does not compare
-	// the signer DID with the issuer field, so a list signed by a
-	// different DID that has assertionMethod would pass without this.
+	// Verify the issuer matches the credential being checked.
+	if sl.issuerDID == "" {
+		return fmt.Errorf("status list credential has no issuer")
+	}
+	if sl.issuerDID != issuerDID {
+		return fmt.Errorf("status list credential issuer %q does not match credential issuer %q", clip(sl.issuerDID), clip(issuerDID))
+	}
+
+	// Verify that every proof was signed by the issuer.
 	proofs, err := vcMap.Proofs()
 	if err != nil {
 		return fmt.Errorf("failed to parse status list credential proofs: %w", err)
@@ -232,20 +236,25 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 	for i, p := range proofs {
 		proofDID := didFromVM(p.VerificationMethod)
 		if proofDID == "" {
-			return fmt.Errorf("status list credential proof %d has no DID in verificationMethod %q", i, p.VerificationMethod)
+			return fmt.Errorf("status list credential proof %d has no DID in verificationMethod %q", i, clip(p.VerificationMethod))
 		}
-		if proofDID != slCredential.Issuer.DID {
-			return fmt.Errorf("status list credential proof %d signed by %q, but issuer is %q", i, proofDID, slCredential.Issuer.DID)
+		if proofDID != sl.issuerDID {
+			return fmt.Errorf("status list credential proof %d signed by %q, but issuer is %q", i, clip(proofDID), clip(sl.issuerDID))
 		}
 	}
 
 	// Verify validity period.
-	if err := vcdm.CheckValidityPeriod("status list credential", slCredential.ValidFrom, slCredential.ValidUntil, 0); err != nil {
+	if err := vcdm.CheckValidityPeriod("status list credential", sl.validFrom, sl.validUntil, 0); err != nil {
 		return err
 	}
 
+	// Refuse legacy lists unless the caller opted in.
+	if !strings.HasPrefix(sl.subject.EncodedList, "u") && !c.acceptLegacyList {
+		return fmt.Errorf("status list encodedList is not multibase base64url; pass WithLegacyStatusList to read authen-service legacy lists")
+	}
+
 	// Check the bit.
-	isSet, err := CheckBitStatus(position, slCredential.CredentialSubject, entryPurpose)
+	isSet, err := CheckBitStatus(position, sl.subject, entryPurpose)
 	if err != nil {
 		return err
 	}
@@ -254,6 +263,102 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 	}
 
 	return nil
+}
+
+// statusListFromBody accepts the status list credential served as is, or
+// wrapped as {"data": <credential>} the way authen-service serves it.
+func statusListFromBody(body []byte) (jsonmap.JSONMap, error) {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal status list credential response: %w", err)
+	}
+	if _, isCredential := m["@context"]; isCredential {
+		return jsonmap.JSONMap(m), nil
+	}
+	inner, ok := m["data"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf(`status list response must be a credential or {"data": <credential>}`)
+	}
+	return jsonmap.JSONMap(inner), nil
+}
+
+// statusListView holds the fields the status check reads, taken by exact key
+// from the same map whose proof was verified.
+type statusListView struct {
+	issuerDID  string
+	validFrom  string
+	validUntil string
+	subject    StatusListCredentialSubject
+}
+
+// readStatusList reads the status list fields from the verified map.
+// It checks the credential type, credentialSubject.type, and reads the
+// statusPurpose as a string or array per Bitstring Status List v1.0 §2.2.
+func readStatusList(m jsonmap.JSONMap, entryPurpose string) (statusListView, error) {
+	var sl statusListView
+
+	// Check credential type (§2.1: MUST include BitstringStatusListCredential).
+	if !hasType(m["type"], "BitstringStatusListCredential") {
+		return sl, fmt.Errorf("status list credential type must include BitstringStatusListCredential")
+	}
+
+	sl.issuerDID, _ = jsonmap.DIDFromField(m["issuer"])
+	sl.validFrom, _ = m["validFrom"].(string)
+	sl.validUntil, _ = m["validUntil"].(string)
+
+	subject, ok := m["credentialSubject"].(map[string]interface{})
+	if !ok {
+		return sl, fmt.Errorf("status list credential has no credentialSubject object")
+	}
+
+	// Check credentialSubject.type (§2.2: MUST be BitstringStatusList).
+	if t, _ := subject["type"].(string); t != "BitstringStatusList" {
+		return sl, fmt.Errorf("status list credentialSubject.type %q must be BitstringStatusList", t)
+	}
+
+	sl.subject.EncodedList, _ = subject["encodedList"].(string)
+	sl.subject.Type, _ = subject["type"].(string)
+
+	// §2.2: statusPurpose MUST be one or more strings. Accept string or array.
+	switch p := subject["statusPurpose"].(type) {
+	case string:
+		sl.subject.StatusPurpose = p
+	case []interface{}:
+		for _, v := range p {
+			if s, ok := v.(string); ok && s == entryPurpose {
+				sl.subject.StatusPurpose = entryPurpose
+			}
+		}
+	}
+
+	return sl, nil
+}
+
+// hasType checks whether a JSON type field (string or array) includes the
+// given type value.
+func hasType(v interface{}, want string) bool {
+	switch t := v.(type) {
+	case string:
+		return t == want
+	case []interface{}:
+		for _, x := range t {
+			if x == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// clip truncates a string to at most 256 bytes for safe inclusion in error
+// messages. Values echoed in errors come from the fetched list and are bounded
+// only by the 16 MiB body limit.
+func clip(s string) string {
+	const max = 256
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }
 
 // CheckBitStatus checks whether the bit at position in the encoded bitstring
@@ -292,11 +397,11 @@ func CheckBitStatus(position int, subject StatusListCredentialSubject, entryPurp
 		raw := encoded[1:]
 		byteString, err := decompressFromBase64URLWithLimit(raw, maxDecompressedSize)
 		if err != nil {
-			return false, fmt.Errorf("failed to decode W3C encodedList: %w", err)
+			return false, fmt.Errorf("failed to decode encodedList: %w", err)
 		}
 		// §2.2: the uncompressed bitstring MUST be at least 16 KB.
 		if len(byteString) < 16384 {
-			return false, fmt.Errorf("W3C bitstring status list must be at least 16 KB (131072 bits), got %d bytes (%d bits)", len(byteString), len(byteString)*8)
+			return false, fmt.Errorf("bitstring status list must be at least 16 KB (131072 bits), got %d bytes (%d bits)", len(byteString), len(byteString)*8)
 		}
 		maxPosition := len(byteString)*8 - 1
 		if position < 0 || position > maxPosition {

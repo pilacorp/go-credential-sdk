@@ -348,6 +348,10 @@ func (j *JWTCredential) Present(selectedDisclosures []string) (Credential, error
 func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
+	if options.isCheckRevocation && !options.isVerifyProof {
+		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
+	}
+
 	g := &errgroup.Group{}
 
 	if options.isValidateSchema {
@@ -357,10 +361,6 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 			}
 			return nil
 		})
-	}
-
-	if options.isCheckRevocation && !options.isVerifyProof {
-		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
 	}
 
 	if options.isVerifyProof {
@@ -386,8 +386,8 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	// forged credential must not trigger a GET to the statusListCredential
 	// URL the attacker chose.
 	if options.isCheckRevocation {
-		// VC-JWT 1.1 §6.3.1: the issuer may only appear in the JWT
-		// "iss" claim, not in the vc payload.
+		// VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
+		// is present it sets the issuer.
 		iss, _ := j.jwtClaims["iss"].(string)
 		if err := checkRevocation(j.payloadData, options.resolver, iss); err != nil {
 			return fmt.Errorf("credential verification failed: check revocation: %w", err)

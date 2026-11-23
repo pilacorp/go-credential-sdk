@@ -696,6 +696,72 @@ func TestCheckRevocation_NoStatusFieldJSONCredential(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestCheckRevocation_UnknownStatusType_Ignored(t *testing.T) {
+	// A credentialStatus with a type other than BitstringStatusListEntry
+	// should be silently ignored per PR #213 / issue #99 item 9.
+	credentialJSON := []byte(`{
+	  "id": "did:nda:testnet:test-unknown-type",
+	  "type": "VerifiableCredential",
+	  "issuer": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212",
+	  "@context": [
+	    "https://www.w3.org/ns/credentials/v2"
+	  ],
+	  "validFrom": "2025-09-25T07:57:04Z",
+	  "validUntil": "2026-09-25T07:57:04Z",
+	  "credentialStatus": {
+	    "type": "StatusList2021Entry",
+	    "statusListCredential": "https://example.com/status/0",
+	    "statusListIndex": "5",
+	    "statusPurpose": "revocation"
+	  },
+	  "credentialSubject": {
+	    "id": "did:pila:testnet:0xedf82c5366eeffcbef566b2edffab102d140f212"
+	  }
+	}`)
+
+	// Even with WithCheckRevocation + WithVerifyProof, the unknown type is
+	// silently skipped — no fetch, no error.
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation(), WithVerifyProof(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
+	// The proof verify step fails (unsigned), but the revocation check
+	// for the unknown type should be skipped. We expect a proof error.
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "proof")
+	assert.NotContains(t, err.Error(), "revocation")
+}
+
+func TestCheckRevocation_MissingStatusPurpose_Refused(t *testing.T) {
+	// A BitstringStatusListEntry without statusPurpose must be refused.
+	// We test via checkRevocation directly (unexported but same package test)
+	// because parseCredential runs proof verify first.
+	data := CredentialData{
+		"credentialStatus": map[string]interface{}{
+			"type":                 "BitstringStatusListEntry",
+			"statusListCredential": "https://example.com/status/0",
+			"statusListIndex":      "5",
+			// no statusPurpose
+		},
+	}
+	err := checkRevocation(data, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "statusPurpose is required")
+}
+
+func TestCheckRevocation_UnsupportedStatusSize_Refused(t *testing.T) {
+	data := CredentialData{
+		"credentialStatus": map[string]interface{}{
+			"type":                 "BitstringStatusListEntry",
+			"statusListCredential": "https://example.com/status/0",
+			"statusListIndex":      "5",
+			"statusPurpose":        "revocation",
+			"statusSize":           float64(2),
+		},
+	}
+	err := checkRevocation(data, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "statusSize")
+	assert.Contains(t, err.Error(), "not supported")
+}
+
 func TestCheckRevocation_RevokedJWTCredential(t *testing.T) {
 	// auth-dev.pila.vn resolves to a private address; bypass SSRF for this test.
 	credentialstatus.SetDefaultHTTPClient(&http.Client{Timeout: 10 * time.Second})

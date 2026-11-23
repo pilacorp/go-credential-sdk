@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -327,7 +328,7 @@ func TestVerifyAndCheckStatus_Signed_Legacy(t *testing.T) {
 	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", encoded)
 	server := serveStatusList(t, vc)
 
-	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 
 	// Position 0 is set -> status is set for purpose "revocation".
 	err := client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
@@ -357,7 +358,7 @@ func TestVerifyAndCheckStatus_UnsignedCredential_Refused(t *testing.T) {
 	}
 	server := serveStatusList(t, vc)
 
-	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	err := client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "proof")
@@ -373,7 +374,7 @@ func TestVerifyAndCheckStatus_TamperedCredential_Refused(t *testing.T) {
 
 	server := serveStatusList(t, vc)
 
-	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	err := client.VerifyAndCheckStatus(server.URL, 0, "revocation", "did:example:tampered")
 	assert.Error(t, err)
 	// The proof should fail because the document was tampered.
@@ -388,7 +389,7 @@ func TestVerifyAndCheckStatus_IssuerMismatch_Refused(t *testing.T) {
 	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", encoded)
 	server := serveStatusList(t, vc)
 
-	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	// But the VC being checked has a different issuer.
 	err := client.VerifyAndCheckStatus(server.URL, 0, "revocation", "did:example:other-issuer")
 	assert.Error(t, err)
@@ -403,7 +404,7 @@ func TestVerifyAndCheckStatus_PurposeMismatch_Refused(t *testing.T) {
 	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", encoded)
 	server := serveStatusList(t, vc)
 
-	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	// But the VC entry claims purpose "suspension".
 	err := client.VerifyAndCheckStatus(server.URL, 0, "suspension", testIssuerDID)
 	assert.Error(t, err)
@@ -436,7 +437,7 @@ func TestVerifyAndCheckStatus_ExpiredCredential_Refused(t *testing.T) {
 
 	server := serveStatusList(t, map[string]interface{}(vc))
 
-	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	err = client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "expired")
@@ -466,7 +467,7 @@ func TestFetchAndCheckRevocation(t *testing.T) {
 				Type:          "BitstringStatusList",
 			},
 			ID:         "did:example:status/0",
-			Issuer:     IssuerField{DID: "did:example:issuer"},
+			Issuer:     "did:example:issuer",
 			Proof:      map[string]interface{}{},
 			Type:       []string{"VerifiableCredential", "BitstringStatusListCredential"},
 			ValidFrom:  "2025-01-01T00:00:00Z",
@@ -493,7 +494,7 @@ func TestFetchAndCheckRevocation(t *testing.T) {
 
 func TestNewClient_UsesDefaultHTTPClient(t *testing.T) {
 	client := NewClient()
-	assert.Equal(t, defaultHTTPClient, client.client)
+	assert.Equal(t, defaultHTTPClient.Load(), client.client)
 }
 
 // The default client refuses a status list on a non-public address, so a
@@ -517,10 +518,10 @@ func TestDefaultHTTPClient_RefusesLoopback(t *testing.T) {
 // restores that bound: a status list server that stops sending must not hang
 // the verifier.
 func TestDefaultHTTPClient_BoundsWholeRequest(t *testing.T) {
-	assert.Equal(t, 10*time.Second, defaultHTTPClient.Timeout)
+	assert.Equal(t, 10*time.Second, defaultHTTPClient.Load().Timeout)
 	SetDefaultHTTPClient(&http.Client{})
 	SetDefaultHTTPClient(nil)
-	assert.Equal(t, 10*time.Second, defaultHTTPClient.Timeout)
+	assert.Equal(t, 10*time.Second, defaultHTTPClient.Load().Timeout)
 }
 
 func TestWithHTTPClient_OverridesClient(t *testing.T) {
@@ -532,7 +533,7 @@ func TestWithHTTPClient_OverridesClient(t *testing.T) {
 
 func TestWithHTTPClient_NilDoesNotOverride(t *testing.T) {
 	client := NewClient(WithHTTPClient(nil))
-	assert.Equal(t, defaultHTTPClient, client.client)
+	assert.Equal(t, defaultHTTPClient.Load(), client.client)
 }
 
 // ---------------------------------------------------------------------------
@@ -644,7 +645,7 @@ func TestVerifyAndCheckStatus_ObjectFormIssuer(t *testing.T) {
 
 	server := serveStatusList(t, map[string]interface{}(vc))
 
-	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	err = client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
 	assert.NoError(t, err)
 }
@@ -672,7 +673,7 @@ func TestVerifyAndCheckStatus_PurposeAwareMessage_Suspension(t *testing.T) {
 	vc := signStatusListCredential(t, priv, testIssuerDID, "suspension", encoded)
 	server := serveStatusList(t, vc)
 
-	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	err := client.VerifyAndCheckStatus(server.URL, 0, "suspension", testIssuerDID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "credential status is set for purpose")
@@ -727,7 +728,7 @@ func TestVerifyAndCheckStatus_ResponseBodyLimit(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	err := client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "status list response exceeds")
@@ -877,10 +878,265 @@ func TestVerifyAndCheckStatus_OversizedBody_ExceedsErrorBeforeUnmarshal(t *testi
 	}))
 	t.Cleanup(server.Close)
 
-	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	err := client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds")
 	// The error should NOT mention "unmarshal" — the body is rejected before parsing.
 	assert.NotContains(t, err.Error(), "unmarshal")
+}
+
+// ---------------------------------------------------------------------------
+// Security: read status fields from the verified map, not a struct decode
+// (review comment 4661773191)
+// ---------------------------------------------------------------------------
+
+func TestReadStatusList_ExactKeyMatch(t *testing.T) {
+	// readStatusList must use exact-case keys from the map, not a struct
+	// decode that matches case-insensitively. A case-variant sibling key
+	// should be ignored.
+	encoded := buildW3CEncodedList(t, []int{0})
+	zeroEncoded := buildW3CEncodedList(t, []int{}) // all zeros
+
+	m := jsonmap.JSONMap{
+		"type":   []interface{}{"VerifiableCredential", "BitstringStatusListCredential"},
+		"issuer": testIssuerDID,
+		"credentialSubject": map[string]interface{}{
+			"type":          "BitstringStatusList",
+			"statusPurpose": "revocation",
+			"encodedList":   encoded,     // exact case: has bit 0 set
+			"EncodedList":   zeroEncoded, // case variant: all zeros — must not be read
+		},
+	}
+
+	sl, err := readStatusList(m, "revocation")
+	require.NoError(t, err)
+	// The readStatusList function reads "encodedList" (exact case), not "EncodedList".
+	assert.Equal(t, encoded, sl.subject.EncodedList)
+	assert.Equal(t, testIssuerDID, sl.issuerDID)
+}
+
+// ---------------------------------------------------------------------------
+// Accept credential served as is (review comment 4661773345)
+// ---------------------------------------------------------------------------
+
+func TestVerifyAndCheckStatus_BareCredential_NoDataWrapper(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	encoded := buildW3CEncodedList(t, []int{0})
+
+	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", encoded)
+
+	// Serve the credential directly (no {"data": ...} wrapper).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(vc)
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	// Position 0 is set.
+	err := client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "credential status is set for purpose")
+
+	// Position 7 is not set.
+	err = client.VerifyAndCheckStatus(server.URL, 7, "revocation", testIssuerDID)
+	assert.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Type checks (review comment 4661773677)
+// ---------------------------------------------------------------------------
+
+func TestVerifyAndCheckStatus_MissingBitstringStatusListCredentialType(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	encoded := buildW3CEncodedList(t, []int{})
+
+	now := time.Now().UTC()
+	vc := jsonmap.JSONMap{
+		"@context":   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":       []interface{}{"VerifiableCredential"}, // missing BitstringStatusListCredential
+		"id":         testIssuerDID + "/status/0",
+		"issuer":     testIssuerDID,
+		"validFrom":  now.Add(-1 * time.Hour).Format(time.RFC3339),
+		"validUntil": now.Add(24 * time.Hour).Format(time.RFC3339),
+		"credentialSubject": map[string]interface{}{
+			"type":          "BitstringStatusList",
+			"statusPurpose": "revocation",
+			"encodedList":   encoded,
+		},
+	}
+	sp, err := signer.NewP256Provider(priv)
+	require.NoError(t, err)
+	err = vc.AddECDSAProof(sp, testVMID, "assertionMethod")
+	require.NoError(t, err)
+
+	server := serveStatusList(t, map[string]interface{}(vc))
+
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	err = client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "BitstringStatusListCredential")
+}
+
+func TestReadStatusList_WrongSubjectType(t *testing.T) {
+	// readStatusList must refuse a credentialSubject.type that is not
+	// "BitstringStatusList" (§2.2).
+	encoded := buildW3CEncodedList(t, []int{})
+
+	m := jsonmap.JSONMap{
+		"type":   []interface{}{"VerifiableCredential", "BitstringStatusListCredential"},
+		"issuer": testIssuerDID,
+		"credentialSubject": map[string]interface{}{
+			"type":          "SomeOtherType",
+			"statusPurpose": "revocation",
+			"encodedList":   encoded,
+		},
+	}
+
+	_, err := readStatusList(m, "revocation")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "BitstringStatusList")
+}
+
+func TestReadStatusList_MissingCredentialType(t *testing.T) {
+	// readStatusList must refuse a credential whose type does not include
+	// "BitstringStatusListCredential" (§2.1).
+	m := jsonmap.JSONMap{
+		"type":   []interface{}{"VerifiableCredential"},
+		"issuer": testIssuerDID,
+		"credentialSubject": map[string]interface{}{
+			"type":          "BitstringStatusList",
+			"statusPurpose": "revocation",
+			"encodedList":   "u...",
+		},
+	}
+
+	_, err := readStatusList(m, "revocation")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "BitstringStatusListCredential")
+}
+
+// ---------------------------------------------------------------------------
+// Purpose refused up front (review comment 4661773816)
+// ---------------------------------------------------------------------------
+
+func TestVerifyAndCheckStatus_UnsupportedPurpose_RefusedBeforeFetch(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	_, resolver := testKeyPair(t)
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	err := client.VerifyAndCheckStatus(server.URL, 0, "refresh", testIssuerDID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported")
+	assert.Contains(t, err.Error(), "refresh")
+	assert.Zero(t, hits, "unsupported purpose must be refused before fetching")
+}
+
+// ---------------------------------------------------------------------------
+// statusPurpose as array (review comment 4661773969)
+// ---------------------------------------------------------------------------
+
+func TestVerifyAndCheckStatus_StatusPurposeArray(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	encoded := buildW3CEncodedList(t, []int{0})
+
+	now := time.Now().UTC()
+	vc := jsonmap.JSONMap{
+		"@context":   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":       []interface{}{"VerifiableCredential", "BitstringStatusListCredential"},
+		"id":         testIssuerDID + "/status/0",
+		"issuer":     testIssuerDID,
+		"validFrom":  now.Add(-1 * time.Hour).Format(time.RFC3339),
+		"validUntil": now.Add(24 * time.Hour).Format(time.RFC3339),
+		"credentialSubject": map[string]interface{}{
+			"type":          "BitstringStatusList",
+			"statusPurpose": []interface{}{"revocation", "suspension"},
+			"encodedList":   encoded,
+		},
+	}
+	sp, err := signer.NewP256Provider(priv)
+	require.NoError(t, err)
+	err = vc.AddECDSAProof(sp, testVMID, "assertionMethod")
+	require.NoError(t, err)
+
+	server := serveStatusList(t, map[string]interface{}(vc))
+
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	// "revocation" is in the array, so the check should proceed.
+	err = client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "credential status is set for purpose")
+}
+
+// ---------------------------------------------------------------------------
+// Legacy list refused by default (review comment 4661774086)
+// ---------------------------------------------------------------------------
+
+func TestVerifyAndCheckStatus_LegacyList_RefusedByDefault(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	encoded := buildLegacyEncodedList(t, 128, []int{})
+
+	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", encoded)
+	server := serveStatusList(t, vc)
+
+	// No WithLegacyStatusList.
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	err := client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not multibase base64url")
+	assert.Contains(t, err.Error(), "WithLegacyStatusList")
+}
+
+func TestVerifyAndCheckStatus_LegacyList_AcceptedWithOption(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	encoded := buildLegacyEncodedList(t, 128, []int{})
+
+	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", encoded)
+	server := serveStatusList(t, vc)
+
+	// With WithLegacyStatusList.
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
+	err := client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
+	assert.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Atomic defaultHTTPClient (review comment 4661774412)
+// ---------------------------------------------------------------------------
+
+func TestSetDefaultHTTPClient_ConcurrentAccess(t *testing.T) {
+	// This test verifies that concurrent access to the default client does
+	// not race. Run with -race to check.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			SetDefaultHTTPClient(&http.Client{Timeout: time.Duration(i) * time.Millisecond})
+		}
+		SetDefaultHTTPClient(nil)
+	}()
+	for i := 0; i < 100; i++ {
+		_ = NewClient()
+	}
+	<-done
+}
+
+// ---------------------------------------------------------------------------
+// Clip error values (review comment 4661774564)
+// ---------------------------------------------------------------------------
+
+func TestClip(t *testing.T) {
+	short := "did:example:issuer"
+	assert.Equal(t, short, clip(short))
+
+	long := strings.Repeat("x", 300)
+	clipped := clip(long)
+	assert.Equal(t, 259, len(clipped)) // 256 + "..."
+	assert.True(t, strings.HasSuffix(clipped, "..."))
 }

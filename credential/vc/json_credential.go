@@ -501,6 +501,10 @@ func (e *JSONCredential) ExtractField(path string) any {
 func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
+	if options.isCheckRevocation && !options.isVerifyProof {
+		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
+	}
+
 	g := &errgroup.Group{}
 
 	if options.isValidateSchema {
@@ -511,10 +515,6 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 
 			return nil
 		})
-	}
-
-	if options.isCheckRevocation && !options.isVerifyProof {
-		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
 	}
 
 	if options.isVerifyProof {

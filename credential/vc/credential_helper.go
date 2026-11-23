@@ -630,8 +630,12 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 // status list, verifies the credential is not revoked. It also verifies the
 // status list credential itself: its proof, issuer match, and validity period.
 //
+// Only BitstringStatusListEntry entries are processed; entries with other types
+// are silently ignored (consistent with PR #213 / issue #99 item 9: unknown
+// credentialStatus types are skipped).
+//
 // issuerDIDFallbacks supplies additional DID strings to try when c["issuer"]
-// is missing (e.g. the JWT "iss" claim for VC-JWT 1.1 §6.3.1).
+// is missing (e.g. the JWT "iss" claim for VC Data Model v1.1 §6.3.1).
 func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvider, issuerDIDFallbacks ...string) error {
 	// If there's no credentialStatus at all, treat as not using revocation → no error.
 	rawStatus, ok := c["credentialStatus"]
@@ -647,6 +651,22 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 	// If credentialStatus is an empty object, also treat it as "no revocation info".
 	if len(statusMap) == 0 {
 		return nil
+	}
+
+	// Only process BitstringStatusListEntry; ignore unknown types.
+	if t, _ := statusMap["type"].(string); t != "BitstringStatusListEntry" {
+		return nil
+	}
+
+	// For a BitstringStatusListEntry, statusPurpose is required (§2.1).
+	entryPurpose, _ := statusMap["statusPurpose"].(string)
+	if entryPurpose == "" {
+		return fmt.Errorf("credentialStatus.statusPurpose is required")
+	}
+
+	// statusSize other than 1 is not supported (this reader handles 1-bit entries).
+	if size, ok := statusMap["statusSize"]; ok && size != float64(1) {
+		return fmt.Errorf("credentialStatus.statusSize %v is not supported: only 1-bit status entries are", size)
 	}
 
 	rawStatusListCredential, ok := statusMap["statusListCredential"]
@@ -674,29 +694,24 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 		return fmt.Errorf("invalid credentialStatus.statusListIndex: %w", err)
 	}
 
-	// Extract the entry's statusPurpose (defaults to "revocation" for
-	// backward compatibility with entries that omit the field).
-	entryPurpose, _ := statusMap["statusPurpose"].(string)
-	if entryPurpose == "" {
-		entryPurpose = "revocation"
-	}
-
 	// Extract the credential's issuer DID for the issuer-match check.
-	// For JWT VCs (VC-JWT 1.1 §6.3.1) the issuer may only be in the JWT
-	// "iss" claim rather than duplicated inside the "vc" payload.
-	issuerDID, _ := jsonmap.DIDFromField(c["issuer"])
-	if issuerDID == "" {
-		for _, fb := range issuerDIDFallbacks {
-			if fb != "" {
-				issuerDID = fb
-				break
-			}
+	// For JWT VCs, VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
+	// is present it sets the issuer.
+	var issuerDID string
+	for _, fb := range issuerDIDFallbacks {
+		if fb != "" {
+			issuerDID = fb
+			break
 		}
+	}
+	if issuerDID == "" {
+		issuerDID, _ = jsonmap.DIDFromField(c["issuer"])
 	}
 
 	// Fetch, verify, and check the status list credential.
 	client := credentialstatus.NewClient(
 		credentialstatus.WithResolver(resolver),
+		credentialstatus.WithLegacyStatusList(),
 	)
 	if err := client.VerifyAndCheckStatus(statusListCredential, position, entryPurpose, issuerDID); err != nil {
 		return fmt.Errorf("failed to check revocation: %w", err)
