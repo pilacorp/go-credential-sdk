@@ -113,19 +113,20 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 		}
 	}
 
-	// Same rule the parse side applies: nothing outside credentialSubject may be
-	// disclosable. Reachable here through WithSDSelectivePaths naming a path
-	// outside the subject, or WithSDDecoyDigests with a root path. The subject
-	// itself is exempt — hiding claims in there is the feature.
-	if err := requireDisclosableAtTopLevel(vcMap, true); err != nil {
-		return nil, err
-	}
+	// Per W3C vc-jose-cose Section 1.1.2.1:
+	// "The JWT Claim Names vc and vp MUST NOT be present in any JWT Claims Set that
+	// comprises a verifiable credential or a verifiable presentation."
+	// Removed before the digest check, so a digest that lived only under one of
+	// these claims is not refused: it is not in the bytes that get signed, and
+	// ParseJOSECredential never sees it.
+	delete(vcMap, "vc")
+	delete(vcMap, "vp")
 
-	// Reconstruct deep-copies, so this validates without touching what gets
-	// signed.
-	if _, rerr := sdjwt.Reconstruct(vcMap, disclosures, true); rerr != nil {
-		return nil, fmt.Errorf("invalid SD-JWT disclosures: %w", rerr)
-	}
+	// Without iat the verifier has no signing time to compare a soft revocation
+	// against, and would have to guess one from validFrom — a different fact.
+	jwtutil.SetIssuedAt(vcMap, time.Now())
+
+	payloadData := CredentialData(vcMap)
 
 	// Read from the payload, which is the same question ParseJOSECredential asks
 	// of the same bytes. Deriving it from len(disclosures) instead made the two
@@ -136,17 +137,39 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 	// byte forms, two Hash values.
 	_, disclosable := vcMap["_sd_alg"]
 
-	// Per W3C vc-jose-cose Section 1.1.2.1:
-	// "The JWT Claim Names vc and vp MUST NOT be present in any JWT Claims Set that
-	// comprises a verifiable credential or a verifiable presentation."
-	delete(vcMap, "vc")
-	delete(vcMap, "vp")
+	payloadJSON, err := json.Marshal(vcMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
 
-	// Without iat the verifier has no signing time to compare a soft revocation
-	// against, and would have to guess one from validFrom — a different fact.
-	jwtutil.SetIssuedAt(vcMap, time.Now())
+	// The checks below read payloadJSON, decoded the way ParseJOSECredential
+	// decodes it. Walking the Go map missed digests held in a typed value (a
+	// map[string][]string, a json.RawMessage, a struct), which marshal to the
+	// same JSON (#105). Only the decoded copy is looked at: what gets signed
+	// stays payloadJSON, because re-encoding the copy would turn large integers
+	// into float64.
+	var checked map[string]interface{}
+	if err := json.Unmarshal(payloadJSON, &checked); err != nil {
+		return nil, fmt.Errorf("failed to decode payload: %w", err)
+	}
 
-	payloadData := CredentialData(vcMap)
+	// Same rule the parse side applies: nothing outside credentialSubject may be
+	// disclosable. Reachable here through WithSDSelectivePaths naming a path
+	// outside the subject, or WithSDDecoyDigests with a root path. The subject
+	// is exempt only when the token is an SD-JWT — hiding claims in there is the
+	// feature. The parser exempts it when typ is vc+sd-jwt, and typ follows
+	// disclosable, so the two ends ask the same question (#105). Asking
+	// "was an SD option passed" instead let WithSDHashAlgorithm alone build a
+	// vc+jwt with digests in the subject, which the parser then refused.
+	if err := requireDisclosableAtTopLevel(checked, disclosable); err != nil {
+		return nil, err
+	}
+
+	// Reconstruct deep-copies, so this validates without touching what gets
+	// signed.
+	if _, rerr := sdjwt.Reconstruct(checked, disclosures, true); rerr != nil {
+		return nil, fmt.Errorf("invalid SD-JWT disclosures: %w", rerr)
+	}
 
 	// Resolve the verification method the header will name, and keep it: every
 	// signing path checks the signature it is handed against this key before
@@ -186,10 +209,6 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 	}
 	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
 
-	payloadJSON, err := json.Marshal(vcMap)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
 	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
 	signingInput := headerEncoded + "." + payloadEncoded

@@ -48,14 +48,6 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 
 	vcMap := normalizeCredentialData(m)
 
-	// The option check misses contents that already carry digests: a caller who
-	// ran sdjwt.BuildDisclosures and put the processed claims into the contents
-	// passes no SD option at all. Building it would produce a JWT carrying
-	// digests that ParseJWTCredential then refuses, so it is refused here.
-	if carriesSDJWT(vcMap) {
-		return nil, fmt.Errorf("NewJWTCredential: contents carry SD-JWT digests: %w", ErrSDJWTRequiresJOSE)
-	}
-
 	payloadData := CredentialData(vcMap)
 
 	otherClaims := map[string]interface{}{}
@@ -81,6 +73,27 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 		payload[key] = value
 	}
 
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// The option check misses contents that already carry digests: a caller who
+	// ran sdjwt.BuildDisclosures and put the processed claims into the contents
+	// passes no SD option at all. Building it would produce a JWT carrying
+	// digests that ParseJWTCredential then refuses, so it is refused here.
+	//
+	// The check reads the JSON that gets signed, decoded the way
+	// ParseJWTCredential decodes it. Walking the Go map missed digests held in a
+	// typed value (a map[string][]string, a json.RawMessage, a struct), which
+	// marshal to the same JSON (#105). Before the DID is resolved, so the
+	// refusal costs no network round trip.
+	if sd, err := jsonCarriesSDJWT(payloadJSON); err != nil {
+		return nil, err
+	} else if sd {
+		return nil, fmt.Errorf("NewJWTCredential: contents carry SD-JWT digests: %w", ErrSDJWTRequiresJOSE)
+	}
+
 	// Resolve the VM so alg reflects the key it actually holds, and so a kid
 	// that does not exist or is not granted assertionMethod is caught here.
 	signingKey, err := jwt.ResolveSigningKey(context.Background(), vcc.Issuer, "assertionMethod",
@@ -101,10 +114,6 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 	}
 	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
 
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
 	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
 	signingInput := headerEncoded + "." + payloadEncoded
@@ -179,6 +188,18 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 	}
 
 	return e, e.executeOptions(opts...)
+}
+
+// jsonCarriesSDJWT runs carriesSDJWT on payloadJSON decoded into a fresh map,
+// which is the view ParseJWTCredential has of the same bytes. The decoded map
+// is only looked at: what gets signed stays payloadJSON, because re-encoding a
+// decoded map would turn large integers into float64 and change the token.
+func jsonCarriesSDJWT(payloadJSON []byte) (bool, error) {
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(payloadJSON, &decoded); err != nil {
+		return false, fmt.Errorf("failed to decode payload: %w", err)
+	}
+	return carriesSDJWT(decoded), nil
 }
 
 // carriesSDJWT reports whether a VC 1.1 document or JWT payload carries any

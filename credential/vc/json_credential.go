@@ -186,10 +186,16 @@ func requireDisclosableAtTopLevel(m map[string]interface{}, subjectMayDisclose b
 		if name == credentialSubjectProperty && subjectMayDisclose {
 			continue
 		}
-		if carriesSDMachinery(value) {
-			return fmt.Errorf("selective disclosure is not permitted in %q; "+
-				"only claims inside %s may be withheld", name, credentialSubjectProperty)
+		if !carriesSDMachinery(value) {
+			continue
 		}
+		if name == credentialSubjectProperty {
+			return fmt.Errorf("selective disclosure is not permitted in %q: the token does not "+
+				"declare SD-JWT (typ is not %s), so %s may not carry digests either",
+				credentialSubjectProperty, TypeVCSDJWT, credentialSubjectProperty)
+		}
+		return fmt.Errorf("selective disclosure is not permitted in %q; "+
+			"only claims inside %s may be withheld", name, credentialSubjectProperty)
 	}
 
 	return nil
