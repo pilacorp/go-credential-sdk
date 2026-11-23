@@ -14,6 +14,7 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -300,27 +301,35 @@ func padBitAlias(t *testing.T, seg string) string {
 
 // --- #99 item 12: KB-JWT acceptance ---
 
-// TestJOSEStrict_KBJWTAccepted checks that an SD-JWT with a trailing Key
-// Binding JWT is accepted (jose/sdjwt.Split accepts it per RFC 9901), not
-// rejected as the old common/sdjwt.Parse did.
-func TestJOSEStrict_KBJWTAccepted(t *testing.T) {
+// RFC 9901 section 7.2: a Holder that receives an SD-JWT+KB MUST reject it,
+// and ParseJOSECredential is the holder's receive path. Until the SDK
+// verifies a Key Binding JWT, a token carrying one is refused rather than
+// parsed with the KB-JWT dropped (#209 review).
+func TestJOSEStrict_KBJWTRefused(t *testing.T) {
 	did, priv, resolver := joseSetup(t)
 	token := signedSDJWTToken(t, did, priv, resolver)
 
-	// Build a fake KB-JWT (not cryptographically valid, but structurally
-	// correct): header.payload.signature.
 	kbHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"typ":"kb+jwt","alg":"ES256"}`))
 	kbPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"nonce":"n","aud":"a","iat":1700000000}`))
 	kbSig := base64.RawURLEncoding.EncodeToString(make([]byte, 64))
-	kb := kbHeader + "." + kbPayload + "." + kbSig
+	noneHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"typ":"kb+jwt","alg":"none"}`))
 
-	// The token already ends with ~, so just append the KB-JWT.
-	withKB := token + kb
-
-	// Parse should succeed: the KB-JWT is accepted but not verified.
-	_, err := vc.ParseCredential([]byte(withKB), vc.WithResolver(resolver))
-	if err != nil {
-		t.Fatalf("rejected SD-JWT with KB-JWT: %v", err)
+	// The token already ends with ~, so the KB-JWT is appended as is.
+	for name, kb := range map[string]string{
+		"ES256 KB-JWT": kbHeader + "." + kbPayload + "." + kbSig,
+		"opaque a.b.c": "a.b.c",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := vc.ParseCredential([]byte(token+kb), vc.WithResolver(resolver))
+			if err == nil || !strings.Contains(err.Error(), "key binding JWT") {
+				t.Fatalf("err = %v, want the key binding JWT refused", err)
+			}
+		})
+	}
+	// An alg none KB-JWT has an empty signature, which Split already refuses
+	// as malformed; either way it does not parse.
+	if _, err := vc.ParseCredential([]byte(token+noneHeader+"."+kbPayload+"."), vc.WithResolver(resolver)); err == nil {
+		t.Fatal("an SD-JWT with an alg none KB-JWT was accepted")
 	}
 }
 
@@ -797,6 +806,77 @@ func TestJOSEStrict_ReservedDisclosureNameRefusedForSHA384(t *testing.T) {
 				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
 			if err == nil || !strings.Contains(err.Error(), "reserved") {
 				t.Fatalf("err = %v, want the disclosure name %q refused as reserved", err, name)
+			}
+		})
+	}
+}
+
+// RFC 9901 section 4.1 rule 7 and section 4.2.4.2: {"...": digest} belongs in
+// an array only. sha-256 payloads were held to that by module jose, sha-384
+// and sha-512 were not, so the same payload issued under one hash and was
+// refused under the other (#209 review).
+func TestJOSEStrict_PayloadShapeRulesForEveryHash(t *testing.T) {
+	did, _, resolver := joseSetup(t)
+	for _, alg := range []string{"sha-256", "sha-384", "sha-512"} {
+		t.Run(alg, func(t *testing.T) {
+			contents := joseContents(did)
+			contents.Subject = []vc.Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{
+				"name": "Alice",
+				"x":    map[string]interface{}{"...": "abc"},
+			}}}
+			_, err := vc.NewJOSECredential(contents,
+				vc.WithSDSelectivePaths([]string{"credentialSubject.name"}), vc.WithSDHashAlgorithm(alg),
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+			if err == nil {
+				t.Fatalf("%s: built a payload with {\"...\": digest} outside an array", alg)
+			}
+		})
+	}
+}
+
+// The SDK must not sign an SD-JWT its own parser refuses: jose/sdjwt.Split
+// caps a token at 1 MiB and 1000 disclosures (#209 review).
+func TestJOSEStrict_RefusesToSignWhatItCannotParse(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	big := joseContents(did)
+	big.Subject = []vc.Subject{{ID: "did:example:subject", CustomFields: map[string]interface{}{
+		"name": strings.Repeat("a", 1<<20),
+	}}}
+
+	many := joseContents(did)
+	fields := map[string]interface{}{}
+	paths := make([]string, 0, 1001)
+	for i := 0; i < 1001; i++ {
+		k := fmt.Sprintf("f%04d", i)
+		fields[k] = i
+		paths = append(paths, "credentialSubject."+k)
+	}
+	many.Subject = []vc.Subject{{ID: "did:example:subject", CustomFields: fields}}
+
+	for name, tc := range map[string]struct {
+		contents vc.CredentialContents
+		opts     []vc.CredentialOpt
+	}{
+		"over 1 MiB":       {big, []vc.CredentialOpt{vc.WithSDSelectivePaths([]string{"credentialSubject.name"})}},
+		"1001 disclosures": {many, []vc.CredentialOpt{vc.WithSDSelectivePaths(paths), vc.WithSDHashAlgorithm("sha-384")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cred, err := vc.NewJOSECredential(tc.contents, append([]vc.CredentialOpt{
+				vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)}, tc.opts...)...)
+			if err != nil {
+				return // refused before signing: nothing unparsable is issued
+			}
+			err = cred.AddProofByProvider(prov, vc.WithResolver(resolver))
+			if err == nil {
+				t.Fatal("signed an SD-JWT that ParseJOSECredential refuses")
+			}
+			if !strings.Contains(err.Error(), "cannot parse back") {
+				t.Fatalf("err = %v, want it to say the token cannot be parsed back", err)
 			}
 		})
 	}

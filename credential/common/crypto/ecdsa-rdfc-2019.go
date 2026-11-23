@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/eckey"
 )
 
 func ECDSAVerifySignature(pubKey *ecdsa.PublicKey, signature string, msg []byte) (bool, error) {
@@ -44,14 +47,19 @@ func ECDSAVerifySignature(pubKey *ecdsa.PublicKey, signature string, msg []byte)
 	return true, nil
 }
 
-// VerifyKeyPair verifies if a private key and public key match
+// VerifyKeyPair verifies if a private key and public key match. It compares
+// points, not Curve values, so a secp256k1 key from btcec matches the same key
+// from go-ethereum.
 func VerifyKeyPair(privateKey *ecdsa.PrivateKey, publicKey *ecdsa.PublicKey) bool {
-	// Get the public key from the private key
-	derivedPublicKey := &privateKey.PublicKey
-
-	// Compare the X and Y coordinates of both public keys
-	return derivedPublicKey.X.Cmp(publicKey.X) == 0 &&
-		derivedPublicKey.Y.Cmp(publicKey.Y) == 0
+	derived, err := eckey.UncompressedBytes(&privateKey.PublicKey)
+	if err != nil {
+		return false
+	}
+	given, err := eckey.UncompressedBytes(publicKey)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(derived, given)
 }
 
 // VerifyKeyPairFromHex verifies if a private key (hex) and public key (hex) match.

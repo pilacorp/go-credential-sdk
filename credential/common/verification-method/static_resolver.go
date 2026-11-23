@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/eckey"
 )
 
 // StaticResolver is an in-memory ResolverProvider backed by a fixed set of DID
@@ -115,16 +117,17 @@ func NewP256MultikeyVM(did, fragment string, pub *ecdsa.PublicKey) (Verification
 // NewP256VM builds a JsonWebKey2020 verification method from a P-256 public key.
 // Used by ecdsa-rdfc-2019 and ecdsa-sd-2023.
 func NewP256VM(did, fragment string, pub *ecdsa.PublicKey) (VerificationMethodEntry, error) {
-	if pub == nil || pub.X == nil || pub.Y == nil {
+	if pub == nil {
 		return VerificationMethodEntry{}, fmt.Errorf("NewP256VM requires a non-nil public key")
 	}
 	if pub.Curve != elliptic.P256() {
 		return VerificationMethodEntry{}, fmt.Errorf("NewP256VM requires a P-256 key")
 	}
-	xb := make([]byte, 32)
-	yb := make([]byte, 32)
-	pub.X.FillBytes(xb)
-	pub.Y.FillBytes(yb)
+	point, err := eckey.UncompressedBytes(pub)
+	if err != nil {
+		return VerificationMethodEntry{}, fmt.Errorf("NewP256VM requires a valid P-256 key: %w", err)
+	}
+	xb, yb := point[1:33], point[33:65]
 	return VerificationMethodEntry{
 		ID:         did + "#" + fragment,
 		Type:       "JsonWebKey2020",
