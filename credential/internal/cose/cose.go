@@ -399,7 +399,8 @@ func init() {
 	}
 
 	decMode, err = cbor.DecOptions{
-		TagsMd: cbor.TagsAllowed,
+		TagsMd:    cbor.TagsAllowed,
+		DupMapKey: cbor.DupMapKeyEnforcedAPF,
 	}.DecMode()
 	if err != nil {
 		panic(fmt.Sprintf("cose: init dec mode: %v", err))

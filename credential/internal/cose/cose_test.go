@@ -580,5 +580,90 @@ func TestW3CTestVector_FlippedSignatureBitRefused(t *testing.T) {
 	}
 }
 
+func TestDecodeProtected_DuplicateLabel_Rejected(t *testing.T) {
+	// RFC 9052 §3: a protected header whose map repeats a label must be
+	// rejected as malformed. Without DupMapKeyEnforcedAPF the decoder
+	// silently accepts the last value, so two kid labels let an attacker
+	// slip a different key past implementations that keep the first.
+	//
+	// Hand-build a CBOR map with two kid (label 4) entries.
+	// CBOR: A3 01 26 04 44 "kid1" 04 44 "kid2"
+	// That encodes {1: -7, 4: h'6b696431', 4: h'6b696432'}.
+	// We use the raw CBOR bytes because the Go cbor library's encoder
+	// refuses duplicate keys in canonical mode.
+	dupHeader := []byte{
+		0xa3,       // map(3) — but CBOR allows encoding 3 pairs even though one label repeats
+		0x01, 0x26, // 1: -7 (ES256)
+		0x04, 0x44, 0x6b, 0x69, 0x64, 0x31, // 4: h'kid1'
+		0x04, 0x44, 0x6b, 0x69, 0x64, 0x32, // 4: h'kid2'
+	}
+
+	_, err := decodeProtected(dupHeader)
+	if err == nil {
+		t.Fatal("expected decodeProtected to reject a header with duplicate labels")
+	}
+	if !strings.Contains(err.Error(), "duplicate") && !strings.Contains(err.Error(), "dup") {
+		t.Logf("error (accepted — duplicate rejection phrasing may vary): %v", err)
+	}
+}
+
+func TestParse1_DuplicateLabelInProtected_Rejected(t *testing.T) {
+	// End-to-end: a full COSE_Sign1 message whose protected header has
+	// duplicate labels must be rejected by Parse1.
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	payload := []byte(`{"issuer":"did:example:1"}`)
+
+	// Build a valid COSE_Sign1 first, then replace the protected header
+	// with one that has duplicate labels.
+	prot := Protected{Alg: AlgES256, Kid: "did:example:1#key-1", Typ: "application/vc+cose"}
+	validData, err := Sign1(prot, payload, signP256(key))
+	if err != nil {
+		t.Fatalf("Sign1: %v", err)
+	}
+
+	// Verify the valid one works.
+	if _, _, _, err := Parse1(validData); err != nil {
+		t.Fatalf("Parse1 valid: %v", err)
+	}
+
+	// Now hand-build a COSE_Sign1 with a duplicate-label protected header.
+	// Protected header with two alg labels:
+	// {1: -7, 4: h'kid', 1: -47}
+	// 0xa3 01 26 04 43 "kid" 01 38 2e
+	dupProtBytes := []byte{
+		0xa3,                   // map(3) — with duplicate label 1
+		0x01, 0x26,             // 1: -7
+		0x04, 0x43, 0x6b, 0x69, 0x64, // 4: h'kid'
+		0x01, 0x38, 0x2e, // 1: -47
+	}
+
+	// Build the COSE_Sign1 structure with the duplicate-label header.
+	// Tag(18, [dupProtBytes, {}, payload, fakeSignature])
+	fakeSig := make([]byte, 64)
+	msg := struct {
+		_           struct{} `cbor:",toarray"`
+		Protected   []byte
+		Unprotected map[interface{}]interface{}
+		Payload     []byte
+		Signature   []byte
+	}{
+		Protected:   dupProtBytes,
+		Unprotected: map[interface{}]interface{}{},
+		Payload:     payload,
+		Signature:   fakeSig,
+	}
+	innerBytes, err := encMode.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal inner: %v", err)
+	}
+	// Wrap in CBOR tag 18. Tag 18 = 0xd2 followed by the content.
+	tagged := append([]byte{0xd2}, innerBytes...)
+
+	_, _, _, err = Parse1(tagged)
+	if err == nil {
+		t.Fatal("expected Parse1 to reject a COSE_Sign1 with duplicate labels in the protected header")
+	}
+}
+
 // w3cCOSEMinimalVector is credential-cose-minimal.txt of the w3c/vc-jose-cose-test-suite.
 const w3cCOSEMinimalVector = "0oRYVqQBJgNuYXBwbGljYXRpb24vdmMEWCs3M3ZvTVhGTm1ObE9FcHVZQ1NKbGg4ZU4wZHNjeWtvTzZnQnVrZ1JTMXVVEHNhcHBsaWNhdGlvbi92Yytjb3NloFkB8nsiQGNvbnRleHQiOlsiaHR0cHM6Ly93d3cudzMub3JnL25zL2NyZWRlbnRpYWxzL3YyIiwiaHR0cHM6Ly93d3cudzMub3JnL25zL2NyZWRlbnRpYWxzL2V4YW1wbGVzL3YyIl0sInR5cGUiOlsiVmVyaWZpYWJsZUNyZWRlbnRpYWwiLCJFeGFtcGxlQWx1bW5pQ3JlZGVudGlhbCJdLCJpZCI6Imh0dHA6Ly91bml2ZXJzaXR5LmV4YW1wbGUvY3JlZGVudGlhbHMvMTg3MiIsImlzc3VlciI6Imh0dHBzOi8vZXhhbXBsZS5pc3N1ZXIvdmMtam9zZS1jb3NlIiwidmFsaWRGcm9tIjoiMjAxMC0wMS0wMVQxOToyMzoyNFoiLCJjcmVkZW50aWFsU3ViamVjdCI6eyJkZWdyZWUiOnsibmFtZSI6IkJhY2hlbG9yIG9mIFNjaWVuY2UgYW5kIEFydHMiLCJ0eXBlIjoiQmFjaGVsb3JEZWdyZWUifSwiaWQiOiJkaWQ6ZXhhbXBsZToxMjMifSwiY3JlZGVudGlhbFNjaGVtYSI6eyJpZCI6Imh0dHBzOi8vZXhhbXBsZS5vcmcvZXhhbXBsZXMvZGVncmVlLmpzb24iLCJ0eXBlIjoiSnNvblNjaGVtYSJ9fVhAs3W1WN83yVu/HoEyYMy7Tcmub9zL55PDnfcx5yG42BTe0gdQ+E0V9B3B1gMZyt9dDEGZVJynd8vztWVr7d4Kkw"
