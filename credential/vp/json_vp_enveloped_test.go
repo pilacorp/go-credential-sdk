@@ -178,6 +178,11 @@ func TestJSONPresentation_EnvelopeMUSTs(t *testing.T) {
 		wants  string
 	}{
 		{name: "well formed", mutate: func(map[string]interface{}) {}},
+		// The scheme and media type are case-insensitive (RFC 3986, RFC 2045):
+		// a spelling the check accepts must also be one the parser opens.
+		{name: "media type in another case", mutate: func(e map[string]interface{}) {
+			e["id"] = "DATA:Application/VC+JWT," + token.(string)
+		}},
 		{name: "no @context", mutate: func(e map[string]interface{}) { delete(e, "@context") }, wants: "@context"},
 		{name: "v1 @context", mutate: func(e map[string]interface{}) {
 			e["@context"] = "https://www.w3.org/2018/credentials/v1"

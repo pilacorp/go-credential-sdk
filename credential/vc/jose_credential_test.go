@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -539,27 +538,32 @@ func TestJOSECredential_EnvelopedCredential_Unwrap(t *testing.T) {
 		t.Fatalf("serialize: %v", err)
 	}
 
-	// Create EnvelopedVerifiableCredential JSON
-	enveloped := map[string]interface{}{
-		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
-		"type":     []interface{}{"EnvelopedVerifiableCredential"},
-		"id":       fmt.Sprintf("data:application/vc+jwt,%s", serialized.(string)),
-	}
-	envJSON, err := json.Marshal(enveloped)
-	if err != nil {
-		t.Fatalf("marshal enveloped: %v", err)
-	}
+	// RFC 3986 section 3.1 and RFC 2045 section 5.1: the scheme and the media
+	// type are case-insensitive, so every spelling of the prefix unwraps (#220).
+	for _, prefix := range []string{"data:application/vc+jwt,", "DATA:Application/VC+JWT,"} {
+		t.Run(prefix, func(t *testing.T) {
+			enveloped := map[string]interface{}{
+				"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+				"type":     []interface{}{"EnvelopedVerifiableCredential"},
+				"id":       prefix + serialized.(string),
+			}
+			envJSON, err := json.Marshal(enveloped)
+			if err != nil {
+				t.Fatalf("marshal enveloped: %v", err)
+			}
 
-	// ParseCredential should auto-unwrap data:application/vc+jwt
-	parsed, err := vc.ParseCredential(envJSON, vc.WithResolver(resolver))
-	if err != nil {
-		t.Fatalf("ParseCredential on enveloped VC error: %v", err)
-	}
-	if parsed.GetType() != "JOSE" {
-		t.Fatalf("parsed type = %q, want 'JOSE'", parsed.GetType())
-	}
-	if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("verify unpacked credential: %v", err)
+			// ParseCredential should auto-unwrap data:application/vc+jwt
+			parsed, err := vc.ParseCredential(envJSON, vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("ParseCredential on enveloped VC error: %v", err)
+			}
+			if parsed.GetType() != "JOSE" {
+				t.Fatalf("parsed type = %q, want 'JOSE'", parsed.GetType())
+			}
+			if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+				t.Fatalf("verify unpacked credential: %v", err)
+			}
+		})
 	}
 }
 

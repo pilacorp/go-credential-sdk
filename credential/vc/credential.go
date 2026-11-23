@@ -440,7 +440,12 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 					"data:application/" + TypeVCJWT + ",",
 					"data:application/" + TypeVCSDJWT + ",",
 				} {
-					if !strings.HasPrefix(idStr, prefix) {
+					// The scheme (RFC 3986 section 3.1) and the media type
+					// (RFC 2045 section 5.1) are case-insensitive, and the
+					// presentation-side check accepts any casing, so the prefix
+					// is matched the same way and the token, which is not, is
+					// cut by length.
+					if len(idStr) < len(prefix) || !strings.EqualFold(idStr[:len(prefix)], prefix) {
 						continue
 					}
 					if !hasType(peek["type"], TypeEnvelopedVC) {
@@ -450,7 +455,7 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 					// ParseCredential: the envelope is defined to hold a vc+jwt, so
 					// this refuses a VC 1.1 JWT hidden inside a v2 envelope, and
 					// keeps the nesting to one level.
-					return ParseJOSECredential(strings.TrimPrefix(idStr, prefix), opts...)
+					return ParseJOSECredential(idStr[len(prefix):], opts...)
 				}
 			}
 		}
