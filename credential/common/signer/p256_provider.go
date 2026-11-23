@@ -1,7 +1,6 @@
 package signer
 
 import (
-	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,6 +8,8 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/eckey"
 )
 
 var _ SignerProvider = (*P256Provider)(nil)
@@ -39,22 +40,13 @@ func NewP256ProviderFromHex(privHex string) (*P256Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode p256 private key hex: %w", err)
 	}
-	// Left-pad scalars whose hex omits leading zero bytes; NewPrivateKey wants 32.
+	// Left-pad scalars whose hex omits leading zero bytes; ParseRawPrivateKey wants 32.
 	if len(b) > 0 && len(b) < 32 {
 		b = append(make([]byte, 32-len(b)), b...)
 	}
-	ecdhPriv, err := ecdh.P256().NewPrivateKey(b)
+	priv, err := eckey.ParseP256PrivateKey(b)
 	if err != nil {
 		return nil, fmt.Errorf("invalid p256 private key: %w", err)
-	}
-	pubBytes := ecdhPriv.PublicKey().Bytes() // 0x04 || X(32) || Y(32)
-	priv := &ecdsa.PrivateKey{
-		PublicKey: ecdsa.PublicKey{
-			Curve: elliptic.P256(),
-			X:     new(big.Int).SetBytes(pubBytes[1:33]),
-			Y:     new(big.Int).SetBytes(pubBytes[33:65]),
-		},
-		D: new(big.Int).SetBytes(b),
 	}
 	return &P256Provider{sign: p256SignFunc(priv), pub: &priv.PublicKey}, nil
 }

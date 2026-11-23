@@ -105,8 +105,8 @@ func TestJOSECredential_DisclosureListIntegrity(t *testing.T) {
 			token:   base + "~" + real + "~" + real + "~",
 			wantErr: "given twice",
 		},
-		// A key binding JWT is now accepted (jose/sdjwt.Split accepts it
-		// per RFC 9901); verification of its signature is out of scope.
+		// RFC 9901 section 7.3: requiring key binding is the verifier's
+		// policy, so without WithKBJWT a KB-JWT is accepted.
 		{name: "a key binding JWT appended", token: base + "~" + real + "~" + kb},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

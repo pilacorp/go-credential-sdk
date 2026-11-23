@@ -285,9 +285,23 @@ func RecreatePayload(payload map[string]interface{}, disclosures []string) (map[
 		}
 		parsed[i] = p
 	}
-	if alg, _ := payload["_sd_alg"].(string); alg != "" && alg != DefaultHashAlgorithm {
+	if alg, _ := payload["_sd_alg"].(string); alg == AlgSHA384 || alg == AlgSHA512 {
+		// module jose recreates sha-256 only. Check the payload's shape by its
+		// rules first (RFC 9901 section 4.1 rule 7, 4.1.1, 4.2.4.2), on a copy
+		// labelled sha-256 with no disclosures, so every hash refuses what
+		// sha-256 refuses; then put the disclosures back with Reconstruct.
+		shape := make(map[string]interface{}, len(payload))
+		for k, v := range payload {
+			shape[k] = v
+		}
+		shape["_sd_alg"] = DefaultHashAlgorithm
+		if _, err := josesdjwt.Recreate(shape, nil); err != nil {
+			return nil, err
+		}
 		return Reconstruct(payload, disclosures, true)
 	}
+	// Any other _sd_alg, sha-256 or unknown, goes to module jose, which
+	// refuses an algorithm it does not implement.
 	recreated, err := josesdjwt.Recreate(payload, parsed)
 	if err != nil {
 		return nil, err

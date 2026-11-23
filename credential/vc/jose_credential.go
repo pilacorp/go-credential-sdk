@@ -461,6 +461,9 @@ func (j *JOSECredential) AddProofByProvider(signerProvider signer.SignerProvider
 	if err != nil {
 		return err
 	}
+	if err := j.checkParsable(signature); err != nil {
+		return err
+	}
 	j.signature = signature
 
 	return nil
@@ -501,6 +504,9 @@ func (j *JOSECredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	// and this is where it is held to being the right key over this input.
 	signature, err := j.signingKey.Accept(j.signingInput, proof.Signature)
 	if err != nil {
+		return err
+	}
+	if err := j.checkParsable(signature); err != nil {
 		return err
 	}
 	j.signature = signature
@@ -804,9 +810,30 @@ func isSecp256k1(p *elliptic.CurveParams) bool {
 
 // recreateSDPayload delegates to sdjwt.RecreatePayload, which validates
 // disclosures through jose/sdjwt.ParseDisclosure (refusing reserved names and
-// non-strict base64url), routes sha-256 through jose/sdjwt.Recreate, and
-// sha-384/512 through common/sdjwt.Reconstruct. Both the VC and VP parse
-// paths call RecreatePayload, so the same rules apply everywhere.
+// non-strict base64url), routes sha-256 through jose/sdjwt.Recreate, and holds
+// sha-384/512 to the same shape rules before common/sdjwt.Reconstruct. Both
+// the VC and VP parse paths call RecreatePayload, so the same rules apply
+// everywhere.
 func recreateSDPayload(payload map[string]interface{}, disclosures []string) (map[string]interface{}, error) {
 	return sdjwt.RecreatePayload(payload, disclosures)
+}
+
+// checkParsable refuses a signature whose finished SD-JWT the SDK's own parser
+// would refuse: jose/sdjwt.Split caps a token at 1 MiB and 1000 disclosures,
+// and issuance has no such cap, so a credential could sign here and then fail
+// ParseJOSECredential.
+func (j *JOSECredential) checkParsable(signature string) error {
+	if !j.disclosable {
+		return nil
+	}
+	signed := *j
+	signed.signature = signature
+	token, err := signed.Serialize()
+	if err != nil {
+		return err
+	}
+	if _, _, _, err := josesdjwt.Split(token.(string)); err != nil {
+		return fmt.Errorf("signed SD-JWT is one this SDK cannot parse back: %w", err)
+	}
+	return nil
 }
