@@ -593,7 +593,7 @@ func TestCheckRevocation_RevokedJSONCredential(t *testing.T) {
 	  }
 	}`)
 
-	_, err := ParseCredential(credentialJSON, WithCheckRevocation(), WithVerifyProof(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation(), WithLegacyStatusList(), WithVerifyProof(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "credential status is set for purpose")
 }
@@ -721,7 +721,7 @@ func TestCheckRevocation_UnknownStatusType_Ignored(t *testing.T) {
 
 	// Even with WithCheckRevocation + WithVerifyProof, the unknown type is
 	// silently skipped — no fetch, no error.
-	_, err := ParseCredential(credentialJSON, WithCheckRevocation(), WithVerifyProof(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
+	_, err := ParseCredential(credentialJSON, WithCheckRevocation(), WithLegacyStatusList(), WithVerifyProof(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
 	// The proof verify step fails (unsigned), but the revocation check
 	// for the unknown type should be skipped. We expect a proof error.
 	assert.Error(t, err)
@@ -741,7 +741,7 @@ func TestCheckRevocation_MissingStatusPurpose_Refused(t *testing.T) {
 			// no statusPurpose
 		},
 	}
-	err := checkRevocation(data, nil)
+	err := checkRevocation(data, nil, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "statusPurpose is required")
 }
@@ -756,7 +756,7 @@ func TestCheckRevocation_UnsupportedStatusSize_Refused(t *testing.T) {
 			"statusSize":           float64(2),
 		},
 	}
-	err := checkRevocation(data, nil)
+	err := checkRevocation(data, nil, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "statusSize")
 	assert.Contains(t, err.Error(), "not supported")
@@ -780,7 +780,14 @@ func TestCheckRevocation_NotRevokedJWTCredential(t *testing.T) {
 
 	notRevokedJWT := "eyJhbGciOiJFUzI1NksiLCJraWQiOiJkaWQ6bmRhOnRlc3RuZXQ6MHgyMjIxMzdmYjAwOTkxMTViZDBiMDQ0NmM0ZDY2YzgxY2NmNDFlMGJiI2tleS0xIiwidHlwIjoiSldUIn0.eyJleHAiOjE3ODc5OTQxMTEsImlhdCI6MTc1NjQ1ODExMSwiaXNzIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYiIsImp0aSI6ImRpZDpuZGE6dGVzdG5ldDpjMGExNDU3YS1kYTdmLTRlYTQtOWZmOC0xYTgxMDFhZjViMjAiLCJuYmYiOjE3NTY0NTgxMTEsInN1YiI6ImRpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIiLCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvbnMvY3JlZGVudGlhbHMvdjIiLCJodHRwczovL3d3dy53My5vcmcvbnMvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjIiXSwiY3JlZGVudGlhbFNjaGVtYSI6eyJpZCI6Imh0dHBzOi8vYXV0aC1kZXYucGlsYS52bi9hcGkvdjEvc2NoZW1hcy83MWExNGNlMS1jOGZhLTRkZjQtOTYwYi1lMThiYjYyODJjZWUiLCJ0eXBlIjoiSnNvblNjaGVtYSJ9LCJjcmVkZW50aWFsU3RhdHVzIjp7ImlkIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYi9jcmVkZW50aWFscy9zdGF0dXMvMCMxNyIsInN0YXR1c0xpc3RDcmVkZW50aWFsIjoiaHR0cHM6Ly9hdXRoLWRldi5waWxhLnZuL2FwaS92MS9pc3N1ZXJzL2RpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIvY3JlZGVudGlhbHMvc3RhdHVzLzAiLCJzdGF0dXNMaXN0SW5kZXgiOiIxNyIsInN0YXR1c1B1cnBvc2UiOiJyZXZvY2F0aW9uIiwidHlwZSI6IkJpdHN0cmluZ1N0YXR1c0xpc3RFbnRyeSJ9LCJjcmVkZW50aWFsU3ViamVjdCI6eyJhZ2UiOjEwLCJkZXBhcnRtZW50IjoiRW5naW5lZXJpbmciLCJpZCI6ImRpZDpuZGE6dGVzdG5ldDoweDIyMjEzN2ZiMDA5OTExNWJkMGIwNDQ2YzRkNjZjODFjY2Y0MWUwYmIiLCJuYW1lIjoiVGVzdCBDcmVhdGUiLCJzYWxhcnkiOjUwMDAwfSwiaWQiOiJkaWQ6bmRhOnRlc3RuZXQ6YzBhMTQ1N2EtZGE3Zi00ZWE0LTlmZjgtMWE4MTAxYWY1YjIwIiwiaXNzdWVyIjoiZGlkOm5kYTp0ZXN0bmV0OjB4MjIyMTM3ZmIwMDk5MTE1YmQwYjA0NDZjNGQ2NmM4MWNjZjQxZTBiYiIsInR5cGUiOiJWZXJpZmlhYmxlQ3JlZGVudGlhbCIsInZhbGlkRnJvbSI6IjIwMjUtMDgtMjlUMDk6MDE6NTFaIiwidmFsaWRVbnRpbCI6IjIwMjYtMDgtMjlUMDk6MDE6NTFaIn19.95u0K9WTZdmAr-s7jCTppk75VqpM-vyMZVARhopZBoE418g4T3tT_1UhNZMrgFmPgvEqvLl1xJ-ZvHXqpwMKqw"
 
+	// The dev server still serves the legacy list format. Without
+	// WithLegacyStatusList it is refused, because Bitstring Status List v1.0
+	// requires the multibase form; with it, it is read.
 	_, err := ParseCredential([]byte(notRevokedJWT), WithCheckRevocation(), WithVerifyProof(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WithLegacyStatusList")
+
+	_, err = ParseCredential([]byte(notRevokedJWT), WithCheckRevocation(), WithLegacyStatusList(), WithVerifyProof(), WithBaseURL("https://auth-dev.pila.vn/api/v1/did"))
 	assert.NoError(t, err)
 }
 

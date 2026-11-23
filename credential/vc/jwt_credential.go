@@ -389,7 +389,7 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 		// VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
 		// is present it sets the issuer.
 		iss, _ := j.jwtClaims["iss"].(string)
-		if err := checkRevocation(j.payloadData, options.resolver, iss); err != nil {
+		if err := checkRevocation(j.payloadData, options.resolver, options.acceptLegacyStatusList, iss); err != nil {
 			return fmt.Errorf("credential verification failed: check revocation: %w", err)
 		}
 	}

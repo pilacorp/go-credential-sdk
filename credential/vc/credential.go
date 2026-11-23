@@ -137,6 +137,7 @@ type credentialOptions struct {
 	isCheckExpiration       bool
 	leeway                  time.Duration
 	isCheckRevocation       bool
+	acceptLegacyStatusList  bool
 	didBaseURL              string
 	verificationMethodKey   string
 	sdDisclosures           []string
@@ -284,6 +285,17 @@ func WithLeeway(d time.Duration) CredentialOpt {
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckRevocation = true
+	}
+}
+
+// WithLegacyStatusList lets WithCheckRevocation read authen-service's legacy
+// status lists: an encodedList with no multibase prefix, least significant bit
+// first. Without it such a list is refused, because Bitstring Status List v1.0
+// requires the multibase base64url form. Pass it only while the issuer still
+// serves legacy lists.
+func WithLegacyStatusList() CredentialOpt {
+	return func(c *credentialOptions) {
+		c.acceptLegacyStatusList = true
 	}
 }
 

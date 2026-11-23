@@ -630,13 +630,13 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 // status list, verifies the credential is not revoked. It also verifies the
 // status list credential itself: its proof, issuer match, and validity period.
 //
-// Only BitstringStatusListEntry entries are processed; entries with other types
-// are silently ignored (consistent with PR #213 / issue #99 item 9: unknown
-// credentialStatus types are skipped).
+// Only BitstringStatusListEntry entries are read. An entry of another type is
+// ignored, the same rule the SDK applies to a credentialSchema type it does
+// not implement, rather than having its index read as a bitstring position.
 //
 // issuerDIDFallbacks supplies additional DID strings to try when c["issuer"]
 // is missing (e.g. the JWT "iss" claim for VC Data Model v1.1 §6.3.1).
-func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvider, issuerDIDFallbacks ...string) error {
+func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, issuerDIDFallbacks ...string) error {
 	// If there's no credentialStatus at all, treat as not using revocation → no error.
 	rawStatus, ok := c["credentialStatus"]
 	if !ok || rawStatus == nil {
@@ -709,10 +709,11 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 	}
 
 	// Fetch, verify, and check the status list credential.
-	client := credentialstatus.NewClient(
-		credentialstatus.WithResolver(resolver),
-		credentialstatus.WithLegacyStatusList(),
-	)
+	clientOpts := []credentialstatus.Option{credentialstatus.WithResolver(resolver)}
+	if acceptLegacyList {
+		clientOpts = append(clientOpts, credentialstatus.WithLegacyStatusList())
+	}
+	client := credentialstatus.NewClient(clientOpts...)
 	if err := client.VerifyAndCheckStatus(statusListCredential, position, entryPurpose, issuerDID); err != nil {
 		return fmt.Errorf("failed to check revocation: %w", err)
 	}
