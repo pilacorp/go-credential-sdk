@@ -318,32 +318,40 @@ func CompactJSONLD(expanded []interface{}, ctx interface{}) (result map[string]i
 // Expansion is permissive (no SafeMode): terms not defined in @context are
 // silently dropped rather than causing an error. This is correct because the
 // comparison list covers only well-known VC/VP properties that every context
-// defines. SafeMode for undefined terms is already enforced by the proof
-// verification step (Canonicalize / ExpandJSONLD).
+// defines. SafeMode for undefined terms is enforced by most proof suites
+// (Canonicalize / ExpandJSONLD), but not by JwtProof2020 or the legacy hex
+// proof, so expandPermissive applies limitInlineContexts independently.
 //
 // If the document has no @context, it is returned unchanged.
-func CompactDocumentForm(body map[string]interface{}) (map[string]interface{}, error) {
+func CompactDocumentForm(body map[string]interface{}) (compacted map[string]interface{}, expanded []interface{}, err error) {
 	ctx, ok := body["@context"]
 	if !ok || ctx == nil {
-		return body, nil
+		return body, nil, nil
 	}
 
-	expanded, err := expandPermissive(body)
+	expanded, err = expandPermissive(body)
 	if err != nil {
-		return nil, fmt.Errorf("compact document form: expand: %w", err)
+		return nil, nil, fmt.Errorf("compact document form: expand: %w", err)
 	}
 
-	compacted, err := CompactJSONLD(expanded, ctx)
+	compacted, err = CompactJSONLD(expanded, ctx)
 	if err != nil {
-		return nil, fmt.Errorf("compact document form: compact: %w", err)
+		return nil, nil, fmt.Errorf("compact document form: compact: %w", err)
 	}
 
-	return compacted, nil
+	return compacted, expanded, nil
 }
 
 // expandPermissive expands a JSON-LD document without SafeMode. Terms not
 // defined by @context are dropped instead of causing an error. Used by
 // CompactDocumentForm where the caller only compares well-known properties.
+//
+// limitInlineContexts is applied before json-gold processes the body, to
+// enforce the same term-definition budget that ExpandJSONLD and Canonicalize
+// use. This matters for proof types that do no JSON-LD work on the document
+// (JwtProof2020, the legacy hex proof, JsonWebSignature2020): without the
+// limit, a large inline @context could cause excessive allocation or a stack
+// overflow.
 func expandPermissive(doc map[string]interface{}) (result []interface{}, err error) {
 	defer finishJSONLD(&err, "expand")
 	std, err := standardizeForCanonicalization(doc)
@@ -353,6 +361,9 @@ func expandPermissive(doc map[string]interface{}) (result []interface{}, err err
 	opts := ld.NewJsonLdOptions("")
 	opts.Algorithm = ld.AlgorithmURDNA2015
 	opts.DocumentLoader = newContextBudget()
+	if err := limitInlineContexts(opts, std); err != nil {
+		return nil, fmt.Errorf("expand: %w", err)
+	}
 	// No SafeMode: undefined terms are dropped rather than refused.
 	out, err := ld.NewJsonLdProcessor().Expand(std, opts)
 	if err != nil {
@@ -422,6 +433,11 @@ func normalizeForCompare(v interface{}) interface{} {
 		}
 		return out
 	case map[string]interface{}:
+		// {"id": X} and "X" are the same node reference; compaction turns the
+		// first into the second for @type: @id terms (issuer, holder, credentialSubject).
+		if id, ok := val["id"].(string); ok && len(val) == 1 {
+			return id
+		}
 		out := make(map[string]interface{}, len(val))
 		for k, e := range val {
 			out[k] = normalizeForCompare(e)
@@ -449,6 +465,97 @@ func elementCount(v interface{}) int {
 		return len(arr)
 	}
 	return 1
+}
+
+// VerifyTermIRIs refuses a document where a second term for the same IRI
+// (alias, compact IRI, full IRI, @nest) carries values the short key does not.
+// Unlike VerifyCompactedKeys, which compares against a compaction with the
+// document's own @context (so the holder can rename a key and its context
+// together), VerifyTermIRIs counts the values in the expanded form under each
+// key's IRI and requires the raw key to hold the same number.
+//
+// expanded is the already-expanded body (from CompactDocumentForm); passing it
+// avoids a second expansion.
+func VerifyTermIRIs(body map[string]interface{}, keys []string, expanded []interface{}) error {
+	ctx, ok := body["@context"]
+	if !ok || ctx == nil {
+		return nil
+	}
+	if len(expanded) != 1 {
+		return fmt.Errorf("%w: expands to %d nodes", ErrNotCompactedForm, len(expanded))
+	}
+	top, _ := expanded[0].(map[string]interface{})
+
+	// Expand one placeholder per key with the same context and type, to learn
+	// which IRI the document's context gives each key.
+	probe := map[string]interface{}{"@context": ctx}
+	if t, ok := body["type"]; ok {
+		probe["type"] = t
+	}
+	for i, k := range keys {
+		if k != "type" {
+			probe[k] = map[string]interface{}{"@id": "urn:x-term:" + strconv.Itoa(i)}
+		}
+	}
+	pexp, err := expandPermissive(probe)
+	if err != nil {
+		return fmt.Errorf("verify term IRIs: probe: %w", err)
+	}
+	iris := map[string]string{"type": "@type"}
+	if len(pexp) == 1 {
+		pn, _ := pexp[0].(map[string]interface{})
+		for iri, v := range pn {
+			if strings.HasPrefix(iri, "@") {
+				continue
+			}
+			if i, ok := findTermProbe(v); ok && i < len(keys) {
+				iris[keys[i]] = iri
+			}
+		}
+	}
+
+	for _, k := range keys {
+		iri, ok := iris[k]
+		if !ok {
+			continue
+		}
+		got := 0
+		if arr, ok := top[iri].([]interface{}); ok {
+			got = len(arr)
+		}
+		want := 0
+		if body[k] != nil {
+			want = elementCount(body[k])
+		}
+		if got != want {
+			return fmt.Errorf("%w: %s", ErrNotCompactedForm, k)
+		}
+	}
+	return nil
+}
+
+// findTermProbe finds a "urn:x-term:N" probe value in an expanded JSON-LD
+// tree and returns N.
+func findTermProbe(v interface{}) (int, bool) {
+	switch t := v.(type) {
+	case []interface{}:
+		for _, e := range t {
+			if i, ok := findTermProbe(e); ok {
+				return i, true
+			}
+		}
+	case map[string]interface{}:
+		if id, ok := t["@id"].(string); ok && strings.HasPrefix(id, "urn:x-term:") {
+			i, err := strconv.Atoi(strings.TrimPrefix(id, "urn:x-term:"))
+			return i, err == nil
+		}
+		for _, e := range t {
+			if i, ok := findTermProbe(e); ok {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // ToRDFNQuads converts a JSON-LD document to N-Quads (each ending in "\n"),

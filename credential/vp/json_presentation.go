@@ -352,12 +352,15 @@ func (e *JSONPresentation) verifyCompactedForm() error {
 	}
 	delete(body, "proof")
 
-	compacted, err := processor.CompactDocumentForm(body)
+	compacted, expanded, err := processor.CompactDocumentForm(body)
 	if err != nil {
 		return fmt.Errorf("compact form check: %w", err)
 	}
 
-	return processor.VerifyCompactedKeys(body, compacted, vpCompactedKeys, vpPresenceOnlyKeys, vpGraphKeys)
+	if err := processor.VerifyCompactedKeys(body, compacted, vpCompactedKeys, vpPresenceOnlyKeys, vpGraphKeys); err != nil {
+		return err
+	}
+	return processor.VerifyTermIRIs(body, vpCompactedKeys, expanded)
 }
 
 // checkChallengeAndDomain enforces WithExpectedChallenge / WithExpectedDomain

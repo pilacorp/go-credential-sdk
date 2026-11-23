@@ -466,6 +466,95 @@ func containsAny(s string, subs ...string) bool {
 	return false
 }
 
+// renameWithContextAlias renames a top-level key and adds a context definition
+// that maps the new name to the same IRI as the old one. This makes the rename
+// transparent to JSON-LD expansion (same RDF) and to compaction against the
+// document's own @context (the compacted form uses the new name too).
+func renameWithContextAlias(raw []byte, oldKey, newKey, iri, typ string) ([]byte, error) {
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	val, ok := doc[oldKey]
+	if !ok {
+		return nil, fmt.Errorf("key %q not found", oldKey)
+	}
+	delete(doc, oldKey)
+	doc[newKey] = val
+
+	// Append a context entry mapping newKey to the same IRI.
+	ctxArr, _ := doc["@context"].([]interface{})
+	entry := map[string]interface{}{
+		newKey: map[string]interface{}{"@id": iri},
+	}
+	if typ != "" {
+		entry[newKey].(map[string]interface{})["@type"] = typ
+	}
+	// Also remap the old key to @none so it does not compact back.
+	entry[oldKey] = "@none"
+	ctxArr = append(ctxArr, entry)
+	doc["@context"] = ctxArr
+
+	return json.Marshal(doc)
+}
+
+// TestVerify_ContextAliasAttack_ValidUntil is the attack from review comment
+// 4659414263: the holder renames validUntil to validUntilX and adds a context
+// alias. Both raw["validUntil"] and compacted["validUntil"] are nil, so the
+// old VerifyCompactedKeys check passes, but the credential is expired.
+func TestVerify_ContextAliasAttack_ValidUntil(t *testing.T) {
+	raw, resolverOpts := signTestCredential(t)
+
+	edited, err := renameWithContextAlias(raw,
+		"validUntil", "validUntilX",
+		"https://www.w3.org/2018/credentials#validUntil",
+		"http://www.w3.org/2001/XMLSchema#dateTime")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cred, err := ParseJSONCredential(edited)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	err = cred.Verify(resolverOpts...)
+	if err == nil {
+		t.Fatal("Verify returned nil — validUntil hidden by context alias rename")
+	}
+	if !errors.Is(err, processor.ErrNotCompactedForm) {
+		t.Fatalf("expected ErrNotCompactedForm, got: %v", err)
+	}
+	t.Logf("refused as expected: %v", err)
+}
+
+// TestVerify_ContextAliasAttack_CredentialStatus is the same attack on
+// credentialStatus.
+func TestVerify_ContextAliasAttack_CredentialStatus(t *testing.T) {
+	raw, resolverOpts := signTestCredential(t)
+
+	edited, err := renameWithContextAlias(raw,
+		"credentialStatus", "credentialStatusX",
+		"https://www.w3.org/2018/credentials#credentialStatus", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cred, err := ParseJSONCredential(edited)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	err = cred.Verify(resolverOpts...)
+	if err == nil {
+		t.Fatal("Verify returned nil — credentialStatus hidden by context alias rename")
+	}
+	if !errors.Is(err, processor.ErrNotCompactedForm) {
+		t.Fatalf("expected ErrNotCompactedForm, got: %v", err)
+	}
+	t.Logf("refused as expected: %v", err)
+}
+
 // --- secp256k1 round-trip tests for the compacted-form check ---
 
 const testSecpPriv = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
@@ -652,4 +741,148 @@ func TestSecp256k1_CompactedForm_ObjectIssuerUndefinedField(t *testing.T) {
 		t.Fatalf("expected a canonicalization error for the undefined term, got: %v", err)
 	}
 	t.Logf("signing refused as expected: %v", err)
+}
+
+// TestVerify_BareObjectIssuer checks that a VC with issuer: {"id": did}
+// (no other fields) verifies. JSON-LD compaction turns this into a string,
+// so normalizeForCompare must treat {"id": X} as "X".
+func TestVerify_BareObjectIssuer(t *testing.T) {
+	const did = "did:example:bare-obj-issuer"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	vm, err := vmpkg.NewP256VM(did, "key-1", &priv.PublicKey)
+	if err != nil {
+		t.Fatalf("vm: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	// Issuer as a bare {"id": did} object — VCDM 2.0 allows this form.
+	raw := []byte(fmt.Sprintf(`{
+		"@context": [
+			"https://www.w3.org/ns/credentials/v2",
+			{"@vocab": "https://example.org/vocab#"}
+		],
+		"id": "urn:uuid:bare-obj-issuer-001",
+		"type": ["VerifiableCredential"],
+		"issuer": {"id": %q},
+		"validFrom": "2026-01-01T00:00:00Z",
+		"credentialSubject": {"id": "did:example:holder"}
+	}`, did))
+
+	cred, err := ParseJSONCredential(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := cred.AddProofByProvider(prov,
+		WithVerificationMethodKey("key-1"),
+		WithResolver(resolver),
+	); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	if err := cred.Verify(WithResolver(resolver)); err != nil {
+		t.Fatalf("Verify failed on bare object issuer: %v", err)
+	}
+}
+
+// TestVerify_CredentialSubjectSwap checks that a holder cannot swap
+// credentialSubject claims via a context alias attack. Because
+// ParseJSONCredential requires credentialSubject, we construct the edited
+// document as a raw JSON map and re-add a fake credentialSubject to pass
+// parsing, while the signed one lives under the alias.
+func TestVerify_CredentialSubjectSwap(t *testing.T) {
+	raw, resolverOpts := signTestCredential(t)
+
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	// Move credentialSubject to credentialSubjectX via context alias.
+	subj := doc["credentialSubject"]
+	delete(doc, "credentialSubject")
+	doc["credentialSubjectX"] = subj
+	// Add a fake credentialSubject so parsing does not refuse the document.
+	doc["credentialSubject"] = map[string]interface{}{
+		"id":          "did:example:attacker",
+		"permissions": []interface{}{"admin"},
+	}
+	// Add context alias.
+	ctxArr, _ := doc["@context"].([]interface{})
+	ctxArr = append(ctxArr, map[string]interface{}{
+		"credentialSubjectX": map[string]interface{}{
+			"@id": "https://www.w3.org/2018/credentials#credentialSubject",
+		},
+	})
+	doc["@context"] = ctxArr
+
+	edited, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cred, err := ParseJSONCredential(edited)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	err = cred.Verify(resolverOpts...)
+	if err == nil {
+		t.Fatal("Verify returned nil — credentialSubject claims swapped via context alias")
+	}
+	t.Logf("refused as expected: %v", err)
+}
+
+// TestVerify_NodeRefBothDirections checks that normalizeForCompare treats
+// {"id": "X"} as equal to "X" in both directions. This matters for
+// credentialSubject and issuer where JSON-LD compaction collapses the object.
+func TestVerify_NodeRefBothDirections(t *testing.T) {
+	const did = "did:example:noderef-test"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	vm, err := vmpkg.NewP256VM(did, "key-1", &priv.PublicKey)
+	if err != nil {
+		t.Fatalf("vm: %v", err)
+	}
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	// credentialSubject as a bare {"id": did} — compaction turns it to a string.
+	raw := []byte(fmt.Sprintf(`{
+		"@context": [
+			"https://www.w3.org/ns/credentials/v2",
+			{"@vocab": "https://example.org/vocab#"}
+		],
+		"id": "urn:uuid:noderef-test-001",
+		"type": ["VerifiableCredential"],
+		"issuer": %q,
+		"validFrom": "2026-01-01T00:00:00Z",
+		"credentialSubject": {"id": "did:example:holder"}
+	}`, did))
+
+	cred, err := ParseJSONCredential(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := cred.AddProofByProvider(prov,
+		WithVerificationMethodKey("key-1"),
+		WithResolver(resolver),
+	); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	if err := cred.Verify(WithResolver(resolver)); err != nil {
+		t.Fatalf("Verify failed with bare subject object: %v", err)
+	}
 }

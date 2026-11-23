@@ -278,6 +278,85 @@ func TestVP_VerifiableCredentialFullIRI(t *testing.T) {
 	}
 }
 
+// vpRenameWithContextAlias renames a top-level key in a VP and adds a context
+// definition that maps the new name to the same IRI as the old one.
+func vpRenameWithContextAlias(raw []byte, oldKey, newKey, iri, typ string) ([]byte, error) {
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	val, ok := doc[oldKey]
+	if !ok {
+		return nil, fmt.Errorf("key %q not found", oldKey)
+	}
+	delete(doc, oldKey)
+	doc[newKey] = val
+
+	ctxArr, _ := doc["@context"].([]interface{})
+	entry := map[string]interface{}{
+		newKey: map[string]interface{}{"@id": iri},
+	}
+	if typ != "" {
+		entry[newKey].(map[string]interface{})["@type"] = typ
+	}
+	entry[oldKey] = "@none"
+	ctxArr = append(ctxArr, entry)
+	doc["@context"] = ctxArr
+
+	return json.Marshal(doc)
+}
+
+// TestVP_ContextAliasAttack_ValidUntil checks that a VP whose validUntil is
+// renamed via a context alias is refused. On the json-gold fork, the proof
+// itself may refuse these edits, so the test only requires a non-nil error.
+func TestVP_ContextAliasAttack_ValidUntil(t *testing.T) {
+	raw, resolverOpts := signTestPresentation(t)
+
+	edited, err := vpRenameWithContextAlias(raw,
+		"validUntil", "validUntilX",
+		"https://www.w3.org/2018/credentials#validUntil",
+		"http://www.w3.org/2001/XMLSchema#dateTime")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pres, err := vp.ParseJSONPresentation(edited)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	err = pres.Verify(resolverOpts[0])
+	if err == nil {
+		t.Fatal("Verify returned nil — validUntil hidden by context alias rename")
+	}
+	t.Logf("refused as expected: %v", err)
+}
+
+// TestVP_ContextAliasAttack_Holder checks that a VP whose holder is renamed
+// via a context alias is refused. On the json-gold fork, the proof itself
+// may refuse these edits, so the test only requires a non-nil error.
+func TestVP_ContextAliasAttack_Holder(t *testing.T) {
+	raw, resolverOpts := signTestPresentation(t)
+
+	edited, err := vpRenameWithContextAlias(raw,
+		"holder", "holderX",
+		"https://www.w3.org/2018/credentials#holder", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pres, err := vp.ParseJSONPresentation(edited)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	err = pres.Verify(resolverOpts[0])
+	if err == nil {
+		t.Fatal("Verify returned nil — holder hidden by context alias rename")
+	}
+	t.Logf("refused as expected: %v", err)
+}
+
 // TestVP_UnmodifiedPresentation ensures a normally signed presentation still
 // verifies (backward compatibility).
 func TestVP_UnmodifiedPresentation(t *testing.T) {

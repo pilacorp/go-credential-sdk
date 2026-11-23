@@ -570,11 +570,8 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 // vcCompactedKeys lists the top-level properties that post-proof checks and
 // SDK readers access by short name. If any of these differs between the raw
 // document and the JSON-LD compacted form, the document is refused.
-//
-// credentialSubject is not included: no security check reads it, and
-// including it would reject v1 credentials whose custom subject fields are
-// not defined in the VC context (they are dropped during expansion).
 var vcCompactedKeys = []string{
+	"credentialSubject",
 	"credentialStatus",
 	"credentialSchema",
 	"renderMethod",
@@ -595,10 +592,13 @@ func (e *JSONCredential) verifyCompactedForm() error {
 	}
 	delete(body, "proof")
 
-	compacted, err := processor.CompactDocumentForm(body)
+	compacted, expanded, err := processor.CompactDocumentForm(body)
 	if err != nil {
 		return fmt.Errorf("compact form check: %w", err)
 	}
 
-	return processor.VerifyCompactedKeys(body, compacted, vcCompactedKeys, nil, nil)
+	if err := processor.VerifyCompactedKeys(body, compacted, vcCompactedKeys, nil, nil); err != nil {
+		return err
+	}
+	return processor.VerifyTermIRIs(body, vcCompactedKeys, expanded)
 }
