@@ -17,6 +17,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
+	"golang.org/x/sync/errgroup"
 )
 
 // COSEPresentation implements W3C VC 2.0 Securing Verifiable Presentations
@@ -339,21 +340,39 @@ func (p *COSEPresentation) ExtractField(path string) any {
 func (p *COSEPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
+	g := &errgroup.Group{}
+
 	if options.isValidateVC {
-		if err := verifyCredentials(p.payloadData, options); err != nil {
-			return fmt.Errorf("verify credentials: %w", err)
-		}
+		g.Go(func() error {
+			if err := verifyCredentials(p.payloadData, options); err != nil {
+				return fmt.Errorf("verify credentials: %w", err)
+			}
+			return nil
+		})
 	}
 
 	if options.isVerifyProof {
-		if err := p.verifyCOSEProof(options); err != nil {
-			return err
-		}
+		g.Go(func() error {
+			if err := p.verifyCOSEProof(options); err != nil {
+				return fmt.Errorf("verify proof: %w", err)
+			}
+			// exp and nbf bound the signature, not the presentation, so they
+			// belong to this check and not to the optional expiry check on
+			// validFrom/validUntil.
+			if err := jwtutil.CheckTimeClaims(map[string]interface{}(p.payloadData), options.leeway); err != nil {
+				return fmt.Errorf("verify proof: %w", err)
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("presentation verification failed: %w", err)
 	}
 
 	if options.isCheckExpiration {
-		if err := jwtutil.CheckTimeClaims(map[string]interface{}(p.payloadData), options.leeway); err != nil {
-			return err
+		if err := checkExpiration(p.payloadData, options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 

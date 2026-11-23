@@ -900,6 +900,106 @@ func TestCOSEPresentation_RelativeKid_IssNotHolder_Rejected(t *testing.T) {
 	}
 }
 
+func TestCOSEPresentation_ExpiredExp_RejectedByVerify(t *testing.T) {
+	// exp/nbf are bound to the signature per vc-jose-cose, so Verify
+	// (which sets WithVerifyProof) must check them even without
+	// WithCheckExpiration.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-exp"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiablePresentation"},
+		"id":       "urn:uuid:cose-vp-exp-001",
+		"holder":   did,
+		"iss":      did,
+		"iat":      time.Now().Add(-2 * time.Hour).Unix(),
+		"exp":      time.Now().Add(-time.Hour).Unix(),
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vp",
+		Kid:         did + "#key-1",
+		Typ:         "application/vp+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vp.ParseCOSEPresentation(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	err = parsed.Verify(vp.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("expected Verify to reject an expired presentation (exp in the past)")
+	}
+	if !strings.Contains(err.Error(), "exp") {
+		t.Fatalf("expected exp error, got: %v", err)
+	}
+}
+
+func TestCOSEPresentation_ValidUntilPassed_CheckExpiration(t *testing.T) {
+	// validUntil is a VCDM 2.0 field checked under WithCheckExpiration.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-validuntil"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context":   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":       []interface{}{"VerifiablePresentation"},
+		"id":         "urn:uuid:cose-vp-validuntil-001",
+		"holder":     did,
+		"iss":        did,
+		"validFrom":  time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+		"validUntil": time.Now().Add(-time.Hour).Format(time.RFC3339),
+		"iat":        time.Now().Add(-2 * time.Hour).Unix(),
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vp",
+		Kid:         did + "#key-1",
+		Typ:         "application/vp+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vp.ParseCOSEPresentation(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// Without WithCheckExpiration, Verify passes.
+	err = parsed.Verify(vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("Verify without expiration check should pass: %v", err)
+	}
+
+	// With WithCheckExpiration, it must fail.
+	err = parsed.Verify(vp.WithResolver(resolver), vp.WithCheckExpiration())
+	if err == nil {
+		t.Fatal("expected Verify+WithCheckExpiration to reject a presentation past validUntil")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expected expiration error, got: %v", err)
+	}
+}
+
 func TestCOSEPresentation_ParsedPresentation_AddProof_Refused(t *testing.T) {
 	// A parsed COSE presentation has no signing key bound. AddProofByProvider
 	// must refuse it up front with a clear message.
