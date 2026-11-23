@@ -927,6 +927,63 @@ func TestCOSECredential_DisallowedAlg(t *testing.T) {
 	}
 }
 
+func TestCOSECredential_ParsedCredential_AddProof_Refused(t *testing.T) {
+	// A parsed COSE credential has no signing key bound. AddProofByProvider
+	// must refuse it up front with a clear message, not fail deep in the
+	// signing path with "unsupported JOSE algorithm for COSE: ".
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-parsed-sign"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	cred, err := vc.NewCOSECredential(coseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := cred.AddProofByProvider(provider); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	coseBytes := serialized.([]byte)
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// AddProofByProvider on a parsed credential must fail.
+	err = parsed.AddProofByProvider(provider, vc.WithReplaceProof())
+	if err == nil {
+		t.Fatal("expected AddProofByProvider to refuse a parsed credential")
+	}
+	if !strings.Contains(err.Error(), "parsed") {
+		t.Fatalf("expected error about parsed credential, got: %v", err)
+	}
+
+	// AddCustomProof on a parsed credential must also fail.
+	err = parsed.AddCustomProof(nil)
+	if err == nil {
+		t.Fatal("expected AddCustomProof to refuse a parsed credential")
+	}
+	if !strings.Contains(err.Error(), "parsed") && !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("expected error about parsed credential, got: %v", err)
+	}
+}
+
 func TestCOSECredential_RelativeKid_IssNotIssuer_Rejected(t *testing.T) {
 	// iss names another DID. Even when the issuer's document happens to list
 	// a method under that DID, a relative kid must not resolve against it.

@@ -899,3 +899,49 @@ func TestCOSEPresentation_RelativeKid_IssNotHolder_Rejected(t *testing.T) {
 		t.Fatalf("Verify error = %v, want iss/holder mismatch", err)
 	}
 }
+
+func TestCOSEPresentation_ParsedPresentation_AddProof_Refused(t *testing.T) {
+	// A parsed COSE presentation has no signing key bound. AddProofByProvider
+	// must refuse it up front with a clear message.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-vp-parsed-sign"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	pres, err := vp.NewCOSEPresentation(coseVPContents(did),
+		vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := pres.AddProofByProvider(provider); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+
+	serialized, err := pres.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	coseBytes := serialized.([]byte)
+
+	parsed, err := vp.ParseCOSEPresentation(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	err = parsed.AddProofByProvider(provider, vp.WithReplaceProof())
+	if err == nil {
+		t.Fatal("expected AddProofByProvider to refuse a parsed presentation")
+	}
+	if !strings.Contains(err.Error(), "parsed") {
+		t.Fatalf("expected error about parsed presentation, got: %v", err)
+	}
+}

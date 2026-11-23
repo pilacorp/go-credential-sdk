@@ -247,6 +247,10 @@ func (p *COSEPresentation) AddProofByProvider(signerProvider signer.SignerProvid
 	}
 
 	options := getOptions(opts...)
+	if p.signingKey.PublicKey == nil {
+		return fmt.Errorf(
+			"no verification method is bound: the presentation was parsed, not built — use NewCOSEPresentation to sign it")
+	}
 	if p.signed && !options.replaceProof {
 		return fmt.Errorf(
 			"presentation is already signed; pass WithReplaceProof to do so deliberately")

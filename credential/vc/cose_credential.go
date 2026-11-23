@@ -158,6 +158,10 @@ func (c *COSECredential) AddProofByProvider(signerProvider signer.SignerProvider
 	if err := rejectBuildTimeOptions(o); err != nil {
 		return err
 	}
+	if c.signingKey.PublicKey == nil {
+		return fmt.Errorf(
+			"no verification method is bound: the credential was parsed, not built — use NewCOSECredential to sign it")
+	}
 	if c.signed && !o.replaceProof {
 		return fmt.Errorf(
 			"credential is already signed; signing again would replace that signature — pass WithReplaceProof to do so deliberately")
