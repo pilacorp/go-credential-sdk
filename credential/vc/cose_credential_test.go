@@ -1097,6 +1097,62 @@ func TestCOSECredential_ValidUntilPassed_CheckExpiration(t *testing.T) {
 	}
 }
 
+func TestCOSECredential_MixedCaseEnvelope_ParseCredential(t *testing.T) {
+	// ParseCredential must handle a mixed-case data: URL for vc+cose
+	// (DATA:Application/VC+COSE;BASE64,...) through CutEnvelopedDataURL.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-mc-env"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	provider, err := signer.NewP256Provider(p256Key)
+	if err != nil {
+		t.Fatalf("p256 provider: %v", err)
+	}
+
+	cred, err := vc.NewCOSECredential(coseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := cred.AddProofByProvider(provider); err != nil {
+		t.Fatalf("add proof: %v", err)
+	}
+
+	serialized, err := cred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	coseBytes := serialized.([]byte)
+	b64 := base64.StdEncoding.EncodeToString(coseBytes)
+
+	// Build an envelope with a MIXED-CASE data: URL.
+	envelope := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"EnvelopedVerifiableCredential"},
+		"id":       "DATA:Application/VC+COSE;BASE64," + b64,
+	}
+	envelopeJSON, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	parsed, err := vc.ParseCredential(envelopeJSON)
+	if err != nil {
+		t.Fatalf("ParseCredential from mixed-case COSE envelope: %v", err)
+	}
+	if parsed.GetType() != "COSE" {
+		t.Fatalf("type = %q, want COSE", parsed.GetType())
+	}
+	if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}
+
 func TestCOSECredential_RelativeKid_IssNotIssuer_Rejected(t *testing.T) {
 	// iss names another DID. Even when the issuer's document happens to list
 	// a method under that DID, a relative kid must not resolve against it.

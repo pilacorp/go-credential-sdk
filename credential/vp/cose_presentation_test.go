@@ -1045,3 +1045,102 @@ func TestCOSEPresentation_ParsedPresentation_AddProof_Refused(t *testing.T) {
 		t.Fatalf("expected error about parsed presentation, got: %v", err)
 	}
 }
+
+func TestCOSEPresentation_MixedCaseEnvelope_WithVCValidation(t *testing.T) {
+	// A COSE credential enveloped with a mixed-case data: URL prefix
+	// (DATA:Application/VC+COSE;BASE64,...) must parse and verify inside
+	// a COSE VP with WithVCValidation.
+	const (
+		issuerDID = "did:example:cose-issuer-mc"
+		holderDID = "did:example:cose-holder-mc"
+	)
+
+	issuerKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen issuer P-256: %v", err)
+	}
+	holderKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen holder P-256: %v", err)
+	}
+
+	issuerVM := mustP256VM(t, issuerDID, "key-1", &issuerKey.PublicKey)
+	holderVM := mustP256VM(t, holderDID, "key-1", &holderKey.PublicKey)
+
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(issuerDID, issuerVM),
+		vmpkg.NewDIDDocument(holderDID, holderVM),
+	)
+
+	issuerProv, err := signer.NewP256Provider(issuerKey)
+	if err != nil {
+		t.Fatalf("issuer provider: %v", err)
+	}
+	// Create and sign a COSE credential.
+	vcCred, err := vc.NewCOSECredential(vc.CredentialContents{
+		Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:        "urn:uuid:cose-vc-mc-001",
+		Types:     []string{"VerifiableCredential"},
+		Issuer:    issuerDID,
+		ValidFrom: time.Now().Add(-time.Hour),
+		Subject: []vc.Subject{{
+			ID:           "did:example:subject",
+			CustomFields: map[string]interface{}{"name": "Test"},
+		}},
+	}, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new cose cred: %v", err)
+	}
+	if err := vcCred.AddProofByProvider(issuerProv); err != nil {
+		t.Fatalf("sign cred: %v", err)
+	}
+
+	serialized, err := vcCred.Serialize()
+	if err != nil {
+		t.Fatalf("serialize cred: %v", err)
+	}
+	coseVCBytes := serialized.([]byte)
+	b64 := base64.StdEncoding.EncodeToString(coseVCBytes)
+
+	// Build a VP payload with a MIXED-CASE envelope id.
+	vpPayload := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":     []interface{}{"VerifiablePresentation"},
+		"id":       "urn:uuid:cose-vp-mc-001",
+		"holder":   holderDID,
+		"iss":      holderDID,
+		"iat":      time.Now().Unix(),
+		"verifiableCredential": []interface{}{
+			map[string]interface{}{
+				"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
+				"type":     []interface{}{"EnvelopedVerifiableCredential"},
+				"id":       "DATA:Application/VC+COSE;BASE64," + b64,
+			},
+		},
+	}
+	vpPayloadJSON, err := json.Marshal(vpPayload)
+	if err != nil {
+		t.Fatalf("marshal VP payload: %v", err)
+	}
+
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vp",
+		Kid:         holderDID + "#key-1",
+		Typ:         "application/vp+cose",
+	}
+	vpCoseBytes, err := cose.Sign1(prot, vpPayloadJSON, signP256COSE(holderKey))
+	if err != nil {
+		t.Fatalf("sign VP: %v", err)
+	}
+
+	parsed, err := vp.ParseCOSEPresentation(vpCoseBytes)
+	if err != nil {
+		t.Fatalf("parse VP: %v", err)
+	}
+
+	// Verify with WithVCValidation — this exercises the mixed-case envelope path.
+	if err := parsed.Verify(vp.WithResolver(resolver), vp.WithVCValidation()); err != nil {
+		t.Fatalf("Verify+WithVCValidation with mixed-case COSE envelope: %v", err)
+	}
+}
