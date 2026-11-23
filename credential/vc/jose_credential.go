@@ -439,6 +439,9 @@ func (j *JOSECredential) AddProofByProvider(signerProvider signer.SignerProvider
 	if err != nil {
 		return err
 	}
+	if err := j.checkParsable(signature); err != nil {
+		return err
+	}
 	j.signature = signature
 
 	return nil
@@ -479,6 +482,9 @@ func (j *JOSECredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	// and this is where it is held to being the right key over this input.
 	signature, err := j.signingKey.Accept(j.signingInput, proof.Signature)
 	if err != nil {
+		return err
+	}
+	if err := j.checkParsable(signature); err != nil {
 		return err
 	}
 	j.signature = signature
@@ -648,6 +654,26 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	return nil
 }
 
+// checkParsable refuses a signature whose finished SD-JWT the SDK's own parser
+// would refuse: jose/sdjwt.Split caps a token at 1 MiB and 1000 disclosures,
+// and issuance has no such cap, so a credential could sign here and then fail
+// ParseJOSECredential.
+func (j *JOSECredential) checkParsable(signature string) error {
+	if !j.disclosable {
+		return nil
+	}
+	signed := *j
+	signed.signature = signature
+	token, err := signed.Serialize()
+	if err != nil {
+		return err
+	}
+	if _, _, _, err := josesdjwt.Split(token.(string)); err != nil {
+		return fmt.Errorf("signed SD-JWT is one this SDK cannot parse back: %w", err)
+	}
+	return nil
+}
+
 // recreateSDPayload returns the claims of an SD-JWT payload with the
 // disclosures put back, without changing payload. Issuance and parsing both
 // call it, so a credential that signs is read by the same rules when it is
@@ -668,9 +694,23 @@ func recreateSDPayload(payload map[string]interface{}, disclosures []string) (ma
 		}
 		parsed[i] = p
 	}
-	if alg, _ := payload["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
+	if alg, _ := payload["_sd_alg"].(string); alg == sdjwt.AlgSHA384 || alg == sdjwt.AlgSHA512 {
+		// module jose recreates sha-256 only. Check the payload's shape by its
+		// rules first (RFC 9901 section 4.1 rule 7, 4.1.1, 4.2.4.2), on a copy
+		// labelled sha-256 with no disclosures, so every hash refuses what
+		// sha-256 refuses; then put the disclosures back with Reconstruct.
+		shape := make(map[string]interface{}, len(payload))
+		for k, v := range payload {
+			shape[k] = v
+		}
+		shape["_sd_alg"] = sdjwt.DefaultHashAlgorithm
+		if _, err := josesdjwt.Recreate(shape, nil); err != nil {
+			return nil, err
+		}
 		return sdjwt.Reconstruct(payload, disclosures, true)
 	}
+	// Any other _sd_alg, sha-256 or unknown, goes to module jose, which
+	// refuses an algorithm it does not implement.
 	recreated, err := josesdjwt.Recreate(payload, parsed)
 	if err != nil {
 		return nil, err
