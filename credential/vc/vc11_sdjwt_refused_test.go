@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"math/big"
 	"testing"
 	"time"
 
@@ -31,13 +31,14 @@ const v1131SDJWT = "eyJhbGciOiJFUzI1NiIsImtpZCI6ImRpZDpleGFtcGxlOmlzc3Vlci0xMDAj
 
 func vc11FixtureKey(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()
-	d, ok := new(big.Int).SetString("6f2e3a8c1b9d4e7f0a1c2b3d4e5f60718293a4b5c6d7e8f90112233445566778", 16)
-	if !ok {
-		t.Fatal("bad fixture scalar")
+	d, err := hex.DecodeString("6f2e3a8c1b9d4e7f0a1c2b3d4e5f60718293a4b5c6d7e8f90112233445566778")
+	if err != nil {
+		t.Fatalf("bad fixture scalar: %v", err)
 	}
-	k := &ecdsa.PrivateKey{D: d}
-	k.PublicKey.Curve = elliptic.P256()
-	k.PublicKey.X, k.PublicKey.Y = elliptic.P256().ScalarBaseMult(d.Bytes())
+	k, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), d)
+	if err != nil {
+		t.Fatalf("bad fixture scalar: %v", err)
+	}
 	return k
 }
 

@@ -137,6 +137,7 @@ type credentialOptions struct {
 	isCheckExpiration       bool
 	leeway                  time.Duration
 	isCheckRevocation       bool
+	acceptLegacyStatusList  bool
 	didBaseURL              string
 	verificationMethodKey   string
 	sdDisclosures           []string
@@ -147,7 +148,9 @@ type credentialOptions struct {
 	loadedSchemaLoader      SchemaLoaderFunc
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
-	replaceProof            bool
+	// expectedProofPurpose overrides the assertionMethod a VC verifier expects.
+	expectedProofPurpose string
+	replaceProof         bool
 }
 
 // WithReplaceProof (signing) lets a signing call replace a signature the
@@ -201,6 +204,27 @@ func refuseReplaceOnJSONLD(options *credentialOptions) error {
 // fields so a new sd* field is added here too.
 func (o *credentialOptions) hasSDOptions() bool {
 	return len(o.sdDisclosures) > 0 || len(o.sdSelectivePaths) > 0 || o.sdAlg != "" || o.sdShuffle || len(o.sdDecoys) > 0
+}
+
+// WithExpectedProofPurpose tells Verify to expect this proof purpose instead of
+// assertionMethod. Data Integrity 1.0 §4.4 requires the comparison: a proof
+// that names another purpose is refused even when the key is granted that
+// other purpose. An empty purpose leaves the default in place.
+func WithExpectedProofPurpose(purpose string) CredentialOpt {
+	return func(c *credentialOptions) {
+		if purpose == "" {
+			return
+		}
+		c.expectedProofPurpose = purpose
+	}
+}
+
+// diProofPurpose is the purpose a VC verifier compares with proof.proofPurpose.
+func (o *credentialOptions) diProofPurpose() string {
+	if o.expectedProofPurpose != "" {
+		return o.expectedProofPurpose
+	}
+	return "assertionMethod"
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -284,6 +308,17 @@ func WithLeeway(d time.Duration) CredentialOpt {
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckRevocation = true
+	}
+}
+
+// WithLegacyStatusList lets WithCheckRevocation read authen-service's legacy
+// status lists: an encodedList with no multibase prefix, least significant bit
+// first. Without it such a list is refused, because Bitstring Status List v1.0
+// requires the multibase base64url form. Pass it only while the issuer still
+// serves legacy lists.
+func WithLegacyStatusList() CredentialOpt {
+	return func(c *credentialOptions) {
+		c.acceptLegacyStatusList = true
 	}
 }
 
