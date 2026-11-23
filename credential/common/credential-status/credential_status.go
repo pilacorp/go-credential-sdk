@@ -298,7 +298,7 @@ func readStatusList(m jsonmap.JSONMap, entryPurpose string) (statusListView, err
 	var sl statusListView
 
 	// Check credential type (§2.1: MUST include BitstringStatusListCredential).
-	if !hasType(m["type"], "BitstringStatusListCredential") {
+	if !vcdm.HasType(m["type"], "BitstringStatusListCredential") {
 		return sl, fmt.Errorf("status list credential type must include BitstringStatusListCredential")
 	}
 
@@ -312,12 +312,12 @@ func readStatusList(m jsonmap.JSONMap, entryPurpose string) (statusListView, err
 	}
 
 	// Check credentialSubject.type (§2.2: MUST be BitstringStatusList).
-	if t, _ := subject["type"].(string); t != "BitstringStatusList" {
-		return sl, fmt.Errorf("status list credentialSubject.type %q must be BitstringStatusList", t)
+	if !vcdm.HasType(subject["type"], "BitstringStatusList") {
+		return sl, fmt.Errorf("status list credentialSubject.type must include BitstringStatusList")
 	}
 
 	sl.subject.EncodedList, _ = subject["encodedList"].(string)
-	sl.subject.Type, _ = subject["type"].(string)
+	sl.subject.Type = "BitstringStatusList"
 
 	// §2.2: statusPurpose MUST be one or more strings. Accept string or array.
 	switch p := subject["statusPurpose"].(type) {
@@ -332,22 +332,6 @@ func readStatusList(m jsonmap.JSONMap, entryPurpose string) (statusListView, err
 	}
 
 	return sl, nil
-}
-
-// hasType checks whether a JSON type field (string or array) includes the
-// given type value.
-func hasType(v interface{}, want string) bool {
-	switch t := v.(type) {
-	case string:
-		return t == want
-	case []interface{}:
-		for _, x := range t {
-			if x == want {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // clip truncates a string to at most 256 bytes for safe inclusion in error

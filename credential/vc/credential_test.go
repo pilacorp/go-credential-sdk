@@ -2491,3 +2491,19 @@ func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) verifi
 	}
 	return entry
 }
+
+// VCDM allows type as an array. An entry written ["BitstringStatusListEntry"]
+// is a bitstring entry and must be checked, not skipped as an unknown type
+// (#203 review): here it reaches the statusPurpose check.
+func TestCheckRevocation_ArrayTypedEntryIsRead(t *testing.T) {
+	data := CredentialData{
+		"credentialStatus": map[string]interface{}{
+			"type":                 []interface{}{"BitstringStatusListEntry"},
+			"statusListCredential": "https://example.com/status/0",
+			"statusListIndex":      "5",
+		},
+	}
+	err := checkRevocation(data, nil, false)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "statusPurpose is required")
+}

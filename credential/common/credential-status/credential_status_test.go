@@ -1140,3 +1140,18 @@ func TestClip(t *testing.T) {
 	assert.Equal(t, 259, len(clipped)) // 256 + "..."
 	assert.True(t, strings.HasSuffix(clipped, "..."))
 }
+
+// credentialSubject.type may be an array (#203 review).
+func TestReadStatusList_ArraySubjectType(t *testing.T) {
+	m := jsonmap.JSONMap{
+		"type":   []interface{}{"VerifiableCredential", "BitstringStatusListCredential"},
+		"issuer": testIssuerDID,
+		"credentialSubject": map[string]interface{}{
+			"type":          []interface{}{"BitstringStatusList"},
+			"statusPurpose": "revocation",
+			"encodedList":   buildW3CEncodedList(t, []int{}),
+		},
+	}
+	_, err := readStatusList(m, "revocation")
+	assert.NoError(t, err)
+}

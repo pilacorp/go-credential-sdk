@@ -654,7 +654,9 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 	}
 
 	// Only process BitstringStatusListEntry; ignore unknown types.
-	if t, _ := statusMap["type"].(string); t != "BitstringStatusListEntry" {
+	// type may be a string or an array (VCDM); reading only the string form
+	// skipped ["BitstringStatusListEntry"] as unknown and read no list at all.
+	if !hasType(statusMap["type"], "BitstringStatusListEntry") {
 		return nil
 	}
 
