@@ -152,8 +152,10 @@ func TestVC_AddProof_RawP256Key(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gen p256: %v", err)
 	}
-	d := make([]byte, 32)
-	priv.D.FillBytes(d)
+	d, err := priv.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	resolver := vmpkg.NewStaticResolver(
 		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
@@ -239,8 +241,8 @@ func TestECDSASD_MultiKey_IssueDeriveVerify(t *testing.T) {
 			if err != nil {
 				t.Fatalf("add base proof: %v", err)
 			}
-			if err := base.Verify(vc.WithResolver(resolver)); err != nil {
-				t.Fatalf("verify base proof: %v", err)
+			if err := base.Verify(vc.WithResolver(resolver)); err == nil || !strings.Contains(err.Error(), "base proof") {
+				t.Fatalf("base proof at verification: %v", err)
 			}
 
 			derived, err := base.Derive([]string{"credentialSubject.name"})

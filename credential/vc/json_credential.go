@@ -422,7 +422,7 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	// asked by handing over a proof, and before attaching, so a proof that does
 	// not check out leaves nothing behind.
 	if options.isVerifyProof {
-		if err := m.VerifyDetachedProof(options.resolver, proof); err != nil {
+		if err := m.VerifyDetachedProof(options.resolver, proof, jsonmap.WithExpectedProofPurpose(options.diProofPurpose())); err != nil {
 			return err
 		}
 	}
@@ -452,8 +452,9 @@ func (e *JSONCredential) Serialize() (any, error) {
 // Hash returns the SHA-256 hash (hex-encoded) of the JSON-LD canonicalized (URDNA2015)
 // full credential, including the proof field — the identity of a signed
 // credential (Merkle leaf). A multibase proof ("z" / "u", Data Integrity) is
-// hashed with processor.Canonicalize; a legacy hex proof keeps CanonicalizeFull
-// so digests already anchored on chain do not change.
+// hashed with processor.Canonicalize; any other proof keeps CanonicalizeFull,
+// so its digest changes only for the cases README lists under "Upgrading from
+// piprate/json-gold". Only the first proof decides.
 func (e *JSONCredential) Hash() (string, error) {
 	if e.credentialData["proof"] == nil {
 		return "", fmt.Errorf("credential must have proof before hashing")
@@ -500,6 +501,10 @@ func (e *JSONCredential) ExtractField(path string) any {
 func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
+	if options.isCheckRevocation && !options.isVerifyProof {
+		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
+	}
+
 	// Step 1: verify the proof first. The proof check works on the canonical
 	// RDF of the document, so it accepts any equivalent JSON shape. All later
 	// checks read the raw JSON by key name, so they need the compacted form.
@@ -507,6 +512,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
 			options.resolver,
 			options.proofVerificationMethod,
+			jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
 		)
 		if err != nil {
 			return fmt.Errorf("credential verification failed: verify proof: %w", err)
@@ -538,18 +544,17 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		})
 	}
 
-	if options.isCheckRevocation {
-		g.Go(func() error {
-			if err := checkRevocation(e.credentialData); err != nil {
-				return fmt.Errorf("check revocation: %w", err)
-			}
-
-			return nil
-		})
-	}
-
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("credential verification failed: %w", err)
+	}
+
+	// Revocation check runs after the proof is verified: an unsigned or
+	// forged credential must not trigger a GET to the statusListCredential
+	// URL the attacker chose.
+	if options.isCheckRevocation {
+		if err := checkRevocation(e.credentialData, options.resolver, options.acceptLegacyStatusList); err != nil {
+			return fmt.Errorf("credential verification failed: check revocation: %w", err)
+		}
 	}
 
 	// checkExpiration always runs sequentially after parallel validations

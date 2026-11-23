@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -68,10 +69,11 @@ func newE2E(t *testing.T) e2eSetup {
 func p256JWKDIDDoc(t *testing.T, did string, pub *ecdsa.PublicKey) *verificationmethod.DIDDocument {
 	t.Helper()
 	vmID := did + "#key-1"
-	xb := make([]byte, 32)
-	yb := make([]byte, 32)
-	pub.X.FillBytes(xb)
-	pub.Y.FillBytes(yb)
+	point, err := pub.Bytes()
+	if err != nil {
+		t.Fatalf("public key bytes: %v", err)
+	}
+	xb, yb := point[1:33], point[33:65]
 	return &verificationmethod.DIDDocument{
 		ID: did,
 		VerificationMethod: []verificationmethod.VerificationMethodEntry{{
@@ -139,8 +141,8 @@ func issueBase(t *testing.T, s e2eSetup) []byte {
 	); err != nil {
 		t.Fatalf("add base proof: %v", err)
 	}
-	if err := base.Verify(vc.WithResolver(s.resolver)); err != nil {
-		t.Fatalf("verify base proof: %v", err)
+	if err := base.Verify(vc.WithResolver(s.resolver)); err == nil || !strings.Contains(err.Error(), "base proof") {
+		t.Fatalf("base proof at verification: %v", err)
 	}
 	serialized, err := base.Serialize()
 	if err != nil {

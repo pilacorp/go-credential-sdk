@@ -188,6 +188,9 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
 	}
+	if err := verificationmethod.RequireController(doc, vm); err != nil {
+		return false, err
+	}
 	// The suite binds the signature to a secp256k1 key; a P-256 VM under this
 	// proof type means the issuer mixed suites, which is what this type exists
 	// to prevent.
