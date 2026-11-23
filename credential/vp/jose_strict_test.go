@@ -320,7 +320,10 @@ func TestVPJOSEStrict_EnvelopeContextIncludesV2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePresentation refused a valid envelope @context: %v", err)
 	}
-	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+	// The envelope carries a placeholder token: this test checks the envelope's
+	// @context and the VP proof, not the enclosed credential, which Verify now
+	// checks by default.
+	if err := pres.Verify(vp.WithResolver(resolver), vp.WithSkipVCValidation()); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 }
