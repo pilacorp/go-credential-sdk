@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
 )
 
 // checkPointers refuses a pointer a caller supplies that is not "" and does not

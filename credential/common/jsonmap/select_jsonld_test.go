@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
 )
 
 func TestSelectJSONLDPreservesContextAndNodeMetadata(t *testing.T) {

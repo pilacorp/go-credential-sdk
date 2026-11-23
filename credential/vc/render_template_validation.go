@@ -10,7 +10,7 @@ import (
 	"mime"
 	"strings"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
 	"golang.org/x/net/html"
 )
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
 )
 
 // HTTPFetcher fetches external resources with limits on response size,

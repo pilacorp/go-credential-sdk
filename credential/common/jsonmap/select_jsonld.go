@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/jsonpointer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
 )
 
 // SelectJSONLD returns the JSON-LD selection addressed by RFC 6901 pointers.

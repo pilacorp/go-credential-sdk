@@ -12,6 +12,7 @@ import (
 	credentialstatus "github.com/pilacorp/go-credential-sdk/credential/common/credential-status"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
@@ -699,7 +700,6 @@ func convertToArray(value interface{}) []interface{} {
 // escaping "~" and "/" within segments. The two cannot collide: a dot path
 // never starts with "/" because JSON-LD drops such keys.
 func dotPathsToPointers(paths []string) []string {
-	esc := strings.NewReplacer("~", "~0", "/", "~1")
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
 		if p == "" {
@@ -712,7 +712,7 @@ func dotPathsToPointers(paths []string) []string {
 		var b strings.Builder
 		for _, seg := range strings.Split(p, ".") {
 			b.WriteByte('/')
-			b.WriteString(esc.Replace(seg))
+			b.WriteString(jsonpointer.Escape(seg))
 		}
 		out = append(out, b.String())
 	}
