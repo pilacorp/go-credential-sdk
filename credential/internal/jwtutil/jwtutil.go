@@ -11,6 +11,7 @@ import (
 	"crypto/elliptic"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"time"
 
@@ -64,7 +65,8 @@ func CheckTimeClaims(payload map[string]interface{}, leeway time.Duration) error
 
 // NumericClaim reads a NumericDate claim. JSON numbers decode as float64, but a
 // decoder set to UseNumber yields json.Number, and claims assembled in memory
-// before signing are still int64.
+// before signing are still int64. A NumericDate may have a fraction (RFC 7519
+// §2), which is dropped; one past the last second time.Time holds is refused.
 func NumericClaim(payload map[string]interface{}, name string) (int64, bool, error) {
 	raw, ok := payload[name]
 	if !ok || raw == nil {
@@ -73,23 +75,50 @@ func NumericClaim(payload map[string]interface{}, name string) (int64, bool, err
 	var sec int64
 	switch t := raw.(type) {
 	case float64:
-		sec = int64(t)
+		v, ok := secondsFromFloat(t)
+		if !ok {
+			return 0, false, fmt.Errorf("invalid %s value: %v", name, raw)
+		}
+		sec = v
 	case int64:
 		sec = t
 	case json.Number:
 		v, err := t.Int64()
 		if err != nil {
-			return 0, false, fmt.Errorf("invalid %s value: %w", name, err)
+			f, ferr := t.Float64()
+			if ferr != nil {
+				return 0, false, fmt.Errorf("invalid %s value: %w", name, ferr)
+			}
+			var ok bool
+			if v, ok = secondsFromFloat(f); !ok {
+				return 0, false, fmt.Errorf("invalid %s value: %v", name, raw)
+			}
 		}
 		sec = v
 	default:
 		return 0, false, fmt.Errorf("invalid %s type: %T", name, raw)
 	}
-	if sec <= 0 {
+	if sec <= 0 || sec > maxUnix {
 		return 0, false, fmt.Errorf("invalid %s value: %v", name, raw)
 	}
 
 	return sec, true, nil
+}
+
+// maxUnix is the last second time.Time holds: time.Unix adds the seconds from
+// year 1 to 1970 to its argument, so a larger value wraps to a date in the
+// past and a far-future nbf would read as long gone. jose/jwt, a separate
+// module, holds the same bound.
+const maxUnix = math.MaxInt64 - 62135596800
+
+// secondsFromFloat truncates f to whole seconds. Go leaves the conversion of a
+// float64 outside the int64 range, or of NaN, to the CPU, so the same claim
+// would pass on one machine and fail on another; those values are refused.
+func secondsFromFloat(f float64) (int64, bool) {
+	if !(f > math.MinInt64 && f < math.MaxInt64) {
+		return 0, false
+	}
+	return int64(f), true
 }
 
 // TrimRecoveryByte drops go-ethereum's trailing recovery id, so a 65-byte
