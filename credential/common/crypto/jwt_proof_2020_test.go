@@ -731,6 +731,314 @@ func TestVerifyJwtProofToken_VP_ExtraMember(t *testing.T) {
 	}
 }
 
+// --- Reverse-direction check: signed moved claims must appear in the body ---
+// VC-JWT 1.1 §6.3.1 moves exp, nbf, jti, sub out of the vc claim into
+// top-level JWT claims. If the JWT signs one of these, the body must still
+// carry the corresponding member; otherwise the body can silently drop it.
+
+func TestVerifyJwtProof_BodyDropsExpirationDateWhileExpSigned(t *testing.T) {
+	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+
+	vcClaim := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"name": "Alice",
+		},
+	}
+	jwtPayload := map[string]interface{}{
+		"vc":  vcClaim,
+		"iss": "did:example:issuer",
+		"exp": float64(1735689600), // 2025-01-01T00:00:00Z
+	}
+	token := signJWT(t, testSecp256k1PrivHex, jwtHeader(), jwtPayload)
+
+	// Body omits expirationDate entirely.
+	body := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"name": "Alice",
+		},
+	}
+	attachJwtProof2020(body, token)
+
+	ok, err := VerifyJwtProof(&body, &priv.PublicKey)
+	if ok {
+		t.Fatal("a body that drops expirationDate while exp is signed was accepted")
+	}
+	if !errors.Is(err, ErrJwtProofBinding) {
+		t.Fatalf("err = %v, want one wrapping ErrJwtProofBinding", err)
+	}
+	if !strings.Contains(err.Error(), "expirationDate") {
+		t.Fatalf("err = %v, want one naming 'expirationDate'", err)
+	}
+}
+
+func TestVerifyJwtProof_BodyDropsIssuanceDateWhileNbfSigned(t *testing.T) {
+	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+
+	vcClaim := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"name": "Alice",
+		},
+	}
+	jwtPayload := map[string]interface{}{
+		"vc":  vcClaim,
+		"iss": "did:example:issuer",
+		"nbf": float64(1704067200), // 2024-01-01T00:00:00Z
+	}
+	token := signJWT(t, testSecp256k1PrivHex, jwtHeader(), jwtPayload)
+
+	// Body omits issuanceDate entirely.
+	body := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"name": "Alice",
+		},
+	}
+	attachJwtProof2020(body, token)
+
+	ok, err := VerifyJwtProof(&body, &priv.PublicKey)
+	if ok {
+		t.Fatal("a body that drops issuanceDate while nbf is signed was accepted")
+	}
+	if !errors.Is(err, ErrJwtProofBinding) {
+		t.Fatalf("err = %v, want one wrapping ErrJwtProofBinding", err)
+	}
+	if !strings.Contains(err.Error(), "issuanceDate") {
+		t.Fatalf("err = %v, want one naming 'issuanceDate'", err)
+	}
+}
+
+func TestVerifyJwtProof_BodyDropsIDWhileJtiSigned(t *testing.T) {
+	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+
+	vcClaim := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"name": "Alice",
+		},
+	}
+	jwtPayload := map[string]interface{}{
+		"vc":  vcClaim,
+		"iss": "did:example:issuer",
+		"jti": "urn:uuid:1234",
+	}
+	token := signJWT(t, testSecp256k1PrivHex, jwtHeader(), jwtPayload)
+
+	// Body omits id entirely.
+	body := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"name": "Alice",
+		},
+	}
+	attachJwtProof2020(body, token)
+
+	ok, err := VerifyJwtProof(&body, &priv.PublicKey)
+	if ok {
+		t.Fatal("a body that drops id while jti is signed was accepted")
+	}
+	if !errors.Is(err, ErrJwtProofBinding) {
+		t.Fatalf("err = %v, want one wrapping ErrJwtProofBinding", err)
+	}
+	if !strings.Contains(err.Error(), "id") {
+		t.Fatalf("err = %v, want one naming 'id'", err)
+	}
+}
+
+func TestVerifyJwtProof_BodyDropsSubjectIDWhileSubSigned(t *testing.T) {
+	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+
+	vcClaim := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"credentialSubject": map[string]interface{}{
+			"name": "Alice",
+		},
+	}
+	jwtPayload := map[string]interface{}{
+		"vc":  vcClaim,
+		"iss": "did:example:issuer",
+		"sub": "did:example:subject",
+	}
+	token := signJWT(t, testSecp256k1PrivHex, jwtHeader(), jwtPayload)
+
+	// Body credentialSubject has no id.
+	body := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
+		"credentialSubject": map[string]interface{}{
+			"name": "Alice",
+		},
+	}
+	attachJwtProof2020(body, token)
+
+	ok, err := VerifyJwtProof(&body, &priv.PublicKey)
+	if ok {
+		t.Fatal("a body whose credentialSubject drops id while sub is signed was accepted")
+	}
+	if !errors.Is(err, ErrJwtProofBinding) {
+		t.Fatalf("err = %v, want one wrapping ErrJwtProofBinding", err)
+	}
+}
+
+func TestVerifyJwtProof_BodyDropsSubjectIDWhileSubSigned_Array(t *testing.T) {
+	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+
+	// credentialSubject is an array, none have id.
+	vcClaim := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"credentialSubject": []interface{}{
+			map[string]interface{}{"name": "Alice"},
+			map[string]interface{}{"role": "witness"},
+		},
+	}
+	jwtPayload := map[string]interface{}{
+		"vc":  vcClaim,
+		"iss": "did:example:issuer",
+		"sub": "did:example:subject",
+	}
+	token := signJWT(t, testSecp256k1PrivHex, jwtHeader(), jwtPayload)
+
+	body := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
+		"credentialSubject": []interface{}{
+			map[string]interface{}{"name": "Alice"},
+			map[string]interface{}{"role": "witness"},
+		},
+	}
+	attachJwtProof2020(body, token)
+
+	ok, err := VerifyJwtProof(&body, &priv.PublicKey)
+	if ok {
+		t.Fatal("a body whose credentialSubject array has no id while sub is signed was accepted")
+	}
+	if !errors.Is(err, ErrJwtProofBinding) {
+		t.Fatalf("err = %v, want one wrapping ErrJwtProofBinding", err)
+	}
+}
+
+func TestVerifyJwtProofToken_VP_BodyDropsIDWhileJtiSigned(t *testing.T) {
+	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+
+	vpClaim := map[string]interface{}{
+		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":                 []interface{}{"VerifiablePresentation"},
+		"verifiableCredential": []interface{}{"vc-jwt-token-here"},
+	}
+	jwtPayload := map[string]interface{}{
+		"vp":  vpClaim,
+		"iss": "did:example:holder",
+		"jti": "urn:uuid:vp-1234",
+	}
+	token := signJWT(t, testSecp256k1PrivHex, jwtHeader(), jwtPayload)
+
+	// Body omits id entirely.
+	vpBody := map[string]interface{}{
+		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":                 []interface{}{"VerifiablePresentation"},
+		"holder":               "did:example:holder",
+		"verifiableCredential": []interface{}{"vc-jwt-token-here"},
+	}
+
+	_, err = VerifyJwtProofToken(vpBody, token, &priv.PublicKey)
+	if err == nil {
+		t.Fatal("a VP that drops id while jti is signed was accepted")
+	}
+	if !errors.Is(err, ErrJwtProofBinding) {
+		t.Fatalf("err = %v, want one wrapping ErrJwtProofBinding", err)
+	}
+	if !strings.Contains(err.Error(), "id") {
+		t.Fatalf("err = %v, want one naming 'id'", err)
+	}
+}
+
+// Verify the existing round-trip tests (TC-03) still work with the reverse
+// check: a body that has all the moved-claim members must still verify.
+func TestVerifyJwtProof_VCJWT11_AllMovedFieldsPresent(t *testing.T) {
+	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+
+	vcClaim := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"credentialSubject": map[string]interface{}{
+			"name": "Alice",
+		},
+	}
+	jwtPayload := map[string]interface{}{
+		"vc":  vcClaim,
+		"iss": "did:example:issuer",
+		"sub": "did:example:subject",
+		"jti": "urn:uuid:1234",
+		"nbf": float64(1704067200), // 2024-01-01T00:00:00Z
+		"exp": float64(1735689600), // 2025-01-01T00:00:00Z
+	}
+	token := signJWT(t, testSecp256k1PrivHex, jwtHeader(), jwtPayload)
+
+	body := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
+		"id":       "urn:uuid:1234",
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"name": "Alice",
+		},
+		"issuanceDate":   "2024-01-01T00:00:00Z",
+		"expirationDate": "2025-01-01T00:00:00Z",
+	}
+	attachJwtProof2020(body, token)
+
+	ok, err := VerifyJwtProof(&body, &priv.PublicKey)
+	if err != nil {
+		t.Fatalf("VerifyJwtProof error: %v", err)
+	}
+	if !ok {
+		t.Fatal("a VC-JWT 1.1 body with all moved fields present was refused")
+	}
+}
+
 // --- Sentinel error ---
 
 func TestErrJwtProofBinding_IsSentinel(t *testing.T) {

@@ -180,6 +180,32 @@ func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[str
 		}
 	}
 
+	// Check 5: each moved claim the JWT signs must have a corresponding
+	// member in the body. Without this, a body that silently drops e.g.
+	// expirationDate still verifies, and WithCheckExpiration (which reads
+	// only the body) lets an expired credential through.
+	if isVP {
+		if _, ok := claims["jti"]; ok && body["id"] == nil {
+			return nil, memberErr("id")
+		}
+	} else {
+		for claim, members := range map[string][]string{
+			"jti": {"id"},
+			"nbf": {"issuanceDate", "validFrom"},
+			"exp": {"expirationDate", "validUntil"},
+		} {
+			if _, signed := claims[claim]; !signed {
+				continue
+			}
+			if !bodyHasAny(body, members) {
+				return nil, memberErr(members[0])
+			}
+		}
+		if _, signed := claims["sub"]; signed && !subjectHasID(body["credentialSubject"]) {
+			return nil, memberErr("credentialSubject")
+		}
+	}
+
 	return claims, nil
 }
 
@@ -444,6 +470,37 @@ func memberErr(key string) error {
 		quoted = quoted[:64]
 	}
 	return fmt.Errorf("member %q not covered by JWT: %w", quoted, ErrJwtProofBinding)
+}
+
+// bodyHasAny returns true when the body contains at least one of the given keys.
+func bodyHasAny(body map[string]interface{}, keys []string) bool {
+	for _, k := range keys {
+		if _, ok := body[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// subjectHasID returns true when credentialSubject (object or array of objects)
+// contains at least one element with an "id" member. This is the safest
+// reading of VC Data Model 1.1 when credentialSubject is an array: sub
+// identifies the subject, and at least one subject must carry that id.
+func subjectHasID(raw interface{}) bool {
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		_, ok := v["id"]
+		return ok
+	case []interface{}:
+		for _, elem := range v {
+			if m, ok := elem.(map[string]interface{}); ok {
+				if _, hasID := m["id"]; hasID {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func getSignatureAndMessage(jwtToken string) ([]byte, []byte, error) {
