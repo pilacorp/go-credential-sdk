@@ -953,6 +953,49 @@ func TestVerifyJwtProof_BodyDropsSubjectIDWhileSubSigned_Array(t *testing.T) {
 	}
 }
 
+func TestVerifyJwtProof_BodyDropsFirstSubjectIDWhileSubSigned(t *testing.T) {
+	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+
+	// sub stands for the first subject (VC-JWT 1.1 moves its id there). An id
+	// on another subject must not stand in for it.
+	vcClaim := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"credentialSubject": []interface{}{
+			map[string]interface{}{"name": "Alice"},
+			map[string]interface{}{"id": "did:example:witness", "role": "witness"},
+		},
+	}
+	jwtPayload := map[string]interface{}{
+		"vc":  vcClaim,
+		"iss": "did:example:issuer",
+		"sub": "did:example:subject",
+	}
+	token := signJWT(t, testSecp256k1PrivHex, jwtHeader(), jwtPayload)
+
+	body := map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":     []interface{}{"VerifiableCredential"},
+		"issuer":   "did:example:issuer",
+		"credentialSubject": []interface{}{
+			map[string]interface{}{"name": "Alice"},
+			map[string]interface{}{"id": "did:example:witness", "role": "witness"},
+		},
+	}
+	attachJwtProof2020(body, token)
+
+	ok, err := VerifyJwtProof(&body, &priv.PublicKey)
+	if ok {
+		t.Fatal("a body whose first credentialSubject has no id while sub is signed was accepted")
+	}
+	if !errors.Is(err, ErrJwtProofBinding) {
+		t.Fatalf("err = %v, want one wrapping ErrJwtProofBinding", err)
+	}
+}
+
 func TestVerifyJwtProofToken_VP_BodyDropsIDWhileJtiSigned(t *testing.T) {
 	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
 	if err != nil {

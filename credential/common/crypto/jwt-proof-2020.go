@@ -482,22 +482,23 @@ func bodyHasAny(body map[string]interface{}, keys []string) bool {
 	return false
 }
 
-// subjectHasID returns true when credentialSubject (object or array of objects)
-// contains at least one element with an "id" member. This is the safest
-// reading of VC Data Model 1.1 when credentialSubject is an array: sub
-// identifies the subject, and at least one subject must carry that id.
+// subjectHasID reports whether the subject a signed sub stands for carries an
+// "id": the object itself, or the first element of an array.
 func subjectHasID(raw interface{}) bool {
 	switch v := raw.(type) {
 	case map[string]interface{}:
 		_, ok := v["id"]
 		return ok
 	case []interface{}:
-		for _, elem := range v {
-			if m, ok := elem.(map[string]interface{}); ok {
-				if _, hasID := m["id"]; hasID {
-					return true
-				}
-			}
+		// sub stands for the first subject: VC-JWT 1.1 moves that subject's id
+		// into it, and checkSubjectIDMovedToSub compares it with the first
+		// element only. An id on another subject must not stand in for it.
+		if len(v) == 0 {
+			return false
+		}
+		if m, ok := v[0].(map[string]interface{}); ok {
+			_, hasID := m["id"]
+			return hasID
 		}
 	}
 	return false
