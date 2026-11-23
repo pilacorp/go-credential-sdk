@@ -11,11 +11,12 @@ import (
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExternalSigningFlow_VP(t *testing.T) {
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	presentationData := vp.PresentationContents{
 		Context: []interface{}{
@@ -25,7 +26,7 @@ func TestExternalSigningFlow_VP(t *testing.T) {
 		Types: []string{"VerifiablePresentation"},
 	}
 	presentation, err := vp.NewJSONPresentation(presentationData)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	proof := &dto.Proof{
 		Type:               "DataIntegrityProof",
@@ -38,13 +39,13 @@ func TestExternalSigningFlow_VP(t *testing.T) {
 	}
 
 	docHash, err := presentation.GetSigningInput()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	proofHash, err := presentation.CreateProofSigning(docHash, proof)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	r, s, err := ecdsa.Sign(rand.Reader, privateKey, proofHash)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	rBytes := r.Bytes()
 	sBytes := s.Bytes()
@@ -55,10 +56,10 @@ func TestExternalSigningFlow_VP(t *testing.T) {
 	proof.ProofValue = verificationmethod.EncodeMultibaseKey(sigBytes)
 
 	err = presentation.AddCustomProof(proof)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	output, err := presentation.Serialize()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	outMap := output.(map[string]interface{})
 	assert.NotNil(t, outMap["proof"])
 

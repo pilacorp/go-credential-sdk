@@ -488,7 +488,7 @@ func TestSecp256k1Suite_AcceptsASecp256k1KeyFromAnotherLibrary(t *testing.T) {
 		t.Fatalf("btcec parse: %v", err)
 	}
 	btcPub := parsed.ToECDSA()
-	if btcPub.X.Cmp(priv.PublicKey.X) != 0 {
+	if !bytes.Equal(ethcrypto.FromECDSAPub(btcPub), ethcrypto.FromECDSAPub(&priv.PublicKey)) {
 		t.Fatal("the fixture is not the same key")
 	}
 	if btcPub.Curve == ethcrypto.S256() {

@@ -69,10 +69,11 @@ func newE2E(t *testing.T) e2eSetup {
 func p256JWKDIDDoc(t *testing.T, did string, pub *ecdsa.PublicKey) *verificationmethod.DIDDocument {
 	t.Helper()
 	vmID := did + "#key-1"
-	xb := make([]byte, 32)
-	yb := make([]byte, 32)
-	pub.X.FillBytes(xb)
-	pub.Y.FillBytes(yb)
+	point, err := pub.Bytes()
+	if err != nil {
+		t.Fatalf("public key bytes: %v", err)
+	}
+	xb, yb := point[1:33], point[33:65]
 	return &verificationmethod.DIDDocument{
 		ID: did,
 		VerificationMethod: []verificationmethod.VerificationMethodEntry{{

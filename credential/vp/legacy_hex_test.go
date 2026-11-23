@@ -9,7 +9,7 @@ import (
 )
 
 // Signed by the SDK before ecdsa-rdfc-2019 moved to multibase proofValues
-// (hex proofValue, secp256k1 key below). Pins the legacy verification path.
+// (hex proofValue, secp256k1 key below), and before #186.
 //
 // This is the sound hex path: type DataIntegrityProof, cryptosuite
 // ecdsa-rdfc-2019, a DID URL in verificationMethod, and the key taken from the
@@ -62,7 +62,12 @@ const legacyHexVP = `{
   ]
 }`
 
-func TestVP_LegacyHexProofStillVerifies(t *testing.T) {
+// #186: this presentation was signed over N-Quads that put the embedded
+// credential in the default graph. credentials/v2 makes verifiableCredential a
+// graph container, so the credential belongs in a named graph, and the
+// signature no longer matches. The hex proofValue path itself is pinned by
+// TestVC_LegacyHexProofStillVerifies, whose credential is the one embedded here.
+func TestVP_SignedWithTheCredentialInTheDefaultGraphIsRefused(t *testing.T) {
 	const did = "did:example:legacy-holder"
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vmpkg.NewSecp256k1VM(did, "key-1",
 		"04e962c45627a43f3bec0af18c6c780ddbacceb8275b5204d494bc2cc44dc96d9805e64ee5ffeb6d05ed37284636c7cf6bfbaaa0d131f950cecc43110ac5510cad")))
@@ -71,8 +76,8 @@ func TestVP_LegacyHexProofStillVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
-		t.Fatalf("verify legacy hex presentation: %v", err)
+	if err := pres.Verify(vp.WithResolver(resolver)); err == nil || !strings.Contains(err.Error(), "invalid proof") {
+		t.Fatalf("verify = %v, want invalid proof", err)
 	}
 }
 

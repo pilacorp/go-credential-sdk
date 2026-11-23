@@ -889,10 +889,11 @@ func TestJSONPresentationFlow(t *testing.T) {
 	issuerDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 	holderDID := "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 
-	// Create both JSON and JWT credentials
-	jsonVC, jwtVC := createTestCredentials(t, issuerDID, privateKeyHex)
+	// A JSON presentation embeds JSON credentials only; a JWT credential is
+	// refused (TestNewJSONPresentationRefusesEnvelopingCredential).
+	jsonVC, _ := createTestCredentials(t, issuerDID, privateKeyHex)
 
-	// 1. Create JSON VP with both JSON VC and JWT VC
+	// 1. Create JSON VP with a JSON VC
 	presentationContents := vp.PresentationContents{
 		Context: []interface{}{
 			"https://www.w3.org/ns/credentials/v2",
@@ -901,7 +902,7 @@ func TestJSONPresentationFlow(t *testing.T) {
 		ID:                    "urn:uuid:json-vp-test-12345678",
 		Types:                 []string{"VerifiablePresentation"},
 		Holder:                holderDID,
-		VerifiableCredentials: []vc.Credential{jsonVC, jwtVC},
+		VerifiableCredentials: []vc.Credential{jsonVC},
 	}
 
 	presentation, err := vp.NewJSONPresentation(presentationContents)

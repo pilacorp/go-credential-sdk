@@ -152,8 +152,10 @@ func TestVC_AddProof_RawP256Key(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gen p256: %v", err)
 	}
-	d := make([]byte, 32)
-	priv.D.FillBytes(d)
+	d, err := priv.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	resolver := vmpkg.NewStaticResolver(
 		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))

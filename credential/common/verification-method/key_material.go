@@ -2,7 +2,6 @@ package verificationmethod
 
 import (
 	"bytes"
-	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
@@ -13,6 +12,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/mr-tron/base58"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/eckey"
 )
 
 // stripHexPrefix drops a leading "0x" or "0X"; hex.DecodeString accepts neither.
@@ -65,52 +66,15 @@ func ECPubFromJWK(jwk *JWK) (*ecdsa.PublicKey, error) {
 			jwk.Crv, size, len(xBytes), len(yBytes))
 	}
 
-	pub := &ecdsa.PublicKey{
-		Curve: curve,
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
-	}
-	if err := checkOnCurve(jwk.Crv, pub); err != nil {
-		return nil, err
+	point := make([]byte, 1+2*size)
+	point[0] = 4
+	copy(point[1+size-len(xBytes):1+size], xBytes)
+	copy(point[1+2*size-len(yBytes):], yBytes)
+	pub, err := eckey.ParseUncompressed(curve, point)
+	if err != nil {
+		return nil, fmt.Errorf("jwk %s: invalid public key point: %w", jwk.Crv, err)
 	}
 	return pub, nil
-}
-
-// checkOnCurve rejects an off-curve point, via each curve's own parser
-// (elliptic.Curve.IsOnCurve is deprecated as of Go 1.21).
-func checkOnCurve(crv string, pub *ecdsa.PublicKey) error {
-	uncompressed := marshalUncompressed(pub)
-	var err error
-	switch crv {
-	case "secp256k1":
-		_, err = crypto.UnmarshalPubkey(uncompressed)
-	case "P-256":
-		_, err = ecdh.P256().NewPublicKey(uncompressed)
-	case "P-384":
-		_, err = ecdh.P384().NewPublicKey(uncompressed)
-	default:
-		return fmt.Errorf("unsupported curve: %s", crv)
-	}
-	if err != nil {
-		return fmt.Errorf("jwk %s: invalid public key point: %w", crv, err)
-	}
-	return nil
-}
-
-// curveSize is the coordinate size in bytes for a curve.
-func curveSize(c elliptic.Curve) int {
-	return (c.Params().BitSize + 7) / 8
-}
-
-// marshalUncompressed renders a public key as SEC1 uncompressed bytes
-// (0x04 || X || Y), coordinates left-padded to the field size.
-func marshalUncompressed(pub *ecdsa.PublicKey) []byte {
-	size := curveSize(pub.Curve)
-	buf := make([]byte, 1+2*size)
-	buf[0] = 4
-	pub.X.FillBytes(buf[1 : 1+size])
-	pub.Y.FillBytes(buf[1+size:])
-	return buf
 }
 
 // P256PubKeyFromJWK builds an *ecdsa.PublicKey from a crv=P-256 JWK, refusing
@@ -220,7 +184,16 @@ func ECPubFromMultikeyBytes(raw []byte) (*ecdsa.PublicKey, error) {
 	if x == nil {
 		return nil, fmt.Errorf("multikey: invalid %s compressed point", curve.Params().Name)
 	}
-	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
+	size := (curve.Params().BitSize + 7) / 8
+	point := make([]byte, 1+2*size)
+	point[0] = 4
+	x.FillBytes(point[1 : 1+size])
+	y.FillBytes(point[1+size:])
+	pub, err := eckey.ParseUncompressed(curve, point)
+	if err != nil {
+		return nil, fmt.Errorf("multikey: invalid %s compressed point: %w", curve.Params().Name, err)
+	}
+	return pub, nil
 }
 
 // ECPubFromMultibase decodes a Multikey string, curve taken from its prefix.
@@ -272,7 +245,15 @@ func PubToMultikeyBytes(pub *ecdsa.PublicKey) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	compressed := elliptic.MarshalCompressed(pub.Curve, pub.X, pub.Y)
+	point, err := eckey.UncompressedBytes(pub)
+	if err != nil {
+		return nil, fmt.Errorf("multikey: %w", err)
+	}
+	// SEC 1 §2.3.3 compressed form: 0x02 or 0x03 by the parity of Y, then X.
+	size := (len(point) - 1) / 2
+	compressed := make([]byte, 1+size)
+	compressed[0] = 2 | point[len(point)-1]&1
+	copy(compressed[1:], point[1:1+size])
 	return append(append([]byte{}, prefix...), compressed...), nil
 }
 
@@ -294,21 +275,9 @@ func DecodeP256PrivMultibase(s string) (*ecdsa.PrivateKey, error) {
 	if !bytes.HasPrefix(raw, p256PrivMulticodec) {
 		return nil, fmt.Errorf("multikey: not a p256-priv multikey")
 	}
-	d := raw[len(p256PrivMulticodec):]
-	if len(d) != 32 {
-		return nil, fmt.Errorf("multikey: p256 secret key must be 32 bytes, got %d", len(d))
-	}
-	ecdhPriv, err := ecdh.P256().NewPrivateKey(d)
+	priv, err := eckey.ParseP256PrivateKey(raw[len(p256PrivMulticodec):])
 	if err != nil {
 		return nil, fmt.Errorf("multikey: invalid p256 secret key: %w", err)
 	}
-	pubBytes := ecdhPriv.PublicKey().Bytes() // 0x04 || X(32) || Y(32)
-	return &ecdsa.PrivateKey{
-		PublicKey: ecdsa.PublicKey{
-			Curve: elliptic.P256(),
-			X:     new(big.Int).SetBytes(pubBytes[1:33]),
-			Y:     new(big.Int).SetBytes(pubBytes[33:65]),
-		},
-		D: new(big.Int).SetBytes(d),
-	}, nil
+	return priv, nil
 }
