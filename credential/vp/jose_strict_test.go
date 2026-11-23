@@ -16,6 +16,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
 )
 
@@ -255,6 +256,70 @@ func TestVPJOSEStrict_EnvelopedCredentialValidDataURL(t *testing.T) {
 				t.Fatalf("Verify: %v", err)
 			}
 		})
+	}
+}
+
+// An uppercase DATA:Application/VC+JWT prefix must pass ParsePresentation AND
+// Verify(WithVCValidation): the VP gate and the credential unwrap must agree on
+// case folding, or the credential reads as a JSON object with no issuer.
+func TestVPJOSEStrict_UppercaseEnvelopeParsesCredential(t *testing.T) {
+	const did = "did:example:vp-jose-uppercase-envelope"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	cred, err := vc.NewJOSECredential(joseVPCredentialContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jose cred: %v", err)
+	}
+	if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign jose cred: %v", err)
+	}
+	token, err := cred.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry := map[string]interface{}{
+		"@context": "https://www.w3.org/ns/credentials/v2",
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "DATA:Application/VC+JWT," + token.(string),
+	}
+	vpToken := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	pres, err := vp.ParsePresentation([]byte(vpToken), vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("ParsePresentation: %v", err)
+	}
+	if err := pres.Verify(vp.WithResolver(resolver),
+		vp.WithVCValidation(vc.WithResolver(resolver))); err != nil {
+		t.Fatalf("Verify with WithVCValidation: %v", err)
+	}
+}
+
+// The envelope's @context must include the v2 context, not start with it.
+// ["https://example.org/ctx", v2] is a valid envelope.
+func TestVPJOSEStrict_EnvelopeContextIncludesV2(t *testing.T) {
+	did, priv, resolver := vpJoseSetup(t)
+	entry := map[string]interface{}{
+		"@context": []interface{}{"https://example.org/ctx", "https://www.w3.org/ns/credentials/v2"},
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "data:application/vc+jwt,eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2ln",
+	}
+	token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	pres, err := vp.ParsePresentation([]byte(token), vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("ParsePresentation refused a valid envelope @context: %v", err)
+	}
+	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("Verify: %v", err)
 	}
 }
 

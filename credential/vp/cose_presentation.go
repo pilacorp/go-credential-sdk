@@ -212,17 +212,20 @@ func requireEnvelopedCredentialsCOSE(m PresentationData) error {
 				i, vc.TypeEnvelopedVC, TypeVPCOSE)
 		}
 
-		if first := vcdm.FirstContext(entry["@context"]); first != vcdm.ContextV2 {
+		// VCDM 2.0 §4.13: the envelope's @context must include the v2 context;
+		// "v2 first" is the rule for credentials and presentations, not for the
+		// envelope object.
+		if !vcdm.HasType(entry["@context"], vcdm.ContextV2) {
 			return fmt.Errorf(
-				"credential at index %d: enveloped credential @context must start with %s, got %q",
-				i, vcdm.ContextV2, first)
+				"credential at index %d: enveloped credential @context must include %s",
+				i, vcdm.ContextV2)
 		}
 
 		id, _ := entry["id"].(string)
-		if !isEnvelopedDataURL(id) {
+		if _, _, ok := vcdm.CutEnvelopedDataURL(id); !ok {
 			return fmt.Errorf(
 				"credential at index %d: enveloped credential id must be a data: URL "+
-					"with media type application/vc+jwt, application/vc+sd-jwt, or application/vc+cose, got %q", i, id)
+					"with media type application/vc+jwt, application/vc+sd-jwt or application/vc+cose", i)
 		}
 	}
 
