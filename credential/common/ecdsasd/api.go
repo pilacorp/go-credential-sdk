@@ -69,7 +69,7 @@ func VerifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 // checks that proof when it is created, inside CreateBaseProof.
 func VerifyProof(document map[string]interface{}, proofConfig map[string]interface{}, proofValue string, issuerPub *ecdsa.PublicKey) error {
 	if _, err := decodeProofValue(proofValue, baseProofHeader); err == nil {
-		return fmt.Errorf("ecdsasd: base proof (header 0xd95d00) cannot be verified; DI ECDSA 1.0 §3.5.8 accepts only a derived proof (header 0xd95d01)")
+		return fmt.Errorf("ecdsasd: a base proof (header 0xd95d00) stays with the holder and cannot be verified; derive a proof from it and verify that (header 0xd95d01)")
 	}
 	if _, err := decodeProofValue(proofValue, derivedProofHeader); err == nil {
 		return verifyDerivedProof(document, proofConfig, proofValue, issuerPub)

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
@@ -195,5 +196,90 @@ func TestStrictPurposeCheck(t *testing.T) {
 				t.Fatalf("err = %v, want one mentioning %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// DI 1.0 §2.1: when created is present it must be an XML Schema dateTimeStamp.
+// time.RFC3339 gets this wrong in both directions: it accepts a comma fraction
+// and offsets past +14:00, and refuses T24:00:00Z.
+func TestParseCreated(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		ok    bool
+	}{
+		{"2026-01-01T00:00:00Z", true},
+		{"2026-01-01T00:00:00+09:00", true},
+		{"2026-01-01T00:00:00-05:30", true},
+		{"2026-01-01T00:00:00.123Z", true},
+		{"2026-01-01T00:00:00.123456789Z", true},
+		{"2026-01-01T24:00:00Z", true},           // end of day is valid
+		{"2026-01-01T24:00:00.0Z", true},          // end of day with zero fraction
+		{"2026-01-01T00:00:00+14:00", true},        // max offset
+		{"2026-01-01T00:00:00-00:00", true},        // negative zero offset
+
+		{"2026-01-01T00:00:00,5Z", false},          // comma fraction: not dateTimeStamp
+		{"2026-01-01T00:00:00+14:01", false},       // offset past +14:00
+		{"2026-01-01T00:00:00+23:59", false},       // RFC3339 accepts; dateTimeStamp refuses
+		{"2026-01-01T00:00:00", false},              // missing time zone
+		{"not-a-date", false},                       // garbage
+		{"yesterday", false},                        // word
+		{"", false},                                 // empty
+		{"2026-01-01", false},                       // date only
+		{"2026-01-01T24:00:01Z", false},             // past end of day
+		{"2026-01-01T24:01:00Z", false},             // past end of day
+		{"2026-01-01T25:00:00Z", false},             // hour 25
+		{"2026-01-01T00:60:00Z", false},             // minute 60
+		{"2026-01-01T00:00:60Z", false},             // second 60
+	} {
+		_, err := parseCreated(tc.input)
+		if tc.ok && err != nil {
+			t.Errorf("parseCreated(%q): unexpected error: %v", tc.input, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("parseCreated(%q): want error, got nil", tc.input)
+		}
+	}
+}
+
+// T24:00:00Z (end of day) is 00:00:00 on the next day.
+func TestParseCreated_EndOfDay(t *testing.T) {
+	got, err := parseCreated("2026-01-01T24:00:00Z")
+	if err != nil {
+		t.Fatalf("parseCreated: %v", err)
+	}
+	want := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// A non-string created (number, object, array) goes into proof.Extra and must
+// be refused.
+func TestVerifyProof_RefusesNonStringCreated(t *testing.T) {
+	sp, pub := testKeyPair(t)
+	for _, created := range []interface{}{42, map[string]interface{}{"v": 1}, []interface{}{"a"}} {
+		m := testCredential()
+		proof := &dto.Proof{
+			Type:               DataIntegrityProof,
+			Created:            "2024-01-01T00:00:00Z",
+			VerificationMethod: "did:example:issuer#key-1",
+			ProofPurpose:       "assertionMethod",
+			Cryptosuite:        ECDSARDFC2019,
+		}
+		attachSignedECDSAProof(t, &m, sp, proof)
+
+		// Tamper with the proof's created field after signing: set a non-string
+		// value that the decoder puts into Extra.
+		rawProof := m.getFirstProof().(map[string]interface{})
+		rawProof["created"] = created
+		m["proof"] = rawProof
+
+		ok, err := (&m).VerifyProof(issuerResolver(t, pub), "")
+		if err == nil && ok {
+			t.Errorf("created=%T: verified, want refusal", created)
+		}
+		if err == nil || !strings.Contains(err.Error(), "proof.created") {
+			t.Errorf("created=%T: err = %v, want a proof.created error", created, err)
+		}
 	}
 }

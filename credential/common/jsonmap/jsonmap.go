@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -305,11 +306,7 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 	if resolver == nil {
 		return fmt.Errorf("jsonmap: document resolver is required")
 	}
-	attached, err := m.Proofs()
-	if err != nil {
-		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
-	}
-	if err := danglingPreviousProof(*proof, attached); err != nil {
+	if err := rejectPreviousProof(proof.ToMap()); err != nil {
 		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
 	}
 
@@ -363,13 +360,14 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	if len(proofs) == 0 {
 		return false, fmt.Errorf("credential has no proof")
 	}
+	raw := m.rawProofList()
 	expectedPurpose := proofVerifyConfigFrom(opts).expectedPurpose
 
 	// Verify a single, caller-selected proof.
 	if targetVM != "" {
 		for i := range proofs {
 			if proofs[i].VerificationMethod == targetVM {
-				if err := danglingPreviousProof(proofs[i], proofs); err != nil {
+				if err := rejectPreviousProof(raw[i]); err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
 				ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose)
@@ -385,7 +383,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	// W3C proof set: every proof must verify, each against its own
 	// verification method.
 	for i := range proofs {
-		if err := danglingPreviousProof(proofs[i], proofs); err != nil {
+		if err := rejectPreviousProof(raw[i]); err != nil {
 			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
 		}
 		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose)
@@ -404,6 +402,12 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, expectedPurpose string) (bool, error) {
 	if err := proofPurposeDisagrees(proof, expectedPurpose); err != nil {
 		return false, err
+	}
+	// A non-string created (number, object, array) lands in proof.Extra as the
+	// decoder's fallback, leaving proof.Created == "". Refuse it before
+	// resolving so the caller sees the right error.
+	if _, ok := proof.Extra["created"]; ok {
+		return false, fmt.Errorf("invalid proof.created: it must be a date-time string, such as 2026-01-01T00:00:00Z")
 	}
 	signerDID, err := m.didForProof(proof)
 	if err != nil {
@@ -779,22 +783,15 @@ func WithExpectedProofPurpose(purpose string) ProofVerifyOpt {
 	}
 }
 
-// danglingPreviousProof reports a previousProof value that is not the id of a
-// proof in the document. Data Integrity 1.0 §4.5 requires that error. An empty
-// previousProof is a proof set, not a chain, and is left alone.
-func danglingPreviousProof(proof dto.Proof, proofs []dto.Proof) error {
-	if len(proof.PreviousProof) == 0 {
-		return nil
-	}
-	ids := make(map[string]struct{}, len(proofs))
-	for i := range proofs {
-		if proofs[i].Id != "" {
-			ids[proofs[i].Id] = struct{}{}
-		}
-	}
-	for _, ref := range proof.PreviousProof {
-		if _, ok := ids[ref]; !ok {
-			return fmt.Errorf("proof previousProof %q does not match the id of a proof in the document", ref)
+// rejectPreviousProof refuses a proof chain. Data Integrity 1.0 §4.5 needs
+// the referenced proofs inside the signed input, which this SDK does not
+// build. It reads the raw proof: the decoder drops "previousProof": null and
+// matches the key in any case.
+func rejectPreviousProof(raw interface{}) error {
+	m, _ := raw.(map[string]interface{})
+	for k := range m {
+		if strings.EqualFold(k, "previousProof") {
+			return fmt.Errorf("proof has previousProof: proof chains are not supported, only proof sets")
 		}
 	}
 	return nil
@@ -815,6 +812,31 @@ func proofPurposeDisagrees(proof *dto.Proof, expected string) error {
 		proof.ProofPurpose, expected)
 }
 
+// XML Schema 1.1 Part 2 §3.3.7.2 with the time zone required (dateTimeStamp,
+// §3.4.28). Years outside 0000-9999 match but cannot be compared as time.Time.
+var dateTimeStamp = regexp.MustCompile(
+	`^-?([1-9][0-9]{3,}|0[0-9]{3})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])` +
+		`T(([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?|24:00:00(\.0+)?)` +
+		`(Z|[+-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00))$`)
+
+func parseCreated(s string) (time.Time, error) {
+	if !dateTimeStamp.MatchString(s) {
+		return time.Time{}, fmt.Errorf("invalid proof.created timestamp %q: want a date-time with a time zone, such as 2026-01-01T00:00:00Z", s)
+	}
+	endOfDay := strings.Contains(s, "T24:00:00")
+	if endOfDay {
+		s = strings.Replace(s, "T24:00:00", "T00:00:00", 1)
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid proof.created timestamp %q: %w", s, err)
+	}
+	if endOfDay {
+		t = t.AddDate(0, 0, 1)
+	}
+	return t, nil
+}
+
 // strictPurposeCheck enforces the post-crypto checks for multi-VM:
 //  1. Hard revocation reason → reject (key compromised, all signatures invalid).
 //  2. Revoked timestamp set and proof.created on/after revoked → reject.
@@ -827,17 +849,15 @@ func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmet
 		return fmt.Errorf("verification method '%s' revoked with hard reason '%s'", vm.ID, vm.RevocationReason)
 	}
 
-	// DI 1.0 §2.1: a present created must be a date-time. It is checked with
-	// time.RFC3339, not the full XML Schema dateTimeStamp grammar: a comma
-	// before the fraction is accepted, a year outside 0000-9999 and hour 24 are
-	// refused. A revoked key needs created to show the proof came first.
+	// DI 1.0 §2.1: a present created must be an XML Schema dateTimeStamp
+	// string. A revoked key needs created to show the proof came first.
 	if proofCreated == "" && vm.Revoked != nil {
 		return fmt.Errorf("verification method '%s' was revoked at %s; the proof has no created to show it was made earlier",
 			vm.ID, vm.Revoked.UTC().Format(time.RFC3339))
 	}
 	var created time.Time
 	if proofCreated != "" {
-		parsed, err := time.Parse(time.RFC3339, proofCreated)
+		parsed, err := parseCreated(proofCreated)
 		if err != nil {
 			return fmt.Errorf("invalid proof.created timestamp '%s': %w", proofCreated, err)
 		}

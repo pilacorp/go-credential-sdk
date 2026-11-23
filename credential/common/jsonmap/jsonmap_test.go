@@ -1613,10 +1613,12 @@ func TestJSONMap_HasMultibaseProof(t *testing.T) {
 	}
 }
 
-// Data Integrity 1.0 §4.5: previousProof must name the id of a proof in the
-// document. A signature that covers a dangling id is not enough.
-func TestVerifyProof_RefusesDanglingPreviousProof(t *testing.T) {
+// Data Integrity 1.0 §4.5 needs the referenced proofs inside the signed input,
+// which this SDK does not build. Any proof carrying previousProof is refused.
+func TestVerifyProof_RefusesPreviousProof(t *testing.T) {
 	sp, pub := testKeyPair(t)
+
+	// A dangling previousProof is refused.
 	m := testCredential()
 	proof := &dto.Proof{
 		Type:               DataIntegrityProof,
@@ -1631,12 +1633,14 @@ func TestVerifyProof_RefusesDanglingPreviousProof(t *testing.T) {
 
 	ok, err := (&m).VerifyProof(issuerResolver(t, pub), "")
 	if err == nil && ok {
-		t.Fatal("a proof whose previousProof names nothing in the document verified")
+		t.Fatal("a proof with previousProof verified")
 	}
 	if err == nil || !strings.Contains(err.Error(), "previousProof") {
 		t.Fatalf("refused, but not for previousProof: %v", err)
 	}
 
+	// A self-referencing previousProof is also refused: the SDK cannot bind a
+	// chain, even when the referenced id exists.
 	linked := testCredential()
 	self := &dto.Proof{
 		Type:               DataIntegrityProof,
@@ -1649,15 +1653,17 @@ func TestVerifyProof_RefusesDanglingPreviousProof(t *testing.T) {
 	}
 	attachSignedECDSAProof(t, &linked, sp, self)
 	ok, err = (&linked).VerifyProof(issuerResolver(t, pub), "")
-	if err != nil || !ok {
-		t.Fatalf("previousProof naming a proof id in the document: %v (ok=%v)", err, ok)
+	if err == nil && ok {
+		t.Fatal("a proof whose previousProof is its own id verified")
+	}
+	if err == nil || !strings.Contains(err.Error(), "previousProof") {
+		t.Fatalf("refused, but not for previousProof: %v", err)
 	}
 }
 
-// A detached proof is checked against the proofs already attached to the
-// document, so a previousProof naming only the detached proof's own id is
-// dangling.
-func TestVerifyDetachedProof_RefusesSelfPreviousProof(t *testing.T) {
+// A detached proof carrying previousProof is refused: the SDK does not bind
+// proof chains.
+func TestVerifyDetachedProof_RefusesPreviousProof(t *testing.T) {
 	_, pub := testKeyPair(t)
 	m := testCredential()
 	proof := &dto.Proof{
@@ -1673,7 +1679,7 @@ func TestVerifyDetachedProof_RefusesSelfPreviousProof(t *testing.T) {
 
 	err := (&m).VerifyDetachedProof(issuerResolver(t, pub), proof)
 	if err == nil || !strings.Contains(err.Error(), "previousProof") {
-		t.Fatalf("detached proof whose previousProof is its own id: got %v, want a previousProof error", err)
+		t.Fatalf("detached proof with previousProof: got %v, want a previousProof error", err)
 	}
 }
 
@@ -1704,6 +1710,33 @@ func TestVerifyProof_RefusesForeignController(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "controller") {
 		t.Fatalf("refused, but not for the controller: %v", err)
+	}
+}
+
+// CID 1.0 §3.3: a resolver that returns did:other for a did:issuer request,
+// with both doc.ID and vm.Controller set to did:other, used to pass because
+// only the two were compared. Now both must match the DID in the VM URL.
+func TestVerifyProof_RefusesDocIDMismatchingVMURL(t *testing.T) {
+	sp, pub := testKeyPair(t)
+	m := testCredential()
+	attachSignedECDSAProof(t, &m, sp, &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+	})
+
+	vm, err := verificationmethod.NewP256VM("did:example:issuer", "key-1", pub)
+	if err != nil {
+		t.Fatalf("vm: %v", err)
+	}
+	vm.Controller = "did:example:other"
+	doc := verificationmethod.NewDIDDocument("did:example:other", vm)
+
+	ok, err := (&m).VerifyProof(verificationmethod.NewStaticResolver(doc), "")
+	if err == nil && ok {
+		t.Fatal("doc.ID and vm.Controller agree but differ from the DID in the VM URL; want refusal")
 	}
 }
 

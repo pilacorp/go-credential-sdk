@@ -260,3 +260,64 @@ func TestResolveSigningVM_DefaultSelection(t *testing.T) {
 		}
 	})
 }
+
+// CID 1.0 §3.3: RequireController compares both doc.ID and vm.Controller with
+// the DID extracted from the verification method URL, not with each other.
+func TestRequireController(t *testing.T) {
+	const did = "did:example:issuer"
+
+	t.Run("matching doc id and controller pass", func(t *testing.T) {
+		doc := &DIDDocument{ID: did}
+		vm := &VerificationMethodEntry{ID: did + "#key-1", Controller: did}
+		if err := RequireController(doc, vm); err != nil {
+			t.Fatalf("RequireController: %v", err)
+		}
+	})
+
+	t.Run("doc id differs from DID in vm URL", func(t *testing.T) {
+		doc := &DIDDocument{ID: "did:example:other"}
+		vm := &VerificationMethodEntry{ID: did + "#key-1", Controller: did}
+		err := RequireController(doc, vm)
+		if err == nil || !strings.Contains(err.Error(), "did:example:other") {
+			t.Fatalf("err = %v, want doc.ID mismatch error", err)
+		}
+	})
+
+	t.Run("vm controller differs from DID in vm URL", func(t *testing.T) {
+		doc := &DIDDocument{ID: did}
+		vm := &VerificationMethodEntry{ID: did + "#key-1", Controller: "did:example:other"}
+		err := RequireController(doc, vm)
+		if err == nil || !strings.Contains(err.Error(), "controller") {
+			t.Fatalf("err = %v, want controller mismatch error", err)
+		}
+	})
+
+	t.Run("both doc id and controller wrong but agree with each other", func(t *testing.T) {
+		// Before the fix, this passed because the old code only compared
+		// doc.ID with vm.Controller. Now both must match the DID in the URL.
+		doc := &DIDDocument{ID: "did:example:other"}
+		vm := &VerificationMethodEntry{ID: did + "#key-1", Controller: "did:example:other"}
+		err := RequireController(doc, vm)
+		if err == nil {
+			t.Fatal("doc and controller agree but neither matches the DID in the VM URL; want an error")
+		}
+	})
+
+	t.Run("vm URL without fragment", func(t *testing.T) {
+		doc := &DIDDocument{ID: did}
+		vm := &VerificationMethodEntry{ID: did, Controller: did}
+		err := RequireController(doc, vm)
+		if err == nil {
+			t.Fatal("want an error for a VM URL without a fragment")
+		}
+	})
+
+	t.Run("nil inputs", func(t *testing.T) {
+		if err := RequireController(nil, &VerificationMethodEntry{}); err == nil {
+			t.Fatal("want error for nil doc")
+		}
+		if err := RequireController(&DIDDocument{}, nil); err == nil {
+			t.Fatal("want error for nil vm")
+		}
+	})
+}
