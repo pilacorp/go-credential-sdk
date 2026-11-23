@@ -459,6 +459,98 @@ func TestKBJWT_RefuseNonSHA256AtIssuance(t *testing.T) {
 	}
 }
 
+// TC-C07: WithKBJWT("", "nonce") must be refused — empty audience silently
+// disables the requirement.
+func TestKBJWT_EmptyAudienceRefused(t *testing.T) {
+	issuerPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	holderPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+
+	const issuerDID = "did:example:kb-empty-aud"
+	cred := issueSDJWTWithCNF(t, issuerDID, issuerPriv, &holderPriv.PublicKey)
+	selected := kbDisclosures(t, cred)
+
+	holderSigner, _ := jws.PrivateKeySigner(holderPriv)
+	presented, err := cred.PresentWithKBJWT(context.Background(), selected, holderSigner, &holderPriv.PublicKey, "verifier-1", "abc")
+	if err != nil {
+		t.Fatalf("PresentWithKBJWT: %v", err)
+	}
+	serialized, _ := presented.Serialize()
+	token := serialized.(string)
+
+	resolver := kbIssuerResolver(t, issuerDID, issuerPriv)
+	parsed, _ := vc.ParseJOSECredential(token)
+	err = parsed.Verify(
+		vc.WithResolver(resolver),
+		vc.WithKBJWT("", "abc"),
+	)
+	if err == nil {
+		t.Fatal("expected error for empty audience")
+	}
+	if !strings.Contains(err.Error(), "audience") && !strings.Contains(err.Error(), "non-empty") {
+		t.Fatalf("error should mention audience: %v", err)
+	}
+}
+
+// TC-C08: WithKBJWT("aud", "") must be refused — empty nonce.
+func TestKBJWT_EmptyNonceRefused(t *testing.T) {
+	issuerPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	holderPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+
+	const issuerDID = "did:example:kb-empty-nonce"
+	cred := issueSDJWTWithCNF(t, issuerDID, issuerPriv, &holderPriv.PublicKey)
+	selected := kbDisclosures(t, cred)
+
+	holderSigner, _ := jws.PrivateKeySigner(holderPriv)
+	presented, err := cred.PresentWithKBJWT(context.Background(), selected, holderSigner, &holderPriv.PublicKey, "verifier-1", "abc")
+	if err != nil {
+		t.Fatalf("PresentWithKBJWT: %v", err)
+	}
+	serialized, _ := presented.Serialize()
+	token := serialized.(string)
+
+	resolver := kbIssuerResolver(t, issuerDID, issuerPriv)
+	parsed, _ := vc.ParseJOSECredential(token)
+	err = parsed.Verify(
+		vc.WithResolver(resolver),
+		vc.WithKBJWT("verifier-1", ""),
+	)
+	if err == nil {
+		t.Fatal("expected error for empty nonce")
+	}
+	if !strings.Contains(err.Error(), "nonce") && !strings.Contains(err.Error(), "non-empty") {
+		t.Fatalf("error should mention nonce: %v", err)
+	}
+}
+
+// TC-C09: WithKBJWT("", "nonce") on a credential without KB-JWT must NOT
+// verify — the empty audience must not silently disable the requirement.
+func TestKBJWT_EmptyAudienceDoesNotSkipRequirement(t *testing.T) {
+	issuerPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	holderPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+
+	const issuerDID = "did:example:kb-empty-aud-skip"
+	cred := issueSDJWTWithCNF(t, issuerDID, issuerPriv, &holderPriv.PublicKey)
+	selected := kbDisclosures(t, cred)
+
+	// Present WITHOUT KB-JWT.
+	presented, err := cred.Present(selected)
+	if err != nil {
+		t.Fatalf("Present: %v", err)
+	}
+	serialized, _ := presented.Serialize()
+	token := serialized.(string)
+
+	resolver := kbIssuerResolver(t, issuerDID, issuerPriv)
+	parsed, _ := vc.ParseJOSECredential(token)
+	err = parsed.Verify(
+		vc.WithResolver(resolver),
+		vc.WithKBJWT("", "nonce-1"),
+	)
+	if err == nil {
+		t.Fatal("expected error: WithKBJWT(\"\", \"nonce\") must not silently verify without KB-JWT")
+	}
+}
+
 // N1: PresentWithKBJWT must refuse a credential whose _sd_alg is not sha-256.
 func TestKBJWT_RefuseNonSHA256AtPresent(t *testing.T) {
 	issuerPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

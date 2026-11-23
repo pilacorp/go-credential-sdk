@@ -149,8 +149,10 @@ type credentialOptions struct {
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
 	replaceProof            bool
-	// KB-JWT verification: set by WithKBJWT. When kbAudience is non-empty,
-	// the verifier requires a Key Binding JWT (RFC 9901 §7.3).
+	// KB-JWT verification: set by WithKBJWT. When requireKB is true, a
+	// Key Binding JWT is required (RFC 9901 §7.3); audience and nonce must
+	// be non-empty.
+	requireKB   bool
 	kbAudience  string
 	kbNonce     string
 	kbMaxAge    time.Duration
@@ -408,6 +410,7 @@ func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 // Implies WithVerifyProof.
 func WithKBJWT(audience, nonce string) CredentialOpt {
 	return func(c *credentialOptions) {
+		c.requireKB = true
 		c.kbAudience = audience
 		c.kbNonce = nonce
 		c.isVerifyProof = true

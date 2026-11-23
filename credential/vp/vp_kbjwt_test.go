@@ -286,3 +286,62 @@ func TestVPKBJWT_WrongSDHash(t *testing.T) {
 		t.Fatalf("error should mention sd_hash: %v", err)
 	}
 }
+
+// F2g: WithKBJWT("", "nonce") must be refused — empty audience silently
+// disables the requirement.
+func TestVPKBJWT_EmptyAudienceRefused(t *testing.T) {
+	token, resolver := vpKBJWTFixture(t, "verifier-1", "nonce-1")
+
+	parsed, err := vp.ParseJOSEPresentation(token)
+	if err != nil {
+		t.Fatalf("ParseJOSEPresentation: %v", err)
+	}
+	err = parsed.Verify(
+		vp.WithResolver(resolver),
+		vp.WithKBJWT("", "nonce-1"),
+	)
+	if err == nil {
+		t.Fatal("expected error for empty audience")
+	}
+	if !strings.Contains(err.Error(), "audience") && !strings.Contains(err.Error(), "non-empty") {
+		t.Fatalf("error should mention audience: %v", err)
+	}
+}
+
+// F2h: WithKBJWT("aud", "") must be refused — empty nonce.
+func TestVPKBJWT_EmptyNonceRefused(t *testing.T) {
+	token, resolver := vpKBJWTFixture(t, "verifier-1", "nonce-1")
+
+	parsed, err := vp.ParseJOSEPresentation(token)
+	if err != nil {
+		t.Fatalf("ParseJOSEPresentation: %v", err)
+	}
+	err = parsed.Verify(
+		vp.WithResolver(resolver),
+		vp.WithKBJWT("verifier-1", ""),
+	)
+	if err == nil {
+		t.Fatal("expected error for empty nonce")
+	}
+	if !strings.Contains(err.Error(), "nonce") && !strings.Contains(err.Error(), "non-empty") {
+		t.Fatalf("error should mention nonce: %v", err)
+	}
+}
+
+// F2i: WithKBJWT("", "nonce") on a VP without KB-JWT must NOT verify — the
+// empty audience must not silently disable the requirement.
+func TestVPKBJWT_EmptyAudienceDoesNotSkipRequirement(t *testing.T) {
+	token, _, resolver := vpSDJWTFixture(t)
+
+	parsed, err := vp.ParseJOSEPresentation(token)
+	if err != nil {
+		t.Fatalf("ParseJOSEPresentation: %v", err)
+	}
+	err = parsed.Verify(
+		vp.WithResolver(resolver),
+		vp.WithKBJWT("", "nonce-1"),
+	)
+	if err == nil {
+		t.Fatal("expected error: WithKBJWT(\"\", \"nonce\") must not silently verify without KB-JWT")
+	}
+}

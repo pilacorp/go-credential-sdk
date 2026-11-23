@@ -123,14 +123,21 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 	jwtutil.SetIssuedAt(payloadData, time.Now())
 
 	// Selective disclosure: when SD options are present, replace named fields
-	// with digests and collect disclosures. The properties a verifier needs to
-	// decide on (@context, type, holder, verifiableCredential) are not
-	// disclosable — BuildDisclosures puts _sd inside whatever subtree the paths
-	// point at, and requireVPDisclosableAtTopLevel rejects machinery at the root.
+	// with digests and collect disclosures. The structural properties a
+	// verifier needs (@context, type, holder, verifiableCredential, …) are
+	// not disclosable — refuse any path whose first segment names one before
+	// BuildDisclosures runs, and requireVPDisclosableAtTopLevel catches
+	// anything else after.
 	vpMap := map[string]interface{}(payloadData)
 	var disclosures []string
 	disclosable := false
 	if len(options.sdSelectivePaths) > 0 {
+		for _, p := range options.sdSelectivePaths {
+			first := strings.SplitN(p, ".", 2)[0]
+			if vpSecuredProperties[first] {
+				return nil, fmt.Errorf("%q cannot be selectively disclosable in a vp+sd-jwt", p)
+			}
+		}
 		result, bErr := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
 			VC:             vpMap,
 			SelectivePaths: options.sdSelectivePaths,
@@ -295,6 +302,19 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 		if rErr != nil {
 			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rErr)
 		}
+
+		// A secured property must come from the signed payload, not from a
+		// disclosure. If it appears in the recreated map but was absent from
+		// the signed payloadMap, an attacker injected it via a disclosure.
+		for name := range vpSecuredProperties {
+			if _, inRecreated := recreated[name]; !inRecreated {
+				continue
+			}
+			if _, inSigned := payloadMap[name]; !inSigned {
+				return nil, fmt.Errorf("%q cannot be selectively disclosable in a vp+sd-jwt", name)
+			}
+		}
+
 		vpMap = recreated
 	}
 
@@ -442,14 +462,11 @@ var vpSecuredProperties = map[string]bool{
 }
 
 // requireVPDisclosableAtTopLevel ensures that the structural properties a
-// verifier needs to decide on are never selectively disclosable. _sd at the
-// root is refused outright; _sd nested inside a secured property is refused
-// per property.
+// verifier needs to decide on are never selectively disclosable. Root _sd is
+// permitted (top-level custom claims go there); _sd_alg at the root is
+// permitted (the hash algorithm for the digests). Only the secured properties
+// and the _sd_alg value itself are checked for nested SD machinery.
 func requireVPDisclosableAtTopLevel(m map[string]interface{}) error {
-	if _, ok := m["_sd"]; ok {
-		return fmt.Errorf("the payload carries _sd at the root; selective disclosure " +
-			"is only for custom claims in a vp+sd-jwt, not for structural properties")
-	}
 	for name, value := range m {
 		if !vpSecuredProperties[name] && name != "_sd_alg" {
 			continue
@@ -752,7 +769,10 @@ func (j *JOSEPresentation) executeOptions(opts ...PresentationOpt) error {
 	// KB-JWT verification, after the issuer JWT is verified, as RFC 9901 §7.3
 	// step 5 specifies. When WithKBJWT is set, a KB-JWT is required; when not
 	// set, a KB-JWT is accepted but ignored.
-	if options.kbAudience != "" {
+	if options.requireKB {
+		if options.kbAudience == "" || options.kbNonce == "" {
+			return fmt.Errorf("presentation verification failed: WithKBJWT needs a non-empty audience and nonce")
+		}
 		if err := j.verifyKBJWT(options); err != nil {
 			return fmt.Errorf("presentation verification failed: %w", err)
 		}

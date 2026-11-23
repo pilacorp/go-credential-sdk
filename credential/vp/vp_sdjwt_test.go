@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -229,6 +230,7 @@ func TestVPSDJWT_SecuredPropertiesRefused(t *testing.T) {
 				t.Fatalf("expected error for disclosable %q", path)
 			}
 			if !strings.Contains(err.Error(), "selective disclosure") &&
+				!strings.Contains(err.Error(), "selectively disclosable") &&
 				!strings.Contains(err.Error(), "_sd") {
 				t.Fatalf("error for %q should mention selective disclosure: %v", path, err)
 			}
@@ -268,11 +270,170 @@ func TestVPSDJWT_EnvelopedCredentialMediaTypes(t *testing.T) {
 	}
 }
 
-// S1: A raw vp+sd-jwt token whose payload carries _sd at the root (disclosable
-// holder) must be rejected by the parser, regardless of whether the token is
-// otherwise well-formed. This pins the security rule at the parser level.
-func TestVPSDJWT_ParserRejectsSDAtRoot(t *testing.T) {
-	// Build a minimal vp+sd-jwt token by hand with _sd at the root.
+// S1: A top-level custom claim can be withheld via SD-JWT (root _sd is
+// allowed; only secured properties like holder are protected).
+func TestVPSDJWT_TopLevelCustomClaimWithheld(t *testing.T) {
+	issuerPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	holderPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	const issuerDID = "did:example:vp-sd-toplevel-issuer"
+	const holderDID = "did:example:vp-sd-toplevel-holder"
+
+	issuerVM, _ := vmpkg.NewP256VM(issuerDID, "key-1", &issuerPriv.PublicKey)
+	issuerDoc := vmpkg.NewDIDDocument(issuerDID, issuerVM)
+	issuerProv, _ := signer.NewP256Provider(issuerPriv)
+	holderVM, _ := vmpkg.NewP256VM(holderDID, "key-1", &holderPriv.PublicKey)
+	holderDoc := vmpkg.NewDIDDocument(holderDID, holderVM)
+	resolver := vmpkg.NewStaticResolver(issuerDoc, holderDoc)
+	holderProv, _ := signer.NewP256Provider(holderPriv)
+
+	credContents := vc.CredentialContents{
+		Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:        "urn:uuid:vp-sd-toplevel-cred",
+		Types:     []string{"VerifiableCredential"},
+		Issuer:    issuerDID,
+		ValidFrom: time.Now().Add(-time.Hour),
+		Subject: []vc.Subject{{
+			ID:           holderDID,
+			CustomFields: map[string]interface{}{"name": "Alice"},
+		}},
+	}
+	cred, err := vc.NewJOSECredential(credContents,
+		vc.WithVerificationMethodKey("key-1"),
+		vc.WithResolver(resolver),
+	)
+	if err != nil {
+		t.Fatalf("NewJOSECredential: %v", err)
+	}
+	if err := cred.AddProofByProvider(issuerProv); err != nil {
+		t.Fatalf("sign cred: %v", err)
+	}
+
+	// A top-level custom claim made selectively disclosable: its digest goes
+	// into the root _sd array.
+	vpContents := vp.PresentationContents{
+		Context:               []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:                    "urn:uuid:vp-sd-toplevel",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                holderDID,
+		VerifiableCredentials: []vc.Credential{cred},
+		CustomFields: map[string]interface{}{
+			"termsOfAgreement": "I agree to the terms",
+		},
+	}
+	pres, err := vp.NewJOSEPresentation(vpContents,
+		vp.WithSDSelectivePaths([]string{"termsOfAgreement"}),
+		vp.WithVerificationMethodKey("key-1"),
+		vp.WithResolver(resolver),
+	)
+	if err != nil {
+		t.Fatalf("NewJOSEPresentation: %v", err)
+	}
+	if err := pres.AddProofByProvider(holderProv, vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign vp: %v", err)
+	}
+
+	// Round-trip with the disclosure: claim is present.
+	disclosures, err := pres.DecodedDisclosures()
+	if err != nil {
+		t.Fatalf("DecodedDisclosures: %v", err)
+	}
+	selected := make([]string, len(disclosures))
+	for i, d := range disclosures {
+		selected[i] = d.Disclosure
+	}
+	presented, err := pres.Present(selected)
+	if err != nil {
+		t.Fatalf("Present(all): %v", err)
+	}
+	ser, _ := presented.Serialize()
+	token := ser.(string)
+
+	parsed, err := vp.ParseJOSEPresentation(token)
+	if err != nil {
+		t.Fatalf("ParseJOSEPresentation (disclosed): %v", err)
+	}
+	if err := parsed.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("Verify (disclosed): %v", err)
+	}
+	contents, _ := parsed.GetContents()
+	var payload map[string]interface{}
+	json.Unmarshal(contents, &payload)
+	if payload["termsOfAgreement"] != "I agree to the terms" {
+		t.Fatalf("termsOfAgreement = %v, want 'I agree to the terms'", payload["termsOfAgreement"])
+	}
+
+	// Round-trip without the disclosure: claim is withheld.
+	withheld, err := pres.Present(nil)
+	if err != nil {
+		t.Fatalf("Present(nil): %v", err)
+	}
+	wSer, _ := withheld.Serialize()
+	wParsed, err := vp.ParseJOSEPresentation(wSer.(string))
+	if err != nil {
+		t.Fatalf("ParseJOSEPresentation (withheld): %v", err)
+	}
+	if err := wParsed.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("Verify (withheld): %v", err)
+	}
+	wContents, _ := wParsed.GetContents()
+	var wPayload map[string]interface{}
+	json.Unmarshal(wContents, &wPayload)
+	if _, found := wPayload["termsOfAgreement"]; found {
+		t.Fatal("termsOfAgreement should be withheld when no disclosures are presented")
+	}
+}
+
+// S1b: A selective path whose first segment names a secured property must be
+// refused at issuance.
+func TestVPSDJWT_SecuredPropertyPathRefused(t *testing.T) {
+	holderPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	const holderDID = "did:example:vp-sd-secured-path"
+	holderVM, _ := vmpkg.NewP256VM(holderDID, "key-1", &holderPriv.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(holderDID, holderVM))
+
+	for _, path := range []string{
+		"holder",
+		"verifiableCredential",
+		"@context",
+		"type",
+	} {
+		t.Run(path, func(t *testing.T) {
+			vpContents := vp.PresentationContents{
+				Context: []interface{}{"https://www.w3.org/ns/credentials/v2"},
+				ID:      "urn:uuid:vp-sd-secured-path",
+				Types:   []string{"VerifiablePresentation"},
+				Holder:  holderDID,
+			}
+			_, err := vp.NewJOSEPresentation(vpContents,
+				vp.WithSDSelectivePaths([]string{path}),
+				vp.WithVerificationMethodKey("key-1"),
+				vp.WithResolver(resolver),
+			)
+			if err == nil {
+				t.Fatalf("expected error for disclosable %q", path)
+			}
+			if !strings.Contains(err.Error(), "selectively disclosable") &&
+				!strings.Contains(err.Error(), "selective disclosure") &&
+				!strings.Contains(err.Error(), "_sd") {
+				t.Fatalf("error for %q should mention selective disclosure: %v", path, err)
+			}
+		})
+	}
+}
+
+// S1c: A hand-built token whose disclosure supplies "holder" must be refused
+// on verify — a secured property must come from the signed payload.
+func TestVPSDJWT_DisclosedSecuredPropertyRefused(t *testing.T) {
+	// Build a vp+sd-jwt token by hand where "holder" comes from a disclosure
+	// rather than the signed payload. The disclosure format is
+	// base64url(json(["salt", "holder", "did:example:attacker"])).
+	disclosure := base64.RawURLEncoding.EncodeToString(
+		[]byte(`["salt123","holder","did:example:attacker"]`))
+
+	// Compute the sha-256 digest of the disclosure for the _sd array.
+	dgst := sha256.Sum256([]byte(disclosure))
+	dgstB64 := base64.RawURLEncoding.EncodeToString(dgst[:])
+
 	header := map[string]interface{}{
 		"typ": "vp+sd-jwt",
 		"alg": "ES256",
@@ -282,19 +443,22 @@ func TestVPSDJWT_ParserRejectsSDAtRoot(t *testing.T) {
 		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
 		"type":     []interface{}{"VerifiablePresentation"},
 		"_sd_alg":  "sha-256",
-		"_sd":      []interface{}{"WyJzYWx0IiwgImhvbGRlciIsICJkaWQ6ZXhhbXBsZTpob2xkZXIiXQ"},
+		"_sd":      []interface{}{dgstB64},
 	}
 	hBytes, _ := json.Marshal(header)
 	pBytes, _ := json.Marshal(payload)
 	token := base64.RawURLEncoding.EncodeToString(hBytes) + "." +
-		base64.RawURLEncoding.EncodeToString(pBytes) + ".fake-sig~"
+		base64.RawURLEncoding.EncodeToString(pBytes) + ".fake-sig~" +
+		disclosure + "~"
 
 	_, err := vp.ParseJOSEPresentation(token)
 	if err == nil {
-		t.Fatal("expected error for _sd at the root of a vp+sd-jwt payload")
+		t.Fatal("expected error: disclosure supplies a secured property (holder)")
 	}
-	if !strings.Contains(err.Error(), "_sd") || !strings.Contains(err.Error(), "selective disclosure") {
-		t.Fatalf("error should mention _sd and selective disclosure: %v", err)
+	if !strings.Contains(err.Error(), "holder") &&
+		!strings.Contains(err.Error(), "selectively disclosable") &&
+		!strings.Contains(err.Error(), "selective disclosure") {
+		t.Fatalf("error should mention holder or selective disclosure: %v", err)
 	}
 }
 

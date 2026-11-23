@@ -737,7 +737,10 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	// KB-JWT verification, after the issuer JWT is verified, as RFC 9901 §7.3
 	// step 5 specifies. When WithKBJWT is set, a KB-JWT is required; when not
 	// set, a KB-JWT is accepted but ignored.
-	if options.kbAudience != "" {
+	if options.requireKB {
+		if options.kbAudience == "" || options.kbNonce == "" {
+			return fmt.Errorf("credential verification failed: WithKBJWT needs a non-empty audience and nonce")
+		}
 		if err := j.verifyKBJWT(options); err != nil {
 			return fmt.Errorf("credential verification failed: %w", err)
 		}

@@ -116,8 +116,10 @@ type presentationOptions struct {
 	sdSelectivePaths []string
 	sdAlg            string
 	sdShuffle        bool
-	// KB-JWT verification (RFC 9901 §7.3): when kbAudience is non-empty, a
-	// Key Binding JWT is required and verified.
+	// KB-JWT verification (RFC 9901 §7.3): when requireKB is true, a
+	// Key Binding JWT is required and verified; audience and nonce must be
+	// non-empty.
+	requireKB   bool
 	kbAudience  string
 	kbNonce     string
 	kbMaxAge    time.Duration
@@ -358,6 +360,7 @@ func WithSDHashAlgorithm(alg string) PresentationOpt {
 // Implies WithVerifyProof.
 func WithKBJWT(audience, nonce string) PresentationOpt {
 	return func(p *presentationOptions) {
+		p.requireKB = true
 		p.kbAudience = audience
 		p.kbNonce = nonce
 		p.isVerifyProof = true
