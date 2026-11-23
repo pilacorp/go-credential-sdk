@@ -439,10 +439,14 @@ func requireEnvelopedCredentials(m PresentationData) error {
 		// VCDM 2.0 §4.13: id MUST be a data: URL whose media type names a
 		// secured credential scheme (application/vc+jwt or application/vc+sd-jwt).
 		id, _ := entry["id"].(string)
-		if _, _, ok := vcdm.CutEnvelopedDataURL(id); !ok {
+		_, envToken, ok := vcdm.CutEnvelopedDataURL(id)
+		if !ok {
 			return fmt.Errorf(
 				"credential at index %d: enveloped credential id must be a data: URL "+
 					"with media type application/vc+jwt or application/vc+sd-jwt", i)
+		}
+		if envToken == "" {
+			return fmt.Errorf("credential at index %d: enveloped credential id is a data: URL with no token", i)
 		}
 	}
 

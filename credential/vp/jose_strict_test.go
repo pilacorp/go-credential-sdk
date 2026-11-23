@@ -323,6 +323,23 @@ func TestVPJOSEStrict_EnvelopeContextIncludesV2(t *testing.T) {
 	}
 }
 
+// An envelope whose data: URL carries no token is refused where the envelope
+// is checked, as the JSON presentation path does, not later when the
+// credential is opened.
+func TestVPJOSEStrict_EnvelopeEmptyTokenRefused(t *testing.T) {
+	did, priv, resolver := vpJoseSetup(t)
+	entry := map[string]interface{}{
+		"@context": "https://www.w3.org/ns/credentials/v2",
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "data:application/vc+jwt,",
+	}
+	token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	_, err := vp.ParsePresentation([]byte(token), vp.WithResolver(resolver))
+	if err == nil || !strings.Contains(err.Error(), "no token") {
+		t.Fatalf("err = %v, want the empty envelope token refused", err)
+	}
+}
+
 // --- Hash and wire format stability ---
 
 func TestVPJOSEStrict_HashStability(t *testing.T) {
