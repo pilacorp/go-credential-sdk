@@ -144,10 +144,10 @@ func curveOrder(alg string) *big.Int {
 	return nil
 }
 
-// NormalizeLowS ensures the s component of a 64-byte ECDSA signature (r||s)
-// satisfies s <= n/2 (the "low-S" form). ECDSA produces two equally valid
-// signatures for any message: (r, s) and (r, n-s). Canonicalizing to low-S
-// prevents signature malleability from changing Hash() on the same token.
+// NormalizeLowS returns the low-S form (s <= n/2) of a 64-byte r||s ECDSA
+// signature, so every token the SDK signs has one canonical signature.
+// Verification still accepts high-S, so a copy with s replaced by n-s
+// verifies too and has a different Hash().
 //
 // alg names the JWS algorithm ("ES256" or "ES256K"). An unrecognised alg is
 // returned unchanged — an extra algorithm does not break existing signatures.

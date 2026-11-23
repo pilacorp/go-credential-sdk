@@ -12,6 +12,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
 // ErrSDJWTRequiresJOSE is returned when selective disclosure is asked of the VC
@@ -49,7 +50,11 @@ type Credential interface {
 	// Serialize returns the JWT string (JWT) or the JSON object with proof (JSON).
 	Serialize() (any, error)
 
-	// Hash returns the SHA-256 hash (hex-encoded) of the full credential, including proof/signature.
+	// Hash returns the SHA-256 hash (hex-encoded) of the full credential,
+	// including proof/signature. Hash identifies these exact token bytes.
+	// ECDSA lets anyone holding the token derive a second valid signature,
+	// so a verifier must not treat Hash() as a unique identifier for a
+	// credential it did not issue.
 	Hash() (string, error)
 
 	GetContents() ([]byte, error)
@@ -436,21 +441,21 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 		var peek map[string]interface{}
 		if err := json.Unmarshal(rawCredential, &peek); err == nil {
 			if idStr, ok := peek["id"].(string); ok {
-				for _, prefix := range []string{
-					"data:application/" + TypeVCJWT + ",",
-					"data:application/" + TypeVCSDJWT + ",",
-				} {
-					if !strings.HasPrefix(idStr, prefix) {
-						continue
-					}
+				if _, token, ok := vcdm.CutEnvelopedDataURL(idStr); ok {
 					if !hasType(peek["type"], TypeEnvelopedVC) {
-						return nil, fmt.Errorf("credential carries a %s id but its type is not %s", prefix, TypeEnvelopedVC)
+						return nil, fmt.Errorf(
+							"credential carries an enveloped data: URL id but its type is not %s",
+							TypeEnvelopedVC)
+					}
+					if token == "" {
+						return nil, fmt.Errorf(
+							"enveloped credential id is a data: URL with no token")
 					}
 					// Parse the token as vc-jose-cose rather than recursing through
 					// ParseCredential: the envelope is defined to hold a vc+jwt, so
 					// this refuses a VC 1.1 JWT hidden inside a v2 envelope, and
 					// keeps the nesting to one level.
-					c, err := ParseJOSECredential(strings.TrimPrefix(idStr, prefix), opts...)
+					c, err := ParseJOSECredential(token, opts...)
 					if err != nil {
 						return nil, err
 					}
