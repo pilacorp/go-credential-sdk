@@ -158,7 +158,7 @@ func selectLatestActiveVM(doc *DIDDocument, purpose string, match func(*Verifica
 		if vm.Revoked != nil {
 			continue
 		}
-		if vm.Expires != nil && !now.Before(*vm.Expires) {
+		if vm.ExpiredAt(now) {
 			continue
 		}
 		if !idInPurposeArray(vm.ID, doc.ID, purposeArr) {

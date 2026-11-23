@@ -6,8 +6,8 @@
 //
 // The adapter applies the unified key rule of the SDK:
 //
-//   - Only keys listed under assertionMethod that belong to this document
-//     (controller == document id) are considered.
+//   - Only keys referenced by id under assertionMethod, whose id is a
+//     fragment of the DID and whose controller is the DID, are considered.
 //   - A key past its expires time is excluded.
 //   - A key revoked as keyCompromise (IsHardRevocationReason) is excluded.
 //   - A key revoked for any other reason, or with no stated reason, is
@@ -16,6 +16,12 @@
 //   - A key module jose cannot verify with (P-384, RSA) is excluded, so the
 //     DC verifier reports no usable key instead of a policy error. A KeyFilter
 //     narrows this further.
+//
+// The document is decoded as [verificationmethod.DIDDocument]: a method
+// embedded as an object in assertionMethod or authentication, or a @context
+// given as a single string, is not read. The digitalcredential didresolver
+// reads these shapes. An undecodable document is mapped to
+// [issuerkey.ErrNoUsableKey].
 //
 // A caller can tell "DID not found / deactivated" from "resolver unreachable":
 // an error from ResolverProvider that wraps verificationmethod.ErrDIDNotFound
@@ -103,7 +109,8 @@ func (r *resolver) Keys(ctx context.Context, iss string) ([]issuerkey.PublicKey,
 
 	doc, err := r.provider.ResolveDocument(ctx, iss)
 	if err != nil {
-		if errors.Is(err, verificationmethod.ErrDIDNotFound) {
+		if errors.Is(err, verificationmethod.ErrDIDNotFound) ||
+			errors.Is(err, verificationmethod.ErrInvalidDocument) {
 			return nil, fmt.Errorf("%w: %w", issuerkey.ErrNoUsableKey, err)
 		}
 		return nil, fmt.Errorf("didkeys: resolver failed: %w", err)
@@ -123,7 +130,7 @@ func (r *resolver) assertionKeys(doc *verificationmethod.DIDDocument, did string
 
 	for _, ref := range doc.AssertionMethod {
 		vmID := absoluteID(ref, did)
-		vm := findVM(doc, vmID)
+		vm := findVM(doc, vmID, did)
 		if vm == nil {
 			continue
 		}
@@ -131,10 +138,10 @@ func (r *resolver) assertionKeys(doc *verificationmethod.DIDDocument, did string
 		// document (its id is a fragment of the DID) and names it as
 		// controller. A method of another DID is not trusted on this
 		// document's word.
-		if !strings.HasPrefix(vm.ID, did+"#") || len(vm.ID) == len(did)+1 || vm.Controller != did {
+		if !strings.HasPrefix(vmID, did+"#") || len(vmID) == len(did)+1 || vm.Controller != did {
 			continue
 		}
-		if vm.Expires != nil && !now.Before(*vm.Expires) {
+		if vm.ExpiredAt(now) {
 			continue
 		}
 		if verificationmethod.IsHardRevocationReason(vm.RevocationReason) {
@@ -152,18 +159,19 @@ func (r *resolver) assertionKeys(doc *verificationmethod.DIDDocument, did string
 			continue
 		}
 		keys = append(keys, issuerkey.PublicKey{
-			KID:    absoluteID(vm.ID, did),
+			KID:    vmID,
 			Public: pub,
 		})
 	}
 	return keys, nil
 }
 
-// findVM looks up a verification method by absolute ID.
-func findVM(doc *verificationmethod.DIDDocument, id string) *verificationmethod.VerificationMethodEntry {
+// findVM looks up a verification method by absolute ID; a relative
+// "#fragment" id on a method is resolved against did first.
+func findVM(doc *verificationmethod.DIDDocument, id, did string) *verificationmethod.VerificationMethodEntry {
 	for i := range doc.VerificationMethod {
 		vm := &doc.VerificationMethod[i]
-		if vm.ID == id {
+		if absoluteID(vm.ID, did) == id {
 			return vm
 		}
 	}

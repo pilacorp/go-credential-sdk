@@ -55,7 +55,7 @@ func ResolveSigningVM(ctx context.Context, did, purpose, pinnedKid string, resol
 		return nil, "", err
 	}
 
-	if vm.Expires != nil && !time.Now().Before(*vm.Expires) {
+	if vm.ExpiredAt(time.Now()) {
 		return nil, "", fmt.Errorf("verification method '%s' expired at %s",
 			vm.ID, vm.Expires.UTC().Format(time.RFC3339))
 	}

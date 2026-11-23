@@ -382,7 +382,7 @@ func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
 // timestamp check is omitted here — verifiers that need it should encode the
 // signing time as `iat` and add their own enforcement.
 func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmethod.VerificationMethodEntry, proofPurpose string, issuedAt *time.Time) error {
-	if vm.Expires != nil && !time.Now().Before(*vm.Expires) {
+	if vm.ExpiredAt(time.Now()) {
 		return fmt.Errorf("verification method '%s' expired at %s", vm.ID, vm.Expires.UTC().Format(time.RFC3339))
 	}
 	if verificationmethod.IsHardRevocationReason(vm.RevocationReason) {

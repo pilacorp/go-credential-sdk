@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -200,6 +201,39 @@ func TestDIDNotFoundMapsToErrNoUsableKey(t *testing.T) {
 	}
 }
 
+// A document with an embedded object in assertionMethod (instead of a string
+// reference) will not decode into DIDDocument.AssertionMethod ([]string).
+// When the provider wraps that as ErrInvalidDocument, the adapter returns
+// ErrNoUsableKey, not a transport error.
+func TestEmbeddedAssertionMethodNotDecoded(t *testing.T) {
+	decodeErr := fmt.Errorf("%w: cannot unmarshal object into Go struct field "+
+		"DIDDocument.assertionMethod of type string", verificationmethod.ErrInvalidDocument)
+	r, err := NewResolver(&staticResolver{err: decodeErr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Keys(context.Background(), "did:example:embedded")
+	if !errors.Is(err, issuerkey.ErrNoUsableKey) {
+		t.Errorf("err = %v; want ErrNoUsableKey for embedded assertionMethod", err)
+	}
+}
+
+// ErrInvalidDocument from provider maps to ErrNoUsableKey.
+func TestInvalidDocumentMapsToErrNoUsableKey(t *testing.T) {
+	decodeErr := fmt.Errorf("%w: unexpected end of JSON input", verificationmethod.ErrInvalidDocument)
+	r, err := NewResolver(&staticResolver{err: decodeErr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Keys(context.Background(), "did:example:badformat")
+	if !errors.Is(err, issuerkey.ErrNoUsableKey) {
+		t.Errorf("err = %v; want ErrNoUsableKey", err)
+	}
+	if !errors.Is(err, verificationmethod.ErrInvalidDocument) {
+		t.Errorf("err = %v; want ErrInvalidDocument in chain", err)
+	}
+}
+
 // A transport error passes through without wrapping as ErrNoUsableKey.
 func TestTransportErrorPassesThrough(t *testing.T) {
 	transportErr := errors.New("connection refused")
@@ -268,6 +302,28 @@ func TestRelativeAssertionMethodRef(t *testing.T) {
 	}
 	if len(keys) != 1 {
 		t.Fatalf("got %d keys; want 1 (relative ref resolved)", len(keys))
+	}
+}
+
+// A document that writes the method id as "#key-1" (relative DID URL)
+// is handled: the adapter resolves it against the DID before comparing.
+func TestRelativeMethodIDInDocument(t *testing.T) {
+	vm := p256VM(testDID, "key-1")
+	vm.ID = "#key-1" // relative form in the document
+	doc := newDoc(testDID, []verificationmethod.VerificationMethodEntry{vm}, []string{"#key-1"})
+	r, err := NewResolver(&staticResolver{docs: map[string]*verificationmethod.DIDDocument{testDID: doc}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := r.Keys(context.Background(), testDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("got %d keys; want 1 (relative method id resolved)", len(keys))
+	}
+	if keys[0].KID != testDID+"#key-1" {
+		t.Errorf("KID = %q; want %q", keys[0].KID, testDID+"#key-1")
 	}
 }
 

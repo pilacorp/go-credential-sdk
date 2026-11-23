@@ -847,7 +847,7 @@ func parseCreated(s string) (time.Time, error) {
 // timestamp comparison so the verifier returns the strongest failure reason
 // first.
 func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmethod.VerificationMethodEntry, proofPurpose, proofCreated string) error {
-	if vm.Expires != nil && !time.Now().Before(*vm.Expires) {
+	if vm.ExpiredAt(time.Now()) {
 		return fmt.Errorf("verification method '%s' expired at %s", vm.ID, vm.Expires.UTC().Format(time.RFC3339))
 	}
 

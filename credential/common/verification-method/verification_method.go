@@ -31,6 +31,12 @@ type VerificationMethodEntry struct {
 	Expires            *time.Time `json:"expires,omitempty"`
 }
 
+// ExpiredAt reports whether the method is past its expires time at t.
+// A method is expired at exactly its expires instant.
+func (vm *VerificationMethodEntry) ExpiredAt(t time.Time) bool {
+	return vm.Expires != nil && !t.Before(*vm.Expires)
+}
+
 // DIDDocument represents the structure of a resolved DID Document. Only
 // the relationship arrays Pila exposes (`authentication`, `assertionMethod`)
 // are typed; other W3C-defined arrays (keyAgreement, capabilityInvocation,
