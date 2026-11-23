@@ -95,7 +95,6 @@ func (m *JSONMap) LegacyHexCanonicalize() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
 	}
-	incCanonicalizeCount()
 
 	return processor.ComputeDigest(canonicalDoc)
 }
@@ -385,19 +384,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	// verification method. The body is the same for all proofs, so the
 	// document digest is computed once per distinct canonical form and reused.
 	cache := &digestCache{}
-	for i := range proofs {
-		if err := rejectPreviousProof(raw[i]); err != nil {
-			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
-		}
-		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, cache)
-		if err != nil {
-			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
-		}
-		if !ok {
-			return false, nil
-		}
-	}
-	return true, nil
+	return m.verifyProofSet(resolver, proofs, expectedPurpose, raw, cache)
 }
 
 // verifyOneProof verifies a single proof against the DID document resolved from
@@ -961,7 +948,6 @@ func (m *JSONMap) DocumentDigest() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	incCanonicalizeCount()
 	digest := sha256.Sum256(bodyCanonical)
 	return digest[:], nil
 }

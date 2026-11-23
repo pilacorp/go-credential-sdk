@@ -187,7 +187,7 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, err
 	}
 
-	docNoProof, err := cache.bodyWithoutProof(m)
+	sdDoc, err := cache.sdDocument(m)
 	if err != nil {
 		return false, err
 	}
@@ -197,7 +197,7 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, fmt.Errorf("failed to build proof configuration: %w", err)
 	}
 
-	if err := ecdsasd.VerifyProof(docNoProof, proofConfig, proof.ProofValue, pub); err != nil {
+	if err := sdDoc.VerifyProof(proofConfig, proof.ProofValue, pub); err != nil {
 		return false, err
 	}
 	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {

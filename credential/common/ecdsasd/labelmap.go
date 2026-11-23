@@ -188,10 +188,21 @@ type groupedCanon struct {
 	groups            map[string]*groupIndexes
 }
 
-// canonicalizeAndGroup produces the HMAC-relabeled canonical N-Quads for the
-// document and, for each named group of JSON pointers, the indexes of the
-// matching (selected) and non-matching N-Quads (ports canonicalizeAndGroup).
-func canonicalizeAndGroup(document map[string]interface{}, hmacKey []byte, groups map[string][]string) (*groupedCanon, error) {
+// docCanon holds the proof-independent canonical form of a document:
+// skolemized compact form, URDNA2015 canonical N-Quads, and the blank-node
+// label map (input label → canonical label, without "_:" prefixes).
+// Computing this is the expensive step; the per-proof HMAC relabeling and
+// group selection that follow are cheap.
+type docCanon struct {
+	compact   map[string]interface{} // skolemized compact form, for pointer selection
+	canonical []string               // URDNA2015 N-Quads (before HMAC relabeling)
+	idMap     map[string]string      // input label → canonical label, no "_:"
+}
+
+// newDocCanon expands, skolemizes, compacts, converts to N-Quads, and runs
+// URDNA2015 — the proof-independent part of canonicalizeAndGroup. The result
+// can be reused across proofs with different HMAC keys.
+func newDocCanon(document map[string]interface{}) (*docCanon, error) {
 	expanded, compact, err := skolemizeCompactJsonLd(document)
 	if err != nil {
 		return nil, err
@@ -200,19 +211,42 @@ func canonicalizeAndGroup(document map[string]interface{}, hmacKey []byte, group
 	if err != nil {
 		return nil, err
 	}
-	hmacNQuads, labelMap, err := labelReplacementCanonicalizeNQuads(deskolemized, hmacKey)
+	canonicalNQuads, rawIDMap, err := processor.CanonicalizeNQuadsWithIdMap(deskolemized)
 	if err != nil {
 		return nil, err
 	}
+	idMap := make(map[string]string, len(rawIDMap))
+	for k, v := range rawIDMap {
+		idMap[strings.TrimPrefix(k, "_:")] = strings.TrimPrefix(v, "_:")
+	}
+	return &docCanon{
+		compact:   compact,
+		canonical: canonicalNQuads,
+		idMap:     idMap,
+	}, nil
+}
+
+// group applies an HMAC key to the proof-independent canonical form, relabels
+// blank nodes, sorts, and groups by pointer sets — the per-proof part of
+// canonicalizeAndGroup.
+func (d *docCanon) group(hmacKey []byte, groups map[string][]string) (*groupedCanon, error) {
+	labelMap := createHmacLabelMap(d.idMap, hmacKey)
+
+	c14nToNew := make(map[string]string, len(labelMap))
+	for input, newLabel := range labelMap {
+		c14nToNew[d.idMap[input]] = newLabel
+	}
+	hmacNQuads := relabelBlankNodes(d.canonical, c14nToNew)
+	sort.Strings(hmacNQuads)
 
 	result := &groupedCanon{
 		hmacNQuads:        hmacNQuads,
 		labelMap:          labelMap,
-		skolemizedCompact: compact,
+		skolemizedCompact: d.compact,
 		groups:            make(map[string]*groupIndexes, len(groups)),
 	}
 	for name, pointers := range groups {
-		deskolemized, selNQuads, err := selectCanonicalNQuads(compact, pointers, labelMap)
+		deskolemized, selNQuads, err := selectCanonicalNQuads(d.compact, pointers, labelMap)
 		if err != nil {
 			return nil, err
 		}
@@ -231,6 +265,17 @@ func canonicalizeAndGroup(document map[string]interface{}, hmacKey []byte, group
 		result.groups[name] = gi
 	}
 	return result, nil
+}
+
+// canonicalizeAndGroup produces the HMAC-relabeled canonical N-Quads for the
+// document and, for each named group of JSON pointers, the indexes of the
+// matching (selected) and non-matching N-Quads (ports canonicalizeAndGroup).
+func canonicalizeAndGroup(document map[string]interface{}, hmacKey []byte, groups map[string][]string) (*groupedCanon, error) {
+	d, err := newDocCanon(document)
+	if err != nil {
+		return nil, err
+	}
+	return d.group(hmacKey, groups)
 }
 
 func randomHex(n int) (string, error) {

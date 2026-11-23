@@ -9,7 +9,10 @@ import (
 	commoncrypto "github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/sdverify"
 )
+
+func init() { sdverify.Register(verifyDerivedWithCanon) }
 
 // verifyBaseProof verifies an ecdsa-sd-2023 base proof on a full document,
 // against the issuer's public key (P-256 standard, or secp256k1 as a
@@ -65,21 +68,32 @@ func verifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 // revealed document, against the issuer's public key (P-256 standard, or
 // secp256k1 as a non-standard extension).
 func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string]interface{}, derivedProofValue string, issuerPub *ecdsa.PublicKey) error {
-	dp, err := parseDisclosureProofValue(derivedProofValue)
+	canonicalNQuads, _, err := processor.CanonicalizeWithIdMap(revealDoc)
 	if err != nil {
-		return err
+		return fmt.Errorf("ecdsasd: canonicalize reveal doc: %w", err)
+	}
+	return verifyDerivedWithCanon(canonicalNQuads, proofConfig, derivedProofValue, issuerPub)
+}
+
+// verifyDerivedWithCanon verifies a derived proof given pre-computed canonical
+// N-Quads. This is the per-proof work: parse the proof value, HMAC-relabel,
+// split, hash, and verify signatures. It performs the same header checks as
+// VerifyProof (rejecting base proofs).
+func verifyDerivedWithCanon(canonicalNQuads []string, proofConfig map[string]interface{}, proofValue string, issuerPub *ecdsa.PublicKey) error {
+	// Same header checks as VerifyProof.
+	if _, err := decodeProofValue(proofValue, baseProofHeader); err == nil {
+		return fmt.Errorf("ecdsasd: a base proof (header 0xd95d00) stays with the holder and cannot be verified; derive a proof from it and verify that (header 0xd95d01)")
+	}
+	dp, err := parseDisclosureProofValue(proofValue)
+	if err != nil {
+		return fmt.Errorf("ecdsasd: unrecognized proof value header")
 	}
 	ephPub, err := verificationmethod.ECPubFromMultikeyBytes(dp.PublicKey)
 	if err != nil {
 		return fmt.Errorf("ecdsasd: decode ephemeral key: %w", err)
 	}
 
-	// Canonicalize the revealed document and relabel its canonical blank-node
-	// labels to the HMAC labels from the proof, then sort.
-	canonicalNQuads, _, err := processor.CanonicalizeWithIdMap(revealDoc)
-	if err != nil {
-		return fmt.Errorf("ecdsasd: canonicalize reveal doc: %w", err)
-	}
+	// Relabel canonical blank-node labels to the HMAC labels from the proof.
 	relabeled := relabelBlankNodes(canonicalNQuads, dp.LabelMap)
 	sort.Strings(relabeled)
 
