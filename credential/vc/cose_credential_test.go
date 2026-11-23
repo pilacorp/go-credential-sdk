@@ -984,6 +984,119 @@ func TestCOSECredential_ParsedCredential_AddProof_Refused(t *testing.T) {
 	}
 }
 
+func TestCOSECredential_ExpiredExp_RejectedByVerify(t *testing.T) {
+	// exp/nbf are bound to the signature per vc-jose-cose, so Verify
+	// (which sets WithVerifyProof) must check them even without
+	// WithCheckExpiration.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-exp"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	// Build a COSE credential with exp in the past.
+	pastExp := time.Now().Add(-time.Hour).Unix()
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context":  []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":      []interface{}{"VerifiableCredential"},
+		"id":        "urn:uuid:cose-exp-001",
+		"issuer":    did,
+		"iss":       did,
+		"validFrom": time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+		"iat":       time.Now().Add(-2 * time.Hour).Unix(),
+		"exp":       pastExp,
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:subject",
+		},
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vc",
+		Kid:         did + "#key-1",
+		Typ:         "application/vc+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// Verify (WithVerifyProof) must reject on exp, even though
+	// WithCheckExpiration is not set.
+	err = parsed.Verify(vc.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("expected Verify to reject an expired credential (exp in the past)")
+	}
+	if !strings.Contains(err.Error(), "exp") {
+		t.Fatalf("expected exp error, got: %v", err)
+	}
+}
+
+func TestCOSECredential_ValidUntilPassed_CheckExpiration(t *testing.T) {
+	// validUntil is a VCDM 2.0 field checked under WithCheckExpiration,
+	// separate from exp.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen P-256: %v", err)
+	}
+
+	did := "did:example:cose-validuntil"
+	vm := mustP256VM(t, did, "key-1", &p256Key.PublicKey)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	// Build a COSE credential with validUntil in the past but no exp.
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
+		"@context":   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":       []interface{}{"VerifiableCredential"},
+		"id":         "urn:uuid:cose-validuntil-001",
+		"issuer":     did,
+		"iss":        did,
+		"validFrom":  time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+		"validUntil": time.Now().Add(-time.Hour).Format(time.RFC3339),
+		"iat":        time.Now().Add(-2 * time.Hour).Unix(),
+		"credentialSubject": map[string]interface{}{
+			"id": "did:example:subject",
+		},
+	})
+	prot := cose.Protected{
+		Alg:         cose.AlgES256,
+		ContentType: "application/vc",
+		Kid:         did + "#key-1",
+		Typ:         "application/vc+cose",
+	}
+	coseBytes, err := cose.Sign1(prot, payloadJSON, signP256COSE(p256Key))
+	if err != nil {
+		t.Fatalf("sign1: %v", err)
+	}
+
+	parsed, err := vc.ParseCOSECredential(coseBytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// Without WithCheckExpiration, Verify passes (validUntil is not exp).
+	err = parsed.Verify(vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("Verify without expiration check should pass: %v", err)
+	}
+
+	// With WithCheckExpiration, it must fail on validUntil.
+	err = parsed.Verify(vc.WithResolver(resolver), vc.WithCheckExpiration())
+	if err == nil {
+		t.Fatal("expected Verify+WithCheckExpiration to reject a credential past validUntil")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expected expiration error, got: %v", err)
+	}
+}
+
 func TestCOSECredential_RelativeKid_IssNotIssuer_Rejected(t *testing.T) {
 	// iss names another DID. Even when the issuer's document happens to list
 	// a method under that DID, a relative kid must not resolve against it.

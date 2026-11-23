@@ -15,6 +15,7 @@ import (
 	coseinternal "github.com/pilacorp/go-credential-sdk/credential/internal/cose"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
+	"golang.org/x/sync/errgroup"
 )
 
 // COSECredential implements W3C VC 2.0 Securing Verifiable Credentials using
@@ -260,15 +261,48 @@ func (c *COSECredential) ExtractField(path string) any {
 func (c *COSECredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
+	g := &errgroup.Group{}
+
+	if options.isValidateSchema {
+		g.Go(func() error {
+			if err := validateCredential(c.payloadData, options); err != nil {
+				return fmt.Errorf("validate credential: %w", err)
+			}
+			return nil
+		})
+	}
+
+	if options.isCheckRevocation {
+		g.Go(func() error {
+			if err := checkRevocation(c.payloadData); err != nil {
+				return fmt.Errorf("check revocation: %w", err)
+			}
+			return nil
+		})
+	}
+
 	if options.isVerifyProof {
-		if err := c.verifyCOSEProof(options); err != nil {
-			return err
-		}
+		g.Go(func() error {
+			if err := c.verifyCOSEProof(options); err != nil {
+				return fmt.Errorf("verify proof: %w", err)
+			}
+			// exp and nbf bound the signature, not the credential, so they
+			// belong to this check and not to the optional expiry check on
+			// validFrom/validUntil.
+			if err := jwtutil.CheckTimeClaims(map[string]interface{}(c.payloadData), options.leeway); err != nil {
+				return fmt.Errorf("verify proof: %w", err)
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("credential verification failed: %w", err)
 	}
 
 	if options.isCheckExpiration {
-		if err := jwtutil.CheckTimeClaims(map[string]interface{}(c.payloadData), options.leeway); err != nil {
-			return err
+		if err := checkExpiration(c.payloadData, options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 
