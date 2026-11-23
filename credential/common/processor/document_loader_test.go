@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/internal/safehttp"
 	"github.com/pilacorp/json-gold/ld"
 )
 
@@ -257,11 +258,11 @@ func TestIsPublicAddr(t *testing.T) {
 		"64:ff9b::a9fe:a9fe":     false, // NAT64 of 169.254.169.254
 		"2002:a9fe:a9fe::":       false, // 6to4 of 169.254.169.254
 	} {
-		if got := isPublicAddr(netip.MustParseAddr(addr)); got != want {
+		if got := safehttp.IsPublicAddr(netip.MustParseAddr(addr)); got != want {
 			t.Errorf("%s: got %v", addr, got)
 		}
 	}
-	if refuseNonPublic("tcp", ":443", nil) == nil {
+	if safehttp.RefuseNonPublic("tcp", ":443", nil) == nil {
 		t.Error("an address without a host must be refused")
 	}
 }
