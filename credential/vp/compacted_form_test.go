@@ -306,31 +306,9 @@ func vpRenameWithContextAlias(raw []byte, oldKey, newKey, iri, typ string) ([]by
 	return json.Marshal(doc)
 }
 
-// TestVP_ContextAliasAttack_ValidUntil checks that a VP whose validUntil is
-// renamed via a context alias is refused. On the json-gold fork, the proof
-// itself may refuse these edits, so the test only requires a non-nil error.
-func TestVP_ContextAliasAttack_ValidUntil(t *testing.T) {
-	raw, resolverOpts := signTestPresentation(t)
-
-	edited, err := vpRenameWithContextAlias(raw,
-		"validUntil", "validUntilX",
-		"https://www.w3.org/2018/credentials#validUntil",
-		"http://www.w3.org/2001/XMLSchema#dateTime")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	pres, err := vp.ParseJSONPresentation(edited)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	err = pres.Verify(resolverOpts[0])
-	if err == nil {
-		t.Fatal("Verify returned nil — validUntil hidden by context alias rename")
-	}
-	t.Logf("refused as expected: %v", err)
-}
+// validUntil is not a VerifiablePresentation property in the v2 context, so a
+// VP carrying it is refused before any rename matters; the alias rule for VP
+// keys is pinned on holder here and in compacted_alias_internal_test.go.
 
 // TestVP_ContextAliasAttack_Holder checks that a VP whose holder is renamed
 // via a context alias is refused. On the json-gold fork, the proof itself
