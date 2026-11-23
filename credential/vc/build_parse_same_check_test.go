@@ -110,6 +110,9 @@ func TestNewJOSECredential_HashAlgorithmAloneDoesNotExemptSubject(t *testing.T) 
 	if err == nil {
 		t.Fatal("NewJOSECredential built a vc+jwt whose credentialSubject carries SD-JWT digests")
 	}
+	if !strings.Contains(err.Error(), "does not declare SD-JWT") {
+		t.Fatalf("error = %q, want it to say the token does not declare SD-JWT", err)
+	}
 }
 
 // The converse, which is the rule itself: for every value, with and without

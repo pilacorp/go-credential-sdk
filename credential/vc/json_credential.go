@@ -201,22 +201,6 @@ func requireDisclosableAtTopLevel(m map[string]interface{}, subjectMayDisclose b
 	return nil
 }
 
-// decodedJSONView returns m as the parser will see it: marshalled to JSON and
-// decoded into a fresh map. It is for checking only; signing m itself keeps
-// the bytes, where re-encoding the decoded map would turn large integers into
-// float64.
-func decodedJSONView(m map[string]interface{}) (map[string]interface{}, error) {
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
-	var decoded map[string]interface{}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, fmt.Errorf("failed to decode payload: %w", err)
-	}
-	return decoded, nil
-}
-
 // credentialSubjectProperty is the one subtree selective disclosure belongs to.
 const credentialSubjectProperty = "credentialSubject"
 
