@@ -1,11 +1,15 @@
 package jwt
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 func encodePayload(t *testing.T, payload map[string]interface{}) string {
@@ -458,5 +462,37 @@ func TestJWTIssuedAt(t *testing.T) {
 	tm3, err := jwtIssuedAt(encodePayload(t, p3))
 	if err != nil || tm3 != nil {
 		t.Fatalf("absent failed: got %v, err %v", tm3, err)
+	}
+}
+
+// countingResolver fails every lookup and counts them, so a test can show a
+// refusal happened before any DID was resolved.
+type countingResolver struct{ calls int }
+
+func (r *countingResolver) ResolveDocument(context.Context, string) (*verificationmethod.DIDDocument, error) {
+	r.calls++
+	return nil, fmt.Errorf("resolver must not be reached")
+}
+
+// An alg the SDK cannot verify with is refused from the header, before any
+// DID is resolved, with an error naming the algorithm (#209 review).
+func TestVerifyJWT_UnsupportedAlgRefusedBeforeResolving(t *testing.T) {
+	payload := encodePayload(t, map[string]interface{}{
+		"iss": "did:example:issuer", "vc": map[string]interface{}{"issuer": "did:example:issuer"},
+	})
+	for _, alg := range []string{"none", "HS256", "RS256"} {
+		t.Run(alg, func(t *testing.T) {
+			header := base64.RawURLEncoding.EncodeToString([]byte(
+				`{"alg":"` + alg + `","typ":"JWT","kid":"did:example:issuer#key-1"}`))
+			token := header + "." + payload + "." + base64.RawURLEncoding.EncodeToString([]byte("sig"))
+			r := &countingResolver{}
+			err := NewJWTVerifier(r).VerifyJWT(token)
+			if err == nil || !strings.Contains(err.Error(), "unsupported algorithm") {
+				t.Fatalf("err = %v, want unsupported algorithm", err)
+			}
+			if r.calls != 0 {
+				t.Fatalf("resolver called %d times before refusing alg %s", r.calls, alg)
+			}
+		})
 	}
 }

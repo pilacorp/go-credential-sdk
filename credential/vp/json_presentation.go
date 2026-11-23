@@ -24,10 +24,36 @@ func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JS
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}
+	if err := refuseNonObjectCredentials(m); err != nil {
+		return nil, err
+	}
 
 	e := &JSONPresentation{presentationData: m}
 
 	return e, e.executeOptions(opts...)
+}
+
+// refuseNonObjectCredentials enforces VCDM 2.0 §4.13: verifiableCredential
+// values "MUST NOT be non-object values such as numbers, strings, or URLs". A
+// JWT, vc+jwt or SD-JWT credential serializes to a string, which JSON-LD cannot
+// turn into statements, so the presentation's proof could not cover it.
+func refuseNonObjectCredentials(m PresentationData) error {
+	value, present := m["verifiableCredential"]
+	if !present || value == nil {
+		return nil
+	}
+	list, isList := value.([]interface{})
+	if !isList {
+		list = []interface{}{value}
+	}
+	for i, entry := range list {
+		if _, isObject := entry.(map[string]interface{}); !isObject {
+			return fmt.Errorf("%w: credential at index %d is a %T; "+
+				"present JWT credentials with NewJWTPresentation or NewJOSEPresentation",
+				ErrCredentialNotObject, i, entry)
+		}
+	}
+	return nil
 }
 
 func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (*JSONPresentation, error) {
@@ -77,6 +103,9 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 	if err := refuseReplaceOnJSONLD(getOptions(opts...)); err != nil {
+		return err
+	}
+	if err := refuseNonObjectCredentials(e.presentationData); err != nil {
 		return err
 	}
 
@@ -136,6 +165,9 @@ func (e *JSONPresentation) resolveSigningVMEntry(opts ...PresentationOpt) (*veri
 // body. For an ecdsa-rdfc-2019 proof, pass it to CreateProofSigning to obtain
 // the digest the external signer signs.
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
+	if err := refuseNonObjectCredentials(e.presentationData); err != nil {
+		return nil, err
+	}
 	return (*jsonmap.JSONMap)(&e.presentationData).DocumentDigest()
 }
 
@@ -173,6 +205,9 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 		return fmt.Errorf("proof cannot be nil")
 	}
 	if err := refuseReplaceOnJSONLD(getOptions(opts...)); err != nil {
+		return err
+	}
+	if err := refuseNonObjectCredentials(e.presentationData); err != nil {
 		return err
 	}
 
