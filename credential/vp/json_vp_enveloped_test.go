@@ -158,6 +158,53 @@ func TestJSONPresentation_EnvelopeNeedsV2Context(t *testing.T) {
 	}
 }
 
+// The envelope's @context must include the v2 context, not start with it.
+func TestJSONPresentation_EnvelopeContextIncludesV2(t *testing.T) {
+	resolver, prov := joseVPFixture(t, envelopeDID)
+	token, err := signedJOSECredential(t, resolver, prov, "urn:uuid:enveloped-ctx-order").Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	envelope := map[string]interface{}{
+		"@context": []interface{}{"https://example.org/ctx", "https://www.w3.org/ns/credentials/v2"},
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "data:application/vc+jwt," + token.(string),
+	}
+	doc := map[string]interface{}{
+		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":                 []interface{}{"VerifiablePresentation"},
+		"holder":               envelopeDID,
+		"verifiableCredential": []interface{}{envelope},
+	}
+	_, err = vp.ParseJSONPresentation(mustMarshal(t, doc), vp.WithResolver(resolver),
+		vp.WithVCValidation(vc.WithResolver(resolver)))
+	if err != nil {
+		t.Fatalf("a valid envelope @context was refused: %v", err)
+	}
+}
+
+// An empty token in the data: URL is a clear error, not a confusing parse failure.
+func TestJSONPresentation_EnvelopeEmptyToken(t *testing.T) {
+	resolver, _ := joseVPFixture(t, envelopeDID)
+	envelope := map[string]interface{}{
+		"@context": "https://www.w3.org/ns/credentials/v2",
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "data:application/vc+jwt,",
+	}
+	doc := map[string]interface{}{
+		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":                 []interface{}{"VerifiablePresentation"},
+		"holder":               envelopeDID,
+		"verifiableCredential": []interface{}{envelope},
+	}
+	_, err := vp.ParseJSONPresentation(mustMarshal(t, doc), vp.WithResolver(resolver),
+		vp.WithVCValidation(vc.WithResolver(resolver)))
+	if err == nil || !strings.Contains(err.Error(), "no token") {
+		t.Fatalf("err = %v, want one mentioning empty/no token", err)
+	}
+}
+
 // VCDM 2.0 §4.13 MUSTs, checked when the enclosed credentials are verified.
 func TestJSONPresentation_EnvelopeMUSTs(t *testing.T) {
 	resolver, prov := joseVPFixture(t, envelopeDID)

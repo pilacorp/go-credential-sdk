@@ -28,7 +28,7 @@ func TestNewJSONPresentationRefusesEnvelopingCredential(t *testing.T) {
 	if !errors.Is(err, vp.ErrCredentialNotObject) {
 		t.Fatalf("err = %v, want ErrCredentialNotObject", err)
 	}
-	if !strings.Contains(err.Error(), "credential at index 0") || !strings.Contains(err.Error(), "VC 1.1 JWT") ||
+	if !strings.Contains(err.Error(), "credential at index 0") || !strings.Contains(err.Error(), "NewJWTCredential") ||
 		!strings.Contains(err.Error(), "NewJWTPresentation") {
 		t.Fatalf("err = %v, want the index and the presentation type to use", err)
 	}

@@ -117,8 +117,8 @@ JSON presentations under the `credentials/v2` context change in both directions.
 presentation with an embedded credential now signs that credential as its own named
 graph, so one signed by an earlier release does not verify here, and one signed here does
 not verify on an earlier release: re-sign stored presentations, and move the holders and
-verifiers of one flow in the same release. A JSON presentation that holds a JWT credential
-no longer verifies, and building or signing one is refused with `vp.ErrCredentialNotObject`.
+verifiers of one flow in the same release. A credential that cannot go in a JSON presentation
+(a VC 1.1 JWT, or a vc+jwt/vc+sd-jwt under a v1 context) is refused with `vp.ErrCredentialNotObject`.
 
 ---
 
@@ -1173,9 +1173,9 @@ To create a Verifiable Presentation, you need:
 2. Create or obtain Verifiable Credentials to include
 3. Define presentation contents using `vp.PresentationContents`
 4. Create the presentation using `vp.NewJSONPresentation()` or `vp.NewJWTPresentation()`.
-   A JSON presentation embeds JSON credentials only (VCDM 2.0 §4.13), so
-   `NewJSONPresentation` and signing refuse a JWT credential with `vp.ErrCredentialNotObject`.
-   Present JWT credentials with `vp.NewJWTPresentation()` or `vp.NewJOSEPresentation()`.
+   A credential that cannot go in a JSON presentation (a VC 1.1 JWT, or a
+   vc+jwt/vc+sd-jwt under a v1 context) is refused with `vp.ErrCredentialNotObject`.
+   Present VC 1.1 JWT credentials with `vp.NewJWTPresentation()`.
 5. Add a cryptographic proof using `AddProof()` with a signer provider
 6. Serialize and verify the presentation
 

@@ -2,7 +2,6 @@ package vp
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -44,32 +43,20 @@ func checkEnvelopedCredential(i int, entry map[string]interface{}) error {
 	if !vcdm.HasType(entry["type"], vc.TypeEnvelopedVC) {
 		return fmt.Errorf("credential at index %d: type must be %s", i, vc.TypeEnvelopedVC)
 	}
-	if first := vcdm.FirstContext(entry["@context"]); first != vcdm.ContextV2 {
-		return fmt.Errorf("credential at index %d: enveloped credential @context must start with %s, got %q",
-			i, vcdm.ContextV2, first)
+	if !vcdm.HasType(entry["@context"], vcdm.ContextV2) {
+		return fmt.Errorf("credential at index %d: enveloped credential @context must include %s",
+			i, vcdm.ContextV2)
 	}
 	id, _ := entry["id"].(string)
-	if !isEnvelopedDataURL(id) {
-		return fmt.Errorf("credential at index %d: enveloped credential id must be a data: URL "+
-			"with media type application/vc+jwt or application/vc+sd-jwt, got %q", i, id)
+	_, token, ok := vcdm.CutEnvelopedDataURL(id)
+	if !ok {
+		return fmt.Errorf("credential at index %d: enveloped credential id must be a data: URL, "+
+			"data:application/vc+jwt,<token> or data:application/vc+sd-jwt,<token>", i)
+	}
+	if token == "" {
+		return fmt.Errorf("credential at index %d: enveloped credential id is a data: URL with no token", i)
 	}
 	return nil
-}
-
-// isEnvelopedDataURL reports whether id is a valid data: URL for an enveloped
-// credential: data:application/vc+jwt,<token> or data:application/vc+sd-jwt,<token>.
-// The scheme (RFC 3986 section 3.1) and the media type (RFC 2397, RFC 2045
-// section 5.1) are case-insensitive; the token after the comma is not.
-func isEnvelopedDataURL(id string) bool {
-	for _, prefix := range []string{
-		"data:application/" + vc.TypeVCJWT + ",",
-		"data:application/" + vc.TypeVCSDJWT + ",",
-	} {
-		if len(id) > len(prefix) && strings.EqualFold(id[:len(prefix)], prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // envelopeForJSONPresentation replaces, in a JSON presentation's serialized
@@ -88,9 +75,9 @@ func envelopeForJSONPresentation(m PresentationData, creds []vc.Credential) erro
 			// @context JSON-LD leaves it undefined, so the proof would not
 			// cover the envelope.
 			if first := vcdm.FirstContext(m["@context"]); first != vcdm.ContextV2 {
-				return fmt.Errorf("%w: credential at index %d is enveloped as an %s, a VCDM 2.0 term; "+
-					"the presentation's @context must start with %s, got %q",
-					ErrCredentialNotObject, i, vc.TypeEnvelopedVC, vcdm.ContextV2, first)
+				return fmt.Errorf("%w: credential at index %d is a vc+jwt or vc+sd-jwt credential, "+
+					"which needs the presentation's @context to start with %s",
+					ErrCredentialNotObject, i, vcdm.ContextV2)
 			}
 			envelope, err := envelopeJOSECredential(i, c)
 			if err != nil {
@@ -98,10 +85,8 @@ func envelopeForJSONPresentation(m PresentationData, creds []vc.Credential) erro
 			}
 			list[i] = envelope
 		case *vc.JWTCredential:
-			// vc.ParseCredential refuses a VC 1.1 JWT inside an envelope: the
-			// envelope's media type names vc+jwt, which a VC 1.1 JWT is not.
-			return fmt.Errorf("%w: credential at index %d is a VC 1.1 JWT, which an %s cannot hold; "+
-				"present it with NewJWTPresentation", ErrCredentialNotObject, i, vc.TypeEnvelopedVC)
+			return fmt.Errorf("%w: credential at index %d was built with NewJWTCredential; "+
+				"present it with NewJWTPresentation", ErrCredentialNotObject, i)
 		}
 	}
 	return nil
