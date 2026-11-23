@@ -1675,6 +1675,150 @@ func TestBaseline_ManyValues_WithoutLimit(t *testing.T) {
 	t.Logf("ExpandJSONLD with %d values took %v (no limit)", n, elapsed)
 }
 
+// ===== Comment #4661874576: nested context overwrites termDefs, breaking alias chain =====
+
+func TestBypass_NestedContextOverwritesAlias(t *testing.T) {
+	// Top-level: "kieu": "@type", "loai": "kieu" (so loai → kieu → @type).
+	// Child node has "@context": {"loai": "http://ex.org/loai"} which, with
+	// a single-string termDefs map, would overwrite the top-level definition
+	// and break the chain. The top-level "loai" must still be recognized as
+	// a type alias.
+	subjects := make([]interface{}, 20)
+	for i := range subjects {
+		subjects[i] = map[string]interface{}{
+			"loai": "ScopedType",
+			"name": fmt.Sprintf("item%d", i),
+		}
+	}
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			map[string]interface{}{
+				"kieu": "@type",
+				"loai": "kieu",
+				"ScopedType": map[string]interface{}{
+					"@id":      "https://example.org/ScopedType",
+					"@context": map[string]interface{}{"name": "https://example.org/name"},
+				},
+			},
+		},
+		"type":   "VerifiableCredential",
+		"issuer": "did:example:issuer",
+		"credentialSubject": map[string]interface{}{
+			// This inline context redefines "loai" to a plain IRI.
+			"@context": map[string]interface{}{
+				"loai": "http://ex.org/loai",
+			},
+			"items": subjects,
+		},
+	}
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 5})
+	if !errors.Is(err, ErrTooManyScopedContextUses) {
+		t.Fatalf("nested context overwriting alias should not break detection, got %v", err)
+	}
+}
+
+// ===== Comment #4661874728: 16,000-term chain resolves fast (linear) =====
+
+func TestResolveTypeAliasChains_16000_Linear(t *testing.T) {
+	// Build a 16,000-term chain: t0 → @type, t1 → t0, t2 → t1, ..., t15999 → t15998.
+	// The old fixed-point loop is O(n²) and takes ~3.5s. The new BFS is O(n).
+	const n = 16000
+	ctx := make(map[string]interface{}, n+1)
+	ctx["t0"] = "@type"
+	for i := 1; i < n; i++ {
+		ctx[fmt.Sprintf("t%d", i)] = fmt.Sprintf("t%d", i-1)
+	}
+	// Also add a scoped term so the check actually exercises the alias chain.
+	ctx["ScopedType"] = map[string]interface{}{
+		"@id":      "https://example.org/ScopedType",
+		"@context": map[string]interface{}{"inner": "https://example.org/inner"},
+	}
+
+	// Build a document that uses the last alias in the chain many times.
+	lastAlias := fmt.Sprintf("t%d", n-1)
+	subjects := make([]interface{}, 20)
+	for i := range subjects {
+		subjects[i] = map[string]interface{}{
+			lastAlias: "ScopedType",
+			"name":    fmt.Sprintf("item%d", i),
+		}
+	}
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			ctx,
+		},
+		"type":              "VerifiableCredential",
+		"issuer":            "did:example:issuer",
+		"credentialSubject": subjects,
+	}
+
+	start := time.Now()
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 5})
+	elapsed := time.Since(start)
+
+	// The last alias in the chain must be recognized as a type alias.
+	if !errors.Is(err, ErrTooManyScopedContextUses) {
+		t.Fatalf("16000-term chain: last alias should be recognized as type alias, got %v", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("16000-term chain took %v, expected < 500ms", elapsed)
+	}
+	t.Logf("16000-term alias chain resolved in %v", elapsed)
+}
+
+// ===== Comment #4661874872: load error wrapped under ErrUnresolvedContext =====
+
+func TestUnresolvedContext_WrapsLoadError_FileScheme(t *testing.T) {
+	// A file: URL context should give errors.Is(err, ErrUnresolvedContext)
+	// AND errors.Is(err, ErrContextScheme).
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"file:///etc/passwd",
+		},
+		"type":   "VerifiableCredential",
+		"issuer": "did:example:issuer",
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"name": "test",
+		},
+	}
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 100})
+	if !errors.Is(err, ErrUnresolvedContext) {
+		t.Fatalf("expected ErrUnresolvedContext, got %v", err)
+	}
+	if !errors.Is(err, ErrContextScheme) {
+		t.Fatalf("expected ErrContextScheme to be wrapped, got %v", err)
+	}
+}
+
+func TestUnresolvedContext_WrapsLoadError_PrivateAddress(t *testing.T) {
+	// A loopback address should give ErrUnresolvedContext wrapping ErrContextAddress.
+	srv := contextServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gone", http.StatusGone)
+	})
+	useTestClient(t, srv)
+
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			srv.URL, // loopback
+		},
+		"type":   "VerifiableCredential",
+		"issuer": "did:example:issuer",
+		"credentialSubject": map[string]interface{}{
+			"id":   "did:example:subject",
+			"name": "test",
+		},
+	}
+	err := CheckJSONLDLimits(doc, JSONLDLimits{MaxScopedContextUses: 100})
+	if !errors.Is(err, ErrUnresolvedContext) {
+		t.Fatalf("expected ErrUnresolvedContext, got %v", err)
+	}
+}
+
 func TestBaseline_ScopedContextUses_WithoutLimit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow baseline in -short mode")

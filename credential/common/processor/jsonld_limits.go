@@ -91,8 +91,8 @@ func CheckJSONLDLimits(doc map[string]interface{}, limits JSONLDLimits) error {
 
 // ===== (a) total value count =====
 
-// checkTotalValues counts all JSON values in the document body (excluding
-// @context subtrees) and returns ErrTooManyValues if the count exceeds limit.
+// checkTotalValues counts all JSON values in the document, inline @context
+// subtrees included, and returns ErrTooManyValues if the count exceeds limit.
 func checkTotalValues(doc map[string]interface{}, limit int) error {
 	count := countValues(doc)
 	if count > limit {
@@ -136,13 +136,13 @@ func collectScopedTerms(ctx interface{}) (map[string]bool, bool) {
 	c := &scopedTermCollector{
 		result:      make(map[string]bool),
 		typeAliases: make(map[string]bool),
-		termDefs:    make(map[string]string),
+		termDefs:    make(map[string][]string),
 		seen:        make(map[string]bool),
 		budget:      newContextBudget(),
 	}
 	c.walk(ctx)
 	c.resolveTypeAliasChains()
-	return c.result, c.hasUnresolved
+	return c.result, c.loadErr != nil
 }
 
 // checkScopedContextUses identifies terms with scoped @context from every
@@ -160,7 +160,7 @@ func checkScopedContextUses(doc map[string]interface{}, limit int) error {
 	c := &scopedTermCollector{
 		result:      make(map[string]bool),
 		typeAliases: make(map[string]bool),
-		termDefs:    make(map[string]string),
+		termDefs:    make(map[string][]string),
 		seen:        make(map[string]bool),
 		budget:      newContextBudget(),
 	}
@@ -171,8 +171,8 @@ func checkScopedContextUses(doc map[string]interface{}, limit int) error {
 	})
 	c.resolveTypeAliasChains()
 
-	if c.hasUnresolved {
-		return fmt.Errorf("%w", ErrUnresolvedContext)
+	if c.loadErr != nil {
+		return fmt.Errorf("%w: %w", ErrUnresolvedContext, c.loadErr)
 	}
 
 	if len(c.result) == 0 {
@@ -209,12 +209,12 @@ func walkDocContexts(v interface{}, fn func(ctx interface{})) {
 }
 
 type scopedTermCollector struct {
-	result        map[string]bool   // terms that carry a scoped @context
-	typeAliases   map[string]bool   // terms that expand to @type (resolved)
-	termDefs      map[string]string // raw term → target mappings for chain resolution
-	seen          map[string]bool   // context URLs already visited
-	hasUnresolved bool
-	budget        *contextBudget
+	result      map[string]bool     // terms that carry a scoped @context
+	typeAliases map[string]bool     // terms that expand to @type (resolved)
+	termDefs    map[string][]string // every target a term maps to, in any context of the document
+	seen        map[string]bool     // context URLs already visited
+	loadErr     error               // first context that could not be loaded
+	budget      *contextBudget
 }
 
 func (c *scopedTermCollector) walk(ctx interface{}) {
@@ -224,9 +224,11 @@ func (c *scopedTermCollector) walk(ctx interface{}) {
 			return
 		}
 		c.seen[v] = true
-		parsed := c.loadContext(v)
-		if parsed == nil {
-			c.hasUnresolved = true
+		parsed, err := c.loadContext(v)
+		if err != nil {
+			if c.loadErr == nil {
+				c.loadErr = err
+			}
 			return
 		}
 		c.walk(parsed)
@@ -248,14 +250,14 @@ func (c *scopedTermCollector) walk(ctx interface{}) {
 			switch d := def.(type) {
 			case string:
 				// Record the mapping for chain resolution.
-				c.termDefs[key] = d
+				c.termDefs[key] = append(c.termDefs[key], d)
 				if d == "@type" {
 					c.typeAliases[key] = true
 				}
 			case map[string]interface{}:
 				if id, ok := d["@id"]; ok {
 					if idStr, ok := id.(string); ok {
-						c.termDefs[key] = idStr
+						c.termDefs[key] = append(c.termDefs[key], idStr)
 						if idStr == "@type" {
 							c.typeAliases[key] = true
 						}
@@ -270,21 +272,29 @@ func (c *scopedTermCollector) walk(ctx interface{}) {
 	}
 }
 
-// resolveTypeAliasChains resolves indirect type aliases to a fixed point.
+// resolveTypeAliasChains walks back from @type and known aliases over reversed
+// edges to discover all indirect type aliases in one linear pass.
 // If "loai" → "kieu" and "kieu" → "@type", then "loai" is also a type alias.
 // json-gold resolves such chains through its IRI expansion of term values
 // (JSON-LD 1.1 § 4.2.2), so the pre-scan must do the same.
 func (c *scopedTermCollector) resolveTypeAliasChains() {
-	changed := true
-	for changed {
-		changed = false
-		for term, target := range c.termDefs {
-			if c.typeAliases[term] {
-				continue
-			}
-			if c.typeAliases[target] {
+	usedBy := make(map[string][]string, len(c.termDefs))
+	for term, targets := range c.termDefs {
+		for _, target := range targets {
+			usedBy[target] = append(usedBy[target], term)
+		}
+	}
+	queue := []string{"@type"}
+	for alias := range c.typeAliases {
+		queue = append(queue, alias)
+	}
+	for len(queue) > 0 {
+		target := queue[0]
+		queue = queue[1:]
+		for _, term := range usedBy[target] {
+			if !c.typeAliases[term] {
 				c.typeAliases[term] = true
-				changed = true
+				queue = append(queue, term)
 			}
 		}
 	}
@@ -293,24 +303,25 @@ func (c *scopedTermCollector) resolveTypeAliasChains() {
 // loadContext loads a context URL through the contextBudget, which enforces
 // the same per-operation limits as the verification loader (30 s deadline,
 // 4 MB bytes, 1024 loads). Bundled contexts are served from embedded bytes.
-func (c *scopedTermCollector) loadContext(url string) interface{} {
+func (c *scopedTermCollector) loadContext(url string) (interface{}, error) {
 	// Bundled context: parse from embedded bytes.
 	if data, ok := wellKnownContexts[url]; ok {
 		var doc map[string]interface{}
 		if err := json.Unmarshal(data, &doc); err != nil {
-			return nil
+			return nil, err
 		}
-		return doc["@context"]
+		return doc["@context"], nil
 	}
 	// Remote context: use the budgeted loader.
 	doc, err := c.budget.LoadDocument(url)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	if m, ok := doc.Document.(map[string]interface{}); ok {
-		return m["@context"]
+	m, ok := doc.Document.(map[string]interface{})
+	if !ok || m["@context"] == nil {
+		return nil, errors.New("loaded context document has no @context")
 	}
-	return nil
+	return m["@context"], nil
 }
 
 // countScopedUses counts uses of scoped terms as property names and as type
