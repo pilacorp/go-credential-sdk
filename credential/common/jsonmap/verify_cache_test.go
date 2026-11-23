@@ -5,21 +5,18 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
-// ===== Test seam: count canonicalization calls =====
-
-// resetCanonicalizeCount zeroes canonicalizeCount and returns the value it had.
-func resetCanonicalizeCount() int64 {
-	return atomic.SwapInt64(&canonicalizeCount, 0)
-}
+// ===== Test helpers =====
 
 // p256Signer generates a random P-256 key pair and returns a signer + public key.
 func p256Signer(t testing.TB) (signer.SignerProvider, *ecdsa.PublicKey) {
@@ -76,55 +73,197 @@ func signedCredential(t testing.TB, n int) (JSONMap, verificationmethod.Resolver
 	return m, resolver
 }
 
+// verifyWithCache runs verifyProofSet with its own cache and returns both the
+// result and the cache's miss count.
+func verifyWithCache(t testing.TB, m *JSONMap, resolver verificationmethod.ResolverProvider) (ok bool, misses int) {
+	t.Helper()
+	proofs, err := m.Proofs()
+	if err != nil {
+		t.Fatalf("Proofs: %v", err)
+	}
+	raw := m.rawProofList()
+	cache := &digestCache{}
+	ok, err = m.verifyProofSet(resolver, proofs, "", raw, cache)
+	if err != nil {
+		t.Fatalf("verifyProofSet: %v", err)
+	}
+	return ok, cache.misses
+}
+
+// signedSDCredential returns a credential with n ecdsa-sd-2023 derived proofs,
+// each signed by a distinct P-256 key on the same DID. Each base proof uses a
+// different random HMAC key (different issuance), producing distinct proof
+// values. The resolver resolves the issuer DID with all VMs.
+func signedSDCredential(t testing.TB, n int) (JSONMap, verificationmethod.ResolverProvider) {
+	t.Helper()
+	const did = "did:example:sd-issuer"
+
+	type keyEntry struct {
+		sp  signer.SignerProvider
+		pub *ecdsa.PublicKey
+		vm  verificationmethod.VerificationMethodEntry
+	}
+	keys := make([]keyEntry, n)
+	for i := range keys {
+		sp, pub := p256Signer(t)
+		frag := fmt.Sprintf("key-%d", i+1)
+		vm, err := verificationmethod.NewP256VM(did, frag, pub)
+		if err != nil {
+			t.Fatalf("vm %d: %v", i, err)
+		}
+		keys[i] = keyEntry{sp, pub, vm}
+	}
+
+	// Build a base credential body.
+	body := testCredential()
+	body["issuer"] = did
+
+	// Issue n separate base proofs and derive from each.
+	derivedProofs := make([]dto.Proof, n)
+	for i, k := range keys {
+		// Deep-copy the body for each base proof (AddECDSASDBaseProof writes proof).
+		bodyJSON, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		var base JSONMap
+		if err := json.Unmarshal(bodyJSON, &base); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+
+		if err := base.AddECDSASDBaseProof(k.sp, k.vm.ID, "assertionMethod",
+			[]string{"/issuer", "/issuanceDate"}, WithVMPublicKey(k.pub)); err != nil {
+			t.Fatalf("add sd base proof %d: %v", i, err)
+		}
+
+		derived, err := base.DeriveECDSASD([]string{"/credentialSubject"})
+		if err != nil {
+			t.Fatalf("derive sd proof %d: %v", i, err)
+		}
+
+		proofs, err := derived.Proofs()
+		if err != nil || len(proofs) == 0 {
+			t.Fatalf("derived proofs %d: %v", i, err)
+		}
+		derivedProofs[i] = proofs[0]
+	}
+
+	// Build the final credential with all derived proofs on the same body.
+	// Use the body from the first derivation (all derivations reveal the same
+	// claims, so the body is structurally identical).
+	bodyJSON, _ := json.Marshal(body)
+	var result JSONMap
+	_ = json.Unmarshal(bodyJSON, &result)
+	result["issuer"] = did
+
+	// Derive the first proof's document to get the revealed body.
+	{
+		var base JSONMap
+		_ = json.Unmarshal(bodyJSON, &base)
+		sp0, pub0 := keys[0].sp, keys[0].pub
+		if err := base.AddECDSASDBaseProof(sp0, keys[0].vm.ID, "assertionMethod",
+			[]string{"/issuer", "/issuanceDate"}, WithVMPublicKey(pub0)); err != nil {
+			t.Fatalf("re-sign base: %v", err)
+		}
+		derived, err := base.DeriveECDSASD([]string{"/credentialSubject"})
+		if err != nil {
+			t.Fatalf("re-derive: %v", err)
+		}
+		// Use the derived body (without proof) as the final document body.
+		for k, v := range derived {
+			if k != proofField {
+				result[k] = v
+			}
+		}
+		// Re-derive all proofs from their respective base proofs using the
+		// same body, since the revealed document must be identical.
+		derivedProofs = derivedProofs[:0]
+		for i, k := range keys {
+			var b JSONMap
+			_ = json.Unmarshal(bodyJSON, &b)
+			if err := b.AddECDSASDBaseProof(k.sp, k.vm.ID, "assertionMethod",
+				[]string{"/issuer", "/issuanceDate"}, WithVMPublicKey(k.pub)); err != nil {
+				t.Fatalf("sign base %d: %v", i, err)
+			}
+			d, err := b.DeriveECDSASD([]string{"/credentialSubject"})
+			if err != nil {
+				t.Fatalf("derive %d: %v", i, err)
+			}
+			pp, _ := d.Proofs()
+			derivedProofs = append(derivedProofs, pp[0])
+		}
+	}
+
+	// Set the proof array.
+	proofArr := make([]interface{}, n)
+	for i, p := range derivedProofs {
+		proofArr[i] = p.ToMap()
+	}
+	result[proofField] = proofArr
+
+	vms := make([]verificationmethod.VerificationMethodEntry, len(keys))
+	for i := range keys {
+		vms[i] = keys[i].vm
+	}
+	resolver := verificationmethod.NewStaticResolver(
+		verificationmethod.NewDIDDocument(did, vms...),
+	)
+	return result, resolver
+}
+
 // ===== Canonicalization count tests =====
 //
-// These tests assert the package-global canonicalizeCount. They must not use
-// t.Parallel, and no other test that canonicalizes may run concurrently —
-// the counter is shared across the whole package.
+// These tests use verifyProofSet with their own digestCache, so they can
+// run in parallel and inspect cache.misses without a shared counter.
 
 func TestVerifyProof_OneProof_CanonicalizesOnce(t *testing.T) {
+	t.Parallel()
 	m, resolver := signedCredential(t, 1)
-	resetCanonicalizeCount()
 
-	ok, err := m.VerifyProof(resolver, "")
-	if err != nil {
-		t.Fatalf("VerifyProof: %v", err)
-	}
+	ok, misses := verifyWithCache(t, &m, resolver)
 	if !ok {
 		t.Fatal("VerifyProof = false, want true")
 	}
-
-	// 1 proof: document body canonicalized once.
-	count := atomic.LoadInt64(&canonicalizeCount)
-	if count != 1 {
-		t.Fatalf("DocumentDigest call count = %d, want 1 (one for one proof)", count)
+	if misses != 1 {
+		t.Fatalf("misses = %d, want 1 (one for one rdfc proof)", misses)
 	}
 }
 
 func TestVerifyProof_FiveProofs_CanonicalizesOnce(t *testing.T) {
+	t.Parallel()
 	m, resolver := signedCredential(t, 5)
-	resetCanonicalizeCount()
 
-	ok, err := m.VerifyProof(resolver, "")
-	if err != nil {
-		t.Fatalf("VerifyProof: %v", err)
-	}
+	ok, misses := verifyWithCache(t, &m, resolver)
 	if !ok {
 		t.Fatal("VerifyProof = false, want true")
 	}
+	// 5 ecdsa-rdfc-2019 proofs sharing the same body form: exactly 1 miss.
+	if misses != 1 {
+		t.Fatalf("misses = %d, want 1 (body canonicalized once for 5 rdfc proofs)", misses)
+	}
+}
 
-	// 5 proofs sharing the same body form: exactly 1 DocumentDigest call.
-	count := atomic.LoadInt64(&canonicalizeCount)
-	if count != 1 {
-		t.Fatalf("DocumentDigest call count = %d, want 1 (body canonicalized once for 5 proofs)", count)
+func TestVerifyProof_SDProofs_CanonicalizesOnce(t *testing.T) {
+	t.Parallel()
+	m, resolver := signedSDCredential(t, 3)
+
+	ok, misses := verifyWithCache(t, &m, resolver)
+	if !ok {
+		t.Fatal("VerifyProof = false, want true for 3 sd proofs")
+	}
+	// 3 ecdsa-sd-2023 proofs on the same body: exactly 1 sd canonicalization.
+	if misses != 1 {
+		t.Fatalf("misses = %d, want 1 (sd body canonicalized once for 3 proofs)", misses)
 	}
 }
 
 // ===== Correctness tests =====
 
 func TestVerifyProof_MultipleValidProofs(t *testing.T) {
+	t.Parallel()
 	for _, n := range []int{2, 3, 5} {
 		t.Run(fmt.Sprintf("proofs=%d", n), func(t *testing.T) {
+			t.Parallel()
 			m, resolver := signedCredential(t, n)
 			ok, err := m.VerifyProof(resolver, "")
 			if err != nil {
@@ -138,6 +277,7 @@ func TestVerifyProof_MultipleValidProofs(t *testing.T) {
 }
 
 func TestVerifyProof_OneInvalidAmongSeveral(t *testing.T) {
+	t.Parallel()
 	m, resolver := signedCredential(t, 3)
 
 	// Tamper with the second proof's proofValue.
@@ -171,6 +311,7 @@ func TestVerifyProof_OneInvalidAmongSeveral(t *testing.T) {
 }
 
 func TestVerifyProof_TargetVM_SkipsCache(t *testing.T) {
+	t.Parallel()
 	m, resolver := signedCredential(t, 3)
 
 	// Get the second proof's verification method.
@@ -201,6 +342,7 @@ func (r *countingResolver) ResolveDocument(ctx context.Context, did string) (*ve
 }
 
 func TestVerifyProof_ErrorsPreservedOrdering(t *testing.T) {
+	t.Parallel()
 	// 2 proofs: first valid, second uses an unknown DID.
 	const (
 		did1 = "did:example:issuer1"
