@@ -68,6 +68,12 @@ type PresentationContents struct {
 // proof.domain on JSON-LD.
 var ErrAudienceUnbound = errors.New("WithRequireAudience needs WithExpectedDomain")
 
+// ErrCredentialNotObject is returned when a JSON presentation is built or
+// signed with a credential that is not a JSON object, such as a JWT. VCDM 2.0
+// §4.13 allows only objects there, and a Data Integrity proof cannot cover
+// anything else.
+var ErrCredentialNotObject = errors.New("a JSON presentation holds JSON credentials only")
+
 // PresentationOpt configures presentation processing options.
 //
 // TODO(opts): one option type is reused across constructors, Parse, signing
@@ -94,6 +100,8 @@ type presentationOptions struct {
 	verificationMethodKey   string
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
+	// expectedProofPurpose overrides the authentication a VP verifier expects.
+	expectedProofPurpose string
 	// Signing: written into proof.challenge / proof.domain.
 	challenge string
 	domain    string
@@ -105,6 +113,26 @@ type presentationOptions struct {
 	requireAudience bool
 	// Signing: allow a signing call to replace a signature already present.
 	replaceProof bool
+}
+
+// WithExpectedProofPurpose tells Verify to expect this proof purpose instead of
+// authentication. Data Integrity 1.0 §4.4 requires the comparison. An empty
+// purpose leaves the default in place.
+func WithExpectedProofPurpose(purpose string) PresentationOpt {
+	return func(p *presentationOptions) {
+		if purpose == "" {
+			return
+		}
+		p.expectedProofPurpose = purpose
+	}
+}
+
+// diProofPurpose is the purpose a VP verifier compares with proof.proofPurpose.
+func (o *presentationOptions) diProofPurpose() string {
+	if o.expectedProofPurpose != "" {
+		return o.expectedProofPurpose
+	}
+	return "authentication"
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof

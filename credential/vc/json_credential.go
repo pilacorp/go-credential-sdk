@@ -422,7 +422,7 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	// asked by handing over a proof, and before attaching, so a proof that does
 	// not check out leaves nothing behind.
 	if options.isVerifyProof {
-		if err := m.VerifyDetachedProof(options.resolver, proof); err != nil {
+		if err := m.VerifyDetachedProof(options.resolver, proof, jsonmap.WithExpectedProofPurpose(options.diProofPurpose())); err != nil {
 			return err
 		}
 	}
@@ -452,8 +452,9 @@ func (e *JSONCredential) Serialize() (any, error) {
 // Hash returns the SHA-256 hash (hex-encoded) of the JSON-LD canonicalized (URDNA2015)
 // full credential, including the proof field — the identity of a signed
 // credential (Merkle leaf). A multibase proof ("z" / "u", Data Integrity) is
-// hashed with processor.Canonicalize; a legacy hex proof keeps CanonicalizeFull
-// so digests already anchored on chain do not change.
+// hashed with processor.Canonicalize; any other proof keeps CanonicalizeFull,
+// so its digest changes only for the cases README lists under "Upgrading from
+// piprate/json-gold". Only the first proof decides.
 func (e *JSONCredential) Hash() (string, error) {
 	if e.credentialData["proof"] == nil {
 		return "", fmt.Errorf("credential must have proof before hashing")
@@ -527,6 +528,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
 				options.resolver,
 				options.proofVerificationMethod,
+				jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
 			)
 			if err != nil {
 				return fmt.Errorf("verify proof: %w", err)

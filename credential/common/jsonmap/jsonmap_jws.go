@@ -110,6 +110,9 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
 	}
+	if err := verificationmethod.RequireController(doc, vm); err != nil {
+		return false, err
+	}
 	if vm.Type != JsonWebKey2020 {
 		return false, fmt.Errorf("expected %s VM, got %s", JsonWebKey2020, vm.Type)
 	}

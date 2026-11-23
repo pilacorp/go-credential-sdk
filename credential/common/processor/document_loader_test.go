@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piprate/json-gold/ld"
+	"github.com/pilacorp/json-gold/ld"
 )
 
 func contextServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
@@ -506,14 +506,38 @@ func TestContextErrors_AreReachable(t *testing.T) {
 			fmt.Fprintf(w, `{"@context":"http://%s/"}`, r.Host)
 		})
 		useTestClient(t, srv)
-		if _, err := Canonicalize(docUsing(srv.URL+"/", "term")); !errors.Is(err, ErrContextOverflow) {
+		_, err := Canonicalize(docUsing(srv.URL+"/", "term"))
+		if !errors.Is(err, ErrContextOverflow) {
 			t.Fatalf("got %v", err)
+		}
+		// errors.As finds json-gold's own error, which names the context, not
+		// the sentinel.
+		var ldErr *ld.JsonLdError
+		if !errors.As(err, &ldErr) || ldErr == ErrContextOverflow || !strings.Contains(ldErr.Error(), srv.URL) {
+			t.Fatalf("errors.As gave %v", ldErr)
 		}
 	})
 }
 
-// One operation may parse maxContextBytesPerOperation and no more: a context
-// that includes itself is parsed again on each load. Bundled contexts count.
+func TestMarkContextOverflow_FindsTheLimitInAJoinedError(t *testing.T) {
+	var limit error = ld.NewJsonLdError(ld.ContextOverflow, "https://example.org/ctx")
+	var limit10 error = ld.NewJsonLdError(ld.RecursiveContextInclusion, "x")
+	for name, err := range map[string]error{
+		"join":        errors.Join(errors.New("other"), limit),
+		"two %w":      fmt.Errorf("%w; %w", errors.New("other"), limit),
+		"json-ld 1.0": fmt.Errorf("expand: %w", limit10),
+	} {
+		if got := markContextOverflow(err); !errors.Is(got, ErrContextOverflow) {
+			t.Errorf("%s: not marked: %v", name, got)
+		}
+	}
+	if got := markContextOverflow(errors.New("other")); errors.Is(got, ErrContextOverflow) {
+		t.Errorf("an unrelated error was marked")
+	}
+}
+
+// One operation may parse maxContextBytesPerOperation and no more, across
+// all the contexts it loads. Bundled contexts count.
 func TestContextBudget_BytesPerOperation(t *testing.T) {
 	srv := contextServer(t, func(w http.ResponseWriter, _ *http.Request) { writeContext(w, "term") })
 	useTestClient(t, srv)
@@ -546,7 +570,9 @@ func TestContextBudget_BytesPerOperation(t *testing.T) {
 	}
 }
 
-func TestCanonicalize_ContextIncludingItselfStopsAtTheByteLimit(t *testing.T) {
+// json-gold stops a context that includes itself (JSON-LD 1.1 §4.1.2 step
+// 5.2.3) and loads it once per operation, so a large one costs its bytes once.
+func TestCanonicalize_ContextIncludingItselfIsLoadedOnce(t *testing.T) {
 	var body string
 	srv := contextServer(t, func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, body) })
 	useTestClient(t, srv)
@@ -557,11 +583,12 @@ func TestCanonicalize_ContextIncludingItselfStopsAtTheByteLimit(t *testing.T) {
 	opts := sdOptions()
 	opts.DocumentLoader = budget
 	_, err := ld.NewJsonLdProcessor().Expand(docUsing(srv.URL+"/", "term"), opts)
-	if !errors.Is(err, ErrContextOverflow) {
-		t.Fatalf("got %v", err)
+	var ldErr *ld.JsonLdError
+	if !errors.As(err, &ldErr) || ldErr.Code != ld.ContextOverflow {
+		t.Fatalf("got %v, want json-gold's context overflow", err)
 	}
-	if want := maxContextBytesPerOperation/pad + 1; budget.loads > want {
-		t.Fatalf("%d loads, the limit allows %d", budget.loads, want)
+	if budget.loads != 1 {
+		t.Fatalf("%d loads, want 1", budget.loads)
 	}
 }
 
@@ -594,14 +621,33 @@ func TestLoadDocument_RefusesUnparsableAlternate(t *testing.T) {
 	}
 }
 
-// The same nil dereference with no server: every other entry already recovers.
-func TestToNQuads_RecoversFromPanic(t *testing.T) {
+// A context URL ld.Resolve cannot parse once dereferenced nil and panicked;
+// json-gold now refuses it as a context it cannot load.
+func TestToNQuads_RefusesUnparsableContextURL(t *testing.T) {
 	doc := map[string]interface{}{
 		"@context": []interface{}{map[string]interface{}{"@base": "http://example.org/", "p": "https://example.org/p"}, "%zz"},
 		"@id":      "urn:x",
 		"p":        "v",
 	}
-	if _, err := ToNQuads(doc); err == nil || !strings.Contains(err.Error(), "malformed JSON-LD input") {
-		t.Fatalf("got %v", err)
+	var ldErr *ld.JsonLdError
+	if _, err := ToNQuads(doc); !errors.As(err, &ldErr) || ldErr.Code != ld.LoadingRemoteContextFailed {
+		t.Fatalf("got %v, want a remote context load failure", err)
+	}
+}
+
+// panickingJSONValue panics when json-gold reads it as JSON.
+type panickingJSONValue struct{}
+
+func (panickingJSONValue) MarshalJSON() ([]byte, error) { panic("boom") }
+
+// A panic inside json-gold must come back as an error, not crash the caller.
+func TestCanonicalize_RecoversFromPanic(t *testing.T) {
+	doc := map[string]interface{}{
+		"@context": map[string]interface{}{"p": "https://example.org/p"},
+		"@id":      "urn:x",
+		"p":        panickingJSONValue{},
+	}
+	if _, err := Canonicalize(doc); err == nil || !strings.Contains(err.Error(), "malformed JSON-LD input") {
+		t.Fatalf("got %v, want the recovered panic", err)
 	}
 }

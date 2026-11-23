@@ -170,11 +170,15 @@ func (m *JSONMap) DeriveECDSASD(selectivePointers []string) (JSONMap, error) {
 	return result, nil
 }
 
-// verifyECDSASDProof verifies an ecdsa-sd-2023 base or derived proof.
+// verifyECDSASDProof verifies an ecdsa-sd-2023 derived proof. A base proof is
+// refused by ecdsasd.VerifyProof.
 func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, cache *digestCache) (bool, error) {
 	vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
+	}
+	if err := verificationmethod.RequireController(doc, vm); err != nil {
+		return false, err
 	}
 	// ecdsa-sd-2023 standardizes on P-256; this SDK also accepts a secp256k1
 	// issuer key as a non-standard extension.
