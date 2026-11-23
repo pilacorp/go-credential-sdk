@@ -631,8 +631,8 @@ func TestParse1_DuplicateLabelInProtected_Rejected(t *testing.T) {
 	// {1: -7, 4: h'kid', 1: -47}
 	// 0xa3 01 26 04 43 "kid" 01 38 2e
 	dupProtBytes := []byte{
-		0xa3,                   // map(3) — with duplicate label 1
-		0x01, 0x26,             // 1: -7
+		0xa3,       // map(3) — with duplicate label 1
+		0x01, 0x26, // 1: -7
 		0x04, 0x43, 0x6b, 0x69, 0x64, // 4: h'kid'
 		0x01, 0x38, 0x2e, // 1: -47
 	}
