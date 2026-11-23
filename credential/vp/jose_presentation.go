@@ -430,19 +430,19 @@ func requireEnvelopedCredentials(m PresentationData) error {
 		}
 
 		// VCDM 2.0 §4.13: the envelope MUST carry the v2 @context.
-		if first := vcdm.FirstContext(entry["@context"]); first != vcdm.ContextV2 {
+		if !vcdm.HasType(entry["@context"], vcdm.ContextV2) {
 			return fmt.Errorf(
-				"credential at index %d: enveloped credential @context must start with %s, got %q",
-				i, vcdm.ContextV2, first)
+				"credential at index %d: enveloped credential @context must include %s",
+				i, vcdm.ContextV2)
 		}
 
 		// VCDM 2.0 §4.13: id MUST be a data: URL whose media type names a
 		// secured credential scheme (application/vc+jwt or application/vc+sd-jwt).
 		id, _ := entry["id"].(string)
-		if !isEnvelopedDataURL(id) {
+		if _, _, ok := vcdm.CutEnvelopedDataURL(id); !ok {
 			return fmt.Errorf(
 				"credential at index %d: enveloped credential id must be a data: URL "+
-					"with media type application/vc+jwt or application/vc+sd-jwt, got %q", i, id)
+					"with media type application/vc+jwt or application/vc+sd-jwt", i)
 		}
 	}
 
@@ -500,22 +500,6 @@ func vpCarriesSDMachinery(value interface{}) bool {
 			if vpCarriesSDMachinery(child) {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-// isEnvelopedDataURL reports whether id is a valid data: URL for an enveloped
-// credential: data:application/vc+jwt,<token> or data:application/vc+sd-jwt,<token>.
-// The scheme (RFC 3986 section 3.1) and the media type (RFC 2397, RFC 2045
-// section 5.1) are case-insensitive; the token after the comma is not.
-func isEnvelopedDataURL(id string) bool {
-	for _, prefix := range []string{
-		"data:application/vc+jwt,",
-		"data:application/vc+sd-jwt,",
-	} {
-		if len(id) > len(prefix) && strings.EqualFold(id[:len(prefix)], prefix) {
-			return true
 		}
 	}
 	return false
