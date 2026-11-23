@@ -224,12 +224,15 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		if serr != nil {
 			return nil, fmt.Errorf("failed to parse SD-JWT: %w", serr)
 		}
+		// RFC 9901 section 7.2: a Holder that receives an SD-JWT+KB MUST
+		// reject it. Dropping the KB-JWT also left a verifier unable to tell
+		// one had arrived, and gave the token the Hash of the token without it.
+		// Refused until the SDK verifies Key Binding JWTs.
+		if kbJWT != "" {
+			return nil, fmt.Errorf("failed to parse SD-JWT: SD-JWT carries a key binding JWT, which this SDK does not verify yet; present the credential without it")
+		}
 		issuerJWT = ij
 		disclosures = ds
-		// The KB-JWT is accepted structurally but not verified here; the
-		// credential path has no holder key to verify it against. Full
-		// KB-JWT verification is a separate feature.
-		_ = kbJWT
 	} else {
 		if !isJWTCredential(rawJWT) {
 			return nil, fmt.Errorf("invalid JWT or SD-JWT format")

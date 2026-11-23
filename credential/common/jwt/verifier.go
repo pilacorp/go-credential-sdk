@@ -48,6 +48,13 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	if err != nil {
 		return fmt.Errorf("invalid JWT: %w", err)
 	}
+	// UnverifiedHeader checks the header's shape, not whether alg is one the
+	// SDK verifies with. Refuse it before resolving any DID, so a token with
+	// alg none, HS256 or RS256 costs no network call and the error names the
+	// algorithm rather than a resolver failure.
+	if alg := jwsHeader.Alg(); alg != AlgES256K && alg != AlgES256 {
+		return fmt.Errorf("unsupported algorithm: %v", jwsHeader["alg"])
+	}
 
 	kid := jwsHeader.Kid()
 	if kid == "" {
@@ -62,14 +69,11 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	// expect. The header is untrusted until jws.Verify succeeds.
 	header := map[string]interface{}(jwsHeader)
 
-	// Read the payload for purpose and signer determination. The payload is
-	// base64url-decoded by jws and also read here from the raw token for the
-	// purpose helpers that expect the base64 segment; a future cleanup can
-	// unify this once the helpers take decoded bytes.
+	// The purpose helpers read the base64url payload segment. The DID to
+	// resolve is the body's signer for this proof purpose, not the kid
+	// prefix: a kid naming another DID must not pick the key.
+	// UnverifiedHeader has already refused a token that is not three parts.
 	parts := strings.SplitN(tokenString, ".", 3)
-	if len(parts) < 2 {
-		return fmt.Errorf("invalid JWT format")
-	}
 
 	purpose, perr := jwtProofPurpose(header, parts[1])
 	if perr != nil {
