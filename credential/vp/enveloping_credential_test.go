@@ -9,40 +9,28 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
 )
 
-// VCDM 2.0 §4.13: verifiableCredential values MUST NOT be strings. A JWT or
-// vc+jwt credential serializes to one, and a JSON presentation's Data
-// Integrity proof could not cover it, so building one must be refused.
+// VCDM 2.0 §4.13: verifiableCredential values MUST NOT be strings. A VC 1.1
+// JWT serializes to one and is not the vc+jwt an EnvelopedVerifiableCredential
+// names (vc.ParseCredential refuses one inside an envelope), so a JSON
+// presentation cannot carry it at all. vc+jwt and vc+sd-jwt are enveloped
+// instead: see json_vp_enveloped_test.go.
 func TestNewJSONPresentationRefusesEnvelopingCredential(t *testing.T) {
 	const issuerDID = "did:nda:testnet:0x8b3b1dee8e00cb95f8b2a1d1a9a7cb8fe7d490ce"
 	_, jwtVC := createTestCredentials(t, issuerDID, "e5c9a597b20e13627a3850d38439b61ec9ee7aefd77c7cb6c01dc3866e1db19a")
 
-	const joseDID = "did:example:json-vp-with-jose-vc"
-	resolver, prov := joseVPFixture(t, joseDID)
-	joseVC, err := vc.NewJOSECredential(joseVPCredentialContents(joseDID),
-		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
-	if err != nil {
-		t.Fatalf("new jose cred: %v", err)
+	_, err := vp.NewJSONPresentation(vp.PresentationContents{
+		Context:               []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		ID:                    "urn:uuid:json-vp-with-enveloped-vc",
+		Types:                 []string{"VerifiablePresentation"},
+		Holder:                issuerDID,
+		VerifiableCredentials: []vc.Credential{jwtVC},
+	})
+	if !errors.Is(err, vp.ErrCredentialNotObject) {
+		t.Fatalf("err = %v, want ErrCredentialNotObject", err)
 	}
-	if err := joseVC.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("sign jose cred: %v", err)
-	}
-
-	for name, cred := range map[string]vc.Credential{"JWT": jwtVC, "vc+jwt": joseVC} {
-		t.Run(name, func(t *testing.T) {
-			_, err := vp.NewJSONPresentation(vp.PresentationContents{
-				Context:               []interface{}{"https://www.w3.org/ns/credentials/v2"},
-				ID:                    "urn:uuid:json-vp-with-enveloped-vc",
-				Types:                 []string{"VerifiablePresentation"},
-				Holder:                issuerDID,
-				VerifiableCredentials: []vc.Credential{cred},
-			})
-			if !errors.Is(err, vp.ErrCredentialNotObject) {
-				t.Fatalf("err = %v, want ErrCredentialNotObject", err)
-			}
-			if !strings.Contains(err.Error(), "credential at index 0") || !strings.Contains(err.Error(), "NewJOSEPresentation") {
-				t.Fatalf("err = %v, want the index and the presentation type to use", err)
-			}
-		})
+	if !strings.Contains(err.Error(), "credential at index 0") || !strings.Contains(err.Error(), "VC 1.1 JWT") ||
+		!strings.Contains(err.Error(), "NewJWTPresentation") {
+		t.Fatalf("err = %v, want the index and the presentation type to use", err)
 	}
 }
 

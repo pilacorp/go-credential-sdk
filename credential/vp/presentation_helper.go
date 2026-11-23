@@ -259,6 +259,13 @@ func parseVerifiableCredentials(vp PresentationData, contents *PresentationConte
 		if vcStr, isString := vcItem.(string); isString {
 			credential, err = vc.ParseCredential([]byte(vcStr))
 		} else {
+			// An envelope is held to the VCDM 2.0 §4.13 MUSTs before its token
+			// is parsed, the same check a vp+jwt applies.
+			if entry, isMap := vcItem.(map[string]interface{}); isMap && vcdm.HasType(entry["type"], vc.TypeEnvelopedVC) {
+				if err := checkEnvelopedCredential(i, entry); err != nil {
+					return err
+				}
+			}
 			vcItemBytes, marshalErr := json.Marshal(vcItem)
 			if marshalErr != nil {
 				return fmt.Errorf("failed to marshal credential at index %d: %w", i, marshalErr)

@@ -24,6 +24,9 @@ func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JS
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}
+	if err := envelopeForJSONPresentation(m, vpc.VerifiableCredentials); err != nil {
+		return nil, err
+	}
 	if err := refuseNonObjectCredentials(m); err != nil {
 		return nil, err
 	}
