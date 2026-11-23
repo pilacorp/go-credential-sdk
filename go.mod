@@ -1,6 +1,6 @@
 module github.com/pilacorp/go-credential-sdk
 
-go 1.25.0
+go 1.27.0
 
 require (
 	github.com/btcsuite/btcd/btcec/v2 v2.3.5
@@ -10,7 +10,7 @@ require (
 	github.com/mr-tron/base58 v1.3.0
 	github.com/nlnwa/whatwg-url v0.6.2
 	github.com/pilacorp/go-credential-sdk/jose v0.1.1
-	github.com/piprate/json-gold v0.7.0
+	github.com/pilacorp/json-gold v0.9.1-pila.6
 	github.com/stretchr/testify v1.11.1
 	github.com/xeipuuv/gojsonschema v1.2.0
 	golang.org/x/exp v0.0.0-20250718183923-645b1fa84792
@@ -23,6 +23,7 @@ require (
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
+	github.com/cayleygraph/quad v1.3.0 // indirect
 	github.com/consensys/gnark-crypto v0.18.0 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.4.0 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240724233137-53bbb0ceb27a // indirect
@@ -36,7 +37,7 @@ require (
 	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/pquerna/cachecontrol v0.0.0-20180517163645-1555304b9b35 // indirect
+	github.com/pquerna/cachecontrol v0.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
 	github.com/supranational/blst v0.3.16-0.20250831170142-f48500c1fdbe // indirect
