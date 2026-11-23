@@ -12,6 +12,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
+- [Upgrading from piprate/json-gold](#upgrading-from-pipratejson-gold)
 - [Verifiable Credential (VC) Package](#verifiable-credential-vc-package)
   - [Features](#vc-features)
   - [Usage](#vc-usage)
@@ -44,12 +45,12 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
 
 ## Prerequisites
 
-- Go 1.25 or higher
+- Go 1.27 or higher
 - For VC/VP: Secure private key generation using `crypto/ecdsa` package and verification method for signing/verifying
 - Internet access for DID resolution and JSON-LD context fetching
 - Dependencies:
   - `github.com/xeipuuv/gojsonschema`
-  - `github.com/piprate/json-gold/ld`
+  - `github.com/pilacorp/json-gold/ld` (a fork of `piprate/json-gold` that follows JSON-LD 1.1)
   - `crypto/ecdsa` (standard library)
   - `crypto/elliptic` (standard library)
   - `crypto/rand` (standard library)
@@ -66,8 +67,58 @@ Ensure dependencies are installed:
 
 ```bash
 go get github.com/xeipuuv/gojsonschema
-go get github.com/piprate/json-gold/ld
+go get github.com/pilacorp/json-gold/ld
 ```
+
+## Upgrading from piprate/json-gold
+
+This release needs Go 1.27: update Docker images, CI, and golangci-lint (built with Go 1.27
+or later) before bumping the SDK.
+
+Canonicalization now follows JSON-LD 1.1 and RDFC-1.0, so the canonical N-Quads, and with
+them signatures and `Hash()`, change for documents that hold the values listed below.
+
+The list names two paths. The multibase path is the signature of an `ecdsa-rdfc-2019`,
+`ecdsa-sd-2023` or `EcdsaSecp256k1Signature2019` proof, and the `Hash()` of a credential
+whose first proof has a multibase `proofValue`. The legacy hex path is the signature of a
+hex proof from SDK v1.7.0 or earlier or of a `JsonWebSignature2020` proof, and the `Hash()`
+of a credential whose first proof is any other, `EcdsaSecp256k1Signature2019` included. A
+case that names no path applies to both.
+
+- a string with a control character other than tab, line feed and carriage return, or DEL,
+  U+FFFE or U+FFFF: it is now escaped;
+- an IRI that is not well-formed, such as `urn:ex:a|b`, `https://ex.com/{1}` or
+  `did:example:a%zz`: vc and vp signing and `Hash()` on the multibase path refuse it, and
+  the legacy hex path drops the node it names, with every statement about that node;
+- an `http` or `https` IRI of 2,083 characters or more: earlier releases dropped it, and it
+  is now kept;
+- a language tag that is not well-formed: now refused on the multibase path; the legacy hex
+  path drops it as before;
+- a type its contexts do not define, on the legacy hex path
+  (see [Terms of Use](#terms-of-use));
+- for an `ecdsa-sd-2023` credential, a string with a backslash before `n`, `r` or `t`, such
+  as `C:\new`: its base proof from an earlier release no longer verifies, so re-issue it;
+- a value of an `@json` term that is an array, a string or null: earlier releases signed an
+  error text in its place, so the signature did not cover the value. It is now signed in
+  its JCS form, so re-issue it. On the multibase path a fractional number under an `@json`
+  term also changes, from `1.5E0` to `1.5`;
+- on the multibase path, an integer from 2^63 up to 10^21, such as `1e20`: earlier releases
+  wrote it as an `xsd:double` (and 2^63 on arm64 as the integer 9223372036854775807), and it
+  is now the exact `xsd:integer`;
+- a context that JSON-LD 1.1 rejects, even in a term the document does not use, such as
+  `"@container": []` or an invalid scoped context: signing and `Hash()` now refuse it;
+- on the multibase path, a node with only an id directly inside a `@graph` container term:
+  earlier releases dropped it, and signing and `Hash()` now refuse it.
+
+Credentials outside these cases keep their signatures and `Hash()`. A store keyed by
+`Hash()` should be scanned for these cases before upgrading.
+
+JSON presentations under the `credentials/v2` context change in both directions. A
+presentation with an embedded credential now signs that credential as its own named
+graph, so one signed by an earlier release does not verify here, and one signed here does
+not verify on an earlier release: re-sign stored presentations, and move the holders and
+verifiers of one flow in the same release. A JSON presentation that holds a JWT credential
+no longer verifies, and building or signing one is refused with `vp.ErrCredentialNotObject`.
 
 ---
 
@@ -214,18 +265,19 @@ against:
 
 ```
 // @context: ["https://www.w3.org/ns/credentials/v2"]
-_:c14n0 <...#type> <PresentationRequiredPolicy> .           // relative IRI — not a valid absolute IRI
+// signing refuses the type; the legacy hex path drops it from the canonical form
 
 // @context: [..., {"@vocab": "https://ndadid.vn/ns#"}]
 _:c14n0 <...#type> <https://ndadid.vn/ns#PresentationRequiredPolicy> .
 ```
 
 This is **mandatory** for the `ecdsa-rdfc-2019` and `ecdsa-sd-2023` proof suites, which sign
-over canonicalized RDF: a relative IRI is resolved differently by different JSON-LD
-processors, producing a different canonical form and therefore a different hash, so a
-third-party verifier can reject a credential this SDK considers valid. JWT credentials do
-not canonicalize and are unaffected — but a credential issued today may be re-issued under
-a Data Integrity proof later.
+over canonicalized RDF. An undeclared type is a relative IRI, which has no RDF form: signing
+refuses it, and verifying a legacy hex proof drops it, so the proof does not cover the type.
+Credentials signed by SDK releases before the `pilacorp/json-gold` fork kept such a type as
+a relative IRI in the signed bytes; their legacy hex proofs and `Hash()` no longer match.
+JWT credentials do not canonicalize and are unaffected — but a credential issued today may
+be re-issued under a Data Integrity proof later.
 
 #### Selective disclosure and `mandatoryPointers`
 
@@ -1120,7 +1172,10 @@ To create a Verifiable Presentation, you need:
 1. Initialize the VP package with a DID resolver endpoint
 2. Create or obtain Verifiable Credentials to include
 3. Define presentation contents using `vp.PresentationContents`
-4. Create the presentation using `vp.NewJSONPresentation()` or `vp.NewJWTPresentation()`
+4. Create the presentation using `vp.NewJSONPresentation()` or `vp.NewJWTPresentation()`.
+   A JSON presentation embeds JSON credentials only (VCDM 2.0 §4.13), so
+   `NewJSONPresentation` and signing refuse a JWT credential with `vp.ErrCredentialNotObject`.
+   Present JWT credentials with `vp.NewJWTPresentation()` or `vp.NewJOSEPresentation()`.
 5. Add a cryptographic proof using `AddProof()` with a signer provider
 6. Serialize and verify the presentation
 

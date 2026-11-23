@@ -68,6 +68,12 @@ type PresentationContents struct {
 // proof.domain on JSON-LD.
 var ErrAudienceUnbound = errors.New("WithRequireAudience needs WithExpectedDomain")
 
+// ErrCredentialNotObject is returned when a JSON presentation is built or
+// signed with a credential that is not a JSON object, such as a JWT. VCDM 2.0
+// §4.13 allows only objects there, and a Data Integrity proof cannot cover
+// anything else.
+var ErrCredentialNotObject = errors.New("a JSON presentation holds JSON credentials only")
+
 // PresentationOpt configures presentation processing options.
 //
 // TODO(opts): one option type is reused across constructors, Parse, signing

@@ -263,7 +263,7 @@ func TestIsRevoked(t *testing.T) {
 	// Legacy LSB-first: 0x01 -> bit 0 set.
 	raw := []byte{0x01}
 	encoded, err := util.CompressToBase64URL(raw)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	subject := StatusListCredentialSubject{
 		EncodedList:   encoded,
@@ -271,18 +271,18 @@ func TestIsRevoked(t *testing.T) {
 	}
 
 	revoked, err := IsRevoked(0, subject)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, revoked, "position 0 should be revoked")
 
 	notRevoked, err := IsRevoked(1, subject)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.False(t, notRevoked, "position 1 should not be revoked")
 }
 
 func TestIsRevoked_NonRevocationPurpose(t *testing.T) {
 	raw := []byte{0x01}
 	encoded, err := util.CompressToBase64URL(raw)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	subject := StatusListCredentialSubject{
 		EncodedList:   encoded,
@@ -454,7 +454,7 @@ func TestFetchAndCheckRevocation(t *testing.T) {
 	// Prepare encoded list where position 0 is revoked (bit 1).
 	raw := []byte{0x01}
 	encoded, err := util.CompressToBase64URL(raw)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Build a fake status list credential response.
 	respBody := StatusListCredentialResponse{
@@ -483,7 +483,7 @@ func TestFetchAndCheckRevocation(t *testing.T) {
 	url := server.URL
 
 	revoked, err := FetchAndCheckRevocation(url, 0)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, revoked, "credential at position 0 should be revoked")
 }
 

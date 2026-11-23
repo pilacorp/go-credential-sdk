@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/internal/safehttp"
-	"github.com/piprate/json-gold/ld"
+	"github.com/pilacorp/json-gold/ld"
 )
 
 // Bounds on remote @context fetches. A document under verification names its
@@ -34,16 +34,16 @@ const (
 	// maxContextBytes this holds the cache to 64 MiB: an entry is the bytes,
 	// because 1 MiB of JSON can decode to 21 MiB.
 	maxCachedContexts = 64
-	// maxContextLoads bounds the remote context loads of one JSON-LD operation,
-	// cached ones included. json-gold's check for a context including itself
-	// never fires (it hands the nested parse an empty list), so a context that
-	// names itself recurses until `fatal error: stack overflow`.
+	// maxContextLoads bounds the remote context loads of one JSON-LD operation.
+	// Each operation is one json-gold call, which loads each URL once, so this
+	// is the number of distinct remote context URLs one operation fetches.
 	maxContextLoads = 1024
 	// maxContextLoadTime bounds one JSON-LD operation's remote loads taken
 	// together, for a chain of contexts each answering just under the timeout.
 	maxContextLoadTime = 30 * time.Second
 	// maxContextBytesPerOperation bounds the context bytes one JSON-LD operation
-	// parses, because maxContextLoads alone lets it parse one context 1024 times.
+	// parses, because maxContextLoads alone lets it parse 1024 contexts of
+	// maxContextBytes each.
 	// All the bundled contexts are about 30 KB, and one context at
 	// maxContextBytes still fits.
 	maxContextBytesPerOperation = 4 << 20
@@ -73,14 +73,51 @@ const (
 var contextFetchTimeout = 10 * time.Second
 
 // Failures of a remote @context load. ErrContextLoad is every failed fetch, and
-// the others name a refusal of this SDK.
+// the others name a refusal of this SDK. ErrContextOverflow also marks
+// json-gold's own limit on the remote contexts one @context value processes.
 var (
 	ErrContextLoad     = ld.NewJsonLdError(ld.LoadingDocumentFailed, "remote context could not be loaded")
 	ErrContextAddress  = errors.New("context address is not public")
 	ErrContextScheme   = errors.New("context URL is not http or https")
 	ErrContextRequests = errors.New("context fetch made too many requests")
-	ErrContextOverflow = ld.NewJsonLdError(ld.ErrorCode("context overflow"), "the operation's context budget is used up")
+	ErrContextOverflow = ld.NewJsonLdError(ld.ContextOverflow, "the operation's context budget is used up")
 )
+
+// contextOverflowError is json-gold's own limit on the remote contexts one
+// @context value processes (JSON-LD 1.1 Processing Algorithms and API §4.1.2
+// step 5.2.3) reported as ErrContextOverflow. The cause comes first on the
+// chain, so errors.As finds json-gold's error, whose text names the context.
+type contextOverflowError struct{ cause error }
+
+func (e *contextOverflowError) Error() string   { return e.cause.Error() }
+func (e *contextOverflowError) Unwrap() []error { return []error{e.cause, ErrContextOverflow} }
+
+func markContextOverflow(err error) error {
+	if err == nil || errors.Is(err, ErrContextOverflow) || !hitsRemoteContextLimit(err) {
+		return err
+	}
+	return &contextOverflowError{cause: err}
+}
+
+// hitsRemoteContextLimit walks the whole error tree, joined errors included.
+// JSON-LD 1.0 mode names the same limit a recursive context inclusion.
+func hitsRemoteContextLimit(err error) bool {
+	if ldErr, ok := err.(*ld.JsonLdError); ok &&
+		(ldErr.Code == ld.ContextOverflow || ldErr.Code == ld.RecursiveContextInclusion) {
+		return true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return u.Unwrap() != nil && hitsRemoteContextLimit(u.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, cause := range u.Unwrap() {
+			if hitsRemoteContextLimit(cause) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // Refusals of what a document's contexts define, ahead of json-gold.
 var (

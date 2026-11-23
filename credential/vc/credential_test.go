@@ -17,6 +17,7 @@ import (
 
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	credentialstatus "github.com/pilacorp/go-credential-sdk/credential/common/credential-status"
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -112,7 +113,7 @@ func TestParseCredential(t *testing.T) {
 				return
 			}
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			// Check the credential type and access the appropriate field
 			if _, ok := result.(*JSONCredential); ok {
 				embeddedCred := result.(*JSONCredential)
@@ -250,7 +251,7 @@ func TestCreateCredentialWithContents(t *testing.T) {
 				return
 			}
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.NotNil(t, result, "Result should not be nil when no error is expected")
 
 			// result is already a *JSONCredential (typed constructor).
@@ -291,7 +292,7 @@ func TestParseContext(t *testing.T) {
 				return
 			}
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, contents.Context)
 		})
 	}
@@ -301,7 +302,7 @@ func TestParseID(t *testing.T) {
 	credential := CredentialData{"id": "urn:uuid:1234"}
 	var contents CredentialContents
 	err := parseID(credential, &contents)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, "urn:uuid:1234", contents.ID)
 }
 
@@ -342,7 +343,7 @@ func TestParseTypes(t *testing.T) {
 				return
 			}
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, contents.Types)
 		})
 	}
@@ -368,7 +369,7 @@ func TestParseIssuer(t *testing.T) {
 			}
 			var contents CredentialContents
 			err := parseIssuer(credential, &contents)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, contents.Issuer)
 		})
 	}
@@ -383,7 +384,7 @@ func TestParseDates(t *testing.T) {
 
 	var contents CredentialContents
 	err := parseDates(credential, &contents)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, fixedTime, contents.ValidFrom)
 	assert.Equal(t, fixedTime.Add(24*time.Hour), contents.ValidUntil)
 }
@@ -396,7 +397,7 @@ func TestCheckExpiration_ValidWindow(t *testing.T) {
 	}
 
 	err := checkExpiration(credential, 0)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestCheckExpiration_NotValidYet(t *testing.T) {
@@ -458,7 +459,7 @@ func TestParseSubject(t *testing.T) {
 				return
 			}
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, contents.Subject)
 		})
 	}
@@ -471,7 +472,7 @@ func TestParseSchema(t *testing.T) {
 
 	var contents CredentialContents
 	err := parseSchema(credential, &contents)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, []Schema{{ID: "https://example.org/schema/1", Type: "JsonSchemaValidator2019"}}, contents.Schemas)
 }
 
@@ -482,7 +483,7 @@ func TestParseStatus(t *testing.T) {
 
 	var contents CredentialContents
 	err := parseStatus(credential, &contents)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, []Status{{ID: "https://example.org/status/1", Type: "StatusList2021Entry"}}, contents.CredentialStatus)
 }
 
@@ -494,7 +495,7 @@ func TestParseProofs(t *testing.T) {
 
 	var contents CredentialContents
 	err := parseProofs(credential, &contents)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	// Note: parseProofs now returns nil since CredentialContents doesn't have Proofs field
 	// The test just verifies no error occurs
 }
@@ -504,7 +505,7 @@ func TestSubjectFromJSON(t *testing.T) {
 	expected := Subject{ID: "did:example:subject1", CustomFields: map[string]interface{}{"name": "John Doe"}}
 
 	result, err := SubjectFromJSON(input)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, expected, result)
 }
 
@@ -525,7 +526,7 @@ func TestParseStatusEntry(t *testing.T) {
 	}
 
 	result, err := parseStatusEntry(input)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, expected, result)
 }
 
@@ -534,14 +535,14 @@ func TestParseSchemaID(t *testing.T) {
 	expected := Schema{ID: "https://example.org/schema/1", Type: "JsonSchemaValidator2019"}
 
 	result, err := parseSchemaID(input)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, expected, result)
 }
 
 func TestParseStringField(t *testing.T) {
 	input := CredentialData{"id": "did:example:subject1"}
 	result, err := parseStringField(input, "id")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, "did:example:subject1", result)
 
 	_, err = parseStringField(CredentialData{"id": 123}, "id")
@@ -772,18 +773,18 @@ func TestCreateCredentialJWT(t *testing.T) {
 
 	// Create credential from contents
 	credential, err := NewJWTCredential(credentialContents)
-	assert.NoError(t, err, "Failed to create credential from contents")
+	require.NoError(t, err, "Failed to create credential from contents")
 
 	// Add proof to the credential
 	defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
-	assert.NoError(t, err, "NewDefaultProvider failed")
+	require.NoError(t, err, "NewDefaultProvider failed")
 
 	err = credential.AddProofByProvider(defaultSigner)
-	assert.NoError(t, err, "Failed to add proof to credential")
+	require.NoError(t, err, "Failed to add proof to credential")
 
 	// Serialize the credential to get JWT string
 	serialized, err := credential.Serialize()
-	assert.NoError(t, err, "Failed to serialize credential")
+	require.NoError(t, err, "Failed to serialize credential")
 	jwtToken, ok := serialized.(string)
 	assert.True(t, ok, "Serialized credential should be a string for JWT")
 	assert.NotEmpty(t, jwtToken, "JWT token should not be empty")
@@ -793,7 +794,7 @@ func TestCreateCredentialJWT(t *testing.T) {
 
 	// Parse the JWT credential back
 	parsedCredential, err := ParseJWTCredential(jwtToken)
-	assert.NoError(t, err, "Failed to parse JWT credential")
+	require.NoError(t, err, "Failed to parse JWT credential")
 	assert.NotNil(t, parsedCredential, "Parsed credential should not be nil")
 
 	// parsedCredential is already a *JWTCredential (typed parser).
@@ -811,7 +812,7 @@ func TestCreateCredentialJWT(t *testing.T) {
 
 	// Verify the credential
 	err = credential.Verify()
-	assert.NoError(t, err, "Failed to verify credential")
+	require.NoError(t, err, "Failed to verify credential")
 }
 
 func TestCredentialSignatureFlows(t *testing.T) {
@@ -870,22 +871,22 @@ func TestCredentialSignatureFlows(t *testing.T) {
 	t.Run("JSON Credential - AddProof Flow", func(t *testing.T) {
 		// Create JSON credential
 		credential, err := NewJSONCredential(credentialContents)
-		assert.NoError(t, err, "Failed to create JSON credential")
+		require.NoError(t, err, "Failed to create JSON credential")
 
 		// P-256, not the secp256k1 testnet key: JSON credentials sign with
 		// ecdsa-rdfc-2019. The JWT flow below keeps the secp256k1 key.
 		p256Signer, opts := p256TestIssuer(t, issuerDID)
 
 		err = credential.AddProofByProvider(p256Signer, opts...)
-		assert.NoError(t, err, "Failed to add proof to JSON credential")
+		require.NoError(t, err, "Failed to add proof to JSON credential")
 
 		// Verify the credential
 		err = credential.Verify(opts...)
-		assert.NoError(t, err, "Failed to verify JSON credential with proof")
+		require.NoError(t, err, "Failed to verify JSON credential with proof")
 
 		// Serialize and verify it has proof
 		serialized, err := credential.Serialize()
-		assert.NoError(t, err, "Failed to serialize JSON credential")
+		require.NoError(t, err, "Failed to serialize JSON credential")
 
 		// Check that serialized credential contains proof
 		credMap, ok := serialized.(map[string]interface{})
@@ -896,18 +897,18 @@ func TestCredentialSignatureFlows(t *testing.T) {
 	t.Run("JWT Credential - AddProof Flow", func(t *testing.T) {
 		// Create JWT credential
 		credential, err := NewJWTCredential(credentialContents)
-		assert.NoError(t, err, "Failed to create JWT credential")
+		require.NoError(t, err, "Failed to create JWT credential")
 
 		// Add proof using AddProofByProvider method
 		defaultSigner, err := signer.NewDefaultProvider(testIssuerPrivateKey)
-		assert.NoError(t, err, "NewDefaultProvider failed")
+		require.NoError(t, err, "NewDefaultProvider failed")
 
 		err = credential.AddProofByProvider(defaultSigner)
-		assert.NoError(t, err, "Failed to add proof to JWT credential")
+		require.NoError(t, err, "Failed to add proof to JWT credential")
 
 		// Serialize to get JWT token
 		serialized, err := credential.Serialize()
-		assert.NoError(t, err, "Failed to serialize JWT credential")
+		require.NoError(t, err, "Failed to serialize JWT credential")
 
 		jwtToken, ok := serialized.(string)
 		assert.True(t, ok, "Serialized JWT credential should be a string")
@@ -919,12 +920,12 @@ func TestCredentialSignatureFlows(t *testing.T) {
 		}
 		// Parse and verify the JWT credential
 		parsedCredential, err := ParseCredential(byteJwkToken)
-		assert.NoError(t, err, "Failed to parse JWT credential")
+		require.NoError(t, err, "Failed to parse JWT credential")
 		assert.NotNil(t, parsedCredential, "Parsed credential should not be nil")
 
 		// verify
 		err = parsedCredential.Verify()
-		assert.NoError(t, err, "Failed to verify JWT credential")
+		require.NoError(t, err, "Failed to verify JWT credential")
 	})
 
 }
@@ -945,7 +946,7 @@ func TestCredentialAddProofNilSigner(t *testing.T) {
 
 	t.Run("JSON", func(t *testing.T) {
 		cred, err := NewJSONCredential(credentialContents)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		err = cred.AddProofByProvider(nil)
 		assert.Error(t, err)
@@ -953,7 +954,7 @@ func TestCredentialAddProofNilSigner(t *testing.T) {
 
 	t.Run("JWT", func(t *testing.T) {
 		cred, err := NewJWTCredential(credentialContents)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		err = cred.AddProofByProvider(nil)
 		assert.Error(t, err)
@@ -986,21 +987,21 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 
 	t.Run("JWT GetSigningInput + AddCustomProof", func(t *testing.T) {
 		cred, err := NewJWTCredential(contents, legacyResolver)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		signingInput, err := cred.GetSigningInput()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.NotEmpty(t, signingInput)
 
 		sig, err := jwt.ES256K.Sign(string(signingInput), issuerPriv)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.NotEmpty(t, sig)
 
 		err = cred.AddCustomProof(&dto.Proof{Signature: sig})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		serialized, err := cred.Serialize()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		jwtToken, ok := serialized.(string)
 		assert.True(t, ok)
 		assert.Equal(t, 3, len(strings.Split(jwtToken, ".")))
@@ -1008,37 +1009,37 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 
 	t.Run("JWT AddCustomProof equals AddProofByProvider", func(t *testing.T) {
 		cred1, err := NewJWTCredential(contents, legacyResolver)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		cred2, err := NewJWTCredential(contents, legacyResolver)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		defaultSigner, err := signer.NewDefaultProvider(issuerPriv)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
-		assert.NoError(t, cred1.AddProofByProvider(defaultSigner))
+		require.NoError(t, cred1.AddProofByProvider(defaultSigner))
 
 		signingInput, err := cred2.GetSigningInput()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		sig, err := jwt.ES256K.Sign(string(signingInput), issuerPriv)
-		assert.NoError(t, err)
-		assert.NoError(t, cred2.AddCustomProof(&dto.Proof{Signature: sig}))
+		require.NoError(t, err)
+		require.NoError(t, cred2.AddCustomProof(&dto.Proof{Signature: sig}))
 
 		s1, err := cred1.Serialize()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		s2, err := cred2.Serialize()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, s1, s2)
 	})
 
 	t.Run("JWT AddCustomProof(nil) errors", func(t *testing.T) {
 		cred, err := NewJWTCredential(contents, legacyResolver)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Error(t, cred.AddCustomProof(nil))
 	})
 
 	t.Run("JSON AddCustomProof attaches proof", func(t *testing.T) {
 		cred, err := NewJSONCredential(contents)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		err = cred.AddCustomProof(&dto.Proof{
 			Type:               "DataIntegrityProof",
@@ -1048,10 +1049,10 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 			Cryptosuite:        "ecdsa-rdfc-2019",
 			ProofValue:         "zdeadbeef",
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		serialized, err := cred.Serialize()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		credMap, ok := serialized.(map[string]interface{})
 		assert.True(t, ok)
 		assert.Contains(t, credMap, "proof")
@@ -1063,7 +1064,7 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 		for name, proofValue := range map[string]string{"hex": "deadbeef", "empty": ""} {
 			t.Run(name, func(t *testing.T) {
 				cred, err := NewJSONCredential(contents)
-				assert.NoError(t, err)
+				require.NoError(t, err)
 
 				err = cred.AddCustomProof(&dto.Proof{
 					Type:               "DataIntegrityProof",
@@ -1083,7 +1084,7 @@ func TestCredential_LegacyExternalSigningFlow(t *testing.T) {
 
 	t.Run("JSON AddCustomProof(nil) errors", func(t *testing.T) {
 		cred, err := NewJSONCredential(contents)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Error(t, cred.AddCustomProof(nil))
 	})
 }
@@ -1394,14 +1395,14 @@ func TestNewJOSECredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 
 	prov, issuerOpts := p256TestIssuer(t, "did:example:issuer")
 	cred, err := NewJOSECredential(vcc, append(issuerOpts, WithSDSelectivePaths(selectivePaths))...)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, cred)
 
 	if err := cred.AddProofByProvider(prov); err != nil {
 		t.Fatalf("sign: %v", err)
 	}
 	serialized, err := cred.Serialize()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	s, ok := serialized.(string)
 	if !ok {
@@ -1421,11 +1422,11 @@ func TestNewJOSECredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(segs[1])
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	var payload map[string]interface{}
 	err = json.Unmarshal(payloadBytes, &payload)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// vc+sd-jwt carries the credential as the payload itself, no vc wrapper.
 	csAny, ok := payload["credentialSubject"].(map[string]interface{})
@@ -1451,17 +1452,17 @@ func TestNewJOSECredential_WithSDSelectivePaths_ArrayElement(t *testing.T) {
 	assert.True(t, sdjwt.IsSDJWT(s), "expected SD-JWT format")
 
 	parsed, err := ParseCredential([]byte(s))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	joseCred, ok := parsed.(*JOSECredential)
 	assert.True(t, ok, "expected parsed credential to be JOSECredential")
 
 	payloadBytes2, err := joseCred.GetContents()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	var m2 map[string]interface{}
 	err = json.Unmarshal(payloadBytes2, &m2)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	cs2, ok := m2["credentialSubject"].(map[string]interface{})
 	assert.True(t, ok)
@@ -1499,14 +1500,14 @@ func TestNewJOSECredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 
 	prov, issuerOpts := p256TestIssuer(t, "did:example:issuer")
 	cred, err := NewJOSECredential(vcc, append(issuerOpts, WithSDSelectivePaths(selectivePaths))...)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, cred)
 
 	if err := cred.AddProofByProvider(prov); err != nil {
 		t.Fatalf("sign: %v", err)
 	}
 	serialized, err := cred.Serialize()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	s, ok := serialized.(string)
 	if !ok {
@@ -1526,11 +1527,11 @@ func TestNewJOSECredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(segs[1])
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	var payload map[string]interface{}
 	err = json.Unmarshal(payloadBytes, &payload)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// vc+sd-jwt carries the credential as the payload itself, no vc wrapper.
 	csAny, ok := payload["credentialSubject"].(map[string]interface{})
@@ -1557,17 +1558,17 @@ func TestNewJOSECredential_WithSDSelectivePaths_RecursiveObject(t *testing.T) {
 	assert.True(t, sdjwt.IsSDJWT(s), "expected SD-JWT format")
 
 	parsed, err := ParseCredential([]byte(s))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	joseCred, ok := parsed.(*JOSECredential)
 	assert.True(t, ok, "expected parsed credential to be JOSECredential")
 
 	payloadBytes2, err := joseCred.GetContents()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	var m2 map[string]interface{}
 	err = json.Unmarshal(payloadBytes2, &m2)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	cs2, ok := m2["credentialSubject"].(map[string]interface{})
 	assert.True(t, ok)
@@ -1604,18 +1605,18 @@ func TestJOSECredential_SDJWTHolderFlow(t *testing.T) {
 
 	prov, issuerOpts := p256TestIssuer(t, "did:example:issuer")
 	cred, err := NewJOSECredential(vcc, append(issuerOpts, WithSDSelectivePaths(selectivePaths))...)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	if err := cred.AddProofByProvider(prov); err != nil {
 		t.Fatalf("sign: %v", err)
 	}
 	serialized, err := cred.Serialize()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	s, ok := serialized.(string)
 	assert.True(t, ok)
 	assert.True(t, sdjwt.IsSDJWT(s), "expected SD-JWT format")
 
 	parsed, err := sdjwt.Parse(s)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	disclosures := parsed.Disclosures
 	assert.Len(t, disclosures, 2, "expected two disclosures (firstname, email)")
@@ -1628,12 +1629,12 @@ func TestJOSECredential_SDJWTHolderFlow(t *testing.T) {
 	assert.True(t, sdjwt.IsSDJWT(presentation))
 
 	parsedPres, err := ParseCredential([]byte(presentation))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	contents, err := parsedPres.GetContents()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	var m map[string]interface{}
 	err = json.Unmarshal(contents, &m)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	cs, ok := m["credentialSubject"].(map[string]interface{})
 	assert.True(t, ok)
 	assert.Equal(t, "Alice", cs["firstname"])
@@ -1649,11 +1650,11 @@ func TestJOSECredential_SDJWTHolderFlow(t *testing.T) {
 	assert.True(t, sdjwt.IsSDJWT(emptyPres))
 
 	parsedEmpty, err := ParseCredential([]byte(emptyPres))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	emptyContents, err := parsedEmpty.GetContents()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	var em map[string]interface{}
-	assert.NoError(t, json.Unmarshal(emptyContents, &em))
+	require.NoError(t, json.Unmarshal(emptyContents, &em))
 	emptyCS, ok := em["credentialSubject"].(map[string]interface{})
 	assert.True(t, ok)
 	for _, k := range []string{"firstname", "email", "_sd"} {
@@ -1666,9 +1667,9 @@ func TestJOSECredential_SDJWTHolderFlow(t *testing.T) {
 	// The same flow through the methods a holder actually calls: list what the
 	// token can disclose, then present one of them.
 	holderCred, err := ParseJOSECredential(s)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	decoded, err := holderCred.DecodedDisclosures()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Len(t, decoded, 2, "expected two disclosures (firstname, email)")
 	var firstnameDisclosure string
 	for _, d := range decoded {
@@ -1679,11 +1680,11 @@ func TestJOSECredential_SDJWTHolderFlow(t *testing.T) {
 	assert.NotEmpty(t, firstnameDisclosure, "expected a disclosure for firstname")
 
 	presented, err := holderCred.Present([]string{firstnameDisclosure})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	presentedContents, err := presented.GetContents()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	var pm map[string]interface{}
-	assert.NoError(t, json.Unmarshal(presentedContents, &pm))
+	require.NoError(t, json.Unmarshal(presentedContents, &pm))
 	presentedCS, ok := pm["credentialSubject"].(map[string]interface{})
 	assert.True(t, ok)
 	assert.Equal(t, "Alice", presentedCS["firstname"])
@@ -1814,7 +1815,7 @@ func TestExtractField(t *testing.T) {
 	}`
 
 	cred, err := ParseCredential([]byte(jsonCred))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Test extracting top-level field
 	name := cred.ExtractField("credentialSubject.name")
@@ -1857,7 +1858,7 @@ func TestExtractField(t *testing.T) {
 	}
 
 	jwtCred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), secpVMResolver(t, "did:example:issuer"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Test extracting from JWT credential
 	jwtName := jwtCred.ExtractField("credentialSubject.name")
@@ -1884,7 +1885,7 @@ func TestExtractField_EdgeCases(t *testing.T) {
 	}`
 
 	cred, err := ParseCredential([]byte(jsonCred))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Test empty path
 	emptyPath := cred.ExtractField("")
@@ -1962,7 +1963,7 @@ func TestValidateCredential_WithCustomSchemaLoader_Succeeds(t *testing.T) {
 	)
 
 	err := validateCredential(cred, opts)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T) {
@@ -1994,7 +1995,7 @@ func TestValidateCredential_WithCustomSchemaLoader_EmptySchemaFails(t *testing.T
 func TestJSONCredentialHash_RequiresProof(t *testing.T) {
 	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
 	cred, err := NewJSONCredential(contents)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	_, err = cred.Hash()
 	assert.Error(t, err)
@@ -2005,32 +2006,32 @@ func TestJSONCredentialHash_Deterministic(t *testing.T) {
 	cred := newSignedJSONCredential(t)
 
 	h1, err := cred.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	h2, err := cred.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, h1, h2, "hash must be deterministic")
 	assert.Len(t, h1, 64, "SHA-256 hex must be 64 chars")
 	_, err = hex.DecodeString(h1)
-	assert.NoError(t, err, "hash must be valid hex")
+	require.NoError(t, err, "hash must be valid hex")
 }
 
 func TestJSONCredentialHash_StableAcrossSerializeParseRoundTrip(t *testing.T) {
 	cred := newSignedJSONCredential(t)
 
 	h1, err := cred.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	serialized, err := cred.Serialize()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	raw, err := json.Marshal(serialized)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	parsed, err := ParseJSONCredential(raw)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	h2, err := parsed.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, h1, h2, "hash must survive serialize/parse round trip")
 }
@@ -2048,18 +2049,18 @@ func TestJSONCredentialHash_SelectsCanonicalizerByProofFormat(t *testing.T) {
 		"proof": {"type": "DataIntegrityProof", "cryptosuite": "ecdsa-rdfc-2019", "created": "2025-08-05T10:00:00Z", "proofPurpose": "assertionMethod", "verificationMethod": "did:example:issuer#key-1", "proofValue": "abab"}
 	}`)
 	legacy, err := ParseJSONCredential(legacyJSON)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	got, err := legacy.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	want, err := (*jsonmap.JSONMap)(&legacy.credentialData).CanonicalizeFull()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, hex.EncodeToString(want), got, "hex proof must keep the legacy CanonicalizeFull digest")
 
 	modern := newSignedJSONCredential(t).(*JSONCredential)
 	got, err = modern.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	legacyDigest, err := (*jsonmap.JSONMap)(&modern.credentialData).CanonicalizeFull()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotEqual(t, hex.EncodeToString(legacyDigest), got, "z proof must not use the legacy canonicalizer")
 }
 
@@ -2085,14 +2086,14 @@ func TestJSONCredentialHash_IndependentOfKeyOrder(t *testing.T) {
 	}`)
 
 	credA, err := ParseJSONCredential(jsonA)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	credB, err := ParseJSONCredential(jsonB)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	hA, err := credA.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	hB, err := credB.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, hA, hB, "hash must be independent of JSON key order")
 }
@@ -2101,11 +2102,11 @@ func TestJSONCredentialHash_IncludesProof(t *testing.T) {
 	cred := newSignedJSONCredential(t)
 
 	h1, err := cred.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Same credential with a tampered proofValue must hash differently.
 	serialized, err := cred.Serialize()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	m, ok := serialized.(map[string]interface{})
 	assert.True(t, ok)
 
@@ -2114,12 +2115,12 @@ func TestJSONCredentialHash_IncludesProof(t *testing.T) {
 	proof["proofValue"] = "zdeadbeef"
 
 	raw, err := json.Marshal(m)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	tampered, err := ParseJSONCredential(raw)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	h2, err := tampered.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.NotEqual(t, h1, h2, "hash must change when proof changes")
 }
@@ -2128,14 +2129,14 @@ func TestJWTCredentialHash_MatchesSerializedString(t *testing.T) {
 	cred := newSignedJWTCredential(t)
 
 	serialized, err := cred.Serialize()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	jwtStr, ok := serialized.(string)
 	assert.True(t, ok)
 
 	expected := sha256.Sum256([]byte(jwtStr))
 
 	h, err := cred.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, hex.EncodeToString(expected[:]), h)
 }
 
@@ -2143,16 +2144,16 @@ func TestJWTCredentialHash_StableAcrossSerializeParseRoundTrip(t *testing.T) {
 	cred := newSignedJWTCredential(t)
 
 	h1, err := cred.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	serialized, err := cred.Serialize()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	parsed, err := ParseJWTCredential(serialized.(string))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	h2, err := parsed.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, h1, h2, "hash must survive serialize/parse round trip")
 }
@@ -2160,7 +2161,7 @@ func TestJWTCredentialHash_StableAcrossSerializeParseRoundTrip(t *testing.T) {
 func TestJWTCredentialHash_RequiresSignature(t *testing.T) {
 	contents := createBaseCredentialContents(testIssuerDID, createValidCustomFields())
 	cred, err := NewJWTCredential(contents, WithVerificationMethodKey("key-1"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Unsigned: must error.
 	_, err = cred.Hash()
@@ -2169,10 +2170,10 @@ func TestJWTCredentialHash_RequiresSignature(t *testing.T) {
 
 	// Signed: must succeed.
 	err = cred.AddProofByProvider(newTestSigner(t))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	h, err := cred.Hash()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Len(t, h, 64)
 }
 
@@ -2227,7 +2228,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 		vcc := baseContents()
 
 		out, err := serializeCredentialContents(&vcc)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		_, present := out["termsOfUse"]
 		assert.False(t, present, "termsOfUse must be absent when no entries are set")
@@ -2238,7 +2239,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 		vcc.TermsOfUse = []TermsOfUse{{Type: "PresentationRequiredPolicy"}}
 
 		out, err := serializeCredentialContents(&vcc)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		terms, ok := out["termsOfUse"].([]CredentialData)
 		assert.True(t, ok, "termsOfUse must serialize to an array, got %T", out["termsOfUse"])
@@ -2254,7 +2255,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 		}}
 
 		out, err := serializeCredentialContents(&vcc)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		terms := out["termsOfUse"].([]CredentialData)
 		assert.Len(t, terms, 1)
@@ -2272,7 +2273,7 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 		}
 
 		out, err := serializeCredentialContents(&vcc)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		terms := out["termsOfUse"].([]CredentialData)
 		assert.Len(t, terms, 2)
@@ -2296,17 +2297,17 @@ func TestSerializeCredentialContents_TermsOfUse(t *testing.T) {
 		vcc.TermsOfUse = []TermsOfUse{{Type: "PresentationRequiredPolicy"}}
 
 		cred, err := NewJWTCredential(vcc, WithVerificationMethodKey("key-1"), secpVMResolver(t, "did:example:issuer"))
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		contents, err := cred.GetContents()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		var payload struct {
 			TermsOfUse []struct {
 				Type string `json:"type"`
 			} `json:"termsOfUse"`
 		}
-		assert.NoError(t, json.Unmarshal(contents, &payload))
+		require.NoError(t, json.Unmarshal(contents, &payload))
 		assert.Len(t, payload.TermsOfUse, 1)
 		assert.Equal(t, "PresentationRequiredPolicy", payload.TermsOfUse[0].Type)
 	})
@@ -2343,7 +2344,7 @@ func TestSerializeCredentialContents_CredentialStatusTypeRequired(t *testing.T) 
 		}}
 
 		out, err := serializeCredentialContents(&vcc)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		status, ok := out["credentialStatus"].(CredentialData)
 		assert.True(t, ok, "a single status collapses to an object, got %T", out["credentialStatus"])
@@ -2371,7 +2372,7 @@ func TestTermsOfUse_CanonicalizationProducesAbsoluteIRIs(t *testing.T) {
 		}
 
 		out, err := serializeCredentialContents(&vcc)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		return normalizeCredentialData(out)
 	}
@@ -2383,27 +2384,28 @@ func TestTermsOfUse_CanonicalizationProducesAbsoluteIRIs(t *testing.T) {
 		})
 
 		nq, err := processor.CanonicalizeDocument(doc)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Contains(t, string(nq), "<https://example.com/vocab#PresentationRequiredPolicy>")
 		assert.NotRegexp(t, relativeIRIPattern, string(nq),
 			"canonicalized n-quads must not contain relative IRIs")
 	})
 
-	t.Run("control: an undeclared policy type degrades to a relative IRI", func(t *testing.T) {
+	t.Run("control: an undeclared policy type has no RDF form", func(t *testing.T) {
 		// This is the trap the README warns about. Asserting it explicitly keeps
 		// the invariant above meaningful: if a future context change silently
 		// started declaring the term, this test would catch that the two cases
-		// are no longer distinct.
+		// are no longer distinct. The legacy canonicalizer drops the relative
+		// IRI; earlier json-gold releases kept it in the signed bytes.
 		doc := contentsWithContext([]interface{}{
 			"https://www.w3.org/ns/credentials/v2",
 		})
 
 		nq, err := processor.CanonicalizeDocument(doc)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
-		assert.Contains(t, string(nq), "<PresentationRequiredPolicy>")
-		assert.Regexp(t, relativeIRIPattern, string(nq))
+		assert.NotContains(t, string(nq), "PresentationRequiredPolicy")
+		assert.NotRegexp(t, relativeIRIPattern, string(nq))
 	})
 }
 
