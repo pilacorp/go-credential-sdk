@@ -422,7 +422,7 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	// asked by handing over a proof, and before attaching, so a proof that does
 	// not check out leaves nothing behind.
 	if options.isVerifyProof {
-		if err := m.VerifyDetachedProof(options.resolver, proof); err != nil {
+		if err := m.VerifyDetachedProof(options.resolver, proof, jsonmap.WithExpectedProofPurpose(options.diProofPurpose())); err != nil {
 			return err
 		}
 	}
@@ -528,6 +528,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
 				options.resolver,
 				options.proofVerificationMethod,
+				jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
 			)
 			if err != nil {
 				return fmt.Errorf("verify proof: %w", err)

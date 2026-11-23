@@ -1612,3 +1612,157 @@ func TestJSONMap_HasMultibaseProof(t *testing.T) {
 		t.Error("no proof: HasMultibaseProof must be false")
 	}
 }
+
+// Data Integrity 1.0 §4.5 needs the referenced proofs inside the signed input,
+// which this SDK does not build. Any proof carrying previousProof is refused.
+func TestVerifyProof_RefusesPreviousProof(t *testing.T) {
+	sp, pub := testKeyPair(t)
+
+	// A dangling previousProof is refused.
+	m := testCredential()
+	proof := &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+		Id:                 "urn:uuid:proof-1",
+		PreviousProof:      dto.StringOrStrings{"urn:uuid:does-not-exist"},
+	}
+	attachSignedECDSAProof(t, &m, sp, proof)
+
+	ok, err := (&m).VerifyProof(issuerResolver(t, pub), "")
+	if err == nil && ok {
+		t.Fatal("a proof with previousProof verified")
+	}
+	if err == nil || !strings.Contains(err.Error(), "previousProof") {
+		t.Fatalf("refused, but not for previousProof: %v", err)
+	}
+
+	// A self-referencing previousProof is also refused: the SDK cannot bind a
+	// chain, even when the referenced id exists.
+	linked := testCredential()
+	self := &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+		Id:                 "urn:uuid:proof-1",
+		PreviousProof:      dto.StringOrStrings{"urn:uuid:proof-1"},
+	}
+	attachSignedECDSAProof(t, &linked, sp, self)
+	ok, err = (&linked).VerifyProof(issuerResolver(t, pub), "")
+	if err == nil && ok {
+		t.Fatal("a proof whose previousProof is its own id verified")
+	}
+	if err == nil || !strings.Contains(err.Error(), "previousProof") {
+		t.Fatalf("refused, but not for previousProof: %v", err)
+	}
+}
+
+// A detached proof carrying previousProof is refused: the SDK does not bind
+// proof chains.
+func TestVerifyDetachedProof_RefusesPreviousProof(t *testing.T) {
+	_, pub := testKeyPair(t)
+	m := testCredential()
+	proof := &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+		Id:                 "urn:uuid:proof-1",
+		PreviousProof:      dto.StringOrStrings{"urn:uuid:proof-1"},
+		ProofValue:         "z1111",
+	}
+
+	err := (&m).VerifyDetachedProof(issuerResolver(t, pub), proof)
+	if err == nil || !strings.Contains(err.Error(), "previousProof") {
+		t.Fatalf("detached proof with previousProof: got %v, want a previousProof error", err)
+	}
+}
+
+// CID 1.0 §3.3: the verification method's controller must be the document that
+// was resolved. The signature does not cover that field, so a document can
+// name another DID as controller and still verify today.
+func TestVerifyProof_RefusesForeignController(t *testing.T) {
+	sp, pub := testKeyPair(t)
+	m := testCredential()
+	attachSignedECDSAProof(t, &m, sp, &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+	})
+
+	vm, err := verificationmethod.NewP256VM("did:example:issuer", "key-1", pub)
+	if err != nil {
+		t.Fatalf("vm: %v", err)
+	}
+	vm.Controller = "did:example:someone-else"
+	doc := verificationmethod.NewDIDDocument("did:example:issuer", vm)
+
+	ok, err := (&m).VerifyProof(verificationmethod.NewStaticResolver(doc), "")
+	if err == nil && ok {
+		t.Fatal("a verification method controlled by another DID verified")
+	}
+	if err == nil || !strings.Contains(err.Error(), "controller") {
+		t.Fatalf("refused, but not for the controller: %v", err)
+	}
+}
+
+// CID 1.0 §3.3: a resolver that returns did:other for a did:issuer request,
+// with both doc.ID and vm.Controller set to did:other, used to pass because
+// only the two were compared. Now both must match the DID in the VM URL.
+func TestVerifyProof_RefusesDocIDMismatchingVMURL(t *testing.T) {
+	sp, pub := testKeyPair(t)
+	m := testCredential()
+	attachSignedECDSAProof(t, &m, sp, &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+	})
+
+	vm, err := verificationmethod.NewP256VM("did:example:issuer", "key-1", pub)
+	if err != nil {
+		t.Fatalf("vm: %v", err)
+	}
+	vm.Controller = "did:example:other"
+	doc := verificationmethod.NewDIDDocument("did:example:other", vm)
+
+	ok, err := (&m).VerifyProof(verificationmethod.NewStaticResolver(doc), "")
+	if err == nil && ok {
+		t.Fatal("doc.ID and vm.Controller agree but differ from the DID in the VM URL; want refusal")
+	}
+}
+
+func attachSignedECDSAProof(t *testing.T, m *JSONMap, sp signer.SignerProvider, proof *dto.Proof) {
+	t.Helper()
+	m.ensureDataIntegrityContext()
+	hashData, err := m.ecdsaHashData(proof)
+	if err != nil {
+		t.Fatalf("hash data: %v", err)
+	}
+	digest := sha256.Sum256(hashData)
+	sig, err := sp.Sign(digest[:])
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	proof.ProofValue = verificationmethod.EncodeMultibaseKey(sig)
+	if err := m.AddCustomProof(proof); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+}
+
+func issuerResolver(t *testing.T, pub *ecdsa.PublicKey) verificationmethod.ResolverProvider {
+	t.Helper()
+	vm, err := verificationmethod.NewP256VM("did:example:issuer", "key-1", pub)
+	if err != nil {
+		t.Fatalf("vm: %v", err)
+	}
+	return verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument("did:example:issuer", vm))
+}
