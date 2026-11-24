@@ -82,7 +82,7 @@ func TestSigningKeyAccept(t *testing.T) {
 		// signature itself is valid for the key.
 		{"header alg differs from the key's", p256SigningKey, mismatchedAlgInput, rs(p256Key, mismatchedAlgInput), "does not verify against verification method"},
 		{"header carries crit", p256SigningKey, critInput, rs(p256Key, critInput), "does not verify against verification method"},
-		{"parsed token: no key, another key's signature", SigningKey{}, p256Input, rs(other, p256Input), ""},
+		{"parsed token: no key, another key's signature", SigningKey{}, p256Input, rs(other, p256Input), "no verification method is bound"},
 		{"parsed token: no key, wrong length", SigningKey{}, p256Input, make([]byte, 72), "got 72 bytes"},
 	}
 	for _, tc := range cases {

@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/internal/safehttp"
 	"github.com/pilacorp/json-gold/ld"
 )
 
@@ -447,12 +447,23 @@ func expandsThrough(iri string) string {
 
 // publicOnlyClient is the client of every context fetch unless a test replaced
 // it. A proxy would connect on its behalf and hide the address, so it uses none.
-var publicOnlyClient = newPublicOnlyClient()
+// The SSRF-prevention logic lives in credential/internal/safehttp; the dialer
+// returns ErrContextAddress so callers can match it with errors.Is.
+var publicOnlyClient = newContextOnlyClient()
 
-// newPublicOnlyClient keeps its dial and handshake bounds apart from
-// contextFetchTimeout: net/http keeps dialing after a request is canceled.
-func newPublicOnlyClient() *http.Client {
-	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: refuseNonPublic}
+// newContextOnlyClient wraps safehttp.RefuseNonPublic to return
+// ErrContextAddress (this package's sentinel) instead of the generic
+// safehttp.ErrNonPublicAddress, so error-chain tests keep working.
+func newContextOnlyClient() *http.Client {
+	dialer := &net.Dialer{
+		Timeout: 5 * time.Second,
+		Control: func(network, address string, c syscall.RawConn) error {
+			if err := safehttp.RefuseNonPublic(network, address, c); err != nil {
+				return ErrContextAddress
+			}
+			return nil
+		},
+	}
 	return &http.Client{Transport: &http.Transport{
 		DialContext:            dialer.DialContext,
 		TLSHandshakeTimeout:    5 * time.Second,
@@ -461,66 +472,4 @@ func newPublicOnlyClient() *http.Client {
 		IdleConnTimeout:        90 * time.Second,
 		MaxResponseHeaderBytes: 64 << 10,
 	}}
-}
-
-// refuseNonPublic is the dialer's Control, so it judges the address actually
-// connected to: after DNS resolution, on every redirect and every attempt.
-func refuseNonPublic(_, address string, _ syscall.RawConn) error {
-	// An address that is not ip:port is refused too: the dialer passes an empty
-	// host unresolved, and dialing ":443" reaches the local host.
-	ap, err := netip.ParseAddrPort(address)
-	if err != nil || !isPublicAddr(ap.Addr()) {
-		return ErrContextAddress
-	}
-	return nil
-}
-
-// nonPublicPrefixes is the table of digitalcredential/internal/safehttp, which
-// this module cannot import: the IANA special-purpose registries' entries that
-// are not globally reachable, plus multicast and deprecated site-local. Change
-// the two tables together: no build or test compares them.
-var nonPublicPrefixes = func() []netip.Prefix {
-	var prefixes []netip.Prefix
-	for _, p := range []string{
-		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-		"169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
-		"192.88.99.2/32", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24",
-		"203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
-		"64:ff9b:1::/48", "100::/64", "100:0:0:1::/64", "2001::/23", "2001:db8::/32",
-		"3fff::/20", "5f00::/16", "fc00::/7", "fe80::/10", "fec0::/10", "ff00::/8",
-	} {
-		prefixes = append(prefixes, netip.MustParsePrefix(p))
-	}
-	return prefixes
-}()
-
-var (
-	ipv4CompatiblePrefix = netip.MustParsePrefix("::/96")
-	nat64Prefix          = netip.MustParsePrefix("64:ff9b::/96")
-	sixToFourPrefix      = netip.MustParsePrefix("2002::/16")
-)
-
-// isPublicAddr reports whether ip may be connected to. An IPv6 address that
-// carries an IPv4 address is judged by that IPv4 address.
-func isPublicAddr(ip netip.Addr) bool {
-	if !ip.IsValid() {
-		return false
-	}
-	// Prefix.Contains never matches an address with a zone.
-	ip = ip.WithZone("")
-	b := ip.As16()
-	switch {
-	case ip.Is4In6():
-		ip = ip.Unmap()
-	case ipv4CompatiblePrefix.Contains(ip), nat64Prefix.Contains(ip):
-		ip = netip.AddrFrom4([4]byte(b[12:16]))
-	case sixToFourPrefix.Contains(ip):
-		ip = netip.AddrFrom4([4]byte(b[2:6]))
-	}
-	for _, p := range nonPublicPrefixes {
-		if p.Contains(ip) {
-			return false
-		}
-	}
-	return true
 }
