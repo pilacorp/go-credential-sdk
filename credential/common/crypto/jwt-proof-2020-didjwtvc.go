@@ -61,5 +61,5 @@ func withoutProof(m map[string]interface{}) map[string]interface{} {
 }
 
 func disagreeErr(member string) error {
-	return fmt.Errorf("member %q differs from another signed value in the JWT: %w", shownMember(member), ErrJwtProofBinding)
+	return fmt.Errorf("member %q differs from another signed value in the JWT: %w", shownValue(member), ErrJwtProofBinding)
 }
