@@ -176,10 +176,10 @@ func WithReplaceProof() CredentialOpt {
 // refuseOverwrite stops a JWT signing call from replacing a signature the
 // credential already carries, unless the caller passed WithReplaceProof.
 //
-// Signing with a key the header does not name already failed, because
-// signingKey.Accept checks the fresh signature before it is stored. What went
-// through in silence was the other case: signing again with the right key
-// succeeded, and Hash() changed. Shared by the VC 1.1 JWT and the vc+jwt
+// Signing with a wrong key or on a parsed token (no key bound) already fails,
+// because signingKey.Accept checks the fresh signature before it is stored.
+// What went through in silence was the other case: signing again with the right
+// key succeeded, and Hash() changed. Shared by the VC 1.1 JWT and the vc+jwt
 // credential, which both hold exactly one signature.
 func refuseOverwrite(current string, options *credentialOptions) error {
 	if current == "" || options.replaceProof {
