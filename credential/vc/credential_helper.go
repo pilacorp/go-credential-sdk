@@ -12,6 +12,7 @@ import (
 	credentialstatus "github.com/pilacorp/go-credential-sdk/credential/common/credential-status"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
@@ -640,21 +641,40 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 	return vcdm.CheckValidityPeriod("credential", validFrom, validUntil, leeway)
 }
 
-// knownStatusType reports whether the SDK implements a credentialStatus type.
+// knownStatusType reports whether the SDK reads a credentialStatus type. Only
+// Bitstring Status List entries are read; the reader refuses any other list.
 func knownStatusType(t interface{}) bool {
-	return hasType(t, "BitstringStatusListEntry") || hasType(t, "StatusList2021Entry")
+	return hasType(t, "BitstringStatusListEntry")
 }
 
 // checkRevocation checks every credentialStatus entry the SDK understands
 // and skips entries with unknown types (VC-JOSE-COSE: "If the extension
-// mechanism type is not understood, this property MUST be ignored").
+// mechanism type is not understood, this property MUST be ignored"). For each
+// entry it verifies the status list credential itself: its proof, issuer
+// match, and validity period.
 //
 // credentialStatus may be a single object or an array of objects
 // (VCDM 2.0 §4.4).
-func checkRevocation(c CredentialData) error {
+//
+// issuerDIDFallbacks supplies additional DID strings to try when c["issuer"]
+// is missing (e.g. the JWT "iss" claim for VC Data Model v1.1 §6.3.1).
+func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, issuerDIDFallbacks ...string) error {
 	rawStatus, ok := c["credentialStatus"]
 	if !ok || rawStatus == nil {
 		return nil
+	}
+
+	// For JWT VCs, VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
+	// is present it sets the issuer.
+	var issuerDID string
+	for _, fb := range issuerDIDFallbacks {
+		if fb != "" {
+			issuerDID = fb
+			break
+		}
+	}
+	if issuerDID == "" {
+		issuerDID, _ = jsonmap.DIDFromField(c["issuer"])
 	}
 
 	entries := convertToArray(rawStatus)
@@ -673,16 +693,26 @@ func checkRevocation(c CredentialData) error {
 			continue
 		}
 
-		if err := checkStatusEntry(statusMap, i); err != nil {
+		if err := checkStatusEntry(statusMap, i, resolver, acceptLegacyList, issuerDID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// checkStatusEntry validates and checks a single credentialStatus entry of a
-// known type.
-func checkStatusEntry(statusMap map[string]interface{}, index int) error {
+// checkStatusEntry validates and checks a single BitstringStatusListEntry.
+func checkStatusEntry(statusMap map[string]interface{}, index int, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, issuerDID string) error {
+	// statusPurpose is required (Bitstring Status List v1.0 §2.1).
+	entryPurpose, _ := statusMap["statusPurpose"].(string)
+	if entryPurpose == "" {
+		return fmt.Errorf("credentialStatus[%d].statusPurpose is required", index)
+	}
+
+	// statusSize other than 1 is not supported (this reader handles 1-bit entries).
+	if size, ok := statusMap["statusSize"]; ok && size != float64(1) {
+		return fmt.Errorf("credentialStatus[%d].statusSize %v is not supported: only 1-bit status entries are", index, size)
+	}
+
 	rawStatusListCredential, ok := statusMap["statusListCredential"]
 	if !ok || rawStatusListCredential == nil {
 		return fmt.Errorf("credentialStatus[%d].statusListCredential is required", index)
@@ -708,12 +738,14 @@ func checkStatusEntry(statusMap map[string]interface{}, index int) error {
 		return fmt.Errorf("invalid credentialStatus[%d].statusListIndex: %w", index, err)
 	}
 
-	isRevoked, err := credentialstatus.FetchAndCheckRevocation(statusListCredential, position)
-	if err != nil {
-		return fmt.Errorf("failed to check revocation: %w", err)
+	// Fetch, verify, and check the status list credential.
+	clientOpts := []credentialstatus.Option{credentialstatus.WithResolver(resolver)}
+	if acceptLegacyList {
+		clientOpts = append(clientOpts, credentialstatus.WithLegacyStatusList())
 	}
-	if isRevoked {
-		return fmt.Errorf("credential is revoked")
+	client := credentialstatus.NewClient(clientOpts...)
+	if err := client.VerifyAndCheckStatus(statusListCredential, position, entryPurpose, issuerDID); err != nil {
+		return fmt.Errorf("failed to check revocation: %w", err)
 	}
 
 	return nil

@@ -153,7 +153,7 @@ func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, v
 	if err != nil {
 		return fmt.Errorf("jsonmap: %w", err)
 	}
-	signingInput, err := m.secp256k1SigningInput(proof, encHeader)
+	signingInput, err := m.secp256k1SigningInput(proof, encHeader, nil)
 	if err != nil {
 		return fmt.Errorf("jsonmap: %w", err)
 	}
@@ -183,10 +183,13 @@ func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, v
 
 // verifyEcdsaSecp256k1Proof verifies an EcdsaSecp256k1Signature2019 proof,
 // rebuilding the signing input exactly as the signer did.
-func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument, proof *dto.Proof, cache *digestCache) (bool, error) {
 	vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
+	}
+	if err := verificationmethod.RequireController(doc, vm); err != nil {
+		return false, err
 	}
 	// The suite binds the signature to a secp256k1 key; a P-256 VM under this
 	// proof type means the issuer mixed suites, which is what this type exists
@@ -246,7 +249,7 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 	// RFC 7797 signs the header that travels with the proof, so the one from
 	// the jws is what goes back into the signing input — not a freshly built
 	// one, which would leave every other header field uncovered.
-	signingInput, err := m.secp256k1SigningInput(proof, encHeader)
+	signingInput, err := m.secp256k1SigningInput(proof, encHeader, cache)
 	if err != nil {
 		return false, err
 	}
@@ -270,8 +273,8 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 // (created, challenge, domain, proofPurpose) is covered by the signature. The
 // alternative, hashing the document alone, would leave those options free to
 // be rewritten after issuance.
-func (m *JSONMap) secp256k1SigningInput(proof *dto.Proof, encHeader string) ([]byte, error) {
-	hashData, err := m.ecdsaHashData(proof)
+func (m *JSONMap) secp256k1SigningInput(proof *dto.Proof, encHeader string, cache *digestCache) ([]byte, error) {
+	hashData, err := m.ecdsaHashData(proof, cache)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build hash data: %w", err)
 	}

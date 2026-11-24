@@ -135,7 +135,7 @@ func TestKnownTypes_ArrayFormIsKnown(t *testing.T) {
 	status := CredentialData{"credentialStatus": map[string]interface{}{
 		"type": []interface{}{"BitstringStatusListEntry"},
 	}}
-	if err := checkRevocation(status); err == nil {
+	if err := checkRevocation(status, nil, false); err == nil {
 		t.Fatal("checkRevocation skipped an array-typed BitstringStatusListEntry as unknown")
 	}
 }

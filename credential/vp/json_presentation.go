@@ -229,7 +229,7 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 	// asked by handing over a proof, and before attaching, so a proof that does
 	// not check out leaves nothing behind.
 	if options.isVerifyProof {
-		if err := m.VerifyDetachedProof(options.resolver, proof); err != nil {
+		if err := m.VerifyDetachedProof(options.resolver, proof, jsonmap.WithExpectedProofPurpose(options.diProofPurpose())); err != nil {
 			return err
 		}
 	}
@@ -288,6 +288,8 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
 			options.resolver,
 			options.proofVerificationMethod,
+			jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
+			jsonmap.WithMaxProofs(options.maxProofs),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
