@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -219,7 +220,7 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 		Domain:             domainValue(options.domain),
 	}
 
-	hashData, err := m.ecdsaHashData(proof)
+	hashData, err := m.ecdsaHashData(proof, nil)
 	if err != nil {
 		return fmt.Errorf("jsonmap: failed to build hash data: %w", err)
 	}
@@ -320,7 +321,7 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 			suite, DataIntegrityProof, ECDSARDFC2019)
 	}
 
-	ok, err := m.verifyOneProof(resolver, proof, proofVerifyConfigFrom(opts).expectedPurpose)
+	ok, err := m.verifyOneProof(resolver, proof, proofVerifyConfigFrom(opts).expectedPurpose, nil)
 	if err != nil {
 		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
 	}
@@ -360,8 +361,12 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	if len(proofs) == 0 {
 		return false, fmt.Errorf("credential has no proof")
 	}
+	cfg := proofVerifyConfigFrom(opts)
+	if cfg.maxProofs > 0 && len(proofs) > cfg.maxProofs {
+		return false, fmt.Errorf("%w: the document carries %d and this verifier accepts at most %d; send at most %d, or raise WithMaxProofs", ErrTooManyProofs, len(proofs), cfg.maxProofs, cfg.maxProofs)
+	}
 	raw := m.rawProofList()
-	expectedPurpose := proofVerifyConfigFrom(opts).expectedPurpose
+	expectedPurpose := cfg.expectedPurpose
 
 	// Verify a single, caller-selected proof.
 	if targetVM != "" {
@@ -370,7 +375,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 				if err := rejectPreviousProof(raw[i]); err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
-				ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose)
+				ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, nil)
 				if err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
@@ -381,12 +386,22 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	}
 
 	// W3C proof set: every proof must verify, each against its own
-	// verification method.
+	// verification method. The body is the same for all proofs, so the
+	// document digest is computed once per distinct canonical form and reused.
+	cache := &digestCache{}
+	return m.verifyProofSet(resolver, proofs, expectedPurpose, raw, cache)
+}
+
+// verifyProofSet verifies every proof in proofs against the JSONMap, using
+// cache for canonicalization and resolving each DID once. Tests call this
+// directly with their own cache so they can inspect cache.misses in parallel.
+func (m *JSONMap) verifyProofSet(resolver verificationmethod.ResolverProvider, proofs []dto.Proof, expectedPurpose string, raw []interface{}, cache *digestCache) (bool, error) {
+	resolver = &didMemo{inner: resolver}
 	for i := range proofs {
 		if err := rejectPreviousProof(raw[i]); err != nil {
 			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
 		}
-		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose)
+		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, cache)
 		if err != nil {
 			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
 		}
@@ -398,8 +413,10 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 }
 
 // verifyOneProof verifies a single proof against the DID document resolved from
-// that proof's own verification method.
-func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, expectedPurpose string) (bool, error) {
+// that proof's own verification method. When cache is non-nil, canonicalization
+// results are shared across calls; when nil, each call computes them fresh
+// (the single-proof path, VerifyDetachedProof).
+func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, expectedPurpose string, cache *digestCache) (bool, error) {
 	if err := proofPurposeDisagrees(proof, expectedPurpose); err != nil {
 		return false, err
 	}
@@ -431,16 +448,16 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 	// it moved onto this SDK; those documents are rejected now, deliberately,
 	// because a key taken from the proof cannot tell them apart from a forgery.
 	case proof.Type == EcdsaSecp256k1Signature2019:
-		return m.verifyEcdsaSecp256k1Proof(doc, proof)
+		return m.verifyEcdsaSecp256k1Proof(doc, proof, cache)
 
 	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019:
-		return m.verifyDataIntegrityProof(doc, proof)
+		return m.verifyDataIntegrityProof(doc, proof, cache)
 
 	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSASD2023:
-		return m.verifyECDSASDProof(doc, proof)
+		return m.verifyECDSASDProof(doc, proof, cache)
 
 	case proof.Type == JsonWebSignature2020:
-		return m.verifyJWSProof(doc, proof)
+		return m.verifyJWSProof(doc, proof, cache)
 
 	default:
 		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
@@ -490,7 +507,7 @@ func didFromVMURL(vm string) string {
 // verifyECDSA verifies an ECDSA-signed JSONMap. A "z" prefix selects the
 // spec-conformant path, anything else the legacy hex path (secp256k1 proofs
 // issued by SDK <= v1.7.0, which also carry cryptosuite ecdsa-rdfc-2019).
-func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof, cache *digestCache) (bool, error) {
 	if strings.HasPrefix(proof.ProofValue, MultibaseBase58BTCPrefix) {
 		// Only the P-256 profile of ecdsa-rdfc-2019 is implemented; reject
 		// other curves up front so a P-384 key gets a clear error, not a
@@ -500,7 +517,7 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, err
 				"ecdsa-rdfc-2019: verification method %q uses curve %q, but this SDK supports P-256 only",
 				proof.VerificationMethod, pub.Curve.Params().Name)
 		}
-		return m.verifyECDSASpecConformant(pub, proof)
+		return m.verifyECDSASpecConformant(pub, proof, cache)
 	}
 
 	// Legacy hex proofs (SDK <= v1.7.0) sign the body only, so challenge and
@@ -508,7 +525,7 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, err
 	// themselves. TODO(after the 14-day grace period): reject hex proofs that
 	// carry challenge or domain.
 
-	doc, err := m.LegacyHexCanonicalize()
+	doc, err := cache.legacyHexCanonicalize(m)
 	if err != nil {
 		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
 	}
@@ -579,8 +596,10 @@ func concatHashData(proofConfigHash, transformedDocumentHash [sha256.Size]byte) 
 
 // ecdsaHashData builds the 64-byte hashData of section 3.2.4,
 // proofConfigHash || transformedDocumentHash, for both signing and verifying.
-func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
-	docHash, err := m.DocumentDigest()
+// When cache is non-nil, the DocumentDigest is fetched from (or stored in) the
+// cache instead of being recomputed.
+func (m *JSONMap) ecdsaHashData(proof *dto.Proof, cache *digestCache) ([]byte, error) {
+	docHash, err := cache.documentDigest(m)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash document: %w", err)
 	}
@@ -589,13 +608,13 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,
 // rebuilding hashData exactly as the signer did.
-func (m *JSONMap) verifyECDSASpecConformant(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyECDSASpecConformant(pub *ecdsa.PublicKey, proof *dto.Proof, cache *digestCache) (bool, error) {
 	signature, err := verificationmethod.DecodeMultibaseKey(proof.ProofValue)
 	if err != nil {
 		return false, fmt.Errorf("failed to decode multibase proofValue: %w", err)
 	}
 
-	hashData, err := m.ecdsaHashData(proof)
+	hashData, err := m.ecdsaHashData(proof, cache)
 	if err != nil {
 		return false, fmt.Errorf("failed to build hash data: %w", err)
 	}
@@ -634,7 +653,7 @@ func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto
 	return true, nil
 }
 
-func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, cache *digestCache) (bool, error) {
 	vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
@@ -646,7 +665,7 @@ func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, 
 	if err != nil {
 		return false, err
 	}
-	ok, err := m.verifyECDSA(pub, proof)
+	ok, err := m.verifyECDSA(pub, proof, cache)
 	if err != nil || !ok {
 		return ok, err
 	}
@@ -758,6 +777,8 @@ type proofVerifyConfig struct {
 	// Empty means the caller did not say, and the purpose written in the
 	// proof is the one that is checked.
 	expectedPurpose string
+	// maxProofs caps the proofs a document may carry; 0 means no cap.
+	maxProofs int
 }
 
 func proofVerifyConfigFrom(opts []ProofVerifyOpt) proofVerifyConfig {
@@ -780,6 +801,22 @@ func WithExpectedProofPurpose(purpose string) ProofVerifyOpt {
 			return
 		}
 		cfg.expectedPurpose = purpose
+	}
+}
+
+// ErrTooManyProofs is returned, wrapped with the counts, when a document
+// carries more proofs than WithMaxProofs allows.
+var ErrTooManyProofs = errors.New("too many proofs")
+
+// WithMaxProofs refuses a document that carries more than n proofs, before any
+// DID is resolved. Each proof costs a resolution, a signature check and a
+// canonicalization of its own configuration, so a verifier that serves
+// untrusted callers sets the most proofs its documents carry. The count is of
+// the whole document, also when VerifyProof checks only the proof of one
+// targetVM. n <= 0 leaves the set unbounded, which is the default.
+func WithMaxProofs(n int) ProofVerifyOpt {
+	return func(cfg *proofVerifyConfig) {
+		cfg.maxProofs = max(n, 0)
 	}
 }
 

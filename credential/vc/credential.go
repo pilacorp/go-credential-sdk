@@ -151,6 +151,8 @@ type credentialOptions struct {
 	// expectedProofPurpose overrides the assertionMethod a VC verifier expects.
 	expectedProofPurpose string
 	replaceProof         bool
+	// maxProofs caps the proofs a JSON-LD credential may carry; 0 means no cap.
+	maxProofs int
 }
 
 // WithReplaceProof (signing) lets a signing call replace a signature the
@@ -234,6 +236,18 @@ func (o *credentialOptions) diProofPurpose() string {
 func WithProofVerificationMethod(vm string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.proofVerificationMethod = vm
+	}
+}
+
+// WithMaxProofs makes Verify refuse a JSON-LD credential that carries more
+// than n proofs, before any DID is resolved. A verifier that serves untrusted
+// callers sets the most proofs its credentials carry. The count is of the
+// whole credential, also with WithProofVerificationMethod. n <= 0 leaves the
+// proof set unbounded, which is the default. A JWT credential holds one signature,
+// so the option does not change it.
+func WithMaxProofs(n int) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.maxProofs = n
 	}
 }
 
