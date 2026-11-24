@@ -105,7 +105,7 @@ func hashForJWSAlg(alg string, input []byte) ([]byte, error) {
 	}
 }
 
-func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, cache *digestCache) (bool, error) {
 	vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
@@ -130,7 +130,7 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 		return false, err
 	}
 
-	payload, err := m.LegacyHexCanonicalize()
+	payload, err := cache.legacyHexCanonicalize(m)
 	if err != nil {
 		return false, fmt.Errorf("canonicalize: %w", err)
 	}

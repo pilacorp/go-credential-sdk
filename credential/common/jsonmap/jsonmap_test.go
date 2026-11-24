@@ -149,7 +149,7 @@ func TestJSONMap_AddECDSAProof_RoundTripsThroughSpecConformantBranch(t *testing.
 		t.Fatalf("proofValue is not multibase base58btc: %s", proof.ProofValue)
 	}
 
-	ok, err := m.verifyECDSA(pub, &proof)
+	ok, err := m.verifyECDSA(pub, &proof, nil)
 	if err != nil {
 		t.Fatalf("verifyECDSA error: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestJSONMap_VerifyECDSA_RejectsTamperedProofOptions(t *testing.T) {
 				proof.Type = "SomeOtherProof"
 			}
 
-			ok, err := m.verifyECDSA(pub, &proof)
+			ok, err := m.verifyECDSA(pub, &proof, nil)
 			if err == nil && ok {
 				t.Fatalf("tampered %s verified successfully", field)
 			}
@@ -210,7 +210,7 @@ func TestJSONMap_VerifyECDSA_RejectsTamperedBody(t *testing.T) {
 	}
 	m["credentialSubject"].(map[string]interface{})["name"] = "Mallory"
 
-	ok, err := m.verifyECDSA(pub, &proof)
+	ok, err := m.verifyECDSA(pub, &proof, nil)
 	if err == nil && ok {
 		t.Fatalf("tampered body verified successfully")
 	}
@@ -302,7 +302,7 @@ _:c14n0 <https://w3id.org/security#verificationMethod> <did:example:issuer#key-1
 		ProofPurpose:       "assertionMethod",
 	}
 
-	hashData, err := m.ecdsaHashData(proof)
+	hashData, err := m.ecdsaHashData(proof, nil)
 	if err != nil {
 		t.Fatalf("ecdsaHashData: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestJSONMap_VerifyECDSA_RejectsMalformedMultibaseProofValue(t *testing.T) {
 				ProofValue:         proofValue,
 			}
 
-			if _, err := m.verifyECDSA(pub, proof); err == nil {
+			if _, err := m.verifyECDSA(pub, proof, nil); err == nil {
 				t.Fatalf("expected an error for proofValue %q", proofValue)
 			}
 		})
@@ -1394,23 +1394,23 @@ func TestJSONMap_AddECDSAProof_SignsChallengeAndDomain(t *testing.T) {
 	if proof.Challenge != "nonce-123" || !reflect.DeepEqual(proof.Domain, dto.StringOrStrings{"verifier.example"}) {
 		t.Fatalf("ParseRawToProof dropped challenge/domain: %+v", proof)
 	}
-	if ok, err := m.verifyECDSA(pub, &proof); err != nil || !ok {
+	if ok, err := m.verifyECDSA(pub, &proof, nil); err != nil || !ok {
 		t.Fatalf("untampered proof failed: ok=%v err=%v", ok, err)
 	}
 
 	tampered := proof
 	tampered.Challenge = "nonce-456"
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("changed challenge verified successfully")
 	}
 	tampered = proof
 	tampered.Domain = dto.StringOrStrings{"attacker.example"}
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("changed domain verified successfully")
 	}
 	tampered = proof
 	tampered.Challenge, tampered.Domain = "", nil
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("stripped challenge/domain verified successfully")
 	}
 }
@@ -1440,7 +1440,7 @@ func signProofObject(t *testing.T, m *JSONMap, sp signer.SignerProvider, proofOb
 	t.Helper()
 	m.ensureDataIntegrityContext()
 	proof := dto.ProofFromMap(proofObj)
-	hashData, err := m.ecdsaHashData(&proof)
+	hashData, err := m.ecdsaHashData(&proof, nil)
 	if err != nil {
 		t.Fatalf("ecdsaHashData: %v", err)
 	}
@@ -1478,18 +1478,18 @@ func TestJSONMap_VerifyECDSA_SignsStandardOptionalProperties(t *testing.T) {
 	if proof.Expires == "" || proof.Nonce == "" || proof.Id == "" || len(proof.PreviousProof) != 1 {
 		t.Fatalf("ParseRawToProof dropped standard properties: %+v", proof)
 	}
-	if ok, err := m.verifyECDSA(pub, &proof); err != nil || !ok {
+	if ok, err := m.verifyECDSA(pub, &proof, nil); err != nil || !ok {
 		t.Fatalf("untampered proof failed: ok=%v err=%v", ok, err)
 	}
 
 	tampered := proof
 	tampered.Expires = "2099-01-01T00:00:00Z"
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("changed expires verified successfully")
 	}
 	tampered = proof
 	tampered.Nonce = ""
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("stripped nonce verified successfully")
 	}
 }
@@ -1519,7 +1519,7 @@ func TestJSONMap_VerifyECDSA_SignsExtraProofProperty(t *testing.T) {
 	if proof.Extra["customTerm"] != "custom-value" {
 		t.Fatalf("ParseRawToProof dropped customTerm: %+v", proof)
 	}
-	if ok, err := m.verifyECDSA(pub, &proof); err != nil || !ok {
+	if ok, err := m.verifyECDSA(pub, &proof, nil); err != nil || !ok {
 		t.Fatalf("untampered proof failed: ok=%v err=%v", ok, err)
 	}
 
@@ -1532,12 +1532,12 @@ func TestJSONMap_VerifyECDSA_SignsExtraProofProperty(t *testing.T) {
 
 	tampered := proof
 	tampered.Extra = map[string]interface{}{"customTerm": "other"}
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("changed extra property verified successfully")
 	}
 	tampered = proof
 	tampered.Extra = nil
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("stripped extra property verified successfully")
 	}
 }
@@ -1562,7 +1562,7 @@ func TestJSONMap_VerifyECDSA_RejectsUndefinedProofTerm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse proof: %v", err)
 	}
-	if _, err := m.verifyECDSA(pub, &proof); err == nil {
+	if _, err := m.verifyECDSA(pub, &proof, nil); err == nil {
 		t.Fatal("expected an error for a proof term the @context does not define")
 	}
 }
@@ -1587,13 +1587,13 @@ func TestJSONMap_VerifyECDSA_P256OnlyAppliesToMultibaseProofs(t *testing.T) {
 	}
 	pub := &secp.PublicKey
 
-	if _, err := m.verifyECDSA(pub, &proof); err == nil || !strings.Contains(err.Error(), "supports P-256 only") {
+	if _, err := m.verifyECDSA(pub, &proof, nil); err == nil || !strings.Contains(err.Error(), "supports P-256 only") {
 		t.Fatalf("z proof with secp256k1 key: want P-256-only error, got %v", err)
 	}
 
 	legacy := proof
 	legacy.ProofValue = strings.Repeat("00", 64) // hex, not multibase
-	if _, err := m.verifyECDSA(pub, &legacy); err != nil && strings.Contains(err.Error(), "supports P-256 only") {
+	if _, err := m.verifyECDSA(pub, &legacy, nil); err != nil && strings.Contains(err.Error(), "supports P-256 only") {
 		t.Fatalf("hex proof must not hit the P-256-only check, got %v", err)
 	}
 }
@@ -1743,7 +1743,7 @@ func TestVerifyProof_RefusesDocIDMismatchingVMURL(t *testing.T) {
 func attachSignedECDSAProof(t *testing.T, m *JSONMap, sp signer.SignerProvider, proof *dto.Proof) {
 	t.Helper()
 	m.ensureDataIntegrityContext()
-	hashData, err := m.ecdsaHashData(proof)
+	hashData, err := m.ecdsaHashData(proof, nil)
 	if err != nil {
 		t.Fatalf("hash data: %v", err)
 	}
