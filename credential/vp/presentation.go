@@ -48,13 +48,14 @@ type PresentationData jsonmap.JSONMap
 
 // PresentationContents represents the structured contents of a Presentation.
 type PresentationContents struct {
-	Context               []interface{}   `json:"context,omitempty"`
-	ID                    string          `json:"id,omitempty"`
-	Types                 []string        `json:"type,omitempty"`
-	Holder                string          `json:"holder,omitempty"`
-	ValidFrom             time.Time       `json:"validFrom,omitempty"`  // Issuance date
-	ValidUntil            time.Time       `json:"validUntil,omitempty"` // Expiration date
-	VerifiableCredentials []vc.Credential `json:"verifiableCredential,omitempty"`
+	Context               []interface{}          `json:"context,omitempty"`
+	ID                    string                 `json:"id,omitempty"`
+	Types                 []string               `json:"type,omitempty"`
+	Holder                string                 `json:"holder,omitempty"`
+	ValidFrom             time.Time              `json:"validFrom,omitempty"`  // Issuance date
+	ValidUntil            time.Time              `json:"validUntil,omitempty"` // Expiration date
+	VerifiableCredentials []vc.Credential        `json:"verifiableCredential,omitempty"`
+	CustomFields          map[string]interface{} `json:"customFields,omitempty"` // Additional VP-level claims
 }
 
 // ErrAudienceUnbound is returned by Verify when WithRequireAudience is set
@@ -113,6 +114,18 @@ type presentationOptions struct {
 	requireAudience bool
 	// Signing: allow a signing call to replace a signature already present.
 	replaceProof bool
+	// SD-JWT options (vp+sd-jwt): paths that become selectively disclosable.
+	sdSelectivePaths []string
+	sdAlg            string
+	sdShuffle        bool
+	// KB-JWT verification (RFC 9901 §7.3): when requireKB is true, a
+	// Key Binding JWT is required and verified; audience and nonce must be
+	// non-empty.
+	requireKB   bool
+	kbAudience  string
+	kbNonce     string
+	kbMaxAge    time.Duration
+	kbClockSkew time.Duration
 	// maxProofs caps the proofs a JSON-LD presentation may carry; 0 means no cap.
 	maxProofs int
 }
@@ -355,6 +368,57 @@ func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt 
 	}
 }
 
+// WithSDSelectivePaths (issuing, vp+sd-jwt) makes the named fields selectively
+// disclosable in a vp+sd-jwt presentation. Only claims that a verifier does NOT
+// need to decide on are eligible: @context, type, holder, verifiableCredential
+// and the structural properties are never disclosable.
+func WithSDSelectivePaths(paths []string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.sdSelectivePaths = paths
+	}
+}
+
+// WithSDHashAlgorithm (issuing, vp+sd-jwt) selects the hash algorithm for
+// SD-JWT digests. Defaults to sha-256 (RFC 9901 §4.1.1).
+func WithSDHashAlgorithm(alg string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.sdAlg = alg
+	}
+}
+
+// WithKBJWT (verifying) requires a Key Binding JWT (RFC 9901 §7.3) on a
+// vp+sd-jwt presentation. The audience is this verifier's identifier, the nonce
+// was given to the holder for this transaction. Without this option a KB-JWT
+// is accepted but ignored, as RFC 9901 §7.3 requires: "Whether to require Key
+// Binding is up to the Verifier's policy and MUST NOT be based on whether or
+// not a Key Binding JWT is provided in the presentation."
+//
+// Implies WithVerifyProof.
+func WithKBJWT(audience, nonce string) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.requireKB = true
+		p.kbAudience = audience
+		p.kbNonce = nonce
+		p.isVerifyProof = true
+	}
+}
+
+// WithKBJWTMaxAge sets the maximum age of the iat claim in the KB-JWT. The
+// default is 5 minutes.
+func WithKBJWTMaxAge(d time.Duration) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.kbMaxAge = d
+	}
+}
+
+// WithKBJWTClockSkew sets the clock skew tolerance for KB-JWT time checks (iat,
+// exp, nbf). The default is zero.
+func WithKBJWTClockSkew(d time.Duration) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.kbClockSkew = d
+	}
+}
+
 // signingOptions returns opts for a signing call, minus proof verification:
 // there is no signature to verify before signing, and the signing paths check
 // the fresh signature against the verification method's key. The other
@@ -428,7 +492,11 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 	}
 
 	if isSDJWTShaped(valStr) {
-		return nil, fmt.Errorf("presentation carries SD-JWT disclosures, which are not supported for presentations")
+		p, err := ParseJOSEPresentation(valStr, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
 
 	return nil, fmt.Errorf("failed to parse presentation")

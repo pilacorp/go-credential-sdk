@@ -17,10 +17,12 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/kbjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
+	josesdjwt "github.com/pilacorp/go-credential-sdk/jose/sdjwt"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -32,6 +34,9 @@ type JOSEPresentation struct {
 	payloadData  PresentationData // Unsecured VP as PresentationData
 	signature    string           // JWS signature (if signed)
 	signingKey   jwt.SigningKey   // Verification method the header names; zero for a parsed presentation
+	disclosures  []string         // SD-JWT disclosures (vp+sd-jwt); nil for vp+jwt
+	disclosable  bool             // true when the payload was secured as an SD-JWT
+	kbJWT        string           // Key Binding JWT, if present (RFC 9901 §4.3)
 }
 
 var _ Presentation = (*JOSEPresentation)(nil)
@@ -117,6 +122,41 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 	// against, and would have to guess one from validFrom — a different fact.
 	jwtutil.SetIssuedAt(payloadData, time.Now())
 
+	// Selective disclosure: when SD options are present, replace named fields
+	// with digests and collect disclosures. The structural properties a
+	// verifier needs (@context, type, holder, verifiableCredential, …) are
+	// not disclosable — refuse any path whose first segment names one before
+	// BuildDisclosures runs, and requireVPDisclosableAtTopLevel catches
+	// anything else after.
+	vpMap := map[string]interface{}(payloadData)
+	var disclosures []string
+	disclosable := false
+	if len(options.sdSelectivePaths) > 0 {
+		for _, p := range options.sdSelectivePaths {
+			first := strings.SplitN(p, ".", 2)[0]
+			if vpSecuredProperties[first] {
+				return nil, fmt.Errorf("%q cannot be selectively disclosable in a vp+sd-jwt", p)
+			}
+		}
+		result, bErr := sdjwt.BuildDisclosures(sdjwt.BuildDisclosuresInput{
+			VC:             vpMap,
+			SelectivePaths: options.sdSelectivePaths,
+			HashAlgorithm:  options.sdAlg,
+			Shuffle:        options.sdShuffle,
+		})
+		if bErr != nil {
+			return nil, fmt.Errorf("failed to build SD-JWT disclosures: %w", bErr)
+		}
+		vpMap = result.ProcessedVC
+		disclosures = result.Disclosures
+		disclosable = true
+		payloadData = PresentationData(vpMap)
+
+		if err := requireVPDisclosableAtTopLevel(vpMap); err != nil {
+			return nil, err
+		}
+	}
+
 	// Resolve the verification method the header will name, and keep it: every
 	// signing path checks the signature it is handed against this key before
 	// attaching it, so a signature made by another key fails here rather than at
@@ -127,11 +167,15 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 		return nil, err
 	}
 
-	// Per W3C vc-jose-cose Section 3.1.2: typ MUST/SHOULD be "vp+jwt"
+	// Per W3C vc-jose-cose Section 3.1.2: typ MUST/SHOULD be "vp+jwt".
+	// When the presentation carries selective disclosures, the typ is vp+sd-jwt.
 	header := map[string]interface{}{
 		"typ": TypeVPJWT,
 		"alg": signingKey.Alg,
 		"kid": signingKey.ID,
+	}
+	if disclosable {
+		header["typ"] = TypeVPSDJWT
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -140,7 +184,7 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 	}
 	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
 
-	payloadJSON, err := json.Marshal(payloadData)
+	payloadJSON, err := json.Marshal(vpMap)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
@@ -153,20 +197,39 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 		payloadData:  payloadData,
 		signature:    "",
 		signingKey:   signingKey,
+		disclosures:  disclosures,
+		disclosable:  disclosable,
 	}
 
 	return e, e.executeOptions(opts...)
 }
 
-// ParseJOSEPresentation parses a W3C vc-jose-cose (vp+jwt) token.
+// ParseJOSEPresentation parses a W3C vc-jose-cose (vp+jwt or vp+sd-jwt) token.
 func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresentation, error) {
 	rawJWT = strings.TrimSpace(strings.Trim(rawJWT, "\""))
 
-	if !isJWTPresentation(rawJWT) {
-		return nil, fmt.Errorf("invalid JWT format")
+	// Split SD-JWT combined format when present. For plain JWS the split
+	// gives issuerJWT = rawJWT, no disclosures, no parsedKBJWT.
+	var issuerJWT string
+	var disclosures []string
+	var parsedKBJWT string
+	if sdjwt.IsSDJWT(rawJWT) {
+		var sErr error
+		issuerJWT, disclosures, parsedKBJWT, sErr = josesdjwt.Split(rawJWT)
+		if sErr != nil {
+			return nil, fmt.Errorf("failed to split SD-JWT presentation: %w", sErr)
+		}
+		// RFC 9901 §7.3 step 1: acceptance MUST NOT be based on whether or not
+		// a Key Binding JWT is provided. The KB-JWT is stored and verified only
+		// when the verifier's policy requires it (WithKBJWT).
+	} else {
+		if !isJWTPresentation(rawJWT) {
+			return nil, fmt.Errorf("invalid JWT format")
+		}
+		issuerJWT = rawJWT
 	}
 
-	parts := strings.Split(rawJWT, ".")
+	parts := strings.Split(issuerJWT, ".")
 	headerEncoded := parts[0]
 	payloadEncoded := parts[1]
 	signature := ""
@@ -184,7 +247,8 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 	}
 	typ, _ := headerMap["typ"].(string)
 	if !isJOSEPresentationTyp(typ) {
-		return nil, fmt.Errorf("invalid typ header for JOSEPresentation: got %q, want %q", typ, TypeVPJWT)
+		return nil, fmt.Errorf("invalid typ header for JOSEPresentation: got %q, want %q or %q",
+			typ, TypeVPJWT, TypeVPSDJWT)
 	}
 
 	payloadBytes, err := jose.DecodeSegment(payloadEncoded)
@@ -207,14 +271,59 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 		return nil, fmt.Errorf("invalid vc-jose-cose: 'vp' claim MUST NOT be present in payload")
 	}
 
-	// Both checks run unconditionally. They decide whether this payload is a
-	// well-formed vp+jwt at all, which is not something to gate behind
-	// WithVCValidation — that option asks for the embedded credentials to be
-	// verified, a different and far more expensive question.
-	if err := requireJOSEPresentation(PresentationData(payloadMap)); err != nil {
+	// Determine whether this token is an SD-JWT from both header and format.
+	// RFC 7515 §4.1.9: typ is case-insensitive and "application/" is implied
+	// when there is no "/". Use jws.Header.TypIs, as isJOSEPresentationTyp
+	// already does, so VP+SD-JWT and application/vp+sd-jwt are accepted.
+	_, hasSDAlg := payloadMap["_sd_alg"]
+	declaredSD := (jws.Header{"typ": typ}).TypIs(TypeVPSDJWT)
+	combinedSD := sdjwt.IsSDJWT(rawJWT)
+
+	if !declaredSD && (combinedSD || hasSDAlg) {
+		return nil, fmt.Errorf("typ %q does not match the SD-JWT format", typ)
+	}
+
+	// Properties needed to verify must not be selectively disclosable.
+	if declaredSD || combinedSD || hasSDAlg {
+		if err := requireVPDisclosableAtTopLevel(payloadMap); err != nil {
+			return nil, err
+		}
+	}
+
+	// Reconstruct SD-JWT payload: fold disclosures back in and strip _sd/_sd_alg.
+	// RecreatePayload applies the same rules as the VC path: every disclosure goes
+	// through jose/sdjwt.ParseDisclosure (refusing reserved names _sd, ...,
+	// _sd_alg and non-strict base64url), sha-256 uses jose/sdjwt.Recreate,
+	// sha-384/512 use Reconstruct — all remove undisclosed array elements.
+	vpMap := payloadMap
+	disclosable := declaredSD || combinedSD || hasSDAlg
+	if disclosable || len(disclosures) > 0 {
+		recreated, rErr := sdjwt.RecreatePayload(payloadMap, disclosures)
+		if rErr != nil {
+			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rErr)
+		}
+
+		// A secured property must come from the signed payload, not from a
+		// disclosure. If it appears in the recreated map but was absent from
+		// the signed payloadMap, an attacker injected it via a disclosure.
+		for name := range vpSecuredProperties {
+			if _, inRecreated := recreated[name]; !inRecreated {
+				continue
+			}
+			if _, inSigned := payloadMap[name]; !inSigned {
+				return nil, fmt.Errorf("%q cannot be selectively disclosable in a vp+sd-jwt", name)
+			}
+		}
+
+		vpMap = recreated
+	}
+
+	// Structural checks run against the reconstructed payload so a disclosed
+	// property is seen.
+	if err := requireJOSEPresentation(PresentationData(vpMap)); err != nil {
 		return nil, err
 	}
-	if err := requireEnvelopedCredentials(PresentationData(payloadMap)); err != nil {
+	if err := requireEnvelopedCredentials(PresentationData(vpMap)); err != nil {
 		return nil, err
 	}
 
@@ -222,8 +331,11 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 
 	e := &JOSEPresentation{
 		signingInput: signingInput,
-		payloadData:  PresentationData(payloadMap),
+		payloadData:  PresentationData(vpMap),
 		signature:    signature,
+		disclosures:  disclosures,
+		disclosable:  disclosable,
+		kbJWT:        parsedKBJWT,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -233,6 +345,11 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 // JWS, named by the typ header. The full "application/" spelling means the same
 // and is accepted when reading.
 const TypeVPJWT = "vp+jwt"
+
+// TypeVPSDJWT is the media type for a presentation secured with SD-JWT,
+// allowing selective disclosure of custom VP-level claims while keeping the
+// properties a verifier needs to decide on (§3.1.2) signed and undisclosable.
+const TypeVPSDJWT = "vp+sd-jwt"
 
 // TypeJOSE is what GetType reports for a presentation secured with
 // vc-jose-cose. Exported for the same reason as its credential counterpart:
@@ -252,7 +369,7 @@ const typeVerifiablePresentation = "VerifiablePresentation"
 // means adding it there.
 func isJOSEPresentationTyp(typ string) bool {
 	h := jws.Header{"typ": typ}
-	return h.TypIs(TypeVPJWT)
+	return h.TypIs(TypeVPJWT) || h.TypIs(TypeVPSDJWT)
 }
 
 // requireJOSEPresentation checks the payload really is the VC 2.0 presentation
@@ -334,6 +451,62 @@ func requireEnvelopedCredentials(m PresentationData) error {
 	}
 
 	return nil
+}
+
+// vpSecuredProperties lists the VP-level properties a verifier needs to decide
+// on. None of them may be selectively disclosable.
+var vpSecuredProperties = map[string]bool{
+	"@context":             true,
+	"type":                 true,
+	"holder":               true,
+	"verifiableCredential": true,
+	"nonce":                true,
+	"aud":                  true,
+	"iat":                  true,
+}
+
+// requireVPDisclosableAtTopLevel ensures that the structural properties a
+// verifier needs to decide on are never selectively disclosable. Root _sd is
+// permitted (top-level custom claims go there); _sd_alg at the root is
+// permitted (the hash algorithm for the digests). Only the secured properties
+// and the _sd_alg value itself are checked for nested SD machinery.
+func requireVPDisclosableAtTopLevel(m map[string]interface{}) error {
+	for name, value := range m {
+		if !vpSecuredProperties[name] && name != "_sd_alg" {
+			continue
+		}
+		if vpCarriesSDMachinery(value) {
+			return fmt.Errorf("selective disclosure is not permitted in %q; "+
+				"only custom claims may be withheld in a vp+sd-jwt", name)
+		}
+	}
+	return nil
+}
+
+func vpCarriesSDMachinery(value interface{}) bool {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		if _, ok := v["_sd"]; ok {
+			return true
+		}
+		for _, child := range v {
+			if vpCarriesSDMachinery(child) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, child := range v {
+			if elem, ok := child.(map[string]interface{}); ok && len(elem) == 1 {
+				if _, ok := elem["..."]; ok {
+					return true
+				}
+			}
+			if vpCarriesSDMachinery(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // envelopeMediaType names the scheme that secured a token, for the data: URL an
@@ -458,6 +631,26 @@ func (j *JOSEPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 	return nil
 }
 
+// DecodedDisclosures reports which fields this token still discloses, decoded
+// from the salted arrays that travel after the signature.
+func (j *JOSEPresentation) DecodedDisclosures() ([]sdjwt.DecodedDisclosure, error) {
+	return sdjwt.DecodeDisclosures(j.disclosures)
+}
+
+// Present returns the same presentation carrying only selectedDisclosures,
+// which is how a holder reveals a subset. The signed JWT is untouched.
+func (j *JOSEPresentation) Present(selectedDisclosures []string) (*JOSEPresentation, error) {
+	if j.signature == "" {
+		return nil, fmt.Errorf("cannot present an unsigned presentation")
+	}
+	if !j.disclosable {
+		return nil, fmt.Errorf("presentation carries no disclosures; nothing to present selectively")
+	}
+	issuerJWT := j.signingInput + "." + j.signature
+	token := sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures)
+	return ParseJOSEPresentation(token)
+}
+
 // GetSigningInput returns the bytes a signature must cover: base64url(header) +
 // "." + base64url(payload). Pair it with AddCustomProof to sign outside the SDK,
 // where the key cannot leave an HSM or a wallet. Not deprecated — this is the
@@ -475,7 +668,16 @@ func (j *JOSEPresentation) Serialize() (any, error) {
 	if j.signature == "" {
 		return j.signingInput, nil
 	}
-	return j.signingInput + "." + j.signature, nil
+	token := j.signingInput + "." + j.signature
+	if j.disclosable {
+		token = sdjwt.BuildSDJWTPresentation(token, j.disclosures)
+		// A Key Binding JWT goes after the trailing ~, turning the combined form
+		// into <issuerJWT>~<D.1>~…~<D.N>~<KB-JWT> (RFC 9901 §4).
+		if j.kbJWT != "" {
+			token += j.kbJWT
+		}
+	}
+	return token, nil
 }
 
 func (j *JOSEPresentation) Hash() (string, error) {
@@ -558,6 +760,18 @@ func (j *JOSEPresentation) executeOptions(opts ...PresentationOpt) error {
 		return fmt.Errorf("presentation verification failed: %w", err)
 	}
 
+	// KB-JWT verification, after the issuer JWT is verified, as RFC 9901 §7.3
+	// step 5 specifies. When WithKBJWT is set, a KB-JWT is required; when not
+	// set, a KB-JWT is accepted but ignored.
+	if options.requireKB {
+		if options.kbAudience == "" || options.kbNonce == "" {
+			return fmt.Errorf("presentation verification failed: WithKBJWT needs a non-empty audience and nonce")
+		}
+		if err := j.verifyKBJWT(options); err != nil {
+			return fmt.Errorf("presentation verification failed: %w", err)
+		}
+	}
+
 	if options.isCheckExpiration {
 		if err := checkExpiration(j.payloadData, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
@@ -565,6 +779,18 @@ func (j *JOSEPresentation) executeOptions(opts ...PresentationOpt) error {
 	}
 
 	return nil
+}
+
+// verifyKBJWT verifies the Key Binding JWT of this presentation against the
+// holder's key (cnf.jwk in the payload) and the verifier's expectations.
+func (j *JOSEPresentation) verifyKBJWT(options *presentationOptions) error {
+	return kbjwt.Verify("presentation", j.payloadData, j.signingInput, j.signature,
+		j.disclosures, j.kbJWT, kbjwt.Params{
+			Audience:  options.kbAudience,
+			Nonce:     options.kbNonce,
+			MaxAge:    options.kbMaxAge,
+			ClockSkew: options.kbClockSkew,
+		})
 }
 
 // pendingChallengeDomain returns the payload and signing input that this call's

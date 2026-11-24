@@ -2,6 +2,9 @@ package vc
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -10,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
@@ -17,6 +22,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/kbjwt"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 	josesdjwt "github.com/pilacorp/go-credential-sdk/jose/sdjwt"
@@ -33,6 +39,7 @@ type JOSECredential struct {
 	disclosures  []string       // SD-JWT disclosures, when the credential is secured that way
 	disclosable  bool           // Payload carries _sd digests, even if this holder reveals none
 	signingKey   jwt.SigningKey // Verification method the header names; zero for a parsed credential
+	kbJWT        string         // Key Binding JWT, if present (RFC 9901 §4.3)
 }
 
 var _ Credential = (*JOSECredential)(nil)
@@ -150,6 +157,26 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 	// against, and would have to guess one from validFrom — a different fact.
 	jwtutil.SetIssuedAt(vcMap, time.Now())
 
+	// RFC 9901 §4.1.2 / RFC 7800 §3.2: when the issuer supplies a holder key,
+	// put it in cnf.jwk so a verifier can require a Key Binding JWT signed by
+	// this key.
+	if options.confirmationKey != nil {
+		// KB-JWT (RFC 9901 §4.3.1) computes sd_hash with the hash algorithm of
+		// the disclosures. The SDK's SDHash is sha-256 only, so a credential
+		// whose _sd_alg is not sha-256 cannot produce or verify a valid KB-JWT.
+		// Refuse at issuance so the holder does not discover the problem at
+		// presentation time.
+		if alg, _ := vcMap["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
+			return nil, fmt.Errorf("WithConfirmationKey requires sha-256 disclosures; _sd_alg is %q, "+
+				"and the SDK cannot compute sd_hash for a Key Binding JWT with another algorithm", alg)
+		}
+		cnfJWK, err := ecPublicKeyToJWK(options.confirmationKey)
+		if err != nil {
+			return nil, fmt.Errorf("WithConfirmationKey: %w", err)
+		}
+		vcMap["cnf"] = map[string]interface{}{"jwk": cnfJWK}
+	}
+
 	payloadData := CredentialData(vcMap)
 
 	// Resolve the verification method the header will name, and keep it: every
@@ -220,20 +247,15 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	// empty disclosures and a missing trailing ~.
 	var issuerJWT string
 	var disclosures []string
+	var parsedKBJWT string
 	if strings.Contains(rawJWT, "~") {
 		ij, ds, kbJWT, serr := josesdjwt.Split(rawJWT)
 		if serr != nil {
 			return nil, fmt.Errorf("failed to parse SD-JWT: %w", serr)
 		}
-		// RFC 9901 section 7.2: a Holder that receives an SD-JWT+KB MUST
-		// reject it. Dropping the KB-JWT also left a verifier unable to tell
-		// one had arrived, and gave the token the Hash of the token without it.
-		// Refused until the SDK verifies Key Binding JWTs.
-		if kbJWT != "" {
-			return nil, fmt.Errorf("failed to parse SD-JWT: SD-JWT carries a key binding JWT, which this SDK does not verify yet; present the credential without it")
-		}
 		issuerJWT = ij
 		disclosures = ds
+		parsedKBJWT = kbJWT
 	} else {
 		if !isJWTCredential(rawJWT) {
 			return nil, fmt.Errorf("invalid JWT or SD-JWT format")
@@ -363,6 +385,7 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		signature:    signature,
 		disclosures:  disclosures,
 		disclosable:  disclosable,
+		kbJWT:        parsedKBJWT,
 	}
 
 	return e, e.executeOptions(opts...)
@@ -530,6 +553,11 @@ func (j *JOSECredential) Serialize() (any, error) {
 		sb.WriteString(d)
 	}
 	sb.WriteString("~")
+	// A Key Binding JWT goes after the trailing ~, turning the combined form
+	// into <issuerJWT>~<D.1>~…~<D.N>~<KB-JWT> (RFC 9901 §4).
+	if j.kbJWT != "" {
+		sb.WriteString(j.kbJWT)
+	}
 
 	return sb.String(), nil
 }
@@ -565,6 +593,68 @@ func (j *JOSECredential) Present(selectedDisclosures []string) (Credential, erro
 	}
 
 	return ParseJOSECredential(sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures))
+}
+
+// PresentWithKBJWT creates a selective-disclosure presentation of this
+// credential with a Key Binding JWT attached (RFC 9901 §4.3). The signer
+// holds the private key of holderKey, the key the credential's cnf.jwk names.
+// audience is the verifier the presentation is for, nonce is the value the
+// verifier gave for this transaction. The returned credential carries the
+// KB-JWT in its serialized form.
+//
+// The credential must be a vc+sd-jwt (disclosable), must be signed, and its
+// payload must have cnf.jwk — the issuer puts the holder's public key there
+// when issuing.
+func (j *JOSECredential) PresentWithKBJWT(
+	ctx context.Context,
+	selectedDisclosures []string,
+	kbSigner jws.Signer,
+	holderKey crypto.PublicKey,
+	audience, nonce string,
+) (*JOSECredential, error) {
+	if j.signature == "" {
+		return nil, fmt.Errorf("cannot present an unsigned credential")
+	}
+	if !j.disclosable {
+		return nil, fmt.Errorf("credential carries no disclosures; nothing to present selectively")
+	}
+	if kbSigner == nil {
+		return nil, fmt.Errorf("KB-JWT signer cannot be nil")
+	}
+	if audience == "" || nonce == "" {
+		return nil, fmt.Errorf("audience and nonce are required for KB-JWT")
+	}
+	// SDHash is sha-256 only (RFC 9901 §4.3.1). A credential whose _sd_alg is
+	// another algorithm would produce a wrong sd_hash and the verifier would
+	// reject the KB-JWT.
+	if alg, _ := j.payloadData["_sd_alg"].(string); alg != "" && alg != sdjwt.DefaultHashAlgorithm {
+		return nil, fmt.Errorf("KB-JWT requires sha-256 disclosures; credential _sd_alg is %q", alg)
+	}
+
+	issuerJWT := j.signingInput + "." + j.signature
+	sdJWTPresentation := sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures)
+
+	// sd_hash is computed over the SD-JWT as the verifier receives it, up to
+	// and including the last ~, without the KB-JWT (RFC 9901 §4.3.1).
+	sdHash := josesdjwt.SDHash(sdJWTPresentation)
+
+	kbToken, err := josesdjwt.NewKBJWT(ctx, kbSigner, holderKey, josesdjwt.KBClaims{
+		Audience: audience,
+		Nonce:    nonce,
+		IssuedAt: time.Now(),
+		SDHash:   sdHash,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KB-JWT: %w", err)
+	}
+
+	// Parse the SD-JWT+KB into a credential: the token is the SD-JWT
+	// presentation with the KB-JWT appended.
+	presented, err := ParseJOSECredential(sdJWTPresentation + kbToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse SD-JWT+KB presentation: %w", err)
+	}
+	return presented, nil
 }
 
 func (j *JOSECredential) Hash() (string, error) {
@@ -645,6 +735,18 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 		return fmt.Errorf("credential verification failed: %w", err)
 	}
 
+	// KB-JWT verification, after the issuer JWT is verified, as RFC 9901 §7.3
+	// step 5 specifies. When WithKBJWT is set, a KB-JWT is required; when not
+	// set, a KB-JWT is accepted but ignored.
+	if options.requireKB {
+		if options.kbAudience == "" || options.kbNonce == "" {
+			return fmt.Errorf("credential verification failed: WithKBJWT needs a non-empty audience and nonce")
+		}
+		if err := j.verifyKBJWT(options); err != nil {
+			return fmt.Errorf("credential verification failed: %w", err)
+		}
+	}
+
 	// Revocation check runs after the proof is verified: an unsigned or
 	// forged credential must not trigger a GET to the statusListCredential
 	// URL the attacker chose.
@@ -661,6 +763,72 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	}
 
 	return nil
+}
+
+// verifyKBJWT verifies the Key Binding JWT of this credential against the
+// holder's key (cnf.jwk in the payload) and the verifier's expectations.
+func (j *JOSECredential) verifyKBJWT(options *credentialOptions) error {
+	return kbjwt.Verify("credential", j.payloadData, j.signingInput, j.signature,
+		j.disclosures, j.kbJWT, kbjwt.Params{
+			Audience:  options.kbAudience,
+			Nonce:     options.kbNonce,
+			MaxAge:    options.kbMaxAge,
+			ClockSkew: options.kbClockSkew,
+		})
+}
+
+// ecPublicKeyToJWK serialises an ECDSA public key as a JWK map (RFC 7518 §6.2)
+// suitable for the cnf.jwk claim. Only P-256 and secp256k1 are supported.
+func ecPublicKeyToJWK(key crypto.PublicKey) (map[string]interface{}, error) {
+	pub, ok := key.(*ecdsa.PublicKey)
+	if !ok || pub == nil {
+		return nil, fmt.Errorf("confirmation key must be an *ecdsa.PublicKey")
+	}
+	var crv string
+	var size int
+	switch pub.Curve {
+	case elliptic.P256():
+		crv = "P-256"
+		size = 32
+	default:
+		// secp256k1 is not in crypto/elliptic; compare by curve parameters
+		// (P and N), the same way jose/internal/ec.kindOf does it.
+		if pub.Curve != nil && isSecp256k1(pub.Params()) {
+			crv = "secp256k1"
+			size = 32
+		} else {
+			return nil, fmt.Errorf("unsupported curve %v", pub.Curve)
+		}
+	}
+	xb := make([]byte, size)
+	yb := make([]byte, size)
+	pub.X.FillBytes(xb)
+	pub.Y.FillBytes(yb)
+	return map[string]interface{}{
+		"kty": "EC",
+		"crv": crv,
+		"x":   base64.RawURLEncoding.EncodeToString(xb),
+		"y":   base64.RawURLEncoding.EncodeToString(yb),
+	}, nil
+}
+
+// isSecp256k1 reports whether the curve parameters match the secp256k1 curve by
+// comparing P and N, the same way jose/internal/ec.sameCurve does. BitSize alone
+// is unreliable: P-256 and secp256k1 share the same bit size.
+func isSecp256k1(p *elliptic.CurveParams) bool {
+	ref := secp256k1.S256().Params()
+	return p.P != nil && p.N != nil &&
+		p.P.Cmp(ref.P) == 0 && p.N.Cmp(ref.N) == 0
+}
+
+// recreateSDPayload delegates to sdjwt.RecreatePayload, which validates
+// disclosures through jose/sdjwt.ParseDisclosure (refusing reserved names and
+// non-strict base64url), routes sha-256 through jose/sdjwt.Recreate, and holds
+// sha-384/512 to the same shape rules before common/sdjwt.Reconstruct. Both
+// the VC and VP parse paths call RecreatePayload, so the same rules apply
+// everywhere.
+func recreateSDPayload(payload map[string]interface{}, disclosures []string) (map[string]interface{}, error) {
+	return sdjwt.RecreatePayload(payload, disclosures)
 }
 
 // checkParsable refuses a signature whose finished SD-JWT the SDK's own parser
@@ -681,48 +849,4 @@ func (j *JOSECredential) checkParsable(signature string) error {
 		return fmt.Errorf("signed SD-JWT is one this SDK cannot parse back: %w", err)
 	}
 	return nil
-}
-
-// recreateSDPayload returns the claims of an SD-JWT payload with the
-// disclosures put back, without changing payload. Issuance and parsing both
-// call it, so a credential that signs is read by the same rules when it is
-// parsed. A sha-256 payload goes through module jose, which applies RFC 9901
-// section 7.1: undisclosed array elements are removed, the names "...", "_sd"
-// and "_sd_alg" are refused, and a digest used twice is refused. module jose
-// recreates sha-256 only, while WithSDHashAlgorithm also issues sha-384 and
-// sha-512 (section 4.1.1 allows any IANA hash), so those go through
-// common/sdjwt.Reconstruct, which also removes undisclosed array elements.
-func recreateSDPayload(payload map[string]interface{}, disclosures []string) (map[string]interface{}, error) {
-	// ParseDisclosure reads a disclosure's form and refuses the reserved claim
-	// names (RFC 9901 section 4.2.1) whatever hash the payload uses.
-	parsed := make([]josesdjwt.Disclosure, len(disclosures))
-	for i, d := range disclosures {
-		p, err := josesdjwt.ParseDisclosure(d)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse disclosure: %w", err)
-		}
-		parsed[i] = p
-	}
-	if alg, _ := payload["_sd_alg"].(string); alg == sdjwt.AlgSHA384 || alg == sdjwt.AlgSHA512 {
-		// module jose recreates sha-256 only. Check the payload's shape by its
-		// rules first (RFC 9901 section 4.1 rule 7, 4.1.1, 4.2.4.2), on a copy
-		// labelled sha-256 with no disclosures, so every hash refuses what
-		// sha-256 refuses; then put the disclosures back with Reconstruct.
-		shape := make(map[string]interface{}, len(payload))
-		for k, v := range payload {
-			shape[k] = v
-		}
-		shape["_sd_alg"] = sdjwt.DefaultHashAlgorithm
-		if _, err := josesdjwt.Recreate(shape, nil); err != nil {
-			return nil, err
-		}
-		return sdjwt.Reconstruct(payload, disclosures, true)
-	}
-	// Any other _sd_alg, sha-256 or unknown, goes to module jose, which
-	// refuses an algorithm it does not implement.
-	recreated, err := josesdjwt.Recreate(payload, parsed)
-	if err != nil {
-		return nil, err
-	}
-	return recreated.Claims, nil
 }

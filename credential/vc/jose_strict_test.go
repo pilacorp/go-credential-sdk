@@ -301,35 +301,27 @@ func padBitAlias(t *testing.T, seg string) string {
 
 // --- #99 item 12: KB-JWT acceptance ---
 
-// RFC 9901 section 7.2: a Holder that receives an SD-JWT+KB MUST reject it,
-// and ParseJOSECredential is the holder's receive path. Until the SDK
-// verifies a Key Binding JWT, a token carrying one is refused rather than
-// parsed with the KB-JWT dropped (#209 review).
-func TestJOSEStrict_KBJWTRefused(t *testing.T) {
+// A KB-JWT is not a reason to refuse an SD-JWT.
+func TestJOSEStrict_KBJWTAccepted(t *testing.T) {
 	did, priv, resolver := joseSetup(t)
 	token := signedSDJWTToken(t, did, priv, resolver)
 
+	// Build a fake KB-JWT (not cryptographically valid, but structurally
+	// correct): header.payload.signature.
 	kbHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"typ":"kb+jwt","alg":"ES256"}`))
 	kbPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"nonce":"n","aud":"a","iat":1700000000}`))
 	kbSig := base64.RawURLEncoding.EncodeToString(make([]byte, 64))
-	noneHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"typ":"kb+jwt","alg":"none"}`))
+	kb := kbHeader + "." + kbPayload + "." + kbSig
 
-	// The token already ends with ~, so the KB-JWT is appended as is.
-	for name, kb := range map[string]string{
-		"ES256 KB-JWT": kbHeader + "." + kbPayload + "." + kbSig,
-		"opaque a.b.c": "a.b.c",
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := vc.ParseCredential([]byte(token+kb), vc.WithResolver(resolver))
-			if err == nil || !strings.Contains(err.Error(), "key binding JWT") {
-				t.Fatalf("err = %v, want the key binding JWT refused", err)
-			}
-		})
-	}
-	// An alg none KB-JWT has an empty signature, which Split already refuses
-	// as malformed; either way it does not parse.
-	if _, err := vc.ParseCredential([]byte(token+noneHeader+"."+kbPayload+"."), vc.WithResolver(resolver)); err == nil {
-		t.Fatal("an SD-JWT with an alg none KB-JWT was accepted")
+	// The token already ends with ~, so just append the KB-JWT.
+	withKB := token + kb
+
+	// RFC 9901 section 7.3: requiring key binding is the verifier's policy.
+	// Without WithKBJWT the token parses and the KB-JWT is kept for
+	// Serialize; with it, the KB-JWT is verified (TestKBJWT_* tests).
+	_, err := vc.ParseCredential([]byte(withKB), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("rejected SD-JWT with KB-JWT: %v", err)
 	}
 }
 

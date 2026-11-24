@@ -262,3 +262,49 @@ func randomSalt() (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(buf[:]), nil
 }
+
+// RecreatePayload returns the claims of an SD-JWT payload with the
+// disclosures put back, without changing payload. Every disclosure is first
+// validated through jose/sdjwt.ParseDisclosure, which applies RFC 9901
+// section 7.1: the reserved claim names "_sd", "..." and "_sd_alg" are
+// refused, and the base64url encoding must be strict. A sha-256 payload goes
+// through jose/sdjwt.Recreate (which also removes undisclosed array elements
+// and refuses duplicate digests); sha-384 and sha-512 go through Reconstruct,
+// which also removes undisclosed array elements.
+//
+// Both the VC and VP parse paths call this, so a credential or presentation
+// that signs is read by the same rules when it is parsed.
+func RecreatePayload(payload map[string]interface{}, disclosures []string) (map[string]interface{}, error) {
+	// ParseDisclosure reads a disclosure's form and refuses the reserved claim
+	// names (RFC 9901 section 4.2.1) whatever hash the payload uses.
+	parsed := make([]josesdjwt.Disclosure, len(disclosures))
+	for i, d := range disclosures {
+		p, err := josesdjwt.ParseDisclosure(d)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse disclosure: %w", err)
+		}
+		parsed[i] = p
+	}
+	if alg, _ := payload["_sd_alg"].(string); alg == AlgSHA384 || alg == AlgSHA512 {
+		// module jose recreates sha-256 only. Check the payload's shape by its
+		// rules first (RFC 9901 section 4.1 rule 7, 4.1.1, 4.2.4.2), on a copy
+		// labelled sha-256 with no disclosures, so every hash refuses what
+		// sha-256 refuses; then put the disclosures back with Reconstruct.
+		shape := make(map[string]interface{}, len(payload))
+		for k, v := range payload {
+			shape[k] = v
+		}
+		shape["_sd_alg"] = DefaultHashAlgorithm
+		if _, err := josesdjwt.Recreate(shape, nil); err != nil {
+			return nil, err
+		}
+		return Reconstruct(payload, disclosures, true)
+	}
+	// Any other _sd_alg, sha-256 or unknown, goes to module jose, which
+	// refuses an algorithm it does not implement.
+	recreated, err := josesdjwt.Recreate(payload, parsed)
+	if err != nil {
+		return nil, err
+	}
+	return recreated.Claims, nil
+}

@@ -105,9 +105,9 @@ func TestJOSECredential_DisclosureListIntegrity(t *testing.T) {
 			token:   base + "~" + real + "~" + real + "~",
 			wantErr: "given twice",
 		},
-		// RFC 9901 section 7.2: a Holder rejects an SD-JWT+KB. Refused until
-		// the SDK verifies Key Binding JWTs, as main did.
-		{name: "a key binding JWT appended", token: base + "~" + real + "~" + kb, wantErr: "key binding JWT"},
+		// RFC 9901 section 7.3: requiring key binding is the verifier's
+		// policy, so without WithKBJWT a KB-JWT is accepted.
+		{name: "a key binding JWT appended", token: base + "~" + real + "~" + kb},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parsed, err := vc.ParseCredential([]byte(tc.token), vc.WithResolver(resolver))

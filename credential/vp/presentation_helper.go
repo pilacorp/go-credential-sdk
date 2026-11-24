@@ -124,6 +124,13 @@ func serializePresentationContents(vpc *PresentationContents) (PresentationData,
 	if !vpc.ValidUntil.IsZero() {
 		vpJSON["validUntil"] = vpc.ValidUntil.Format(time.RFC3339)
 	}
+	if err := validateCustomFields(vpc.CustomFields); err != nil {
+		return nil, err
+	}
+	for k, v := range vpc.CustomFields {
+		vpJSON[k] = v
+	}
+
 	if len(vpc.VerifiableCredentials) > 0 {
 		// Serialize credentials for presentation storage
 		credentialList := make([]interface{}, len(vpc.VerifiableCredentials))
@@ -303,4 +310,31 @@ func parsePresentationContents(vp PresentationData) (PresentationContents, error
 		}
 	}
 	return contents, nil
+}
+
+// vpReservedKeys are the VCDM 2.0 and JWT structural properties that
+// serializePresentationContents already writes from typed fields. Letting a
+// CustomFields entry silently overwrite one of them would either discard the
+// typed value or produce a presentation that serializes with two conflicting
+// sources of truth.
+var vpReservedKeys = map[string]bool{
+	"@context":             true,
+	"type":                 true,
+	"id":                   true,
+	"holder":               true,
+	"validFrom":            true,
+	"validUntil":           true,
+	"verifiableCredential": true,
+	"proof":                true,
+}
+
+// validateCustomFields refuses a CustomFields entry whose key clashes with a
+// structural property the SDK writes from typed fields.
+func validateCustomFields(fields map[string]interface{}) error {
+	for k := range fields {
+		if vpReservedKeys[k] {
+			return fmt.Errorf("CustomFields key %q is a reserved presentation property; set it via PresentationContents instead", k)
+		}
+	}
+	return nil
 }

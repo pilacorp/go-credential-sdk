@@ -1,6 +1,7 @@
 package vc
 
 import (
+	"crypto"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -153,9 +154,21 @@ type credentialOptions struct {
 	loadedSchemaLoader      SchemaLoaderFunc
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
+	replaceProof            bool
+	// KB-JWT verification: set by WithKBJWT. When requireKB is true, a
+	// Key Binding JWT is required (RFC 9901 §7.3); audience and nonce must
+	// be non-empty.
+	requireKB   bool
+	kbAudience  string
+	kbNonce     string
+	kbMaxAge    time.Duration
+	kbClockSkew time.Duration
+	// confirmationKey (issuing): the holder's public key to put in cnf.jwk
+	// (RFC 9901 §4.1.2, RFC 7800 §3.2), binding the credential to the holder
+	// for KB-JWT. Set by WithConfirmationKey.
+	confirmationKey crypto.PublicKey
 	// expectedProofPurpose overrides the assertionMethod a VC verifier expects.
 	expectedProofPurpose string
-	replaceProof         bool
 	// maxProofs caps the proofs a JSON-LD credential may carry; 0 means no cap.
 	maxProofs int
 }
@@ -438,6 +451,49 @@ func WithSchemaLoader(loader SchemaLoaderFunc) CredentialOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.resolver = resolver
+	}
+}
+
+// WithKBJWT (verifying) requires a Key Binding JWT (RFC 9901 §7.3) on a
+// vc+sd-jwt credential. The audience is this verifier's identifier, the nonce
+// was given to the holder for this transaction. Without this option a KB-JWT
+// is accepted but ignored, as RFC 9901 §7.3 requires: "Whether to require Key
+// Binding is up to the Verifier's policy and MUST NOT be based on whether or
+// not a Key Binding JWT is provided in the presentation."
+//
+// Implies WithVerifyProof.
+func WithKBJWT(audience, nonce string) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.requireKB = true
+		c.kbAudience = audience
+		c.kbNonce = nonce
+		c.isVerifyProof = true
+	}
+}
+
+// WithKBJWTMaxAge sets the maximum age of the iat claim in the KB-JWT. The
+// default is 5 minutes.
+func WithKBJWTMaxAge(d time.Duration) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.kbMaxAge = d
+	}
+}
+
+// WithKBJWTClockSkew sets the clock skew tolerance for KB-JWT time checks (iat,
+// exp, nbf). The default is zero.
+func WithKBJWTClockSkew(d time.Duration) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.kbClockSkew = d
+	}
+}
+
+// WithConfirmationKey (issuing) puts the holder's public key in the cnf.jwk
+// claim (RFC 9901 §4.1.2, RFC 7800 §3.2), binding the SD-JWT credential to
+// the holder so a verifier can require a Key Binding JWT signed by this key.
+// Only ECDSA P-256 and secp256k1 keys are supported.
+func WithConfirmationKey(pub crypto.PublicKey) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.confirmationKey = pub
 	}
 }
 

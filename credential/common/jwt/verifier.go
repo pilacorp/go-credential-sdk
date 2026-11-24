@@ -189,15 +189,15 @@ func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, 
 // got through while only the parser knew it. Teaching a parser a new media type
 // means teaching this function the same one.
 //
-// vp+sd-jwt is absent because vp.isJOSEPresentationTyp does not accept it
-// either: a presentation secured as an SD-JWT needs a key binding JWT, which
-// this package does not check, so neither end claims support it.
+// vp+sd-jwt is now accepted alongside vp+jwt: when a presentation is secured
+// as an SD-JWT the properties needed to verify (§3.1.2) stay in the signed
+// payload, only custom claims are selectively disclosable.
 func purposeFromTyp(header map[string]interface{}) string {
 	h := jws.Header(header)
 	switch {
 	case h.TypIs("vc+jwt") || h.TypIs("vc+sd-jwt"):
 		return "assertionMethod"
-	case h.TypIs("vp+jwt"):
+	case h.TypIs("vp+jwt") || h.TypIs("vp+sd-jwt"):
 		return "authentication"
 	}
 	return ""
