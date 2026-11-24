@@ -100,6 +100,8 @@ type presentationOptions struct {
 	verificationMethodKey   string
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
+	// expectedProofPurpose overrides the authentication a VP verifier expects.
+	expectedProofPurpose string
 	// Signing: written into proof.challenge / proof.domain.
 	challenge string
 	domain    string
@@ -111,6 +113,28 @@ type presentationOptions struct {
 	requireAudience bool
 	// Signing: allow a signing call to replace a signature already present.
 	replaceProof bool
+	// maxProofs caps the proofs a JSON-LD presentation may carry; 0 means no cap.
+	maxProofs int
+}
+
+// WithExpectedProofPurpose tells Verify to expect this proof purpose instead of
+// authentication. Data Integrity 1.0 §4.4 requires the comparison. An empty
+// purpose leaves the default in place.
+func WithExpectedProofPurpose(purpose string) PresentationOpt {
+	return func(p *presentationOptions) {
+		if purpose == "" {
+			return
+		}
+		p.expectedProofPurpose = purpose
+	}
+}
+
+// diProofPurpose is the purpose a VP verifier compares with proof.proofPurpose.
+func (o *presentationOptions) diProofPurpose() string {
+	if o.expectedProofPurpose != "" {
+		return o.expectedProofPurpose
+	}
+	return "authentication"
 }
 
 // WithProofVerificationMethod restricts proof verification to the single proof
@@ -119,6 +143,18 @@ type presentationOptions struct {
 func WithProofVerificationMethod(vm string) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.proofVerificationMethod = vm
+	}
+}
+
+// WithMaxProofs makes Verify refuse a JSON-LD presentation that carries more
+// than n proofs, before the DIDs of those proofs are resolved. Embedded
+// credentials are verified first, under their own options: pass
+// vc.WithMaxProofs through WithVCValidation to cap their proofs. A JWT
+// presentation holds one signature, so the option does not change it.
+// n <= 0 leaves the proof set unbounded, which is the default.
+func WithMaxProofs(n int) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.maxProofs = n
 	}
 }
 

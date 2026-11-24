@@ -241,8 +241,8 @@ func TestECDSASD_MultiKey_IssueDeriveVerify(t *testing.T) {
 			if err != nil {
 				t.Fatalf("add base proof: %v", err)
 			}
-			if err := base.Verify(vc.WithResolver(resolver)); err != nil {
-				t.Fatalf("verify base proof: %v", err)
+			if err := base.Verify(vc.WithResolver(resolver)); err == nil || !strings.Contains(err.Error(), "base proof") {
+				t.Fatalf("base proof at verification: %v", err)
 			}
 
 			derived, err := base.Derive([]string{"credentialSubject.name"})

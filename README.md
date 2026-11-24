@@ -562,6 +562,8 @@ err := credential.AddProofByProvider(signer, vc.WithVerificationMethodKey("key-2
 
 Lets a signing call replace a signature the credential already carries. Without it, signing an already-signed JWT credential (`vc+jwt` or VC 1.1 JWT) is refused.
 
+It works only on a credential built with `New*`. A parsed JWT credential cannot be signed at all, with or without the option: build it again with `New*`.
+
 A JWT holds one signature, so signing again always throws the old one away. Even with the same key and the same claims the new signature is different (ECDSA is randomized), so the token and its `Hash()` change too. The option makes that a choice instead of a side effect.
 
 ```go
@@ -1265,6 +1267,8 @@ err := presentation.AddProofByProvider(signer, vp.WithVerificationMethodKey("key
 #### **vp.WithReplaceProof()**
 
 Lets a signing call replace a signature the presentation already carries. Without it, signing an already-signed JWT presentation (`vp+jwt` or VC 1.1 JWT) is refused.
+
+It works only on a presentation built with `New*`. A parsed JWT presentation cannot be signed at all, with or without the option: build it again with `New*`.
 
 The usual reason to need it: the verifier hands out a new challenge and the holder signs again.
 

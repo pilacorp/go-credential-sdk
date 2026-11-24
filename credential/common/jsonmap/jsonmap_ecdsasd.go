@@ -9,6 +9,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/sdverify"
 )
 
 // ECDSASD2023 is the cryptosuite identifier for the ecdsa-sd-2023
@@ -170,11 +171,15 @@ func (m *JSONMap) DeriveECDSASD(selectivePointers []string) (JSONMap, error) {
 	return result, nil
 }
 
-// verifyECDSASDProof verifies an ecdsa-sd-2023 base or derived proof.
-func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
+// verifyECDSASDProof verifies an ecdsa-sd-2023 derived proof. ecdsasd refuses
+// a base proof, through the same check as ecdsasd.VerifyProof.
+func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, cache *digestCache) (bool, error) {
 	vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
+	}
+	if err := verificationmethod.RequireController(doc, vm); err != nil {
+		return false, err
 	}
 	// ecdsa-sd-2023 standardizes on P-256; this SDK also accepts a secp256k1
 	// issuer key as a non-standard extension.
@@ -183,7 +188,7 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, err
 	}
 
-	docNoProof, err := m.bodyWithoutProof()
+	canon, err := cache.sdCanonicalizer(m)
 	if err != nil {
 		return false, err
 	}
@@ -193,7 +198,7 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, fmt.Errorf("failed to build proof configuration: %w", err)
 	}
 
-	if err := ecdsasd.VerifyProof(docNoProof, proofConfig, proof.ProofValue, pub); err != nil {
+	if err := sdverify.VerifyProof(canon, proofConfig, proof.ProofValue, pub); err != nil {
 		return false, err
 	}
 	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {

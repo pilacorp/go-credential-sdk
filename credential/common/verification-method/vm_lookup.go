@@ -43,3 +43,23 @@ func FindVerificationMethod(doc *DIDDocument, verificationMethodURL string) (*Ve
 	}
 	return nil, fmt.Errorf("verification method '%s' not found in DID '%s' document", verificationMethodURL, doc.ID)
 }
+
+// RequireController checks that vm belongs to doc. CID 1.0 §3.3 takes the
+// DID from the verification method URL and requires both the document id and
+// the method's controller to equal that DID.
+func RequireController(doc *DIDDocument, vm *VerificationMethodEntry) error {
+	if doc == nil || vm == nil {
+		return fmt.Errorf("verification method controller cannot be checked without a document and a method")
+	}
+	did, err := DIDFromVerificationMethodURL(vm.ID)
+	if err != nil {
+		return err
+	}
+	if doc.ID != did {
+		return fmt.Errorf("DID document id %q is not the DID %q that verification method %q belongs to", doc.ID, did, vm.ID)
+	}
+	if vm.Controller != did {
+		return fmt.Errorf("verification method %q controller %q is not the DID %q it belongs to", vm.ID, vm.Controller, did)
+	}
+	return nil
+}

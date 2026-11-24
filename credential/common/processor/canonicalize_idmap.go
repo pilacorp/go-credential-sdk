@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pilacorp/go-credential-sdk/credential/internal/nquads"
 	ld "github.com/pilacorp/json-gold/ld"
 )
 
@@ -49,23 +50,12 @@ func toRDFDataset(doc map[string]interface{}) (*ld.RDFDataset, error) {
 // Both Data Integrity cryptosuites (ecdsa-rdfc-2019 and ecdsa-sd-2023) hash
 // their documents and proof configurations through here.
 func Canonicalize(doc map[string]interface{}) ([]byte, error) {
-	nquads, err := canonicalizeNQuads(doc)
-	if err != nil {
-		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
-	}
-
-	// An empty dataset would make the signature commit to nothing.
-	canonical := []byte(strings.Join(nquads, ""))
-	if len(canonical) == 0 {
-		return nil, fmt.Errorf("canonicalization produced no N-Quads; the document has no @context or no JSON-LD terms")
-	}
-
-	return canonical, nil
+	return nquads.Join(CanonicalizeNQuads(doc))
 }
 
-// canonicalizeNQuads is CanonicalizeWithIdMap without the blank-node map, for
-// callers that only hash the result (ecdsa-rdfc-2019, proof configurations).
-func canonicalizeNQuads(doc map[string]interface{}) (nquads []string, err error) {
+// CanonicalizeNQuads is CanonicalizeWithIdMap without the blank-node map: the
+// same URDNA2015 N-Quads, one per element, each ending in "\n".
+func CanonicalizeNQuads(doc map[string]interface{}) (nquads []string, err error) {
 	if doc == nil {
 		return nil, fmt.Errorf("canonicalize: document is nil")
 	}
