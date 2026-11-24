@@ -105,7 +105,9 @@ func extractJwtFromProof(body map[string]interface{}) (string, error) {
 
 // verifyJwtBodyBinding decodes the JWT payload and checks that every member of
 // the credential/presentation body (minus proof) is covered by the JWT: either
-// directly in the vc/vp claim or via the VC-JWT 1.1 moved-field mapping.
+// directly in the vc/vp claim or via the VC-JWT 1.1 moved-field mapping. A body
+// equal to what did-jwt-vc decodes from the JWT is accepted as a whole (see
+// jwt-proof-2020-didjwtvc.go).
 // On success it returns the full JWT claims map so the caller can extract
 // signed timestamps (iat, nbf).
 func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[string]interface{}, error) {
@@ -138,6 +140,20 @@ func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[str
 		return nil, bindingErr(fmt.Sprintf("JWT %s claim is not a JSON object", claimKey))
 	}
 
+	if err := checkMappedBody(body, container, claims, isVP); err != nil {
+		// A body that did-jwt-vc decoded from this JWT is the other accepted
+		// form; it is tried second so the common mapped body pays nothing.
+		if bodyIsDidJwtVcForm(claims, body, isVP) {
+			return claims, nil
+		}
+		return nil, err
+	}
+	return claims, nil
+}
+
+// checkMappedBody is the VC-JWT 1.1 mapping check: each body member is in the
+// vc/vp claim or moved to its registered claim, and nothing signed is dropped.
+func checkMappedBody(body, container, claims map[string]interface{}, isVP bool) error {
 	// Check 2: every body member (except proof) must be covered.
 	for k, bodyVal := range body {
 		if k == "proof" {
@@ -151,20 +167,20 @@ func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[str
 			// VC-JWT 1.1 §6.3.1 moves to the sub claim.
 			if !isVP && k == "credentialSubject" {
 				if err := checkSubjectIDMovedToSub(bodyVal, cVal, claims); err != nil {
-					return nil, err
+					return err
 				}
 				continue
 			}
-			return nil, memberErr(k)
+			return memberErr(k)
 		}
 		// Not in the container claim: check if it is a moved field.
 		if isVP {
 			if err := checkMovedFieldVP(k, bodyVal, claims); err != nil {
-				return nil, err
+				return err
 			}
 		} else {
 			if err := checkMovedField(k, bodyVal, claims); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
@@ -173,10 +189,10 @@ func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[str
 	// inside the container, makes the proof fail.
 	for k := range container {
 		if k == "proof" {
-			return nil, memberErr(k)
+			return memberErr(k)
 		}
 		if _, inBody := body[k]; !inBody {
-			return nil, memberErr(k)
+			return memberErr(k)
 		}
 	}
 
@@ -186,7 +202,7 @@ func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[str
 	// only the body) lets an expired credential through.
 	if isVP {
 		if _, ok := claims["jti"]; ok && body["id"] == nil {
-			return nil, memberErr("id")
+			return memberErr("id")
 		}
 	} else {
 		for claim, members := range map[string][]string{
@@ -198,15 +214,14 @@ func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[str
 				continue
 			}
 			if !bodyHasAny(body, members) {
-				return nil, memberErr(members[0])
+				return memberErr(members[0])
 			}
 		}
 		if _, signed := claims["sub"]; signed && !subjectHasID(body["credentialSubject"]) {
-			return nil, memberErr("credentialSubject")
+			return memberErr("credentialSubject")
 		}
 	}
-
-	return claims, nil
+	return nil
 }
 
 // BodyIsPresentation returns true when the body's type array contains
