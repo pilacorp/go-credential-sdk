@@ -56,7 +56,7 @@ func signedSecp256k1Proof(t *testing.T) (JSONMap, *verificationmethod.DIDDocumen
 	if err != nil {
 		t.Fatalf("header: %v", err)
 	}
-	signingInput, err := m.secp256k1SigningInput(proof, encHeader)
+	signingInput, err := m.secp256k1SigningInput(proof, encHeader, nil)
 	if err != nil {
 		t.Fatalf("signing input: %v", err)
 	}
@@ -71,7 +71,7 @@ func signedSecp256k1Proof(t *testing.T) (JSONMap, *verificationmethod.DIDDocumen
 	}
 	proof.JWS = encHeader + ".." + base64.RawURLEncoding.EncodeToString(signature)
 
-	if ok, err := m.verifyEcdsaSecp256k1Proof(doc, proof); !ok || err != nil {
+	if ok, err := m.verifyEcdsaSecp256k1Proof(doc, proof, nil); !ok || err != nil {
 		t.Fatalf("the proof this test starts from does not verify: ok=%v err=%v", ok, err)
 	}
 
@@ -107,7 +107,7 @@ func TestSecp256k1Suite_RejectsNonCanonicalBase64(t *testing.T) {
 	}
 
 	proof.JWS = encHeader + ".." + mutated
-	ok, err = m.verifyEcdsaSecp256k1Proof(doc, proof)
+	ok, err = m.verifyEcdsaSecp256k1Proof(doc, proof, nil)
 	if ok || err == nil {
 		t.Fatalf("a second spelling of the same signature verified: ok=%v err=%v", ok, err)
 	}
@@ -146,7 +146,7 @@ func TestSecp256k1Suite_RejectsHighS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pub: %v", err)
 	}
-	signingInput, err := m.secp256k1SigningInput(proof, encHeader)
+	signingInput, err := m.secp256k1SigningInput(proof, encHeader, nil)
 	if err != nil {
 		t.Fatalf("signing input: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestSecp256k1Suite_RejectsHighS(t *testing.T) {
 	}
 
 	proof.JWS = encHeader + ".." + base64.RawURLEncoding.EncodeToString(flipped)
-	ok, err = m.verifyEcdsaSecp256k1Proof(doc, proof)
+	ok, err = m.verifyEcdsaSecp256k1Proof(doc, proof, nil)
 	if ok || err == nil || !strings.Contains(err.Error(), "low-S") {
 		t.Fatalf("the (r, n-s) form of the same signature was accepted: ok=%v err=%v", ok, err)
 	}
@@ -175,7 +175,7 @@ func TestSecp256k1Suite_RejectsVMWithoutTheClaimedPurpose(t *testing.T) {
 	doc.Authentication = doc.AssertionMethod
 	doc.AssertionMethod = nil
 
-	ok, err := m.verifyEcdsaSecp256k1Proof(doc, proof)
+	ok, err := m.verifyEcdsaSecp256k1Proof(doc, proof, nil)
 	if ok || err == nil || !strings.Contains(err.Error(), "is not granted purpose") {
 		t.Fatalf("a login-only key issued a credential: ok=%v err=%v", ok, err)
 	}
@@ -194,7 +194,7 @@ func TestSecp256k1Suite_RejectsProofSignedAfterRevocation(t *testing.T) {
 	doc.VerificationMethod[0].Revoked = &revoked
 	doc.VerificationMethod[0].RevocationReason = verificationmethod.ReasonSuperseded
 
-	ok, err := m.verifyEcdsaSecp256k1Proof(doc, proof)
+	ok, err := m.verifyEcdsaSecp256k1Proof(doc, proof, nil)
 	if ok || err == nil || !strings.Contains(err.Error(), "is not earlier") {
 		t.Fatalf("a revoked key issued a credential: ok=%v err=%v", ok, err)
 	}
@@ -253,7 +253,7 @@ func TestSecp256k1Suite_AcceptsAHeaderWithExtraFields(t *testing.T) {
 	}
 	encHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
 
-	signingInput, err := m.secp256k1SigningInput(proof, encHeader)
+	signingInput, err := m.secp256k1SigningInput(proof, encHeader, nil)
 	if err != nil {
 		t.Fatalf("signing input: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestSecp256k1Suite_AcceptsAHeaderWithExtraFields(t *testing.T) {
 	}
 	proof.JWS = encHeader + ".." + base64.RawURLEncoding.EncodeToString(signature[:64])
 
-	ok, err := m.verifyEcdsaSecp256k1Proof(doc, proof)
+	ok, err := m.verifyEcdsaSecp256k1Proof(doc, proof, nil)
 	if err != nil || !ok {
 		t.Fatalf("a correctly signed header with kid was refused: ok=%v err=%v", ok, err)
 	}

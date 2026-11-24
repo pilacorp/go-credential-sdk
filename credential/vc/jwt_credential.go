@@ -348,21 +348,16 @@ func (j *JWTCredential) Present(selectedDisclosures []string) (Credential, error
 func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
+	if options.isCheckRevocation && !options.isVerifyProof {
+		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
+	}
+
 	g := &errgroup.Group{}
 
 	if options.isValidateSchema {
 		g.Go(func() error {
 			if err := validateCredential(j.payloadData, options); err != nil {
 				return fmt.Errorf("validate credential: %w", err)
-			}
-			return nil
-		})
-	}
-
-	if options.isCheckRevocation {
-		g.Go(func() error {
-			if err := checkRevocation(j.payloadData); err != nil {
-				return fmt.Errorf("check revocation: %w", err)
 			}
 			return nil
 		})
@@ -385,6 +380,18 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("credential verification failed: %w", err)
+	}
+
+	// Revocation check runs after the proof is verified: an unsigned or
+	// forged credential must not trigger a GET to the statusListCredential
+	// URL the attacker chose.
+	if options.isCheckRevocation {
+		// VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
+		// is present it sets the issuer.
+		iss, _ := j.jwtClaims["iss"].(string)
+		if err := checkRevocation(j.payloadData, options.resolver, options.acceptLegacyStatusList, iss); err != nil {
+			return fmt.Errorf("credential verification failed: check revocation: %w", err)
+		}
 	}
 
 	if options.isCheckExpiration {
