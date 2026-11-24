@@ -388,9 +388,10 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 }
 
 // verifyProofSet verifies every proof in proofs against the JSONMap, using
-// cache for canonicalization. Tests call this directly with their own cache
-// so they can inspect cache.misses in parallel.
+// cache for canonicalization and resolving each DID once. Tests call this
+// directly with their own cache so they can inspect cache.misses in parallel.
 func (m *JSONMap) verifyProofSet(resolver verificationmethod.ResolverProvider, proofs []dto.Proof, expectedPurpose string, raw []interface{}, cache *digestCache) (bool, error) {
+	resolver = &didMemo{inner: resolver}
 	for i := range proofs {
 		if err := rejectPreviousProof(raw[i]); err != nil {
 			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)

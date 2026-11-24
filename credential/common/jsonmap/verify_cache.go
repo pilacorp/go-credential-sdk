@@ -1,9 +1,11 @@
 package jsonmap
 
 import (
+	"context"
 	"crypto/sha256"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/nquads"
 )
 
@@ -129,4 +131,28 @@ func (c *digestCache) sdCanonicalizer(m *JSONMap) (func() ([]string, error), err
 		return func() ([]string, error) { return processor.CanonicalizeNQuads(body) }, nil
 	}
 	return func() ([]string, error) { return c.canonicalNQuads(body) }, nil
+}
+
+// didMemo resolves each DID once per proof set. Proofs signed by keys of one
+// DID would otherwise fetch its document once per proof, and a resolver is
+// usually a network call. Only successes are kept: the first failure ends the
+// set. Not safe for concurrent use, like digestCache.
+type didMemo struct {
+	inner verificationmethod.ResolverProvider
+	docs  map[string]*verificationmethod.DIDDocument
+}
+
+func (r *didMemo) ResolveDocument(ctx context.Context, did string) (*verificationmethod.DIDDocument, error) {
+	if doc, ok := r.docs[did]; ok {
+		return doc, nil
+	}
+	doc, err := r.inner.ResolveDocument(ctx, did)
+	if err != nil {
+		return nil, err
+	}
+	if r.docs == nil {
+		r.docs = make(map[string]*verificationmethod.DIDDocument)
+	}
+	r.docs[did] = doc
+	return doc, nil
 }

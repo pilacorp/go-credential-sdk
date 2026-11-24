@@ -392,6 +392,20 @@ func (r *countingResolver) ResolveDocument(ctx context.Context, did string) (*ve
 	return r.inner.ResolveDocument(ctx, did)
 }
 
+func TestVerifyProof_OneDIDResolvedOnce(t *testing.T) {
+	t.Parallel()
+	m, inner := signedCredential(t, 3)
+	resolver := &countingResolver{inner: inner}
+
+	ok, err := m.VerifyProof(resolver, "")
+	if err != nil || !ok {
+		t.Fatalf("VerifyProof = %v, %v; want true, nil", ok, err)
+	}
+	if got := atomic.LoadInt64(&resolver.count); got != 1 {
+		t.Fatalf("ResolveDocument calls = %d, want 1 (three proofs, one DID)", got)
+	}
+}
+
 func TestVerifyProof_ErrorsPreservedOrdering(t *testing.T) {
 	t.Parallel()
 	// 2 proofs: first valid, second uses an unknown DID.
