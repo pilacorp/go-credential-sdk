@@ -44,3 +44,71 @@ func TestCheckValidityPeriod(t *testing.T) {
 		})
 	}
 }
+
+// Vectors from the lexical space of XML Schema 1.1 Part 2 dateTime (§3.3.7.2)
+// and dateTimeStamp (§3.4.28).
+func TestParseDateTime(t *testing.T) {
+	utc := func(s string) time.Time {
+		v, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	cases := []struct {
+		in        string
+		stamp     bool // ParseDateTimeStamp accepts it
+		dateTime  bool // ParseDateTime accepts it
+		wantInUTC string
+	}{
+		{"2020-01-01T00:00:00Z", true, true, "2020-01-01T00:00:00Z"},
+		{"2020-01-01T07:00:00+07:00", true, true, "2020-01-01T00:00:00Z"},
+		{"2020-01-01T00:00:00.25Z", true, true, "2020-01-01T00:00:00.25Z"},
+		{"2019-12-31T24:00:00Z", true, true, "2020-01-01T00:00:00Z"},
+		{"2020-01-01T00:00:00", false, true, "2020-01-01T00:00:00Z"},
+		{"2020-01-01T00:00:00,5Z", false, false, ""},
+		{"2020-01-01t00:00:00Z", false, false, ""},
+		{"2020-01-01T25:00:00Z", false, false, ""},
+		{"2020-13-01T00:00:00Z", false, false, ""},
+		{"2020-01-01", false, false, ""},
+		{"2020-01-01T00:00:00+15:00", false, false, ""},
+		{"2020-02-30T00:00:00Z", false, false, ""},
+		{"12020-01-01T00:00:00Z", false, false, ""},
+	}
+	for _, c := range cases {
+		got, err := ParseDateTimeStamp(c.in)
+		if (err == nil) != c.stamp {
+			t.Errorf("ParseDateTimeStamp(%q) err = %v, want accepted = %v", c.in, err, c.stamp)
+		} else if err == nil && !got.Equal(utc(c.wantInUTC)) {
+			t.Errorf("ParseDateTimeStamp(%q) = %v, want %s", c.in, got, c.wantInUTC)
+		}
+		got, err = ParseDateTime(c.in)
+		if (err == nil) != c.dateTime {
+			t.Errorf("ParseDateTime(%q) err = %v, want accepted = %v", c.in, err, c.dateTime)
+		} else if err == nil && !got.Equal(utc(c.wantInUTC)) {
+			t.Errorf("ParseDateTime(%q) = %v, want %s", c.in, got, c.wantInUTC)
+		}
+	}
+}
+
+// A value the pattern takes but the calendar does not have is refused with
+// the wanted form, not Go's layout, and without the value.
+func TestParseDateTime_ErrorText(t *testing.T) {
+	for _, in := range []string{"2020-02-30T00:00:00Z", "123456789012345678901234567890-01-01T00:00:00Z", "2020-01-01"} {
+		_, err := ParseDateTimeStamp(in)
+		if err == nil || !strings.HasPrefix(err.Error(), "want a ") || strings.Contains(err.Error(), in) {
+			t.Errorf("%q: err = %v, want a 'want a ...' text without the value", in, err)
+		}
+	}
+}
+
+// VC Data Model 2.0 §5.8: a validFrom or validUntil serialized without an
+// offset MUST be interpreted as UTC.
+func TestCheckValidityPeriod_ZonelessReadAsUTC(t *testing.T) {
+	if err := CheckValidityPeriod("credential", "", "2999-01-01T00:00:00", 0); err != nil {
+		t.Fatalf("zoneless validUntil refused: %v", err)
+	}
+	if err := CheckValidityPeriod("credential", "", "2000-01-01T00:00:00", 0); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("err = %v, want expired", err)
+	}
+}

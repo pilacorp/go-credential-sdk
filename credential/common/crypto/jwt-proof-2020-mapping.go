@@ -2,7 +2,8 @@ package crypto
 
 import (
 	"math"
-	"time"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
 // The VC-JWT 1.1 mapping check (VCDM 1.1 §6.3.1): a JwtProof2020 body binds to
@@ -250,7 +251,7 @@ func checkTimeClaim(key string, bodyVal interface{}, claims map[string]interface
 	if !ok {
 		return memberErr(key)
 	}
-	t, err := time.Parse(time.RFC3339, dateStr)
+	t, err := vcdm.ParseDateTime(dateStr)
 	if err != nil {
 		return memberErr(key)
 	}

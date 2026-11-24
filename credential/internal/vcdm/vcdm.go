@@ -10,10 +10,12 @@ package vcdm
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 )
 
-// ContextV2 is the @context VC Data Model 2.0 § 4.2 requires first on every
+// ContextV2 is the @context VC Data Model 2.0 §4.3 requires first on every
 // credential and presentation.
 const ContextV2 = "https://www.w3.org/ns/credentials/v2"
 
@@ -66,13 +68,88 @@ func FirstContext(v interface{}) string {
 	return ""
 }
 
+// dateTimePattern is the lexical space of XML Schema 1.1 Part 2 dateTime
+// (§3.3.7.2). The zone group is optional there and required in dateTimeStamp
+// (§3.4.28). Years outside 0000-9999 match but cannot be read as time.Time.
+var dateTimePattern = regexp.MustCompile(
+	`^-?([1-9][0-9]{3,}|0[0-9]{3})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])` +
+		`T(([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?|24:00:00(\.0+)?)` +
+		`(?P<zone>Z|[+-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$`)
+
+var zoneGroup = dateTimePattern.SubexpIndex("zone")
+
+// ParseDateTimeStamp reads a date-time with a time zone, as a Data Integrity
+// proof's created (DI 1.0 §2.1, a dateTimeStamp). DI 1.0 lets a processor
+// consume a value serialized without an offset; this reader refuses it.
+// T24:00:00 is the start of the next day.
+func ParseDateTimeStamp(s string) (time.Time, error) {
+	return parseDateTime(s, true)
+}
+
+// ParseDateTime reads a date-time whose time zone may be left out, and reads
+// such a value as UTC. VC Data Model 2.0 §5.8 requires that for validFrom and
+// validUntil (§4.9, dateTimeStamp values serialized without an offset). For
+// VCDM 1.1 issuanceDate (§4.6) and expirationDate (§4.8), XML Schema dateTime
+// values, it is this SDK's choice: XML Schema leaves the order against a zoned
+// value partial (§3.3.7.1), and one instant keeps every verifier in step.
+// T24:00:00 is the start of the next day.
+func ParseDateTime(s string) (time.Time, error) {
+	return parseDateTime(s, false)
+}
+
+// Date members of a credential or presentation: validFrom and validUntil
+// (VCDM 2.0 §4.9) and issuanceDate and expirationDate (VCDM 1.1 §4.6, §4.8).
+const (
+	ValidFrom      = "validFrom"
+	ValidUntil     = "validUntil"
+	IssuanceDate   = "issuanceDate"
+	ExpirationDate = "expirationDate"
+)
+
+// IsDateMember reports whether name is one of the date members.
+func IsDateMember(name string) bool {
+	switch name {
+	case ValidFrom, ValidUntil, IssuanceDate, ExpirationDate:
+		return true
+	}
+	return false
+}
+
+func parseDateTime(s string, zoneRequired bool) (time.Time, error) {
+	m := dateTimePattern.FindStringSubmatch(s)
+	if m == nil || (zoneRequired && m[zoneGroup] == "") {
+		if zoneRequired {
+			return time.Time{}, fmt.Errorf("want a date-time with a time zone, such as 2026-01-01T00:00:00Z")
+		}
+		return time.Time{}, fmt.Errorf("want a date-time, such as 2026-01-01T00:00:00Z")
+	}
+	if m[zoneGroup] == "" {
+		s += "Z"
+	}
+	endOfDay := strings.Contains(s, "T24:00:00")
+	if endOfDay {
+		s = strings.Replace(s, "T24:00:00", "T00:00:00", 1)
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		// The pattern takes dates the calendar does not have (February 30)
+		// and years outside 0000-9999, which XML Schema allows and
+		// time.Time does not hold.
+		return time.Time{}, fmt.Errorf("want a year from 0000 to 9999 and a date the calendar has, such as 2026-01-01T00:00:00Z")
+	}
+	if endOfDay {
+		t = t.AddDate(0, 0, 1)
+	}
+	return t, nil
+}
+
 // CheckValidityPeriod enforces a document's validFrom/validUntil (RFC 3339
 // strings, empty when absent) at the current time, widened by leeway on both
 // sides. what names the document in the error ("credential", "presentation").
 func CheckValidityPeriod(what, validFrom, validUntil string, leeway time.Duration) error {
 	now := time.Now()
 	if validFrom != "" {
-		t, err := time.Parse(time.RFC3339, validFrom)
+		t, err := ParseDateTime(validFrom)
 		if err != nil {
 			return fmt.Errorf("failed to parse validFrom: %w", err)
 		}
@@ -82,7 +159,7 @@ func CheckValidityPeriod(what, validFrom, validUntil string, leeway time.Duratio
 	}
 
 	if validUntil != "" {
-		t, err := time.Parse(time.RFC3339, validUntil)
+		t, err := ParseDateTime(validUntil)
 		if err != nil {
 			return fmt.Errorf("failed to parse validUntil: %w", err)
 		}

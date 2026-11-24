@@ -72,7 +72,7 @@ func requireCredentialProperties(m CredentialData) error {
 	return nil
 }
 
-// credentialsV2Context is the @context VC Data Model 2.0 §4.2 requires first on
+// credentialsV2Context is the @context VC Data Model 2.0 §4.3 requires first on
 // every credential. vc-jose-cose is defined against 2.0 only, so the JOSE paths
 // hold documents to it; the VC 1.1 paths do not, and keep their own context.
 const credentialsV2Context = "https://www.w3.org/ns/credentials/v2"
@@ -233,7 +233,7 @@ func carriesSDMachinery(value interface{}) bool {
 	return false
 }
 
-// requireV2Context enforces VCDM 2.0 §4.2: the v2 URL comes first. The data
+// requireV2Context enforces VCDM 2.0 §4.3: the v2 URL comes first. The data
 // model asks for an ordered set, but a lone string means the same thing and is
 // accepted rather than turned into a second way to fail.
 func requireV2Context(v interface{}) error {

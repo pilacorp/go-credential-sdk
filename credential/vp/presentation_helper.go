@@ -214,7 +214,7 @@ func parseHolder(vp PresentationData, contents *PresentationContents) error {
 // parseDates extracts validFrom and validUntil fields from a Presentation.
 func parseDates(vp PresentationData, contents *PresentationContents) error {
 	if validFrom, ok := vp["validFrom"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validFrom)
+		t, err := vcdm.ParseDateTime(validFrom)
 		if err != nil {
 			return fmt.Errorf("failed to parse validFrom: %w", err)
 		}
@@ -222,7 +222,7 @@ func parseDates(vp PresentationData, contents *PresentationContents) error {
 	}
 
 	if validUntil, ok := vp["validUntil"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validUntil)
+		t, err := vcdm.ParseDateTime(validUntil)
 		if err != nil {
 			return fmt.Errorf("failed to parse validUntil: %w", err)
 		}

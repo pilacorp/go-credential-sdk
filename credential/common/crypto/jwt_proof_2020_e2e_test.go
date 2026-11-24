@@ -402,6 +402,43 @@ func TestVerifyProof_CreatedDiffersFromIat(t *testing.T) {
 	}
 }
 
+// proof.created is read as every other proof's created (a dateTimeStamp):
+// T24:00:00 of the day before is the same instant as iat, and a comma before
+// the fraction is not a date-time.
+func TestVerifyProof_JwtProofCreatedReadAsDateTimeStamp(t *testing.T) {
+	const did = "did:example:issuer"
+	resolver := e2eResolverAndDoc(t, did, "key-1", e2ePrivHex)
+	for _, c := range []struct {
+		created string
+		accept  bool
+	}{
+		{"2023-12-31T24:00:00Z", true},
+		{"2024-01-01T00:00:00,0Z", false},
+	} {
+		body := map[string]interface{}{
+			"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+			"type":              []interface{}{"VerifiableCredential"},
+			"issuer":            did,
+			"credentialSubject": map[string]interface{}{"id": "did:example:subject", "name": "Alice"},
+			"issuanceDate":      "2024-01-01T00:00:00Z",
+		}
+		token := signJWTE2E(t, e2ePrivHex, e2eHeader(), map[string]interface{}{
+			"vc": body, "iss": did, "iat": float64(1704067200),
+		})
+		m := jsonmap.JSONMap(body)
+		m["proof"] = map[string]interface{}{
+			"type": "JwtProof2020", "jwt": token, "verificationMethod": did + "#key-1", "created": c.created,
+		}
+		ok, err := m.VerifyProof(resolver, "")
+		if c.accept && !ok {
+			t.Fatalf("created %s refused: %v", c.created, err)
+		}
+		if !c.accept && (ok || err == nil || !strings.Contains(err.Error(), "invalid proof.created")) {
+			t.Fatalf("created %s: ok = %v, err = %v, want an invalid proof.created error", c.created, ok, err)
+		}
+	}
+}
+
 // --- Finding 4: VP end-to-end through VerifyProof ---
 
 func TestVerifyProof_VP_MatchingVpClaimVerifies(t *testing.T) {

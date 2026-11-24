@@ -344,7 +344,7 @@ func parseIssuer(c CredentialData, contents *CredentialContents) error {
 // parseDates extracts validFrom and validUntil fields from a Credential.
 func parseDates(c CredentialData, contents *CredentialContents) error {
 	if validFrom, ok := c["validFrom"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validFrom)
+		t, err := vcdm.ParseDateTime(validFrom)
 		if err != nil {
 			return fmt.Errorf("failed to parse validFrom: %w", err)
 		}
@@ -352,7 +352,7 @@ func parseDates(c CredentialData, contents *CredentialContents) error {
 	}
 
 	if validUntil, ok := c["validUntil"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validUntil)
+		t, err := vcdm.ParseDateTime(validUntil)
 		if err != nil {
 			return fmt.Errorf("failed to parse validUntil: %w", err)
 		}
