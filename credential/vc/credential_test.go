@@ -422,6 +422,34 @@ func TestCheckExpiration_Expired(t *testing.T) {
 	assert.Contains(t, err.Error(), "credential is expired")
 }
 
+func TestCheckExpiration_V1ExpirationDatePassed(t *testing.T) {
+	credential := CredentialData{
+		"issuanceDate":   time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+		"expirationDate": time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+	}
+
+	require.ErrorContains(t, checkExpiration(credential, 0), "credential is expired")
+}
+
+func TestCheckExpiration_V1IssuanceDateAhead(t *testing.T) {
+	credential := CredentialData{
+		"issuanceDate": time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+	}
+
+	require.ErrorContains(t, checkExpiration(credential, 0), "credential is not valid yet")
+}
+
+// VCDM 1.1 dates are XML Schema dateTime values: the time zone may be left
+// out (read as UTC) and T24:00:00 is the end of the day.
+func TestCheckExpiration_V1DatesInXMLSchemaForms(t *testing.T) {
+	credential := CredentialData{
+		"issuanceDate":   "2020-01-01T00:00:00",
+		"expirationDate": "2999-12-31T24:00:00Z",
+	}
+
+	require.NoError(t, checkExpiration(credential, 0))
+}
+
 func TestParseSubject(t *testing.T) {
 	tests := []struct {
 		name        string

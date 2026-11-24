@@ -32,31 +32,10 @@ func extractFieldFromMap(m PresentationData, path string) interface{} {
 	return current
 }
 
-// parseStringField extracts a string field from PresentationData.
-func parseStringField(obj PresentationData, fieldName string) (string, error) {
-	if value, ok := obj[fieldName]; ok {
-		if str, ok := value.(string); ok {
-			return str, nil
-		}
-		return "", fmt.Errorf("field %q must be a string, got %T", fieldName, value)
-	}
-
-	return "", nil
-}
-
-// checkExpiration checks that the presentation is inside its validFrom/validUntil
-// window, widened by leeway on both sides to absorb clock skew.
-func checkExpiration(p PresentationData, leeway time.Duration) error {
-	validFrom, err := parseStringField(p, "validFrom")
-	if err != nil {
-		return fmt.Errorf("failed to parse validFrom: %w", err)
-	}
-	validUntil, err := parseStringField(p, "validUntil")
-	if err != nil {
-		return fmt.Errorf("failed to parse validUntil: %w", err)
-	}
-
-	return vcdm.CheckValidityPeriod("presentation", validFrom, validUntil, leeway)
+// checkExpiration checks the validity period the presentation states (vcdm.CheckValidity),
+// widened by leeway on both sides to absorb clock skew.
+func checkExpiration(c PresentationData, leeway time.Duration) error {
+	return vcdm.CheckValidity("presentation", c, leeway)
 }
 
 // verifyCredentials verifies every embedded credential's proof, plus whatever
@@ -214,7 +193,7 @@ func parseHolder(vp PresentationData, contents *PresentationContents) error {
 // parseDates extracts validFrom and validUntil fields from a Presentation.
 func parseDates(vp PresentationData, contents *PresentationContents) error {
 	if validFrom, ok := vp["validFrom"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validFrom)
+		t, err := vcdm.ParseDateTime(validFrom)
 		if err != nil {
 			return fmt.Errorf("failed to parse validFrom: %w", err)
 		}
@@ -222,7 +201,7 @@ func parseDates(vp PresentationData, contents *PresentationContents) error {
 	}
 
 	if validUntil, ok := vp["validUntil"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validUntil)
+		t, err := vcdm.ParseDateTime(validUntil)
 		if err != nil {
 			return fmt.Errorf("failed to parse validUntil: %w", err)
 		}

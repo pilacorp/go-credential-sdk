@@ -72,7 +72,7 @@ func requireCredentialProperties(m CredentialData) error {
 	return nil
 }
 
-// credentialsV2Context is the @context VC Data Model 2.0 §4.2 requires first on
+// credentialsV2Context is the @context VC Data Model 2.0 §4.3 requires first on
 // every credential. vc-jose-cose is defined against 2.0 only, so the JOSE paths
 // hold documents to it; the VC 1.1 paths do not, and keep their own context.
 const credentialsV2Context = "https://www.w3.org/ns/credentials/v2"
@@ -233,7 +233,7 @@ func carriesSDMachinery(value interface{}) bool {
 	return false
 }
 
-// requireV2Context enforces VCDM 2.0 §4.2: the v2 URL comes first. The data
+// requireV2Context enforces VCDM 2.0 §4.3: the v2 URL comes first. The data
 // model asks for an ordered set, but a lone string means the same thing and is
 // accepted rather than turned into a second way to fail.
 func requireV2Context(v interface{}) error {
@@ -526,8 +526,18 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		// the same value in the raw document and in the JSON-LD compacted form.
 		// If any differs the document was rewritten (e.g. @nest, full IRI) and
 		// is refused. The raw data is NOT mutated.
-		if err := e.verifyCompactedForm(); err != nil {
+		//
+		// Only a proof over the canonical form lets the JSON-LD meaning
+		// differ from what the keys say. A JwtProof2020 proof signs the JWT,
+		// whose claims the document repeats key by key.
+		signsCanonical, err := (*jsonmap.JSONMap)(&e.credentialData).SignsCanonicalForm()
+		if err != nil {
 			return fmt.Errorf("credential verification failed: %w", err)
+		}
+		if signsCanonical {
+			if err := e.verifyCompactedForm(); err != nil {
+				return fmt.Errorf("credential verification failed: %w", err)
+			}
 		}
 	}
 
@@ -561,6 +571,12 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	// checkExpiration always runs sequentially after parallel validations
 	if options.isCheckExpiration {
 		if err := checkExpiration(e.credentialData, options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+		// The JWT of a JwtProof2020 proof is checked as the JWT path checks
+		// it. Its body dates are not a substitute: a date at the claim's
+		// second can lie later in that second, and a falsy exp (0) has no date.
+		if err := (*jsonmap.JSONMap)(&e.credentialData).CheckJwtProofTimes(options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}

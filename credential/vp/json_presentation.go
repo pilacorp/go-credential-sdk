@@ -292,8 +292,18 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 
 		// Verify that every property the SDK reads by short name has the same
 		// value in the raw document and in the JSON-LD compacted form.
-		if err := e.verifyCompactedForm(); err != nil {
+		//
+		// Only a proof over the canonical form lets the JSON-LD meaning
+		// differ from what the keys say. A JwtProof2020 proof signs the JWT,
+		// whose claims the document repeats key by key.
+		signsCanonical, err := (*jsonmap.JSONMap)(&e.presentationData).SignsCanonicalForm()
+		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+		if signsCanonical {
+			if err := e.verifyCompactedForm(); err != nil {
+				return fmt.Errorf("failed to verify presentation: %w", err)
+			}
 		}
 
 		if err := e.checkChallengeAndDomain(options); err != nil {
@@ -308,8 +318,16 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		}
 	}
 
+	// Expiry runs after the proof, as for a credential: a forged document is
+	// reported as a proof failure, not as an expired one.
 	if options.isCheckExpiration {
 		if err := checkExpiration(PresentationData(e.presentationData), options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+		// The JWT of a JwtProof2020 proof is checked as the JWT path checks
+		// it: VCDM 1.1 §6.3.1 moves no exp of a presentation to a member, so
+		// the JWT may be the only place its expiry is.
+		if err := (*jsonmap.JSONMap)(&e.presentationData).CheckJwtProofTimes(options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
