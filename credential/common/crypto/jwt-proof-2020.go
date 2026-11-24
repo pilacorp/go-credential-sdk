@@ -116,17 +116,9 @@ func extractJwtFromProof(body map[string]interface{}) (string, error) {
 // On success it returns the full JWT claims map so the caller can extract
 // signed timestamps (iat, nbf).
 func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[string]interface{}, error) {
-	parts := strings.Split(jwtToken, ".")
-	if len(parts) != 3 {
-		return nil, bindingErr("invalid JWT format")
-	}
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	claims, err := jwtutil.DecodePayload(jwtToken)
 	if err != nil {
-		return nil, bindingErr("failed to decode JWT payload")
-	}
-	var claims map[string]interface{}
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return nil, bindingErr("failed to parse JWT payload")
+		return nil, bindingErr(err.Error())
 	}
 
 	isVP := bodyIsPresentation(body)

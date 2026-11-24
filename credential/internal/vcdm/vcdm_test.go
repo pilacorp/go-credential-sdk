@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestCheckValidityPeriod(t *testing.T) {
+func TestCheckValidity(t *testing.T) {
 	now := time.Now()
 	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
 
@@ -31,7 +31,14 @@ func TestCheckValidityPeriod(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckValidityPeriod("credential", tc.validFrom, tc.validUntil, tc.leeway)
+			doc := map[string]interface{}{}
+			if tc.validFrom != "" {
+				doc[ValidFrom] = tc.validFrom
+			}
+			if tc.validUntil != "" {
+				doc[ValidUntil] = tc.validUntil
+			}
+			err := CheckValidity("credential", doc, tc.leeway)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -104,11 +111,30 @@ func TestParseDateTime_ErrorText(t *testing.T) {
 
 // VC Data Model 2.0 §5.8: a validFrom or validUntil serialized without an
 // offset MUST be interpreted as UTC.
-func TestCheckValidityPeriod_ZonelessReadAsUTC(t *testing.T) {
-	if err := CheckValidityPeriod("credential", "", "2999-01-01T00:00:00", 0); err != nil {
+func TestCheckValidity_ZonelessReadAsUTC(t *testing.T) {
+	if err := CheckValidity("credential", map[string]interface{}{ValidUntil: "2999-01-01T00:00:00"}, 0); err != nil {
 		t.Fatalf("zoneless validUntil refused: %v", err)
 	}
-	if err := CheckValidityPeriod("credential", "", "2000-01-01T00:00:00", 0); err == nil || !strings.Contains(err.Error(), "expired") {
+	if err := CheckValidity("credential", map[string]interface{}{ValidUntil: "2000-01-01T00:00:00"}, 0); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("err = %v, want expired", err)
+	}
+}
+
+func TestCheckValidity_DateMemberNotAString(t *testing.T) {
+	for _, name := range []string{"validFrom", "validUntil", "issuanceDate", "expirationDate"} {
+		err := CheckValidity("credential", map[string]interface{}{name: 1700000000.0}, 0)
+		if err == nil || !strings.Contains(err.Error(), "must be a string") {
+			t.Errorf("%s: err = %v, want a must-be-a-string error", name, err)
+		}
+	}
+}
+
+// A date member that is there must be a date-time, an empty string included.
+func TestCheckValidity_EmptyDateMember(t *testing.T) {
+	for _, name := range []string{ValidFrom, ValidUntil, IssuanceDate, ExpirationDate} {
+		err := CheckValidity("credential", map[string]interface{}{name: ""}, 0)
+		if err == nil || !strings.Contains(err.Error(), "failed to parse "+name) {
+			t.Errorf("%s: err = %v, want a parse error", name, err)
+		}
 	}
 }

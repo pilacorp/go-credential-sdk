@@ -287,8 +287,9 @@ func (j *JWTPresentation) executeOptions(opts ...PresentationOpt) error {
 	}
 
 	if options.isCheckExpiration {
-		// Same split as the credential path: validFrom/validUntil describe the
-		// presentation and sit in the payload, exp/nbf describe the token and sit
+		// Same split as the credential path: validFrom/validUntil (or
+		// issuanceDate/expirationDate) describe the presentation and sit in the
+		// payload, exp/nbf describe the token and sit
 		// in the top-level claims this builder also writes. Checking one pair and
 		// not the other let a presentation past its own exp verify.
 		//

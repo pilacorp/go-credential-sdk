@@ -555,6 +555,12 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		if err := checkExpiration(e.credentialData, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
+		// The JWT of a JwtProof2020 proof is checked as the JWT path checks
+		// it. Its body dates are not a substitute: a date at the claim's
+		// second can lie later in that second, and a falsy exp (0) has no date.
+		if err := (*jsonmap.JSONMap)(&e.credentialData).CheckJwtProofTimes(options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
 	}
 
 	return nil

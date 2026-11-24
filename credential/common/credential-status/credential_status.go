@@ -246,7 +246,10 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 	// Verify validity period, allowing for clock drift between the list's
 	// issuer, which stamps validFrom when it serves the list, and this
 	// verifier: with no leeway a verifier a second behind refused a fresh list.
-	if err := vcdm.CheckValidityPeriod("status list credential", sl.validFrom, sl.validUntil, statusListClockSkew); err != nil {
+	if err := vcdm.CheckValidity("status list credential", vcMap, statusListClockSkew); err != nil {
+		return err
+	}
+	if err := vcMap.CheckJwtProofTimes(statusListClockSkew); err != nil {
 		return err
 	}
 
@@ -287,10 +290,8 @@ func statusListFromBody(body []byte) (jsonmap.JSONMap, error) {
 // statusListView holds the fields the status check reads, taken by exact key
 // from the same map whose proof was verified.
 type statusListView struct {
-	issuerDID  string
-	validFrom  string
-	validUntil string
-	subject    StatusListCredentialSubject
+	issuerDID string
+	subject   StatusListCredentialSubject
 }
 
 // readStatusList reads the status list fields from the verified map.
@@ -305,8 +306,6 @@ func readStatusList(m jsonmap.JSONMap, entryPurpose string) (statusListView, err
 	}
 
 	sl.issuerDID, _ = jsonmap.DIDFromField(m["issuer"])
-	sl.validFrom, _ = m["validFrom"].(string)
-	sl.validUntil, _ = m["validUntil"].(string)
 
 	subject, ok := m["credentialSubject"].(map[string]interface{})
 	if !ok {

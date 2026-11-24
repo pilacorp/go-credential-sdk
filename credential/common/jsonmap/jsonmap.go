@@ -18,6 +18,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
@@ -758,6 +759,33 @@ func (m *JSONMap) Proofs() ([]dto.Proof, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// CheckJwtProofTimes checks the nbf and exp of the JWT of each JwtProof2020
+// proof at the current time, widened by leeway, as the JWT path does
+// (jwtutil.CheckTimeClaims). Such a document is a VC-JWT or VP-JWT in JSON
+// form and its validity is in those claims (VCDM 1.1 §6.3.1 moves
+// issuanceDate to nbf and expirationDate to exp). Proofs are read with
+// Proofs, as VerifyProof reads them, so both see the same set.
+func (m *JSONMap) CheckJwtProofTimes(leeway time.Duration) error {
+	proofs, err := m.Proofs()
+	if err != nil {
+		return err
+	}
+	for i := range proofs {
+		if proofs[i].Type != JwtProof2020 {
+			continue
+		}
+		jwtStr, _ := proofs[i].Extra["jwt"].(string)
+		claims, err := jwtutil.DecodePayload(jwtStr)
+		if err != nil {
+			return fmt.Errorf("JwtProof2020 proof: %w", err)
+		}
+		if err := jwtutil.CheckTimeClaims(claims, leeway); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rawProofList normalizes the proof field into a slice of raw proof entries,

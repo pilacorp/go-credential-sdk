@@ -611,19 +611,10 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 	return nil
 }
 
-// checkExpiration checks that the credential is inside its validFrom/validUntil
-// window, widened by leeway on both sides to absorb clock skew.
+// checkExpiration checks the validity period the credential states (vcdm.CheckValidity),
+// widened by leeway on both sides to absorb clock skew.
 func checkExpiration(c CredentialData, leeway time.Duration) error {
-	validFrom, err := parseStringField(c, "validFrom")
-	if err != nil {
-		return fmt.Errorf("failed to parse validFrom: %w", err)
-	}
-	validUntil, err := parseStringField(c, "validUntil")
-	if err != nil {
-		return fmt.Errorf("failed to parse validUntil: %w", err)
-	}
-
-	return vcdm.CheckValidityPeriod("credential", validFrom, validUntil, leeway)
+	return vcdm.CheckValidity("credential", c, leeway)
 }
 
 // checkRevocation checks that credentialStatus is present and, if using a

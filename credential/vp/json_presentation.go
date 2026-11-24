@@ -278,12 +278,6 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		}
 	}
 
-	if options.isCheckExpiration {
-		if err := checkExpiration(PresentationData(e.presentationData), options.leeway); err != nil {
-			return fmt.Errorf("failed to check expiration: %w", err)
-		}
-	}
-
 	if options.isVerifyProof {
 		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
 			options.resolver,
@@ -299,6 +293,20 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		}
 		if err := e.checkChallengeAndDomain(options); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+	}
+
+	// Expiry runs after the proof, as for a credential: a forged document is
+	// reported as a proof failure, not as an expired one.
+	if options.isCheckExpiration {
+		if err := checkExpiration(PresentationData(e.presentationData), options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+		// The JWT of a JwtProof2020 proof is checked as the JWT path checks
+		// it: VCDM 1.1 §6.3.1 moves no exp of a presentation to a member, so
+		// the JWT may be the only place its expiry is.
+		if err := (*jsonmap.JSONMap)(&e.presentationData).CheckJwtProofTimes(options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
 		}
 	}
 

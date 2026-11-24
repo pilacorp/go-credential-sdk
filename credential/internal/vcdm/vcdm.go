@@ -143,30 +143,70 @@ func parseDateTime(s string, zoneRequired bool) (time.Time, error) {
 	return t, nil
 }
 
-// CheckValidityPeriod enforces a document's validFrom/validUntil (RFC 3339
-// strings, empty when absent) at the current time, widened by leeway on both
-// sides. what names the document in the error ("credential", "presentation").
-func CheckValidityPeriod(what, validFrom, validUntil string, leeway time.Duration) error {
-	now := time.Now()
-	if validFrom != "" {
-		t, err := ParseDateTime(validFrom)
+// CheckValidity enforces the validity period a credential or presentation
+// states, at the current time widened by leeway on both sides: validFrom and
+// validUntil (VCDM 2.0), and issuanceDate and expirationDate (VCDM 1.1 §4.6,
+// §4.8). Each pair is read when present, whatever @context says, so a
+// document that mixes contexts cannot move its dates out of view. what names
+// the document in the error ("credential", "presentation").
+func CheckValidity(what string, doc map[string]interface{}, leeway time.Duration) error {
+	for _, pair := range [][2]string{{ValidFrom, ValidUntil}, {IssuanceDate, ExpirationDate}} {
+		from, err := dateMember(doc, pair[0])
 		if err != nil {
-			return fmt.Errorf("failed to parse validFrom: %w", err)
+			return err
+		}
+		until, err := dateMember(doc, pair[1])
+		if err != nil {
+			return err
+		}
+		if err := checkBounds(what, from, until, leeway); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dateBound is one end of a validity period: the member name, its value, and
+// whether the member is there.
+type dateBound struct {
+	name, value string
+	present     bool
+}
+
+func checkBounds(what string, from, until dateBound, leeway time.Duration) error {
+	now := time.Now()
+	if from.present {
+		t, err := ParseDateTime(from.value)
+		if err != nil {
+			return fmt.Errorf("failed to parse %s: %w", from.name, err)
 		}
 		if now.Add(leeway).Before(t) {
 			return fmt.Errorf("%s is not valid yet", what)
 		}
 	}
-
-	if validUntil != "" {
-		t, err := ParseDateTime(validUntil)
+	if until.present {
+		t, err := ParseDateTime(until.value)
 		if err != nil {
-			return fmt.Errorf("failed to parse validUntil: %w", err)
+			return fmt.Errorf("failed to parse %s: %w", until.name, err)
 		}
 		if now.Add(-leeway).After(t) {
 			return fmt.Errorf("%s is expired", what)
 		}
 	}
-
 	return nil
+}
+
+// dateMember reads a date member of doc. A member that is there must be a
+// date-time string, empty included (VCDM 1.1 §4.6: issuanceDate "MUST be";
+// §4.8 and VCDM 2.0 §4.9: "If present ... MUST be").
+func dateMember(doc map[string]interface{}, name string) (dateBound, error) {
+	v, ok := doc[name]
+	if !ok {
+		return dateBound{name: name}, nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return dateBound{}, fmt.Errorf("failed to parse %s: field %q must be a string, got %T", name, name, v)
+	}
+	return dateBound{name: name, value: s, present: true}, nil
 }

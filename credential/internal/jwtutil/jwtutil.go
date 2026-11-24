@@ -8,9 +8,12 @@
 package jwtutil
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -138,4 +141,23 @@ func TrimRecoveryByte(signature []byte) []byte {
 	}
 
 	return signature
+}
+
+// DecodePayload decodes the payload of a compact JWT without checking its
+// signature. The caller verifies the signature, or reads only claims whose
+// worth does not depend on it.
+func DecodePayload(token string) (map[string]interface{}, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, errors.New("invalid JWT format")
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, errors.New("failed to decode JWT payload")
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return nil, errors.New("failed to parse JWT payload")
+	}
+	return claims, nil
 }
