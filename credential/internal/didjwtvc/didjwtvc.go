@@ -6,7 +6,8 @@
 // The port follows the JavaScript semantics the decoder depends on (js.go).
 // Inputs that make did-jwt-vc throw, and shapes this port does not cover
 // (legacy attestation payloads, nested JWTs with cty "JWT", years outside
-// 0-9999), return ErrUnsupported.
+// 0-9999, a credentialSubject or issuer that is not an object), return
+// ErrUnsupported.
 //
 // It only decodes. Whether a decoded object is bound by a signature is the
 // caller's rule (common/crypto, JwtProof2020).
@@ -33,9 +34,78 @@ var jwsFormat = regexp.MustCompile(`^[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_
 // additionalPropNames is additionalPropNames in did-jwt-vc src/converters.ts.
 var additionalPropNames = []string{"evidence", "termsOfUse", "refreshService", "credentialSchema", "credentialStatus"}
 
-// NormalizeCredentialPayload is normalizeJwtCredentialPayload: the credential
+// Decoded is a credential or presentation as did-jwt-vc's verifyCredential or
+// verifyPresentation gives it, with the other signed values that carry its
+// top-level members.
+type Decoded struct {
+	// Form is the decoded object.
+	Form map[string]interface{}
+	// Nested lists, for a top-level member, the members of the signed vc or
+	// vp claim with that name that the decoder left nested or overrode.
+	// "credentialSubject.id" names the id inside credentialSubject.
+	Nested map[string][]interface{}
+}
+
+// DecodeCredential gives what did-jwt-vc's verifyCredential returns for the
+// payload of a VC-JWT: normalizeJwtCredentialPayload, then the checks of
+// validateCredentialPayload.
+func DecodeCredential(payload map[string]interface{}) (Decoded, error) {
+	form, err := normalizeCredentialPayload(payload)
+	if err != nil {
+		return Decoded{}, err
+	}
+	if err := validateCredentialPayload(form); err != nil {
+		return Decoded{}, err
+	}
+
+	return Decoded{Form: form, Nested: nestedBeside(payload, "vc")}, nil
+}
+
+// DecodePresentation gives what did-jwt-vc's verifyPresentation returns for
+// the payload of a VP-JWT: normalizeJwtPresentationPayload, then the checks of
+// validatePresentationPayload.
+func DecodePresentation(payload map[string]interface{}) (Decoded, error) {
+	form, err := normalizePresentationPayload(payload)
+	if err != nil {
+		return Decoded{}, err
+	}
+	if err := validatePresentationPayload(form); err != nil {
+		return Decoded{}, err
+	}
+
+	return Decoded{
+		Form:   form,
+		Nested: nestedBeside(payload, "vp"),
+	}, nil
+}
+
+// nestedBeside lists the members of the signed vc or vp claim that the decoded
+// form shows at the top level under the same name. The decoders merge
+// @context and type into arrays that keep every value, and decode each
+// verifiableCredential of a presentation, so those are left out. Of
+// credentialSubject only the id can be replaced, by sub; its other members
+// win over a top-level credentialSubject.
+func nestedBeside(payload map[string]interface{}, claimKey string) map[string][]interface{} {
+	signed := map[string][]interface{}{}
+	container, _ := payload[claimKey].(map[string]interface{})
+	for k, v := range container {
+		switch {
+		case k == "@context" || k == "type":
+		case claimKey == "vp" && k == "verifiableCredential":
+		case claimKey == "vc" && k == "credentialSubject":
+			if id, ok := jsMember(v, "id"), jsMemberPresent(v, "id"); ok {
+				signed["credentialSubject.id"] = append(signed["credentialSubject.id"], id)
+			}
+		default:
+			signed[k] = append(signed[k], v)
+		}
+	}
+	return signed
+}
+
+// normalizeCredentialPayload is normalizeJwtCredentialPayload: the credential
 // did-jwt-vc returns for the payload of a VC-JWT.
-func NormalizeCredentialPayload(input map[string]interface{}) (map[string]interface{}, error) {
+func normalizeCredentialPayload(input map[string]interface{}) (map[string]interface{}, error) {
 	if jsTruthy(input["sub"]) && jsTruthy(input["iss"]) && jsTruthy(input["claim"]) && jsTruthy(input["iat"]) {
 		return nil, ErrUnsupported // legacy attestation format, not ported
 	}
@@ -48,9 +118,13 @@ func NormalizeCredentialPayload(input map[string]interface{}) (map[string]interf
 	inputVC, _ := input["vc"].(map[string]interface{})
 
 	subject := map[string]interface{}{}
-	jsSpread(subject, input["credentialSubject"])
+	if err := jsSpread(subject, input["credentialSubject"]); err != nil {
+		return nil, err
+	}
 	if inputVC != nil {
-		jsSpread(subject, inputVC["credentialSubject"])
+		if err := jsSpread(subject, inputVC["credentialSubject"]); err != nil {
+			return nil, err
+		}
 	}
 	result["credentialSubject"] = subject
 	if jsTruthy(input["sub"]) && !jsTruthy(jsMember(input["credentialSubject"], "id")) {
@@ -66,7 +140,9 @@ func NormalizeCredentialPayload(input map[string]interface{}) (map[string]interf
 		if iss, ok := input["iss"]; ok {
 			obj["id"] = iss
 		}
-		jsSpread(obj, issuer)
+		if err := jsSpread(obj, issuer); err != nil {
+			return nil, err
+		}
 		result["issuer"] = obj
 		if !jsTruthy(jsMember(issuer, "id")) {
 			delete(result, "iss")
@@ -114,10 +190,10 @@ func NormalizeCredentialPayload(input map[string]interface{}) (map[string]interf
 	return result, nil
 }
 
-// NormalizePresentationPayload is normalizeJwtPresentationPayload: the
+// normalizePresentationPayload is normalizeJwtPresentationPayload: the
 // presentation did-jwt-vc returns for the payload of a VP-JWT, each credential
 // it holds decoded as normalizeCredential does.
-func NormalizePresentationPayload(input map[string]interface{}) (map[string]interface{}, error) {
+func normalizePresentationPayload(input map[string]interface{}) (map[string]interface{}, error) {
 	result := copyMap(input)
 	vp, _ := result["vp"].(map[string]interface{})
 	if vp != nil {
@@ -208,7 +284,7 @@ func normalizeCredential(input interface{}) (map[string]interface{}, error) {
 			out["proof"] = v["proof"]
 			return out, nil
 		}
-		out, err := NormalizeCredentialPayload(v)
+		out, err := normalizeCredentialPayload(v)
 		if err != nil {
 			return nil, err
 		}
@@ -238,7 +314,7 @@ func normalizeJWTCredential(jwt string) (map[string]interface{}, error) {
 	if header["cty"] == "JWT" {
 		return nil, ErrUnsupported // nested JWT, not ported
 	}
-	out, err := NormalizeCredentialPayload(payload)
+	out, err := normalizeCredentialPayload(payload)
 	if err != nil {
 		return nil, err
 	}

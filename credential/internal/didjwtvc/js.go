@@ -2,7 +2,6 @@ package didjwtvc
 
 import (
 	"math"
-	"strconv"
 	"time"
 )
 
@@ -61,22 +60,21 @@ func jsMember(v interface{}, key string) interface{} {
 	return nil
 }
 
-// jsSpread copies the own enumerable properties of v into dst, as {...v}.
-func jsSpread(dst map[string]interface{}, v interface{}) {
+// jsSpread copies the members of an object into dst, as {...v} does; null and
+// a missing value add nothing. JavaScript also spreads strings and arrays into
+// index keys, which converters.ts marks as unhandled (FIXME) and whose lone
+// surrogates encoding/json cannot keep apart, so any other value is refused.
+func jsSpread(dst map[string]interface{}, v interface{}) error {
 	switch t := v.(type) {
+	case nil:
+		return nil
 	case map[string]interface{}:
 		for k, val := range t {
 			dst[k] = val
 		}
-	case []interface{}:
-		for i, val := range t {
-			dst[strconv.Itoa(i)] = val
-		}
-	case string:
-		for i, r := range []rune(t) {
-			dst[strconv.Itoa(i)] = string(r)
-		}
+		return nil
 	}
+	return ErrUnsupported
 }
 
 // jsKeyCount is Object.keys(v).length for a truthy decoded JSON value.
@@ -121,4 +119,24 @@ func jsDedup(lists ...[]interface{}) []interface{} {
 		}
 	}
 	return out
+}
+
+// jsIncludes is asArray(v).indexOf(want) !== -1 for a string want.
+func jsIncludes(v interface{}, want string) bool {
+	for _, e := range jsAsArray(v) {
+		if s, ok := e.(string); ok && s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// jsMemberPresent is key in v for a decoded JSON object.
+func jsMemberPresent(v interface{}, key string) bool {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, present := m[key]
+	return present
 }

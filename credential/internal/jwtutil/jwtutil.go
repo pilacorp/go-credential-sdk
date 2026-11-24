@@ -68,12 +68,25 @@ func NumericClaim(payload map[string]interface{}, name string) (int64, bool, err
 	if !ok || raw == nil {
 		return 0, false, nil
 	}
+	sec, err := NumericDate(raw)
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid %s %w", name, err)
+	}
+
+	return sec, true, nil
+}
+
+// NumericDate reads one NumericDate value as NumericClaim does, as whole
+// seconds since the epoch. Two edges differ from RFC 7519 §2: zero and
+// negative values are refused, and a fraction is dropped, so an nbf of 1.5
+// admits a token from second 1 and an exp of 1.5 refuses it from second 1.
+func NumericDate(raw interface{}) (int64, error) {
 	var sec int64
 	switch t := raw.(type) {
 	case float64:
 		v, ok := secondsFromFloat(t)
 		if !ok {
-			return 0, false, fmt.Errorf("invalid %s value: %v", name, raw)
+			return 0, fmt.Errorf("value: %v", raw)
 		}
 		sec = v
 	case int64:
@@ -83,22 +96,22 @@ func NumericClaim(payload map[string]interface{}, name string) (int64, bool, err
 		if err != nil {
 			f, ferr := t.Float64()
 			if ferr != nil {
-				return 0, false, fmt.Errorf("invalid %s value: %w", name, ferr)
+				return 0, fmt.Errorf("value: %w", ferr)
 			}
 			var ok bool
 			if v, ok = secondsFromFloat(f); !ok {
-				return 0, false, fmt.Errorf("invalid %s value: %v", name, raw)
+				return 0, fmt.Errorf("value: %v", raw)
 			}
 		}
 		sec = v
 	default:
-		return 0, false, fmt.Errorf("invalid %s type: %T", name, raw)
+		return 0, fmt.Errorf("type: %T", raw)
 	}
 	if sec <= 0 || sec > maxUnix {
-		return 0, false, fmt.Errorf("invalid %s value: %v", name, raw)
+		return 0, fmt.Errorf("value: %v", raw)
 	}
 
-	return sec, true, nil
+	return sec, nil
 }
 
 // maxUnix is the last second time.Time holds: time.Unix adds the seconds from

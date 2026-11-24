@@ -226,8 +226,10 @@ func TestVerifyProof_TwoProofSetUsesEachProofsOwnJWT(t *testing.T) {
 	jwt1 := signJWTE2E(t, e2ePrivHex, e2eHeader(), map[string]interface{}{
 		"vc": body, "iss": did1, "iat": float64(1704067200),
 	})
+	// did2 co-signs: the proof is not bound to the issuer, but its JWT states
+	// the issuer in iss, which VCDM 1.1 §6.3.1 makes the credential's issuer.
 	jwt2 := signJWTE2E(t, e2ePrivHex2, e2eHeader(), map[string]interface{}{
-		"vc": body, "iss": did2, "iat": float64(1704067200),
+		"vc": body, "iss": did1, "iat": float64(1704067200),
 	})
 
 	m := jsonmap.JSONMap(body)
@@ -250,6 +252,32 @@ func TestVerifyProof_TwoProofSetUsesEachProofsOwnJWT(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("a two-proof set where both JWTs match was refused")
+	}
+}
+
+// A JWT that states another issuer in iss than the body shows is refused:
+// the decoded credential would carry the iss value (VCDM 1.1 §6.3.1).
+func TestVerifyProof_JwtIssDiffersFromBodyIssuer(t *testing.T) {
+	const did1 = "did:example:issuer1"
+	const did2 = "did:example:issuer2"
+	priv2, _ := ethcrypto.HexToECDSA(e2ePrivHex2)
+	resolver := verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(did2, verificationmethod.NewSecp256k1VM(
+		did2, "key-1", hex.EncodeToString(ethcrypto.CompressPubkey(&priv2.PublicKey)))))
+	body := map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            did1,
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject", "name": "Alice"},
+		"issuanceDate":      "2024-01-01T00:00:00Z",
+	}
+	token := signJWTE2E(t, e2ePrivHex2, e2eHeader(), map[string]interface{}{
+		"vc": body, "iss": did2, "iat": float64(1704067200),
+	})
+	m := jsonmap.JSONMap(body)
+	m["proof"] = map[string]interface{}{"type": "JwtProof2020", "jwt": token, "verificationMethod": did2 + "#key-1"}
+	ok, err := m.VerifyProof(resolver, "")
+	if ok || !errors.Is(err, pilacrpto.ErrJwtProofBinding) {
+		t.Fatalf("ok = %v, err = %v, want a binding error", ok, err)
 	}
 }
 

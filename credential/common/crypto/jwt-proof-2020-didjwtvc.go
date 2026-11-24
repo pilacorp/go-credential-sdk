@@ -1,53 +1,65 @@
 package crypto
 
 import (
+	"fmt"
+	"sort"
+
 	"github.com/pilacorp/go-credential-sdk/credential/internal/didjwtvc"
 )
 
-// A JwtProof2020 body that fails the VC-JWT 1.1 mapping check is accepted when
-// it equals what did-jwt-vc, the library that defined JwtProof2020, decodes
-// from the signed JWT (internal/didjwtvc). That object keeps the claims
-// VC-JWT 1.1 does not map (iat, aud, nonce) and moves others in ways VCDM 1.1
-// §6.3.1 leaves open. Every member of it comes from the signed payload, so a
-// body equal to it is bound by the signature.
-//
-// did-jwt-vc leaves members it does not move (validFrom, validUntil, custom
-// members) nested under vc or vp. Every check after this one reads the top
-// level, so such a member would be signed but never checked; a body whose
-// decoded form keeps one there is refused.
+// A JwtProof2020 body that fails the VCDM 1.1 §6.3.1 mapping check is
+// accepted when it equals what did-jwt-vc, the library that defined
+// JwtProof2020, gives for the signed JWT (internal/didjwtvc). That object
+// keeps the claims §6.3.1 does not map to a data model property (iat, aud,
+// nonce) and keeps some members of the vc or vp claim nested beside the
+// top-level ones. Every member of it comes from the signed payload.
 
-// bodyIsDidJwtVcForm reports whether body, without its proof, equals what
-// did-jwt-vc decodes from the signed payload claims.
-// The form shares nested values with claims; it is only compared, never
-// changed, so claims stay as signed.
-func bodyIsDidJwtVcForm(claims, body map[string]interface{}, isVP bool) bool {
-	var form map[string]interface{}
-	var err error
-	claimKey := "vc"
+// didJwtVcForm decodes claims as did-jwt-vc does and reports whether body,
+// without its proof, is that object.
+func didJwtVcForm(claims, body map[string]interface{}, isVP bool) (didjwtvc.Decoded, bool) {
+	decode := didjwtvc.DecodeCredential
 	if isVP {
-		claimKey = "vp"
-		form, err = didjwtvc.NormalizePresentationPayload(claims)
-	} else {
-		form, err = didjwtvc.NormalizeCredentialPayload(claims)
+		decode = didjwtvc.DecodePresentation
 	}
-	if err != nil {
-		return false
+	d, err := decode(claims)
+	if err != nil || !jsonDeepEqual(withoutProof(body), withoutProof(d.Form)) {
+		return didjwtvc.Decoded{}, false
 	}
-	if leftover, ok := form[claimKey].(map[string]interface{}); ok {
-		for k := range leftover {
-			if _, onTop := form[k]; !onTop {
-				return false
+	return d, true
+}
+
+// checkNestedMembers checks that each member of the vc or vp claim the
+// decoder left nested or overrode says the same as the top-level member a
+// reader sees: later checks read the top level, the SDK's VC-JWT path reads
+// the vc claim. Members are taken in sorted order, so the one an error names
+// does not change from run to run.
+func checkNestedMembers(d didjwtvc.Decoded) error {
+	members := make([]string, 0, len(d.Nested))
+	for member := range d.Nested {
+		members = append(members, member)
+	}
+	sort.Strings(members)
+	for _, member := range members {
+		top, present := memberAt(d.Form, member)
+		for _, v := range d.Nested[member] {
+			if !present || !sameMembers(member, top, v) {
+				return disagreeErr(member)
 			}
 		}
 	}
-	// did-jwt-vc sets proof to the JWT itself; the body's proof is what
-	// carried the JWT here, so only the other members are compared.
-	delete(form, "proof")
-	rest := make(map[string]interface{}, len(body))
-	for k, v := range body {
+	return nil
+}
+
+func withoutProof(m map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
 		if k != "proof" {
-			rest[k] = v
+			out[k] = v
 		}
 	}
-	return jsonDeepEqual(rest, form)
+	return out
+}
+
+func disagreeErr(member string) error {
+	return fmt.Errorf("member %q differs from another signed value in the JWT: %w", shownMember(member), ErrJwtProofBinding)
 }

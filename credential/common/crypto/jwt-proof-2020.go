@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/didjwtvc"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 // ErrJwtProofBinding is returned when the JWT payload does not cover
@@ -54,6 +56,9 @@ func VerifyJwtProofToken(body map[string]interface{}, jwtToken string, pub *ecds
 // field in req and delegates to VerifyJwtProofToken. It is safe to call when
 // proof is an array or any other non-object: it returns an error, never a panic.
 func VerifyJwtProof(req *map[string]interface{}, pub *ecdsa.PublicKey) (bool, error) {
+	if req == nil {
+		return false, fmt.Errorf("credential is nil")
+	}
 	jwtToken, err := extractJwtFromProof(*req)
 	if err != nil {
 		return false, err
@@ -105,9 +110,9 @@ func extractJwtFromProof(body map[string]interface{}) (string, error) {
 
 // verifyJwtBodyBinding decodes the JWT payload and checks that every member of
 // the credential/presentation body (minus proof) is covered by the JWT: either
-// directly in the vc/vp claim or via the VC-JWT 1.1 moved-field mapping. A body
-// equal to what did-jwt-vc decodes from the JWT is accepted as a whole (see
-// jwt-proof-2020-didjwtvc.go).
+// directly in the vc/vp claim or via the VCDM 1.1 §6.3.1 moved-field mapping
+// (jwt-proof-2020-mapping.go), or as what did-jwt-vc decodes from the JWT
+// (jwt-proof-2020-didjwtvc.go).
 // On success it returns the full JWT claims map so the caller can extract
 // signed timestamps (iat, nbf).
 func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[string]interface{}, error) {
@@ -140,13 +145,26 @@ func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[str
 		return nil, bindingErr(fmt.Sprintf("JWT %s claim is not a JSON object", claimKey))
 	}
 
+	// The body is the VCDM 1.1 §6.3.1 mapping form, or what did-jwt-vc
+	// decodes from this JWT; the second is tried only when the first fails,
+	// so the common mapped body pays nothing for it.
+	var decoded *didjwtvc.Decoded
 	if err := checkMappedBody(body, container, claims, isVP); err != nil {
-		// A body that did-jwt-vc decoded from this JWT is the other accepted
-		// form; it is tried second so the common mapped body pays nothing.
-		if bodyIsDidJwtVcForm(claims, body, isVP) {
-			return claims, nil
+		d, matched := didJwtVcForm(claims, body, isVP)
+		if !matched {
+			return nil, err
 		}
+		decoded = &d
+	}
+	// Either way the body may show a member whose value has a second signed
+	// copy; every copy must say the same.
+	if err := checkRegisteredClaims(claims, body, movesFor(isVP)); err != nil {
 		return nil, err
+	}
+	if decoded != nil {
+		if err := checkNestedMembers(*decoded); err != nil {
+			return nil, err
+		}
 	}
 	return claims, nil
 }
@@ -181,12 +199,11 @@ func bodyIsPresentation(body map[string]interface{}) bool {
 }
 
 // jwtSignedTime extracts the signed time from the JWT claims: iat first,
-// else nbf. Returns the zero Time when neither is a valid integer.
+// else nbf, read as NumericDate. Returns the zero Time when neither is one.
 func jwtSignedTime(claims map[string]interface{}) time.Time {
 	for _, key := range []string{"iat", "nbf"} {
-		if num, ok := claims[key].(float64); ok &&
-			!math.IsNaN(num) && !math.IsInf(num, 0) && num == math.Trunc(num) {
-			return time.Unix(int64(num), 0).UTC()
+		if sec, err := jwtutil.NumericDate(claims[key]); err == nil {
+			return time.Unix(sec, 0).UTC()
 		}
 	}
 	return time.Time{}
@@ -220,11 +237,16 @@ func bindingErr(msg string) error {
 }
 
 func memberErr(key string) error {
-	quoted := key
-	if len(quoted) > 64 {
-		quoted = quoted[:64]
+	return fmt.Errorf("member %q not covered by JWT: %w", shownMember(key), ErrJwtProofBinding)
+}
+
+// shownMember cuts a member name from the body to 64 bytes before an error
+// shows it: the name comes from untrusted input.
+func shownMember(name string) string {
+	if len(name) > 64 {
+		return name[:64]
 	}
-	return fmt.Errorf("member %q not covered by JWT: %w", quoted, ErrJwtProofBinding)
+	return name
 }
 
 func getSignatureAndMessage(jwtToken string) ([]byte, []byte, error) {
