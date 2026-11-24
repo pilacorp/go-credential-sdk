@@ -2,7 +2,6 @@ package ecdsasd
 
 import (
 	"crypto/ecdsa"
-	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
@@ -68,11 +67,5 @@ func VerifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 // A base proof (0xd95d00) carries the HMAC key and is refused here; the issuer
 // checks that proof when it is created, inside CreateBaseProof.
 func VerifyProof(document map[string]interface{}, proofConfig map[string]interface{}, proofValue string, issuerPub *ecdsa.PublicKey) error {
-	if _, err := decodeProofValue(proofValue, baseProofHeader); err == nil {
-		return fmt.Errorf("ecdsasd: a base proof (header 0xd95d00) stays with the holder and cannot be verified; derive a proof from it and verify that (header 0xd95d01)")
-	}
-	if _, err := decodeProofValue(proofValue, derivedProofHeader); err == nil {
-		return verifyDerivedProof(document, proofConfig, proofValue, issuerPub)
-	}
-	return fmt.Errorf("ecdsasd: unrecognized proof value header")
+	return verifyProof(canonicalizer(document), proofConfig, proofValue, issuerPub)
 }

@@ -170,8 +170,8 @@ func (m *JSONMap) DeriveECDSASD(selectivePointers []string) (JSONMap, error) {
 	return result, nil
 }
 
-// verifyECDSASDProof verifies an ecdsa-sd-2023 derived proof. A base proof is
-// refused by ecdsasd.VerifyProof.
+// verifyECDSASDProof verifies an ecdsa-sd-2023 derived proof. ecdsasd refuses
+// a base proof, through the same check as ecdsasd.VerifyProof.
 func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, cache *digestCache) (bool, error) {
 	vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
 	if err != nil {

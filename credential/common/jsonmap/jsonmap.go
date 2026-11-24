@@ -387,6 +387,25 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	return m.verifyProofSet(resolver, proofs, expectedPurpose, raw, cache)
 }
 
+// verifyProofSet verifies every proof in proofs against the JSONMap, using
+// cache for canonicalization. Tests call this directly with their own cache
+// so they can inspect cache.misses in parallel.
+func (m *JSONMap) verifyProofSet(resolver verificationmethod.ResolverProvider, proofs []dto.Proof, expectedPurpose string, raw []interface{}, cache *digestCache) (bool, error) {
+	for i := range proofs {
+		if err := rejectPreviousProof(raw[i]); err != nil {
+			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+		}
+		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, cache)
+		if err != nil {
+			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+		}
+		if !ok {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // verifyOneProof verifies a single proof against the DID document resolved from
 // that proof's own verification method. When cache is non-nil, canonicalization
 // results are shared across calls; when nil, each call computes them fresh

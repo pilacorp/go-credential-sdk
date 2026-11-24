@@ -1,12 +1,6 @@
 package jsonmap
 
-import (
-	"fmt"
-
-	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
-	"github.com/pilacorp/go-credential-sdk/credential/internal/sdverify"
-)
+import "github.com/pilacorp/go-credential-sdk/credential/internal/sdverify"
 
 // digestCache lazily computes and caches canonicalization results for a single
 // JSONMap, so that verifying N proofs over the same body pays the
@@ -97,8 +91,8 @@ func (c *digestCache) bodyWithoutProof(m *JSONMap) (map[string]interface{}, erro
 }
 
 // sdDocument returns a DocVerifier that lazily canonicalizes the body-without-
-// proof for ecdsa-sd-2023 verification. The first VerifyProof call on the
-// returned DocVerifier runs URDNA2015; subsequent calls reuse the result.
+// proof for ecdsa-sd-2023 verification. URDNA2015 runs the first time a proof
+// gets past its header and parse checks; later proofs reuse the result.
 // When the receiver is nil, a standalone DocVerifier is returned (no caching
 // across calls — the single-proof path).
 func (c *digestCache) sdDocument(m *JSONMap) (*sdverify.DocVerifier, error) {
@@ -119,23 +113,4 @@ func (c *digestCache) sdDocument(m *JSONMap) (*sdverify.DocVerifier, error) {
 		c.sdDocOK = true
 	}
 	return c.sdDoc, c.sdDocErr
-}
-
-// verifyProofSet verifies every proof in proofs against the JSONMap, using
-// cache for canonicalization. Tests call this directly with their own cache
-// so they can inspect cache.misses in parallel.
-func (m *JSONMap) verifyProofSet(resolver verificationmethod.ResolverProvider, proofs []dto.Proof, expectedPurpose string, raw []interface{}, cache *digestCache) (bool, error) {
-	for i := range proofs {
-		if err := rejectPreviousProof(raw[i]); err != nil {
-			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
-		}
-		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, cache)
-		if err != nil {
-			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
-		}
-		if !ok {
-			return false, nil
-		}
-	}
-	return true, nil
 }

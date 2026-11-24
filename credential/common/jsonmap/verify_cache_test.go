@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -254,6 +255,28 @@ func TestVerifyProof_SDProofs_CanonicalizesOnce(t *testing.T) {
 	// 3 ecdsa-sd-2023 proofs on the same body: exactly 1 sd canonicalization.
 	if misses != 1 {
 		t.Fatalf("misses = %d, want 1 (sd body canonicalized once for 3 proofs)", misses)
+	}
+}
+
+// A derived proof value whose CBOR does not parse is refused with the parse
+// error, before the body is canonicalized.
+func TestVerifyProof_SDMalformedProofValue_RefusedBeforeCanonicalizing(t *testing.T) {
+	t.Parallel()
+	m, resolver := signedSDCredential(t, 1)
+	proofs, err := m.Proofs()
+	if err != nil {
+		t.Fatalf("Proofs: %v", err)
+	}
+	// Derived header 0xd95d01, then the CBOR array [1, 2, 3].
+	proofs[0].ProofValue = "u" + base64.RawURLEncoding.EncodeToString([]byte{0xd9, 0x5d, 0x01, 0x83, 0x01, 0x02, 0x03})
+
+	cache := &digestCache{}
+	_, err = m.verifyProofSet(resolver, proofs, "", m.rawProofList(), cache)
+	if err == nil || !strings.Contains(err.Error(), "want 5 elements, got 3") {
+		t.Fatalf("err = %v, want the derived proof parse error", err)
+	}
+	if cache.misses != 0 {
+		t.Fatalf("misses = %d, want 0 (malformed proof value refused before canonicalizing)", cache.misses)
 	}
 }
 
