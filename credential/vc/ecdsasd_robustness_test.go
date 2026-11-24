@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -44,7 +45,7 @@ func signSDBase(t *testing.T, did string, provider signer.SignerProvider, resolv
 
 // signSDBaseSecp signs through jsonmap: vc issues ecdsa-sd-2023 with a P-256 VM
 // only, so a secp256k1 base proof can no longer be produced through it. Verify
-// still accepts them, which is what these tests exercise.
+// refuses a base proof; tests that need the issuer key derive first.
 func signSDBaseSecp(t *testing.T, did string, provider signer.SignerProvider, _ vmpkg.ResolverProvider) []byte {
 	t.Helper()
 	var m jsonmap.JSONMap
@@ -98,8 +99,9 @@ func TestECDSASD_P256Multikey_IssueDeriveVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse base: %v", err)
 	}
-	if err := base.Verify(vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("verify base via Multikey VM: %v", err)
+	err = base.Verify(vc.WithResolver(resolver))
+	if err == nil || !strings.Contains(err.Error(), "base proof") || !strings.Contains(err.Error(), "0xd95d01") {
+		t.Fatalf("base proof at verification: %v", err)
 	}
 	derived, err := base.Derive([]string{"credentialSubject.name"})
 	if err != nil {
@@ -230,8 +232,15 @@ func TestECDSASD_WrongCurveVM_Rejected(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse base: %v", err)
 		}
-		if err := base.Verify(vc.WithResolver(wrongResolver)); err == nil {
-			t.Fatal("secp256k1 proof must not verify against a P-256 VM")
+		// A base proof is refused before the issuer key is read. Derive first so
+		// this test observes the curve check, not the base-header refusal.
+		derived, err := base.Derive([]string{"credentialSubject.name"})
+		if err != nil {
+			t.Fatalf("derive: %v", err)
+		}
+		err = derived.Verify(vc.WithResolver(wrongResolver))
+		if err == nil || strings.Contains(err.Error(), "base proof") {
+			t.Fatalf("secp256k1 derived proof vs P-256 VM: %v", err)
 		}
 	})
 
@@ -247,8 +256,13 @@ func TestECDSASD_WrongCurveVM_Rejected(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse base: %v", err)
 		}
-		if err := base.Verify(vc.WithResolver(wrongResolver)); err == nil {
-			t.Fatal("P-256 proof must not verify against a secp256k1 VM")
+		derived, err := base.Derive([]string{"credentialSubject.name"})
+		if err != nil {
+			t.Fatalf("derive: %v", err)
+		}
+		err = derived.Verify(vc.WithResolver(wrongResolver))
+		if err == nil || strings.Contains(err.Error(), "base proof") {
+			t.Fatalf("P-256 derived proof vs secp256k1 VM: %v", err)
 		}
 	})
 }

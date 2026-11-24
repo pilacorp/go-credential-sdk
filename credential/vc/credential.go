@@ -143,6 +143,7 @@ type credentialOptions struct {
 	isCheckExpiration       bool
 	leeway                  time.Duration
 	isCheckRevocation       bool
+	acceptLegacyStatusList  bool
 	didBaseURL              string
 	verificationMethodKey   string
 	sdDisclosures           []string
@@ -153,7 +154,11 @@ type credentialOptions struct {
 	loadedSchemaLoader      SchemaLoaderFunc
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
-	replaceProof            bool
+	// expectedProofPurpose overrides the assertionMethod a VC verifier expects.
+	expectedProofPurpose string
+	replaceProof         bool
+	// maxProofs caps the proofs a JSON-LD credential may carry; 0 means no cap.
+	maxProofs int
 }
 
 // WithReplaceProof (signing) lets a signing call replace a signature the
@@ -177,10 +182,10 @@ func WithReplaceProof() CredentialOpt {
 // refuseOverwrite stops a JWT signing call from replacing a signature the
 // credential already carries, unless the caller passed WithReplaceProof.
 //
-// Signing with a key the header does not name already failed, because
-// signingKey.Accept checks the fresh signature before it is stored. What went
-// through in silence was the other case: signing again with the right key
-// succeeded, and Hash() changed. Shared by the VC 1.1 JWT and the vc+jwt
+// Signing with a wrong key or on a parsed token (no key bound) already fails,
+// because signingKey.Accept checks the fresh signature before it is stored.
+// What went through in silence was the other case: signing again with the right
+// key succeeded, and Hash() changed. Shared by the VC 1.1 JWT and the vc+jwt
 // credential, which both hold exactly one signature.
 func refuseOverwrite(current string, options *credentialOptions) error {
 	if current == "" || options.replaceProof {
@@ -209,6 +214,27 @@ func (o *credentialOptions) hasSDOptions() bool {
 	return len(o.sdDisclosures) > 0 || len(o.sdSelectivePaths) > 0 || o.sdAlg != "" || o.sdShuffle || len(o.sdDecoys) > 0
 }
 
+// WithExpectedProofPurpose tells Verify to expect this proof purpose instead of
+// assertionMethod. Data Integrity 1.0 §4.4 requires the comparison: a proof
+// that names another purpose is refused even when the key is granted that
+// other purpose. An empty purpose leaves the default in place.
+func WithExpectedProofPurpose(purpose string) CredentialOpt {
+	return func(c *credentialOptions) {
+		if purpose == "" {
+			return
+		}
+		c.expectedProofPurpose = purpose
+	}
+}
+
+// diProofPurpose is the purpose a VC verifier compares with proof.proofPurpose.
+func (o *credentialOptions) diProofPurpose() string {
+	if o.expectedProofPurpose != "" {
+		return o.expectedProofPurpose
+	}
+	return "assertionMethod"
+}
+
 // WithProofVerificationMethod restricts proof verification to the single proof
 // bound to the given verification method URL (e.g. "did:example:issuer#key-2").
 // By default all proofs in the set must verify; with this option only the
@@ -216,6 +242,18 @@ func (o *credentialOptions) hasSDOptions() bool {
 func WithProofVerificationMethod(vm string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.proofVerificationMethod = vm
+	}
+}
+
+// WithMaxProofs makes Verify refuse a JSON-LD credential that carries more
+// than n proofs, before any DID is resolved. A verifier that serves untrusted
+// callers sets the most proofs its credentials carry. The count is of the
+// whole credential, also with WithProofVerificationMethod. n <= 0 leaves the
+// proof set unbounded, which is the default. A JWT credential holds one signature,
+// so the option does not change it.
+func WithMaxProofs(n int) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.maxProofs = n
 	}
 }
 
@@ -290,6 +328,17 @@ func WithLeeway(d time.Duration) CredentialOpt {
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckRevocation = true
+	}
+}
+
+// WithLegacyStatusList lets WithCheckRevocation read authen-service's legacy
+// status lists: an encodedList with no multibase prefix, least significant bit
+// first. Without it such a list is refused, because Bitstring Status List v1.0
+// requires the multibase base64url form. Pass it only while the issuer still
+// serves legacy lists.
+func WithLegacyStatusList() CredentialOpt {
+	return func(c *credentialOptions) {
+		c.acceptLegacyStatusList = true
 	}
 }
 

@@ -43,6 +43,73 @@ var binaryEscapes = []byte{'\\', '"', '\b', '\f', '\n', '\r', '\t'}
 // JSON literals
 var literals = []string{"true", "false", "null"}
 
+// isValidJSONNumber checks whether s matches the RFC 8259 §6 number grammar:
+//
+//	number = [ "-" ] int [ frac ] [ exp ]
+//	int    = "0" / ( digit1-9 *DIGIT )
+//	frac   = "." 1*DIGIT
+//	exp    = ("e" / "E") [ "+" / "-" ] 1*DIGIT
+func isValidJSONNumber(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	i := 0
+
+	// Optional leading minus
+	if s[i] == '-' {
+		i++
+		if i == len(s) {
+			return false
+		}
+	}
+
+	// Integer part: "0" or digit1-9 followed by digits
+	if s[i] == '0' {
+		i++
+		// After a leading 0 the next character must not be a digit (no 01, 00, etc.)
+		if i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			return false
+		}
+	} else if s[i] >= '1' && s[i] <= '9' {
+		i++
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+	} else {
+		return false // must start with digit
+	}
+
+	// Optional fraction
+	if i < len(s) && s[i] == '.' {
+		i++
+		if i == len(s) || s[i] < '0' || s[i] > '9' {
+			return false // at least one digit after dot
+		}
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+	}
+
+	// Optional exponent
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i == len(s) {
+			return false
+		}
+		if s[i] == '+' || s[i] == '-' {
+			i++
+		}
+		if i == len(s) || s[i] < '0' || s[i] > '9' {
+			return false // at least one digit in exponent
+		}
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+	}
+
+	return i == len(s)
+}
+
 // Transform canonicalizes JSON data according to RFC 8785 (JSON Canonicalization Scheme).
 //
 // Canonicalization ensures that semantically equivalent JSON documents produce
@@ -258,7 +325,13 @@ func Transform(jsonData []byte) (result []byte, e error) {
 				return literal
 			}
 		}
-		// Apparently not so we assume that it is a I-JSON number
+		// Validate that the token is a valid JSON number per RFC 8259 §6
+		// before parsing. strconv.ParseFloat accepts forms like "01", "1.",
+		// "+1", ".5" that are not valid JSON.
+		if !isValidJSONNumber(value) {
+			setError("Invalid JSON number: " + value)
+			return value
+		}
 		ieeeF64, err := strconv.ParseFloat(value, 64)
 		checkError(err)
 		value, err = NumberToJSON(ieeeF64)
