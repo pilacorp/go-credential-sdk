@@ -261,21 +261,16 @@ func (c *COSECredential) ExtractField(path string) any {
 func (c *COSECredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
+	if options.isCheckRevocation && !options.isVerifyProof {
+		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
+	}
+
 	g := &errgroup.Group{}
 
 	if options.isValidateSchema {
 		g.Go(func() error {
 			if err := validateCredential(c.payloadData, options); err != nil {
 				return fmt.Errorf("validate credential: %w", err)
-			}
-			return nil
-		})
-	}
-
-	if options.isCheckRevocation {
-		g.Go(func() error {
-			if err := checkRevocation(c.payloadData); err != nil {
-				return fmt.Errorf("check revocation: %w", err)
 			}
 			return nil
 		})
@@ -298,6 +293,15 @@ func (c *COSECredential) executeOptions(opts ...CredentialOpt) error {
 
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("credential verification failed: %w", err)
+	}
+
+	// Revocation check runs after the proof is verified, as on the JOSE path:
+	// an unsigned or forged credential must not trigger a GET to the
+	// statusListCredential URL the attacker chose.
+	if options.isCheckRevocation {
+		if err := checkRevocation(c.payloadData, options.resolver, options.acceptLegacyStatusList); err != nil {
+			return fmt.Errorf("credential verification failed: check revocation: %w", err)
+		}
 	}
 
 	if options.isCheckExpiration {
