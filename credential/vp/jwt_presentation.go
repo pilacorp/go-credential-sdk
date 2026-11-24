@@ -200,6 +200,12 @@ func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opt
 		return err
 	}
 
+	// A parsed token has no verification method: refuse before building a
+	// signer for its empty alg.
+	if err := j.signingKey.RequireBound(); err != nil {
+		return err
+	}
+
 	// Sign through jose/jws: the adapter wraps the SignerProvider (which
 	// signs a digest) as a jws.Signer (which signs the signing input).
 	jwsSigner, err := joseadapter.NewSigner(j.signingKey.Alg, provider)

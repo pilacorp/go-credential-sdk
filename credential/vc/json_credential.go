@@ -422,7 +422,7 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	// asked by handing over a proof, and before attaching, so a proof that does
 	// not check out leaves nothing behind.
 	if options.isVerifyProof {
-		if err := m.VerifyDetachedProof(options.resolver, proof); err != nil {
+		if err := m.VerifyDetachedProof(options.resolver, proof, jsonmap.WithExpectedProofPurpose(options.diProofPurpose())); err != nil {
 			return err
 		}
 	}
@@ -501,6 +501,10 @@ func (e *JSONCredential) ExtractField(path string) any {
 func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	options := getOptions(opts...)
 
+	if options.isCheckRevocation && !options.isVerifyProof {
+		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
+	}
+
 	g := &errgroup.Group{}
 
 	if options.isValidateSchema {
@@ -513,21 +517,13 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		})
 	}
 
-	if options.isCheckRevocation {
-		g.Go(func() error {
-			if err := checkRevocation(e.credentialData); err != nil {
-				return fmt.Errorf("check revocation: %w", err)
-			}
-
-			return nil
-		})
-	}
-
 	if options.isVerifyProof {
 		g.Go(func() error {
 			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
 				options.resolver,
 				options.proofVerificationMethod,
+				jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
+				jsonmap.WithMaxProofs(options.maxProofs),
 			)
 			if err != nil {
 				return fmt.Errorf("verify proof: %w", err)
@@ -543,6 +539,15 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("credential verification failed: %w", err)
+	}
+
+	// Revocation check runs after the proof is verified: an unsigned or
+	// forged credential must not trigger a GET to the statusListCredential
+	// URL the attacker chose.
+	if options.isCheckRevocation {
+		if err := checkRevocation(e.credentialData, options.resolver, options.acceptLegacyStatusList); err != nil {
+			return fmt.Errorf("credential verification failed: check revocation: %w", err)
+		}
 	}
 
 	// checkExpiration always runs sequentially after parallel validations

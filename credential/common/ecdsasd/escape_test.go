@@ -40,7 +40,7 @@ func TestDerivedProof_ValueWithEscapedText(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateBaseProof: %v", err)
 			}
-			if err := VerifyProof(cred, config, baseProof, issuerPub); err != nil {
+			if err := VerifyBaseProof(cred, config, baseProof, issuerPub); err != nil {
 				t.Fatalf("verify base proof: %v", err)
 			}
 			revealed, derivedProof, err := DeriveProof(cred, baseProof, append(append([]string{}, exp.Derived.SelectivePointers...), "/description"))

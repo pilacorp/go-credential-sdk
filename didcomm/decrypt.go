@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 )
 
 type JWE struct {
@@ -16,33 +15,46 @@ type JWE struct {
 	Tag        string `json:"tag"`
 }
 
-func base64urlDecode(input string) []byte {
+func base64urlDecode(input string) ([]byte, error) {
 	data, err := base64.RawURLEncoding.DecodeString(input)
 	if err != nil {
-		log.Fatal("base64url decode error:", err)
+		return nil, err
 	}
-	return data
+	return data, nil
 }
 
 func DecryptJWE(jweStr string, sharedKey []byte) (string, error) {
 	var jwe JWE
 	err := json.Unmarshal([]byte(jweStr), &jwe)
 	if err != nil {
-		return "", fmt.Errorf("unmarshal error: %v", err)
+		return "", fmt.Errorf("unmarshal error: %w", err)
 	}
 
-	iv := base64urlDecode(jwe.IV)
-	ciphertext := base64urlDecode(jwe.Ciphertext)
-	tag := base64urlDecode(jwe.Tag)
+	iv, err := base64urlDecode(jwe.IV)
+	if err != nil {
+		return "", fmt.Errorf("base64url decode iv: %w", err)
+	}
+	ciphertext, err := base64urlDecode(jwe.Ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("base64url decode ciphertext: %w", err)
+	}
+	tag, err := base64urlDecode(jwe.Tag)
+	if err != nil {
+		return "", fmt.Errorf("base64url decode tag: %w", err)
+	}
 
 	block, err := aes.NewCipher(sharedKey)
 	if err != nil {
-		return "", fmt.Errorf("aes new cipher error: %v", err)
+		return "", fmt.Errorf("aes new cipher error: %w", err)
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("aes new gcm error: %v", err)
+		return "", fmt.Errorf("aes new gcm error: %w", err)
+	}
+
+	if len(iv) != gcm.NonceSize() {
+		return "", fmt.Errorf("invalid nonce size: got %d, want %d", len(iv), gcm.NonceSize())
 	}
 
 	// Append tag to ciphertext for GCM.Open (it verifies the tag)
@@ -50,13 +62,14 @@ func DecryptJWE(jweStr string, sharedKey []byte) (string, error) {
 
 	plaintext, err := gcm.Open(nil, iv, ciphertextWithTag, nil)
 	if err != nil {
-		// Fallback to mock tag for backward compatibility (old implementation used sharedKey[:16] as tag)
+		// Fallback to mock tag for backward compatibility (old implementation used sharedKey[:16] as tag).
+		// Safe: aes.NewCipher above only accepts 16/24/32-byte keys, so len(sharedKey) >= 16.
 		mockTag := sharedKey[:16]
 		ciphertextWithMockTag := append(ciphertext, mockTag...)
 
 		plaintext, err = gcm.Open(nil, iv, ciphertextWithMockTag, nil)
 		if err != nil {
-			return "", fmt.Errorf("decryption failed: %v", err)
+			return "", fmt.Errorf("decryption failed: %w", err)
 		}
 	}
 
