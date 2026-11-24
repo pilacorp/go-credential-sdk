@@ -289,6 +289,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 			options.resolver,
 			options.proofVerificationMethod,
 			jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
+			jsonmap.WithMaxProofs(options.maxProofs),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -360,8 +361,12 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	if len(proofs) == 0 {
 		return false, fmt.Errorf("credential has no proof")
 	}
+	cfg := proofVerifyConfigFrom(opts)
+	if cfg.maxProofs > 0 && len(proofs) > cfg.maxProofs {
+		return false, fmt.Errorf("%w: the document carries %d and this verifier accepts at most %d; send at most %d, or raise WithMaxProofs", ErrTooManyProofs, len(proofs), cfg.maxProofs, cfg.maxProofs)
+	}
 	raw := m.rawProofList()
-	expectedPurpose := proofVerifyConfigFrom(opts).expectedPurpose
+	expectedPurpose := cfg.expectedPurpose
 
 	// Verify a single, caller-selected proof.
 	if targetVM != "" {
@@ -772,6 +777,8 @@ type proofVerifyConfig struct {
 	// Empty means the caller did not say, and the purpose written in the
 	// proof is the one that is checked.
 	expectedPurpose string
+	// maxProofs caps the proofs a document may carry; 0 means no cap.
+	maxProofs int
 }
 
 func proofVerifyConfigFrom(opts []ProofVerifyOpt) proofVerifyConfig {
@@ -794,6 +801,22 @@ func WithExpectedProofPurpose(purpose string) ProofVerifyOpt {
 			return
 		}
 		cfg.expectedPurpose = purpose
+	}
+}
+
+// ErrTooManyProofs is returned, wrapped with the counts, when a document
+// carries more proofs than WithMaxProofs allows.
+var ErrTooManyProofs = errors.New("too many proofs")
+
+// WithMaxProofs refuses a document that carries more than n proofs, before any
+// DID is resolved. Each proof costs a resolution, a signature check and a
+// canonicalization of its own configuration, so a verifier that serves
+// untrusted callers sets the most proofs its documents carry. The count is of
+// the whole document, also when VerifyProof checks only the proof of one
+// targetVM. n <= 0 leaves the set unbounded, which is the default.
+func WithMaxProofs(n int) ProofVerifyOpt {
+	return func(cfg *proofVerifyConfig) {
+		cfg.maxProofs = max(n, 0)
 	}
 }
 

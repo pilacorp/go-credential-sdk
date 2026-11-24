@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -403,6 +404,23 @@ func TestVerifyProof_OneDIDResolvedOnce(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&resolver.count); got != 1 {
 		t.Fatalf("ResolveDocument calls = %d, want 1 (three proofs, one DID)", got)
+	}
+}
+
+func TestVerifyProof_MaxProofs(t *testing.T) {
+	t.Parallel()
+	m, inner := signedCredential(t, 3)
+	resolver := &countingResolver{inner: inner}
+
+	_, err := m.VerifyProof(resolver, "", WithMaxProofs(2))
+	if !errors.Is(err, ErrTooManyProofs) || !strings.Contains(err.Error(), "carries 3 and this verifier accepts at most 2") {
+		t.Fatalf("WithMaxProofs(2) on 3 proofs: err = %v", err)
+	}
+	if got := atomic.LoadInt64(&resolver.count); got != 0 {
+		t.Fatalf("ResolveDocument calls = %d, want 0 (refused before resolving)", got)
+	}
+	if ok, err := m.VerifyProof(resolver, "", WithMaxProofs(3)); err != nil || !ok {
+		t.Fatalf("WithMaxProofs(3) on 3 proofs = %v, %v; want true, nil", ok, err)
 	}
 }
 

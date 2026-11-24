@@ -529,6 +529,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 				options.resolver,
 				options.proofVerificationMethod,
 				jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
+				jsonmap.WithMaxProofs(options.maxProofs),
 			)
 			if err != nil {
 				return fmt.Errorf("verify proof: %w", err)
