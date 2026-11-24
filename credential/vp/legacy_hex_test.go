@@ -76,7 +76,9 @@ func TestVP_SignedWithTheCredentialInTheDefaultGraphIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if err := pres.Verify(vp.WithResolver(resolver)); err == nil || !strings.Contains(err.Error(), "invalid proof") {
+	// The embedded credential's issuer is not in the resolver; this test checks
+	// the VP proof, not the inner VCs.
+	if err := pres.Verify(vp.WithResolver(resolver), vp.WithSkipVCValidation()); err == nil || !strings.Contains(err.Error(), "invalid proof") {
 		t.Fatalf("verify = %v, want invalid proof", err)
 	}
 }

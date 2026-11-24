@@ -545,7 +545,16 @@ func parseStringField(obj CredentialData, fieldName string) (string, error) {
 	return "", nil
 }
 
+// knownSchemaType reports whether the SDK implements a credentialSchema type.
+func knownSchemaType(t interface{}) bool {
+	return hasType(t, "JsonSchema") || hasType(t, "JsonSchemaValidator2018")
+}
+
 // validateCredential validates the Credential against its schema.
+// Only schema entries with a known type are validated; unknown types are
+// silently skipped (VC-JOSE-COSE §5.4: "If the extension mechanism type is
+// not understood, this property MUST be ignored"). If every entry has an
+// unknown type, validation succeeds — there is nothing to reject.
 func validateCredential(m CredentialData, opts *credentialOptions) error {
 	copyMap := util.ShallowCopyObj(m)
 
@@ -572,6 +581,12 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 		err = json.Unmarshal(marshalJsonMap, &schemaMap)
 		if err != nil {
 			return fmt.Errorf("failed to unmarshal schema: %w", err)
+		}
+
+		// type may be a string or an array; reading only the string form
+		// skipped an array-typed JsonSchema as unknown.
+		if !knownSchemaType(schemaMap["type"]) {
+			continue
 		}
 
 		if schemaMap["id"] == nil {
@@ -626,77 +641,29 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 	return vcdm.CheckValidityPeriod("credential", validFrom, validUntil, leeway)
 }
 
-// checkRevocation checks that credentialStatus is present and, if using a
-// status list, verifies the credential is not revoked. It also verifies the
-// status list credential itself: its proof, issuer match, and validity period.
+// knownStatusType reports whether the SDK reads a credentialStatus type. Only
+// Bitstring Status List entries are read; the reader refuses any other list.
+func knownStatusType(t interface{}) bool {
+	return hasType(t, "BitstringStatusListEntry")
+}
+
+// checkRevocation checks every credentialStatus entry the SDK understands
+// and skips entries with unknown types (VC-JOSE-COSE: "If the extension
+// mechanism type is not understood, this property MUST be ignored"). For each
+// entry it verifies the status list credential itself: its proof, issuer
+// match, and validity period.
 //
-// Only BitstringStatusListEntry entries are read. An entry of another type is
-// ignored, the same rule the SDK applies to a credentialSchema type it does
-// not implement, rather than having its index read as a bitstring position.
+// credentialStatus may be a single object or an array of objects
+// (VCDM 2.0 §4.4).
 //
 // issuerDIDFallbacks supplies additional DID strings to try when c["issuer"]
 // is missing (e.g. the JWT "iss" claim for VC Data Model v1.1 §6.3.1).
 func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, issuerDIDFallbacks ...string) error {
-	// If there's no credentialStatus at all, treat as not using revocation → no error.
 	rawStatus, ok := c["credentialStatus"]
 	if !ok || rawStatus == nil {
 		return nil
 	}
 
-	statusMap, ok := rawStatus.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("credentialStatus must be an object")
-	}
-
-	// If credentialStatus is an empty object, also treat it as "no revocation info".
-	if len(statusMap) == 0 {
-		return nil
-	}
-
-	// Only process BitstringStatusListEntry; ignore unknown types.
-	// type may be a string or an array (VCDM); reading only the string form
-	// skipped ["BitstringStatusListEntry"] as unknown and read no list at all.
-	if !hasType(statusMap["type"], "BitstringStatusListEntry") {
-		return nil
-	}
-
-	// For a BitstringStatusListEntry, statusPurpose is required (§2.1).
-	entryPurpose, _ := statusMap["statusPurpose"].(string)
-	if entryPurpose == "" {
-		return fmt.Errorf("credentialStatus.statusPurpose is required")
-	}
-
-	// statusSize other than 1 is not supported (this reader handles 1-bit entries).
-	if size, ok := statusMap["statusSize"]; ok && size != float64(1) {
-		return fmt.Errorf("credentialStatus.statusSize %v is not supported: only 1-bit status entries are", size)
-	}
-
-	rawStatusListCredential, ok := statusMap["statusListCredential"]
-	if !ok || rawStatusListCredential == nil {
-		return fmt.Errorf("credentialStatus.statusListCredential is required")
-	}
-
-	statusListCredential, ok := rawStatusListCredential.(string)
-	if !ok || statusListCredential == "" {
-		return fmt.Errorf("credentialStatus.statusListCredential must be a non-empty string")
-	}
-
-	rawStatusListIndex, ok := statusMap["statusListIndex"]
-	if !ok || rawStatusListIndex == nil {
-		return fmt.Errorf("credentialStatus.statusListIndex is required")
-	}
-
-	statusListIndex, ok := rawStatusListIndex.(string)
-	if !ok || statusListIndex == "" {
-		return fmt.Errorf("credentialStatus.statusListIndex must be a non-empty string")
-	}
-
-	position, err := strconv.Atoi(statusListIndex)
-	if err != nil {
-		return fmt.Errorf("invalid credentialStatus.statusListIndex: %w", err)
-	}
-
-	// Extract the credential's issuer DID for the issuer-match check.
 	// For JWT VCs, VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
 	// is present it sets the issuer.
 	var issuerDID string
@@ -708,6 +675,67 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 	}
 	if issuerDID == "" {
 		issuerDID, _ = jsonmap.DIDFromField(c["issuer"])
+	}
+
+	entries := convertToArray(rawStatus)
+	for i, entry := range entries {
+		statusMap, ok := entry.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("credentialStatus[%d] must be an object", i)
+		}
+		if len(statusMap) == 0 {
+			continue
+		}
+
+		// type may be a string or an array; reading only the string form
+		// skipped an array-typed entry and read no list at all.
+		if !knownStatusType(statusMap["type"]) {
+			continue
+		}
+
+		if err := checkStatusEntry(statusMap, i, resolver, acceptLegacyList, issuerDID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkStatusEntry validates and checks a single BitstringStatusListEntry.
+func checkStatusEntry(statusMap map[string]interface{}, index int, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, issuerDID string) error {
+	// statusPurpose is required (Bitstring Status List v1.0 §2.1).
+	entryPurpose, _ := statusMap["statusPurpose"].(string)
+	if entryPurpose == "" {
+		return fmt.Errorf("credentialStatus[%d].statusPurpose is required", index)
+	}
+
+	// statusSize other than 1 is not supported (this reader handles 1-bit entries).
+	if size, ok := statusMap["statusSize"]; ok && size != float64(1) {
+		return fmt.Errorf("credentialStatus[%d].statusSize %v is not supported: only 1-bit status entries are", index, size)
+	}
+
+	rawStatusListCredential, ok := statusMap["statusListCredential"]
+	if !ok || rawStatusListCredential == nil {
+		return fmt.Errorf("credentialStatus[%d].statusListCredential is required", index)
+	}
+
+	statusListCredential, ok := rawStatusListCredential.(string)
+	if !ok || statusListCredential == "" {
+		return fmt.Errorf("credentialStatus[%d].statusListCredential must be a non-empty string", index)
+	}
+
+	rawStatusListIndex, ok := statusMap["statusListIndex"]
+	if !ok || rawStatusListIndex == nil {
+		return fmt.Errorf("credentialStatus[%d].statusListIndex is required", index)
+	}
+
+	statusListIndex, ok := rawStatusListIndex.(string)
+	if !ok || statusListIndex == "" {
+		return fmt.Errorf("credentialStatus[%d].statusListIndex must be a non-empty string", index)
+	}
+
+	position, err := strconv.Atoi(statusListIndex)
+	if err != nil {
+		return fmt.Errorf("invalid credentialStatus[%d].statusListIndex: %w", index, err)
 	}
 
 	// Fetch, verify, and check the status list credential.

@@ -261,7 +261,7 @@ func (j *JWTPresentation) AddCustomProof(proof *dto.Proof, opts ...PresentationO
 }
 
 func (j *JWTPresentation) Verify(opts ...PresentationOpt) error {
-	opts = append(opts, WithVerifyProof())
+	opts = append(verifyOptions(opts), WithVerifyProof())
 
 	return j.executeOptions(opts...)
 }

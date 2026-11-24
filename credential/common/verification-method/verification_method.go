@@ -1,6 +1,9 @@
 package verificationmethod
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // JWK represents a JSON Web Key. It supports EC (secp256k1) and RSA keys.
 type JWK struct {
@@ -35,6 +38,12 @@ type VerificationMethodEntry struct {
 // are typed; other W3C-defined arrays (keyAgreement, capabilityInvocation,
 // capabilityDelegation) are intentionally omitted — see Pila's multi-VM
 // design Option A.
+//
+// The relationship arrays (Authentication, AssertionMethod) may contain either
+// a string VM id or an embedded VM object (DID Core §5.3.1). UnmarshalJSON
+// handles both: a string is kept as-is, an object is decoded as a
+// VerificationMethodEntry, its id is kept in the relationship array and the
+// full entry is appended to VerificationMethod if not already present.
 type DIDDocument struct {
 	Context             []string                  `json:"@context"`
 	ID                  string                    `json:"id"`
@@ -43,4 +52,68 @@ type DIDDocument struct {
 	AssertionMethod     []string                  `json:"assertionMethod"`
 	Controller          interface{}               `json:"controller"` // string or []string
 	DIDDocumentMetadata map[string]interface{}    `json:"didDocumentMetadata"`
+}
+
+// UnmarshalJSON decodes a DID document, accepting both string references and
+// embedded VM objects in the authentication and assertionMethod arrays.
+func (d *DIDDocument) UnmarshalJSON(data []byte) error {
+	// Use a plain struct with json.RawMessage for the mixed arrays.
+	var raw struct {
+		Context             []string                  `json:"@context"`
+		ID                  string                    `json:"id"`
+		VerificationMethod  []VerificationMethodEntry `json:"verificationMethod"`
+		Authentication      []json.RawMessage         `json:"authentication"`
+		AssertionMethod     []json.RawMessage         `json:"assertionMethod"`
+		Controller          interface{}               `json:"controller"`
+		DIDDocumentMetadata map[string]interface{}    `json:"didDocumentMetadata"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	d.Context = raw.Context
+	d.ID = raw.ID
+	d.VerificationMethod = raw.VerificationMethod
+	d.Controller = raw.Controller
+	d.DIDDocumentMetadata = raw.DIDDocumentMetadata
+
+	vmIndex := make(map[string]bool, len(d.VerificationMethod))
+	for _, vm := range d.VerificationMethod {
+		vmIndex[vm.ID] = true
+	}
+
+	unmarshalRelationship := func(elems []json.RawMessage) ([]string, error) {
+		ids := make([]string, 0, len(elems))
+		for _, elem := range elems {
+			// Try string first.
+			var s string
+			if err := json.Unmarshal(elem, &s); err == nil {
+				ids = append(ids, s)
+				continue
+			}
+			// Must be an embedded VM object.
+			var vm VerificationMethodEntry
+			if err := json.Unmarshal(elem, &vm); err != nil {
+				return nil, err
+			}
+			ids = append(ids, vm.ID)
+			if !vmIndex[vm.ID] {
+				d.VerificationMethod = append(d.VerificationMethod, vm)
+				vmIndex[vm.ID] = true
+			}
+		}
+		return ids, nil
+	}
+
+	var err error
+	d.Authentication, err = unmarshalRelationship(raw.Authentication)
+	if err != nil {
+		return err
+	}
+	d.AssertionMethod, err = unmarshalRelationship(raw.AssertionMethod)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
