@@ -11,6 +11,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/cose"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
@@ -393,6 +394,11 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 		return nil, fmt.Errorf("presentation is empty")
 	}
 
+	// COSE_Sign1 detection: CBOR tag 18 starts with 0xd2.
+	if cose.IsCOSESign1(rawPresentation) {
+		return ParseCOSEPresentation(rawPresentation, opts...)
+	}
+
 	if isJSONPresentation(rawPresentation) {
 		p, err := ParseJSONPresentation(rawPresentation, opts...)
 		if err != nil {
@@ -431,7 +437,7 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 		return nil, fmt.Errorf("presentation carries SD-JWT disclosures, which are not supported for presentations")
 	}
 
-	return nil, fmt.Errorf("failed to parse presentation")
+	return nil, fmt.Errorf("failed to parse presentation: not a valid JSON, JWT, or COSE presentation")
 }
 
 // ParsePresentationWithValidation parses a presentation into a Presentation with validation.

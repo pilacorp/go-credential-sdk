@@ -326,7 +326,7 @@ func requireEnvelopedCredentials(m PresentationData) error {
 		if !ok {
 			return fmt.Errorf(
 				"credential at index %d: enveloped credential id must be a data: URL "+
-					"with media type application/vc+jwt or application/vc+sd-jwt", i)
+					"with media type application/vc+jwt, application/vc+sd-jwt or application/vc+cose", i)
 		}
 		if envToken == "" {
 			return fmt.Errorf("credential at index %d: enveloped credential id is a data: URL with no token", i)

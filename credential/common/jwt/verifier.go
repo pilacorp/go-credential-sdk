@@ -133,7 +133,7 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	if ierr != nil {
 		return ierr
 	}
-	if err := strictPurposeCheck(doc, vm, purpose, issuedAt); err != nil {
+	if err := StrictPurposeCheck(doc, vm, purpose, issuedAt); err != nil {
 		return err
 	}
 	return nil
@@ -397,11 +397,26 @@ func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
 	return &tm, nil
 }
 
-// strictPurposeCheck mirrors the post-crypto checks used by jsonmap.VerifyProof
+// IssuedAtFromPayload extracts iat (issued at) as UTC time from a decoded
+// payload map. Returns (nil, nil) when iat is absent. Exported for the COSE
+// verification path.
+func IssuedAtFromPayload(body map[string]interface{}) (*time.Time, error) {
+	sec, ok, err := jwtutil.NumericClaim(body, "iat")
+	if err != nil || !ok {
+		return nil, err
+	}
+	tm := time.Unix(sec, 0).UTC()
+	return &tm, nil
+}
+
+// StrictPurposeCheck mirrors the post-crypto checks used by jsonmap.VerifyProof
 // for embedded ECDSA proofs. JWTs do not carry a proof.created field, so the
 // timestamp check is omitted here — verifiers that need it should encode the
 // signing time as `iat` and add their own enforcement.
-func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmethod.VerificationMethodEntry, proofPurpose string, issuedAt *time.Time) error {
+//
+// Exported for reuse by the COSE verification path, which applies the same
+// revocation and purpose-relationship rules.
+func StrictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmethod.VerificationMethodEntry, proofPurpose string, issuedAt *time.Time) error {
 	if verificationmethod.IsHardRevocationReason(vm.RevocationReason) {
 		return fmt.Errorf("verification method '%s' revoked with hard reason '%s'", vm.ID, vm.RevocationReason)
 	}

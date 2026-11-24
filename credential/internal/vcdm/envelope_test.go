@@ -71,3 +71,16 @@ func TestCutEnvelopedDataURL(t *testing.T) {
 		})
 	}
 }
+
+// A COSE_Sign1 token is binary, so its envelope is a base64 data: URL.
+func TestCutEnvelopedDataURL_COSE(t *testing.T) {
+	for _, id := range []string{"data:application/vc+cose;base64,AAEC", "DATA:Application/VC+COSE;BASE64,AAEC"} {
+		mt, token, ok := CutEnvelopedDataURL(id)
+		if !ok || mt != MediaTypeVCCOSE || token != "AAEC" {
+			t.Fatalf("CutEnvelopedDataURL(%q) = %q, %q, %v", id, mt, token, ok)
+		}
+	}
+	if _, _, ok := CutEnvelopedDataURL("data:application/vc+cose,AAEC"); ok {
+		t.Fatal("a vc+cose data: URL without ;base64 was accepted")
+	}
+}

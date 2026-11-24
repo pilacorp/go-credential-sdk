@@ -12,6 +12,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	coseinternal "github.com/pilacorp/go-credential-sdk/credential/internal/cose"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
@@ -480,6 +481,11 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 		return nil, fmt.Errorf("JSON string is empty")
 	}
 
+	// COSE_Sign1 detection: CBOR tag 18 starts with 0xd2.
+	if coseinternal.IsCOSESign1(rawCredential) {
+		return ParseCOSECredential(rawCredential, opts...)
+	}
+
 	if isJSONCredential(rawCredential) {
 		// Check for EnvelopedVerifiableCredential data URI per W3C VC 2.0 / vc-jose-cose.
 		//
@@ -490,7 +496,7 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 		var peek map[string]interface{}
 		if err := json.Unmarshal(rawCredential, &peek); err == nil {
 			if idStr, ok := peek["id"].(string); ok {
-				if _, token, ok := vcdm.CutEnvelopedDataURL(idStr); ok {
+				if mediaType, token, ok := vcdm.CutEnvelopedDataURL(idStr); ok {
 					if !hasType(peek["type"], TypeEnvelopedVC) {
 						return nil, fmt.Errorf(
 							"credential carries an enveloped data: URL id but its type is not %s",
@@ -501,9 +507,16 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 							"enveloped credential id is a data: URL with no token")
 					}
 					// Parse the token as vc-jose-cose rather than recursing through
-					// ParseCredential: the envelope is defined to hold a vc+jwt, so
-					// this refuses a VC 1.1 JWT hidden inside a v2 envelope, and
-					// keeps the nesting to one level.
+					// ParseCredential: the envelope is defined to hold a vc+jwt,
+					// vc+sd-jwt or vc+cose, so this refuses a VC 1.1 JWT hidden
+					// inside a v2 envelope, and keeps the nesting to one level.
+					if mediaType == vcdm.MediaTypeVCCOSE {
+						coseBytes, err := base64.StdEncoding.DecodeString(token)
+						if err != nil {
+							return nil, fmt.Errorf("failed to decode COSE envelope base64: %w", err)
+						}
+						return ParseCOSECredential(coseBytes, opts...)
+					}
 					c, err := ParseJOSECredential(token, opts...)
 					if err != nil {
 						return nil, err
@@ -563,7 +576,7 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 		return c, nil
 	}
 
-	return nil, fmt.Errorf("failed to parse credential: not a valid JSON, SD-JWT, or JWT credential")
+	return nil, fmt.Errorf("failed to parse credential: not a valid JSON, SD-JWT, JWT, or COSE credential")
 }
 
 // ParseCredentialWithValidation parses a credential from various formats into a Credential with validation.
