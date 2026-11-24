@@ -9,7 +9,10 @@ import (
 	commoncrypto "github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/sdverify"
 )
+
+func init() { sdverify.Register(verifyProof) }
 
 // verifyBaseProof verifies an ecdsa-sd-2023 base proof on a full document,
 // against the issuer's public key (P-256 standard, or secp256k1 as a
@@ -61,10 +64,31 @@ func verifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 	return nil
 }
 
-// verifyDerivedProof verifies an ecdsa-sd-2023 derived (disclosure) proof on a
-// revealed document, against the issuer's public key (P-256 standard, or
-// secp256k1 as a non-standard extension).
-func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string]interface{}, derivedProofValue string, issuerPub *ecdsa.PublicKey) error {
+// verifyProof refuses every proof value but a derived one, then verifies it.
+// VerifyProof and the jsonmap proof-set cache both call it, so the two paths
+// refuse the same values with the same errors.
+func verifyProof(canon func() ([]string, error), proofConfig map[string]interface{}, proofValue string, issuerPub *ecdsa.PublicKey) error {
+	if _, err := decodeProofValue(proofValue, baseProofHeader); err == nil {
+		return fmt.Errorf("ecdsasd: a base proof (header 0xd95d00) stays with the holder and cannot be verified; derive a proof from it and verify that (header 0xd95d01)")
+	}
+	if _, err := decodeProofValue(proofValue, derivedProofHeader); err != nil {
+		return fmt.Errorf("ecdsasd: unrecognized proof value header")
+	}
+	return verifyDerivedProof(canon, proofConfig, proofValue, issuerPub)
+}
+
+// canonicalizer returns the canon function verifyDerivedProof expects for a
+// document that is verified once.
+func canonicalizer(document map[string]interface{}) func() ([]string, error) {
+	return func() ([]string, error) { return processor.CanonicalizeNQuads(document) }
+}
+
+// verifyDerivedProof verifies an ecdsa-sd-2023 derived (disclosure) proof
+// against the issuer's public key (P-256 standard, or secp256k1 as a
+// non-standard extension). canon returns the canonical N-Quads of the revealed
+// document; it is called only after the proof value has parsed, so a malformed
+// proof is refused without canonicalizing.
+func verifyDerivedProof(canon func() ([]string, error), proofConfig map[string]interface{}, derivedProofValue string, issuerPub *ecdsa.PublicKey) error {
 	dp, err := parseDisclosureProofValue(derivedProofValue)
 	if err != nil {
 		return err
@@ -76,7 +100,7 @@ func verifyDerivedProof(revealDoc map[string]interface{}, proofConfig map[string
 
 	// Canonicalize the revealed document and relabel its canonical blank-node
 	// labels to the HMAC labels from the proof, then sort.
-	canonicalNQuads, _, err := processor.CanonicalizeWithIdMap(revealDoc)
+	canonicalNQuads, err := canon()
 	if err != nil {
 		return fmt.Errorf("ecdsasd: canonicalize reveal doc: %w", err)
 	}

@@ -12,6 +12,7 @@ import (
 	credentialstatus "github.com/pilacorp/go-credential-sdk/credential/common/credential-status"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
@@ -343,7 +344,7 @@ func parseIssuer(c CredentialData, contents *CredentialContents) error {
 // parseDates extracts validFrom and validUntil fields from a Credential.
 func parseDates(c CredentialData, contents *CredentialContents) error {
 	if validFrom, ok := c["validFrom"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validFrom)
+		t, err := vcdm.ParseDateTime(validFrom)
 		if err != nil {
 			return fmt.Errorf("failed to parse validFrom: %w", err)
 		}
@@ -351,7 +352,7 @@ func parseDates(c CredentialData, contents *CredentialContents) error {
 	}
 
 	if validUntil, ok := c["validUntil"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validUntil)
+		t, err := vcdm.ParseDateTime(validUntil)
 		if err != nil {
 			return fmt.Errorf("failed to parse validUntil: %w", err)
 		}
@@ -610,24 +611,23 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 	return nil
 }
 
-// checkExpiration checks that the credential is inside its validFrom/validUntil
-// window, widened by leeway on both sides to absorb clock skew.
+// checkExpiration checks the validity period the credential states (vcdm.CheckValidity),
+// widened by leeway on both sides to absorb clock skew.
 func checkExpiration(c CredentialData, leeway time.Duration) error {
-	validFrom, err := parseStringField(c, "validFrom")
-	if err != nil {
-		return fmt.Errorf("failed to parse validFrom: %w", err)
-	}
-	validUntil, err := parseStringField(c, "validUntil")
-	if err != nil {
-		return fmt.Errorf("failed to parse validUntil: %w", err)
-	}
-
-	return vcdm.CheckValidityPeriod("credential", validFrom, validUntil, leeway)
+	return vcdm.CheckValidity("credential", c, leeway)
 }
 
 // checkRevocation checks that credentialStatus is present and, if using a
-// status list, verifies the credential is not revoked.
-func checkRevocation(c CredentialData) error {
+// status list, verifies the credential is not revoked. It also verifies the
+// status list credential itself: its proof, issuer match, and validity period.
+//
+// Only BitstringStatusListEntry entries are read. An entry of another type is
+// ignored, the same rule the SDK applies to a credentialSchema type it does
+// not implement, rather than having its index read as a bitstring position.
+//
+// issuerDIDFallbacks supplies additional DID strings to try when c["issuer"]
+// is missing (e.g. the JWT "iss" claim for VC Data Model v1.1 §6.3.1).
+func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, issuerDIDFallbacks ...string) error {
 	// If there's no credentialStatus at all, treat as not using revocation → no error.
 	rawStatus, ok := c["credentialStatus"]
 	if !ok || rawStatus == nil {
@@ -642,6 +642,24 @@ func checkRevocation(c CredentialData) error {
 	// If credentialStatus is an empty object, also treat it as "no revocation info".
 	if len(statusMap) == 0 {
 		return nil
+	}
+
+	// Only process BitstringStatusListEntry; ignore unknown types.
+	// type may be a string or an array (VCDM); reading only the string form
+	// skipped ["BitstringStatusListEntry"] as unknown and read no list at all.
+	if !hasType(statusMap["type"], "BitstringStatusListEntry") {
+		return nil
+	}
+
+	// For a BitstringStatusListEntry, statusPurpose is required (§2.1).
+	entryPurpose, _ := statusMap["statusPurpose"].(string)
+	if entryPurpose == "" {
+		return fmt.Errorf("credentialStatus.statusPurpose is required")
+	}
+
+	// statusSize other than 1 is not supported (this reader handles 1-bit entries).
+	if size, ok := statusMap["statusSize"]; ok && size != float64(1) {
+		return fmt.Errorf("credentialStatus.statusSize %v is not supported: only 1-bit status entries are", size)
 	}
 
 	rawStatusListCredential, ok := statusMap["statusListCredential"]
@@ -669,13 +687,28 @@ func checkRevocation(c CredentialData) error {
 		return fmt.Errorf("invalid credentialStatus.statusListIndex: %w", err)
 	}
 
-	// Call status list API and check revocation based on encodedList bits.
-	isRevoked, err := credentialstatus.FetchAndCheckRevocation(statusListCredential, position)
-	if err != nil {
-		return fmt.Errorf("failed to check revocation: %w", err)
+	// Extract the credential's issuer DID for the issuer-match check.
+	// For JWT VCs, VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
+	// is present it sets the issuer.
+	var issuerDID string
+	for _, fb := range issuerDIDFallbacks {
+		if fb != "" {
+			issuerDID = fb
+			break
+		}
 	}
-	if isRevoked {
-		return fmt.Errorf("credential is revoked")
+	if issuerDID == "" {
+		issuerDID, _ = jsonmap.DIDFromField(c["issuer"])
+	}
+
+	// Fetch, verify, and check the status list credential.
+	clientOpts := []credentialstatus.Option{credentialstatus.WithResolver(resolver)}
+	if acceptLegacyList {
+		clientOpts = append(clientOpts, credentialstatus.WithLegacyStatusList())
+	}
+	client := credentialstatus.NewClient(clientOpts...)
+	if err := client.VerifyAndCheckStatus(statusListCredential, position, entryPurpose, issuerDID); err != nil {
+		return fmt.Errorf("failed to check revocation: %w", err)
 	}
 
 	return nil

@@ -99,7 +99,7 @@ func TestBaseProofsWithUncheckedMandatoryPointersStillVerifyAndDerive(t *testing
 		if err != nil {
 			t.Fatalf("%q: createBaseProof: %v", mandatory, err)
 		}
-		if err := VerifyProof(cred, w3cProofConfig(exp, cred["@context"]), basePV, issuerPub); err != nil {
+		if err := VerifyBaseProof(cred, w3cProofConfig(exp, cred["@context"]), basePV, issuerPub); err != nil {
 			t.Errorf("%q: verify base: %v", mandatory, err)
 		}
 

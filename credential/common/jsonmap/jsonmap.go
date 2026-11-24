@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
 // JSONMap represents a JSON object as a map.
@@ -218,7 +221,7 @@ func (m *JSONMap) AddECDSAProof(signerProvider signer.SignerProvider, verificati
 		Domain:             domainValue(options.domain),
 	}
 
-	hashData, err := m.ecdsaHashData(proof)
+	hashData, err := m.ecdsaHashData(proof, nil)
 	if err != nil {
 		return fmt.Errorf("jsonmap: failed to build hash data: %w", err)
 	}
@@ -295,7 +298,7 @@ func (m *JSONMap) AddCustomProof(proof *dto.Proof) error {
 // signed. Those are refused rather than checked wrongly.
 //
 // The document is not modified, whatever the outcome.
-func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof) error {
+func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, opts ...ProofVerifyOpt) error {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
@@ -305,6 +308,10 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 	if resolver == nil {
 		return fmt.Errorf("jsonmap: document resolver is required")
 	}
+	if err := rejectPreviousProof(proof.ToMap()); err != nil {
+		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
+	}
+
 	if proof.Type != DataIntegrityProof || proof.Cryptosuite != ECDSARDFC2019 {
 		suite := proof.Type
 		if proof.Cryptosuite != "" {
@@ -315,7 +322,7 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 			suite, DataIntegrityProof, ECDSARDFC2019)
 	}
 
-	ok, err := m.verifyOneProof(resolver, proof)
+	ok, err := m.verifyOneProof(resolver, proof, proofVerifyConfigFrom(opts).expectedPurpose, nil)
 	if err != nil {
 		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
 	}
@@ -340,7 +347,7 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 //
 // resolver is required; callers must construct it (e.g. via
 // verificationmethod.NewHTTPResolver(baseURL)) before invoking VerifyProof.
-func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targetVM string) (bool, error) {
+func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targetVM string, opts ...ProofVerifyOpt) (bool, error) {
 	if m == nil {
 		return false, fmt.Errorf("JSONMap is nil")
 	}
@@ -355,12 +362,21 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	if len(proofs) == 0 {
 		return false, fmt.Errorf("credential has no proof")
 	}
+	cfg := proofVerifyConfigFrom(opts)
+	if cfg.maxProofs > 0 && len(proofs) > cfg.maxProofs {
+		return false, fmt.Errorf("%w: the document carries %d and this verifier accepts at most %d; send at most %d, or raise WithMaxProofs", ErrTooManyProofs, len(proofs), cfg.maxProofs, cfg.maxProofs)
+	}
+	raw := m.rawProofList()
+	expectedPurpose := cfg.expectedPurpose
 
 	// Verify a single, caller-selected proof.
 	if targetVM != "" {
 		for i := range proofs {
 			if proofs[i].VerificationMethod == targetVM {
-				ok, err := m.verifyOneProof(resolver, &proofs[i])
+				if err := rejectPreviousProof(raw[i]); err != nil {
+					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
+				}
+				ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, nil)
 				if err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
@@ -371,9 +387,22 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	}
 
 	// W3C proof set: every proof must verify, each against its own
-	// verification method.
+	// verification method. The body is the same for all proofs, so the
+	// document digest is computed once per distinct canonical form and reused.
+	cache := &digestCache{}
+	return m.verifyProofSet(resolver, proofs, expectedPurpose, raw, cache)
+}
+
+// verifyProofSet verifies every proof in proofs against the JSONMap, using
+// cache for canonicalization and resolving each DID once. Tests call this
+// directly with their own cache so they can inspect cache.misses in parallel.
+func (m *JSONMap) verifyProofSet(resolver verificationmethod.ResolverProvider, proofs []dto.Proof, expectedPurpose string, raw []interface{}, cache *digestCache) (bool, error) {
+	resolver = &didMemo{inner: resolver}
 	for i := range proofs {
-		ok, err := m.verifyOneProof(resolver, &proofs[i])
+		if err := rejectPreviousProof(raw[i]); err != nil {
+			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+		}
+		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, cache)
 		if err != nil {
 			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
 		}
@@ -385,8 +414,19 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 }
 
 // verifyOneProof verifies a single proof against the DID document resolved from
-// that proof's own verification method.
-func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof) (bool, error) {
+// that proof's own verification method. When cache is non-nil, canonicalization
+// results are shared across calls; when nil, each call computes them fresh
+// (the single-proof path, VerifyDetachedProof).
+func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, expectedPurpose string, cache *digestCache) (bool, error) {
+	if err := proofPurposeDisagrees(proof, expectedPurpose); err != nil {
+		return false, err
+	}
+	// A non-string created (number, object, array) lands in proof.Extra as the
+	// decoder's fallback, leaving proof.Created == "". Refuse it before
+	// resolving so the caller sees the right error.
+	if _, ok := proof.Extra["created"]; ok {
+		return false, fmt.Errorf("invalid proof.created: it must be a date-time string, such as 2026-01-01T00:00:00Z")
+	}
 	signerDID, err := m.didForProof(proof)
 	if err != nil {
 		return false, err
@@ -409,16 +449,16 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 	// it moved onto this SDK; those documents are rejected now, deliberately,
 	// because a key taken from the proof cannot tell them apart from a forgery.
 	case proof.Type == EcdsaSecp256k1Signature2019:
-		return m.verifyEcdsaSecp256k1Proof(doc, proof)
+		return m.verifyEcdsaSecp256k1Proof(doc, proof, cache)
 
 	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSARDFC2019:
-		return m.verifyDataIntegrityProof(doc, proof)
+		return m.verifyDataIntegrityProof(doc, proof, cache)
 
 	case proof.Type == DataIntegrityProof && proof.Cryptosuite == ECDSASD2023:
-		return m.verifyECDSASDProof(doc, proof)
+		return m.verifyECDSASDProof(doc, proof, cache)
 
 	case proof.Type == JsonWebSignature2020:
-		return m.verifyJWSProof(doc, proof)
+		return m.verifyJWSProof(doc, proof, cache)
 
 	default:
 		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
@@ -468,7 +508,7 @@ func didFromVMURL(vm string) string {
 // verifyECDSA verifies an ECDSA-signed JSONMap. A "z" prefix selects the
 // spec-conformant path, anything else the legacy hex path (secp256k1 proofs
 // issued by SDK <= v1.7.0, which also carry cryptosuite ecdsa-rdfc-2019).
-func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof, cache *digestCache) (bool, error) {
 	if strings.HasPrefix(proof.ProofValue, MultibaseBase58BTCPrefix) {
 		// Only the P-256 profile of ecdsa-rdfc-2019 is implemented; reject
 		// other curves up front so a P-384 key gets a clear error, not a
@@ -478,7 +518,7 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, err
 				"ecdsa-rdfc-2019: verification method %q uses curve %q, but this SDK supports P-256 only",
 				proof.VerificationMethod, pub.Curve.Params().Name)
 		}
-		return m.verifyECDSASpecConformant(pub, proof)
+		return m.verifyECDSASpecConformant(pub, proof, cache)
 	}
 
 	// Legacy hex proofs (SDK <= v1.7.0) sign the body only, so challenge and
@@ -486,7 +526,7 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, err
 	// themselves. TODO(after the 14-day grace period): reject hex proofs that
 	// carry challenge or domain.
 
-	doc, err := m.LegacyHexCanonicalize()
+	doc, err := cache.legacyHexCanonicalize(m)
 	if err != nil {
 		return false, fmt.Errorf("failed to canonicalize JSONMap: %w", err)
 	}
@@ -557,8 +597,10 @@ func concatHashData(proofConfigHash, transformedDocumentHash [sha256.Size]byte) 
 
 // ecdsaHashData builds the 64-byte hashData of section 3.2.4,
 // proofConfigHash || transformedDocumentHash, for both signing and verifying.
-func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
-	docHash, err := m.DocumentDigest()
+// When cache is non-nil, the DocumentDigest is fetched from (or stored in) the
+// cache instead of being recomputed.
+func (m *JSONMap) ecdsaHashData(proof *dto.Proof, cache *digestCache) ([]byte, error) {
+	docHash, err := cache.documentDigest(m)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash document: %w", err)
 	}
@@ -567,13 +609,13 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof) ([]byte, error) {
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,
 // rebuilding hashData exactly as the signer did.
-func (m *JSONMap) verifyECDSASpecConformant(pub *ecdsa.PublicKey, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyECDSASpecConformant(pub *ecdsa.PublicKey, proof *dto.Proof, cache *digestCache) (bool, error) {
 	signature, err := verificationmethod.DecodeMultibaseKey(proof.ProofValue)
 	if err != nil {
 		return false, fmt.Errorf("failed to decode multibase proofValue: %w", err)
 	}
 
-	hashData, err := m.ecdsaHashData(proof)
+	hashData, err := m.ecdsaHashData(proof, cache)
 	if err != nil {
 		return false, fmt.Errorf("failed to build hash data: %w", err)
 	}
@@ -589,10 +631,41 @@ func (m *JSONMap) verifyECDSASpecConformant(pub *ecdsa.PublicKey, proof *dto.Pro
 }
 
 func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
-	vmURL, err := jwtVerificationMethodURL((*m))
-	if err != nil {
-		return false, err
+	// Extract the JWT from THIS proof, not from the document, so proof sets
+	// verify each proof against its own JWT.
+	jwtStr, _ := proof.Extra["jwt"].(string)
+	if jwtStr == "" {
+		return false, fmt.Errorf("JwtProof2020 proof is missing jwt")
 	}
+
+	// Resolve the VM from the proof's own verificationMethod, with kid fallback.
+	vmURL := proof.VerificationMethod
+	if kid, hasKid := crypto.JwtKid(jwtStr); hasKid {
+		if vmURL == "" {
+			vmURL = kid
+		} else {
+			// Both kid (signed header) and proof.verificationMethod (unsigned)
+			// are present — they must name the same VM. Normalise a relative
+			// "#fragment" kid against the DID document ID before comparing.
+			normKid := kid
+			if strings.HasPrefix(kid, "#") && doc != nil {
+				normKid = doc.ID + kid
+			}
+			normVM := proof.VerificationMethod
+			if strings.HasPrefix(normVM, "#") && doc != nil {
+				normVM = doc.ID + normVM
+			}
+			if normKid != normVM {
+				return false, fmt.Errorf(
+					"JWT kid %q does not match proof.verificationMethod %q: %w",
+					kid, proof.VerificationMethod, crypto.ErrJwtProofBinding)
+			}
+		}
+	}
+	if vmURL == "" {
+		return false, fmt.Errorf("token is missing verification method id (kid/verificationMethod)")
+	}
+
 	vm, err := verificationmethod.FindVerificationMethod(doc, vmURL)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
@@ -602,26 +675,53 @@ func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto
 		return false, err
 	}
 
-	ok, err := crypto.VerifyJwtProof((*map[string]interface{})(m), pub)
-	if err != nil || !ok {
-		return ok, err
+	signedAt, err := crypto.VerifyJwtProofToken((map[string]interface{})(*m), jwtStr, pub)
+	if err != nil {
+		return false, err
 	}
-	if err := strictPurposeCheck(doc, vm, "assertionMethod", proof.Created); err != nil {
+
+	// The signed time from the JWT (iat, else nbf) is the trustworthy
+	// creation timestamp. proof.created sits in the unsigned proof object;
+	// if present it must agree with the signed time, to the second.
+	signedAtStr := ""
+	if !signedAt.IsZero() {
+		signedAtStr = signedAt.UTC().Format(time.RFC3339)
+		if proof.Created != "" {
+			created, err := parseCreated(proof.Created)
+			if err != nil {
+				return false, err
+			}
+			if created.Unix() != signedAt.Unix() {
+				return false, fmt.Errorf(
+					"proof.created %s differs from JWT signed time %s: %w",
+					proof.Created, signedAtStr, crypto.ErrJwtProofBinding)
+			}
+		}
+	}
+
+	purpose := "assertionMethod"
+	if crypto.BodyIsPresentation((map[string]interface{})(*m)) {
+		purpose = "authentication"
+	}
+	if err := strictPurposeCheck(doc, vm, purpose, signedAtStr); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
+func (m *JSONMap) verifyDataIntegrityProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, cache *digestCache) (bool, error) {
 	vm, err := verificationmethod.FindVerificationMethod(doc, proof.VerificationMethod)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
+	}
+	if err := verificationmethod.RequireController(doc, vm); err != nil {
+		return false, err
 	}
 	pub, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
 		return false, err
 	}
-	ok, err := m.verifyECDSA(pub, proof)
+	ok, err := m.verifyECDSA(pub, proof, cache)
 	if err != nil || !ok {
 		return ok, err
 	}
@@ -659,6 +759,33 @@ func (m *JSONMap) Proofs() ([]dto.Proof, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// CheckJwtProofTimes checks the nbf and exp of the JWT of each JwtProof2020
+// proof at the current time, widened by leeway, as the JWT path does
+// (jwtutil.CheckTimeClaims). Such a document is a VC-JWT or VP-JWT in JSON
+// form and its validity is in those claims (VCDM 1.1 §6.3.1 moves
+// issuanceDate to nbf and expirationDate to exp). Proofs are read with
+// Proofs, as VerifyProof reads them, so both see the same set.
+func (m *JSONMap) CheckJwtProofTimes(leeway time.Duration) error {
+	proofs, err := m.Proofs()
+	if err != nil {
+		return err
+	}
+	for i := range proofs {
+		if proofs[i].Type != JwtProof2020 {
+			continue
+		}
+		jwtStr, _ := proofs[i].Extra["jwt"].(string)
+		claims, err := jwtutil.DecodePayload(jwtStr)
+		if err != nil {
+			return fmt.Errorf("JwtProof2020 proof: %w", err)
+		}
+		if err := jwtutil.CheckTimeClaims(claims, leeway); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rawProofList normalizes the proof field into a slice of raw proof entries,
@@ -725,6 +852,99 @@ func DIDFromField(v interface{}) (string, bool) {
 	return "", false
 }
 
+// ProofVerifyOpt configures VerifyProof and VerifyDetachedProof.
+type ProofVerifyOpt func(*proofVerifyConfig)
+
+type proofVerifyConfig struct {
+	// expectedPurpose is the proof purpose the verifier is performing.
+	// Empty means the caller did not say, and the purpose written in the
+	// proof is the one that is checked.
+	expectedPurpose string
+	// maxProofs caps the proofs a document may carry; 0 means no cap.
+	maxProofs int
+}
+
+func proofVerifyConfigFrom(opts []ProofVerifyOpt) proofVerifyConfig {
+	var cfg proofVerifyConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return cfg
+}
+
+// WithExpectedProofPurpose is the expectedProofPurpose of Data Integrity 1.0
+// §4.4. When set, a Data Integrity proof whose proofPurpose differs is
+// refused before any DID is resolved. JwtProof2020 is left to its own check:
+// that suite does not carry the purpose in a field this comparison can read.
+func WithExpectedProofPurpose(purpose string) ProofVerifyOpt {
+	return func(cfg *proofVerifyConfig) {
+		if purpose == "" {
+			return
+		}
+		cfg.expectedPurpose = purpose
+	}
+}
+
+// ErrTooManyProofs is returned, wrapped with the counts, when a document
+// carries more proofs than WithMaxProofs allows.
+var ErrTooManyProofs = errors.New("too many proofs")
+
+// WithMaxProofs refuses a document that carries more than n proofs, before any
+// DID is resolved. Each proof costs a resolution, a signature check and a
+// canonicalization of its own configuration, so a verifier that serves
+// untrusted callers sets the most proofs its documents carry. The count is of
+// the whole document, also when VerifyProof checks only the proof of one
+// targetVM. n <= 0 leaves the set unbounded, which is the default.
+func WithMaxProofs(n int) ProofVerifyOpt {
+	return func(cfg *proofVerifyConfig) {
+		cfg.maxProofs = max(n, 0)
+	}
+}
+
+// rejectPreviousProof refuses a proof chain. Data Integrity 1.0 §4.5 needs
+// the referenced proofs inside the signed input, which this SDK does not
+// build. It reads the raw proof: the decoder drops "previousProof": null and
+// matches the key in any case.
+func rejectPreviousProof(raw interface{}) error {
+	m, _ := raw.(map[string]interface{})
+	for k := range m {
+		if strings.EqualFold(k, "previousProof") {
+			return fmt.Errorf("proof has previousProof: proof chains are not supported, only proof sets")
+		}
+	}
+	return nil
+}
+
+// proofPurposeDisagrees reports a Data Integrity proof whose proofPurpose is
+// not the one the verifier asked for. A verifier that passed no purpose does
+// not disagree with anything.
+func proofPurposeDisagrees(proof *dto.Proof, expected string) error {
+	if expected == "" || proof == nil || proof.Type == JwtProof2020 {
+		return nil
+	}
+	if proof.ProofPurpose == expected {
+		return nil
+	}
+	return fmt.Errorf(
+		"proof.proofPurpose %q does not match the proof purpose %q this verifier expects",
+		proof.ProofPurpose, expected)
+}
+
+// parseCreated reads proof.created, a dateTimeStamp.
+func parseCreated(s string) (time.Time, error) {
+	t, err := vcdm.ParseDateTimeStamp(s)
+	if err != nil {
+		shown := s
+		if len(shown) > 64 {
+			shown = shown[:64] + "..."
+		}
+		return time.Time{}, fmt.Errorf("invalid proof.created timestamp %q: %w", shown, err)
+	}
+	return t, nil
+}
+
 // strictPurposeCheck enforces the post-crypto checks for multi-VM:
 //  1. Hard revocation reason → reject (key compromised, all signatures invalid).
 //  2. Revoked timestamp set and proof.created on/after revoked → reject.
@@ -737,11 +957,23 @@ func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmet
 		return fmt.Errorf("verification method '%s' revoked with hard reason '%s'", vm.ID, vm.RevocationReason)
 	}
 
-	if vm.Revoked != nil {
-		created, err := time.Parse(time.RFC3339, proofCreated)
+	// DI 1.0 §2.1: a present created must be an XML Schema dateTimeStamp
+	// string. A revoked key needs created to show the proof came first.
+	if proofCreated == "" && vm.Revoked != nil {
+		return fmt.Errorf("verification method '%s' was revoked at %s; the proof has no created to show it was made earlier",
+			vm.ID, vm.Revoked.UTC().Format(time.RFC3339))
+	}
+	var created time.Time
+	if proofCreated != "" {
+		// parseCreated's error already names the field and the value.
+		parsed, err := parseCreated(proofCreated)
 		if err != nil {
-			return fmt.Errorf("invalid proof.created timestamp '%s': %w", proofCreated, err)
+			return err
 		}
+		created = parsed
+	}
+
+	if vm.Revoked != nil {
 		if !created.Before(*vm.Revoked) {
 			return fmt.Errorf("verification method '%s' was revoked at %s; proof.created %s is not earlier",
 				vm.ID, vm.Revoked.UTC().Format(time.RFC3339), created.UTC().Format(time.RFC3339))
