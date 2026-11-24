@@ -226,8 +226,10 @@ func TestVerifyProof_TwoProofSetUsesEachProofsOwnJWT(t *testing.T) {
 	jwt1 := signJWTE2E(t, e2ePrivHex, e2eHeader(), map[string]interface{}{
 		"vc": body, "iss": did1, "iat": float64(1704067200),
 	})
+	// did2 co-signs: the proof is not bound to the issuer, but its JWT states
+	// the issuer in iss, which VCDM 1.1 §6.3.1 makes the credential's issuer.
 	jwt2 := signJWTE2E(t, e2ePrivHex2, e2eHeader(), map[string]interface{}{
-		"vc": body, "iss": did2, "iat": float64(1704067200),
+		"vc": body, "iss": did1, "iat": float64(1704067200),
 	})
 
 	m := jsonmap.JSONMap(body)
@@ -250,6 +252,32 @@ func TestVerifyProof_TwoProofSetUsesEachProofsOwnJWT(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("a two-proof set where both JWTs match was refused")
+	}
+}
+
+// A JWT that states another issuer in iss than the body shows is refused:
+// the decoded credential would carry the iss value (VCDM 1.1 §6.3.1).
+func TestVerifyProof_JwtIssDiffersFromBodyIssuer(t *testing.T) {
+	const did1 = "did:example:issuer1"
+	const did2 = "did:example:issuer2"
+	priv2, _ := ethcrypto.HexToECDSA(e2ePrivHex2)
+	resolver := verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(did2, verificationmethod.NewSecp256k1VM(
+		did2, "key-1", hex.EncodeToString(ethcrypto.CompressPubkey(&priv2.PublicKey)))))
+	body := map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            did1,
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject", "name": "Alice"},
+		"issuanceDate":      "2024-01-01T00:00:00Z",
+	}
+	token := signJWTE2E(t, e2ePrivHex2, e2eHeader(), map[string]interface{}{
+		"vc": body, "iss": did2, "iat": float64(1704067200),
+	})
+	m := jsonmap.JSONMap(body)
+	m["proof"] = map[string]interface{}{"type": "JwtProof2020", "jwt": token, "verificationMethod": did2 + "#key-1"}
+	ok, err := m.VerifyProof(resolver, "")
+	if ok || !errors.Is(err, pilacrpto.ErrJwtProofBinding) {
+		t.Fatalf("ok = %v, err = %v, want a binding error", ok, err)
 	}
 }
 
@@ -399,6 +427,43 @@ func TestVerifyProof_CreatedDiffersFromIat(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "differs from JWT signed time") {
 		t.Fatalf("err = %v, want one about created mismatch", err)
+	}
+}
+
+// proof.created is read as every other proof's created (a dateTimeStamp):
+// T24:00:00 of the day before is the same instant as iat, and a comma before
+// the fraction is not a date-time.
+func TestVerifyProof_JwtProofCreatedReadAsDateTimeStamp(t *testing.T) {
+	const did = "did:example:issuer"
+	resolver := e2eResolverAndDoc(t, did, "key-1", e2ePrivHex)
+	for _, c := range []struct {
+		created string
+		accept  bool
+	}{
+		{"2023-12-31T24:00:00Z", true},
+		{"2024-01-01T00:00:00,0Z", false},
+	} {
+		body := map[string]interface{}{
+			"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+			"type":              []interface{}{"VerifiableCredential"},
+			"issuer":            did,
+			"credentialSubject": map[string]interface{}{"id": "did:example:subject", "name": "Alice"},
+			"issuanceDate":      "2024-01-01T00:00:00Z",
+		}
+		token := signJWTE2E(t, e2ePrivHex, e2eHeader(), map[string]interface{}{
+			"vc": body, "iss": did, "iat": float64(1704067200),
+		})
+		m := jsonmap.JSONMap(body)
+		m["proof"] = map[string]interface{}{
+			"type": "JwtProof2020", "jwt": token, "verificationMethod": did + "#key-1", "created": c.created,
+		}
+		ok, err := m.VerifyProof(resolver, "")
+		if c.accept && !ok {
+			t.Fatalf("created %s refused: %v", c.created, err)
+		}
+		if !c.accept && (ok || err == nil || !strings.Contains(err.Error(), "invalid proof.created")) {
+			t.Fatalf("created %s: ok = %v, err = %v, want an invalid proof.created error", c.created, ok, err)
+		}
 	}
 }
 

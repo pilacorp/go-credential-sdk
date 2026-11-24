@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +18,8 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
 // JSONMap represents a JSON object as a map.
@@ -686,9 +687,9 @@ func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto
 	if !signedAt.IsZero() {
 		signedAtStr = signedAt.UTC().Format(time.RFC3339)
 		if proof.Created != "" {
-			created, err := time.Parse(time.RFC3339, proof.Created)
+			created, err := parseCreated(proof.Created)
 			if err != nil {
-				return false, fmt.Errorf("invalid proof.created: %w", err)
+				return false, err
 			}
 			if created.Unix() != signedAt.Unix() {
 				return false, fmt.Errorf(
@@ -758,6 +759,33 @@ func (m *JSONMap) Proofs() ([]dto.Proof, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// CheckJwtProofTimes checks the nbf and exp of the JWT of each JwtProof2020
+// proof at the current time, widened by leeway, as the JWT path does
+// (jwtutil.CheckTimeClaims). Such a document is a VC-JWT or VP-JWT in JSON
+// form and its validity is in those claims (VCDM 1.1 §6.3.1 moves
+// issuanceDate to nbf and expirationDate to exp). Proofs are read with
+// Proofs, as VerifyProof reads them, so both see the same set.
+func (m *JSONMap) CheckJwtProofTimes(leeway time.Duration) error {
+	proofs, err := m.Proofs()
+	if err != nil {
+		return err
+	}
+	for i := range proofs {
+		if proofs[i].Type != JwtProof2020 {
+			continue
+		}
+		jwtStr, _ := proofs[i].Extra["jwt"].(string)
+		claims, err := jwtutil.DecodePayload(jwtStr)
+		if err != nil {
+			return fmt.Errorf("JwtProof2020 proof: %w", err)
+		}
+		if err := jwtutil.CheckTimeClaims(claims, leeway); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rawProofList normalizes the proof field into a slice of raw proof entries,
@@ -904,27 +932,15 @@ func proofPurposeDisagrees(proof *dto.Proof, expected string) error {
 		proof.ProofPurpose, expected)
 }
 
-// XML Schema 1.1 Part 2 §3.3.7.2 with the time zone required (dateTimeStamp,
-// §3.4.28). Years outside 0000-9999 match but cannot be compared as time.Time.
-var dateTimeStamp = regexp.MustCompile(
-	`^-?([1-9][0-9]{3,}|0[0-9]{3})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])` +
-		`T(([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?|24:00:00(\.0+)?)` +
-		`(Z|[+-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00))$`)
-
+// parseCreated reads proof.created, a dateTimeStamp.
 func parseCreated(s string) (time.Time, error) {
-	if !dateTimeStamp.MatchString(s) {
-		return time.Time{}, fmt.Errorf("invalid proof.created timestamp %q: want a date-time with a time zone, such as 2026-01-01T00:00:00Z", s)
-	}
-	endOfDay := strings.Contains(s, "T24:00:00")
-	if endOfDay {
-		s = strings.Replace(s, "T24:00:00", "T00:00:00", 1)
-	}
-	t, err := time.Parse(time.RFC3339Nano, s)
+	t, err := vcdm.ParseDateTimeStamp(s)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid proof.created timestamp %q: %w", s, err)
-	}
-	if endOfDay {
-		t = t.AddDate(0, 0, 1)
+		shown := s
+		if len(shown) > 64 {
+			shown = shown[:64] + "..."
+		}
+		return time.Time{}, fmt.Errorf("invalid proof.created timestamp %q: %w", shown, err)
 	}
 	return t, nil
 }

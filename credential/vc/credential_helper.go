@@ -344,7 +344,7 @@ func parseIssuer(c CredentialData, contents *CredentialContents) error {
 // parseDates extracts validFrom and validUntil fields from a Credential.
 func parseDates(c CredentialData, contents *CredentialContents) error {
 	if validFrom, ok := c["validFrom"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validFrom)
+		t, err := vcdm.ParseDateTime(validFrom)
 		if err != nil {
 			return fmt.Errorf("failed to parse validFrom: %w", err)
 		}
@@ -352,7 +352,7 @@ func parseDates(c CredentialData, contents *CredentialContents) error {
 	}
 
 	if validUntil, ok := c["validUntil"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validUntil)
+		t, err := vcdm.ParseDateTime(validUntil)
 		if err != nil {
 			return fmt.Errorf("failed to parse validUntil: %w", err)
 		}
@@ -611,19 +611,10 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 	return nil
 }
 
-// checkExpiration checks that the credential is inside its validFrom/validUntil
-// window, widened by leeway on both sides to absorb clock skew.
+// checkExpiration checks the validity period the credential states (vcdm.CheckValidity),
+// widened by leeway on both sides to absorb clock skew.
 func checkExpiration(c CredentialData, leeway time.Duration) error {
-	validFrom, err := parseStringField(c, "validFrom")
-	if err != nil {
-		return fmt.Errorf("failed to parse validFrom: %w", err)
-	}
-	validUntil, err := parseStringField(c, "validUntil")
-	if err != nil {
-		return fmt.Errorf("failed to parse validUntil: %w", err)
-	}
-
-	return vcdm.CheckValidityPeriod("credential", validFrom, validUntil, leeway)
+	return vcdm.CheckValidity("credential", c, leeway)
 }
 
 // checkRevocation checks that credentialStatus is present and, if using a

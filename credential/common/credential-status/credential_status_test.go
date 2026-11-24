@@ -5,6 +5,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
@@ -440,6 +445,46 @@ func TestVerifyAndCheckStatus_ExpiredCredential_Refused(t *testing.T) {
 	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	err = client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "expired")
+}
+
+// A status list whose VCDM 1.1 expirationDate has passed is refused like one
+// past validUntil. It is a JwtProof2020 list: a Data Integrity proof cannot
+// carry 1.1 dates under the 2.0 context these lists use.
+func TestVerifyAndCheckStatus_ExpiredByExpirationDate_Refused(t *testing.T) {
+	priv, err := ethcrypto.HexToECDSA("59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d")
+	require.NoError(t, err)
+	vm := verificationmethod.NewSecp256k1VM(testIssuerDID, "jwt-1", hex.EncodeToString(ethcrypto.CompressPubkey(&priv.PublicKey)))
+	resolver := verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(testIssuerDID, vm))
+
+	list := map[string]interface{}{
+		"@context":       []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":           []interface{}{"VerifiableCredential", "BitstringStatusListCredential"},
+		"issuer":         testIssuerDID,
+		"issuanceDate":   time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339),
+		"expirationDate": time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+		"credentialSubject": map[string]interface{}{
+			"type": "BitstringStatusList", "statusPurpose": "revocation",
+			"encodedList": buildLegacyEncodedList(t, 128, []int{}),
+		},
+	}
+	header, _ := json.Marshal(map[string]interface{}{"typ": "JWT", "alg": "ES256K", "kid": testIssuerDID + "#jwt-1"})
+	payload, _ := json.Marshal(map[string]interface{}{"iss": testIssuerDID, "vc": list})
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+	digest := sha256.Sum256([]byte(input))
+	sig, err := ethcrypto.Sign(digest[:], priv)
+	require.NoError(t, err)
+	body := map[string]interface{}{}
+	for k, v := range list {
+		body[k] = v
+	}
+	body["proof"] = map[string]interface{}{"type": "JwtProof2020", "jwt": input + "." + base64.RawURLEncoding.EncodeToString(sig[:64]),
+		"verificationMethod": testIssuerDID + "#jwt-1"}
+
+	server := serveStatusList(t, body)
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
+	err = client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expired")
 }
 

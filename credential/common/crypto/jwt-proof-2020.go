@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/didjwtvc"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 // ErrJwtProofBinding is returned when the JWT payload does not cover
@@ -31,6 +33,10 @@ func VerifyJwtProofToken(body map[string]interface{}, jwtToken string, pub *ecds
 	}
 	if pub == nil {
 		return time.Time{}, fmt.Errorf("public key is nil")
+	}
+
+	if err := checkJwtHeader(jwtToken); err != nil {
+		return time.Time{}, err
 	}
 
 	signature, message, err := getSignatureAndMessage(jwtToken)
@@ -54,6 +60,9 @@ func VerifyJwtProofToken(body map[string]interface{}, jwtToken string, pub *ecds
 // field in req and delegates to VerifyJwtProofToken. It is safe to call when
 // proof is an array or any other non-object: it returns an error, never a panic.
 func VerifyJwtProof(req *map[string]interface{}, pub *ecdsa.PublicKey) (bool, error) {
+	if req == nil {
+		return false, fmt.Errorf("credential is nil")
+	}
 	jwtToken, err := extractJwtFromProof(*req)
 	if err != nil {
 		return false, err
@@ -65,23 +74,62 @@ func VerifyJwtProof(req *map[string]interface{}, pub *ecdsa.PublicKey) (bool, er
 	return true, nil
 }
 
-// JwtKid extracts the kid claim from the JWT header, if present.
-func JwtKid(jwtToken string) (string, bool) {
+// checkJwtHeader checks the JOSE header VCDM 1.1 §6.3.1 constrains: "alg
+// MUST be set for digital signatures", and "typ, if present, MUST be set to
+// JWT". This verifier checks secp256k1 with SHA-256 only, so alg must name
+// that: ES256K (RFC 8812 §3.2) or ES256K-R, the recoverable form did-jwt, the
+// library behind JwtProof2020, writes (did-jwt's name; IANA does not register
+// it). The signature length is not tied to alg: a 65-byte signature labelled
+// ES256K (go-ethereum's output) verifies as before. typ compares as a media
+// type (RFC 7515 §4.1.9): any case, with or without "application/". crit
+// names extensions the recipient must understand (RFC 7515 §4.1.11); this
+// verifier understands none, so a header that lists any is refused.
+func checkJwtHeader(jwtToken string) error {
+	header, err := decodeJwtHeader(jwtToken)
+	if err != nil {
+		return err
+	}
+	alg, _ := header["alg"].(string)
+	if alg != "ES256K" && alg != "ES256K-R" {
+		return fmt.Errorf("JWT header alg %q is not supported: want ES256K or ES256K-R", shownValue(alg))
+	}
+	if typ, present := header["typ"]; present {
+		s, ok := typ.(string)
+		if !ok || !(strings.EqualFold(s, "JWT") || strings.EqualFold(s, "application/jwt")) {
+			return fmt.Errorf("JWT header typ must be JWT")
+		}
+	}
+	if _, present := header["crit"]; present {
+		return fmt.Errorf("JWT header crit is not supported: this verifier understands no JWS extension")
+	}
+	return nil
+}
+
+// decodeJwtHeader decodes the JOSE header of a compact JWT, a JSON object.
+func decodeJwtHeader(jwtToken string) (map[string]interface{}, error) {
 	dot := strings.IndexByte(jwtToken, '.')
 	if dot <= 0 {
-		return "", false
+		return nil, fmt.Errorf("invalid JWT format")
 	}
 	headerBytes, err := base64.RawURLEncoding.DecodeString(jwtToken[:dot])
 	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWT header")
+	}
+	var header map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &header); err != nil || header == nil {
+		return nil, fmt.Errorf("JWT header is not a JSON object")
+	}
+	return header, nil
+}
+
+// JwtKid extracts the kid claim from the JWT header, if present.
+func JwtKid(jwtToken string) (string, bool) {
+	header, err := decodeJwtHeader(jwtToken)
+	if err != nil {
 		return "", false
 	}
-	var hdr struct {
-		Kid string `json:"kid"`
-	}
-	if err := json.Unmarshal(headerBytes, &hdr); err != nil {
-		return "", false
-	}
-	return hdr.Kid, hdr.Kid != ""
+	kid, _ := header["kid"].(string)
+	return kid, kid != ""
 }
 
 // extractJwtFromProof safely extracts the JWT string from the proof field.
@@ -105,23 +153,15 @@ func extractJwtFromProof(body map[string]interface{}) (string, error) {
 
 // verifyJwtBodyBinding decodes the JWT payload and checks that every member of
 // the credential/presentation body (minus proof) is covered by the JWT: either
-// directly in the vc/vp claim or via the VC-JWT 1.1 moved-field mapping. A body
-// equal to what did-jwt-vc decodes from the JWT is accepted as a whole (see
-// jwt-proof-2020-didjwtvc.go).
+// directly in the vc/vp claim or via the VCDM 1.1 §6.3.1 moved-field mapping
+// (jwt-proof-2020-mapping.go), or as what did-jwt-vc decodes from the JWT
+// (jwt-proof-2020-didjwtvc.go).
 // On success it returns the full JWT claims map so the caller can extract
 // signed timestamps (iat, nbf).
 func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[string]interface{}, error) {
-	parts := strings.Split(jwtToken, ".")
-	if len(parts) != 3 {
-		return nil, bindingErr("invalid JWT format")
-	}
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	claims, err := jwtutil.DecodePayload(jwtToken)
 	if err != nil {
-		return nil, bindingErr("failed to decode JWT payload")
-	}
-	var claims map[string]interface{}
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return nil, bindingErr("failed to parse JWT payload")
+		return nil, bindingErr(err.Error())
 	}
 
 	isVP := bodyIsPresentation(body)
@@ -140,88 +180,28 @@ func verifyJwtBodyBinding(jwtToken string, body map[string]interface{}) (map[str
 		return nil, bindingErr(fmt.Sprintf("JWT %s claim is not a JSON object", claimKey))
 	}
 
+	// The body is the VCDM 1.1 §6.3.1 mapping form, or what did-jwt-vc
+	// decodes from this JWT; the second is tried only when the first fails,
+	// so the common mapped body pays nothing for it.
+	var decoded *didjwtvc.Decoded
 	if err := checkMappedBody(body, container, claims, isVP); err != nil {
-		// A body that did-jwt-vc decoded from this JWT is the other accepted
-		// form; it is tried second so the common mapped body pays nothing.
-		if bodyIsDidJwtVcForm(claims, body, isVP) {
-			return claims, nil
+		d, matched := didJwtVcForm(claims, body, isVP)
+		if !matched {
+			return nil, err
 		}
+		decoded = &d
+	}
+	// Either way the body may show a member whose value has a second signed
+	// copy; every copy must say the same.
+	if err := checkRegisteredClaims(claims, body, movesFor(isVP)); err != nil {
 		return nil, err
 	}
+	if decoded != nil {
+		if err := checkNestedMembers(*decoded); err != nil {
+			return nil, err
+		}
+	}
 	return claims, nil
-}
-
-// checkMappedBody is the VC-JWT 1.1 mapping check: each body member is in the
-// vc/vp claim or moved to its registered claim, and nothing signed is dropped.
-func checkMappedBody(body, container, claims map[string]interface{}, isVP bool) error {
-	// Check 2: every body member (except proof) must be covered.
-	for k, bodyVal := range body {
-		if k == "proof" {
-			continue
-		}
-		if cVal, inContainer := container[k]; inContainer {
-			if jsonDeepEqual(bodyVal, cVal) {
-				continue
-			}
-			// credentialSubject may differ only by the id field, which
-			// VC-JWT 1.1 §6.3.1 moves to the sub claim.
-			if !isVP && k == "credentialSubject" {
-				if err := checkSubjectIDMovedToSub(bodyVal, cVal, claims); err != nil {
-					return err
-				}
-				continue
-			}
-			return memberErr(k)
-		}
-		// Not in the container claim: check if it is a moved field.
-		if isVP {
-			if err := checkMovedFieldVP(k, bodyVal, claims); err != nil {
-				return err
-			}
-		} else {
-			if err := checkMovedField(k, bodyVal, claims); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Check 4: a container member that the body lacks, or a proof member
-	// inside the container, makes the proof fail.
-	for k := range container {
-		if k == "proof" {
-			return memberErr(k)
-		}
-		if _, inBody := body[k]; !inBody {
-			return memberErr(k)
-		}
-	}
-
-	// Check 5: each moved claim the JWT signs must have a corresponding
-	// member in the body. Without this, a body that silently drops e.g.
-	// expirationDate still verifies, and WithCheckExpiration (which reads
-	// only the body) lets an expired credential through.
-	if isVP {
-		if _, ok := claims["jti"]; ok && body["id"] == nil {
-			return memberErr("id")
-		}
-	} else {
-		for claim, members := range map[string][]string{
-			"jti": {"id"},
-			"nbf": {"issuanceDate", "validFrom"},
-			"exp": {"expirationDate", "validUntil"},
-		} {
-			if _, signed := claims[claim]; !signed {
-				continue
-			}
-			if !bodyHasAny(body, members) {
-				return memberErr(members[0])
-			}
-		}
-		if _, signed := claims["sub"]; signed && !subjectHasID(body["credentialSubject"]) {
-			return memberErr("credentialSubject")
-		}
-	}
-	return nil
 }
 
 // BodyIsPresentation returns true when the body's type array contains
@@ -254,202 +234,14 @@ func bodyIsPresentation(body map[string]interface{}) bool {
 }
 
 // jwtSignedTime extracts the signed time from the JWT claims: iat first,
-// else nbf. Returns the zero Time when neither is a valid integer.
+// else nbf, read as NumericDate. Returns the zero Time when neither is one.
 func jwtSignedTime(claims map[string]interface{}) time.Time {
 	for _, key := range []string{"iat", "nbf"} {
-		if num, ok := claims[key].(float64); ok &&
-			!math.IsNaN(num) && !math.IsInf(num, 0) && num == math.Trunc(num) {
-			return time.Unix(int64(num), 0).UTC()
+		if sec, err := jwtutil.NumericDate(claims[key]); err == nil {
+			return time.Unix(sec, 0).UTC()
 		}
 	}
 	return time.Time{}
-}
-
-// checkMovedField checks whether a body member absent from the vc claim is
-// accounted for by the VC-JWT 1.1 moved-field table.
-func checkMovedField(key string, bodyVal interface{}, claims map[string]interface{}) error {
-	switch key {
-	case "issuer":
-		return checkMovedIssuer(bodyVal, claims)
-	case "id":
-		return checkStringClaim(key, bodyVal, claims, "jti")
-	case "issuanceDate", "validFrom":
-		return checkTimeClaim(key, bodyVal, claims, "nbf")
-	case "expirationDate", "validUntil":
-		return checkTimeClaim(key, bodyVal, claims, "exp")
-	default:
-		return memberErr(key)
-	}
-}
-
-// checkMovedFieldVP checks whether a body member absent from the vp claim is
-// accounted for by the VC-JWT 1.1 §6.3.2 VP moved-field table:
-// holder ↔ iss, id ↔ jti (no date fields).
-func checkMovedFieldVP(key string, bodyVal interface{}, claims map[string]interface{}) error {
-	switch key {
-	case "holder":
-		return checkMovedHolder(bodyVal, claims)
-	case "id":
-		return checkStringClaim(key, bodyVal, claims, "jti")
-	default:
-		return memberErr(key)
-	}
-}
-
-// checkMovedIssuer validates the issuer field against iss.
-// A string issuer must equal iss. An object issuer must have only "id"
-// equal to iss; additional members like "name" are unsigned.
-func checkMovedIssuer(bodyVal interface{}, claims map[string]interface{}) error {
-	iss, _ := claims["iss"].(string)
-	if iss == "" {
-		return memberErr("issuer")
-	}
-	switch v := bodyVal.(type) {
-	case string:
-		if v != iss {
-			return memberErr("issuer")
-		}
-		return nil
-	case map[string]interface{}:
-		if len(v) != 1 {
-			return memberErr("issuer")
-		}
-		id, _ := v["id"].(string)
-		if id != iss {
-			return memberErr("issuer")
-		}
-		return nil
-	default:
-		return memberErr("issuer")
-	}
-}
-
-// checkMovedHolder validates the VP holder field against iss.
-func checkMovedHolder(bodyVal interface{}, claims map[string]interface{}) error {
-	iss, _ := claims["iss"].(string)
-	if iss == "" {
-		return memberErr("holder")
-	}
-	s, ok := bodyVal.(string)
-	if !ok || s != iss {
-		return memberErr("holder")
-	}
-	return nil
-}
-
-// checkSubjectIDMovedToSub handles the case where credentialSubject is present
-// in both body and vc but they differ because the id field was moved to the sub
-// JWT claim (VC-JWT 1.1 §6.3.1). When credentialSubject is an array, sub is
-// the id of the first element; the other elements must match as-is.
-func checkSubjectIDMovedToSub(bodyVal, vcVal interface{}, claims map[string]interface{}) error {
-	sub, _ := claims["sub"].(string)
-	if sub == "" {
-		return memberErr("credentialSubject")
-	}
-
-	switch bv := bodyVal.(type) {
-	case map[string]interface{}:
-		vv, ok := vcVal.(map[string]interface{})
-		if !ok {
-			return memberErr("credentialSubject")
-		}
-		return checkSingleSubjectID(bv, vv, sub)
-
-	case []interface{}:
-		va, ok := vcVal.([]interface{})
-		if !ok || len(bv) != len(va) {
-			return memberErr("credentialSubject")
-		}
-		if len(bv) == 0 {
-			return memberErr("credentialSubject")
-		}
-		// First element: id may be moved to sub.
-		bFirst, ok1 := bv[0].(map[string]interface{})
-		vFirst, ok2 := va[0].(map[string]interface{})
-		if !ok1 || !ok2 {
-			return memberErr("credentialSubject")
-		}
-		if err := checkSingleSubjectID(bFirst, vFirst, sub); err != nil {
-			return err
-		}
-		// Remaining elements must match exactly.
-		for i := 1; i < len(bv); i++ {
-			if !jsonDeepEqual(bv[i], va[i]) {
-				return memberErr("credentialSubject")
-			}
-		}
-		return nil
-
-	default:
-		return memberErr("credentialSubject")
-	}
-}
-
-// checkSingleSubjectID verifies that a body subject object equals the vc subject
-// object except for the id field, which must equal sub.
-func checkSingleSubjectID(bodySubject, vcSubject map[string]interface{}, sub string) error {
-	bodyID, hasBodyID := bodySubject["id"].(string)
-	_, hasVCID := vcSubject["id"]
-	if !hasBodyID || hasVCID {
-		// If body has no id, or vc already has id, this isn't the moved-id case.
-		return memberErr("credentialSubject")
-	}
-	if bodyID != sub {
-		return memberErr("credentialSubject")
-	}
-	// Every other field in the body subject must match vc subject.
-	if len(bodySubject)-1 != len(vcSubject) {
-		return memberErr("credentialSubject")
-	}
-	for k, bv := range bodySubject {
-		if k == "id" {
-			continue
-		}
-		vv, ok := vcSubject[k]
-		if !ok || !jsonDeepEqual(bv, vv) {
-			return memberErr("credentialSubject")
-		}
-	}
-	return nil
-}
-
-// checkStringClaim checks a string body member against a string JWT claim.
-func checkStringClaim(key string, bodyVal interface{}, claims map[string]interface{}, claimKey string) error {
-	bodyStr, ok := bodyVal.(string)
-	if !ok {
-		return memberErr(key)
-	}
-	claimVal, _ := claims[claimKey].(string)
-	if bodyStr != claimVal {
-		return memberErr(key)
-	}
-	return nil
-}
-
-// checkTimeClaim checks an RFC 3339 date string in the body against a
-// numeric Unix timestamp JWT claim (nbf or exp).
-func checkTimeClaim(key string, bodyVal interface{}, claims map[string]interface{}, claimKey string) error {
-	dateStr, ok := bodyVal.(string)
-	if !ok {
-		return memberErr(key)
-	}
-	t, err := time.Parse(time.RFC3339, dateStr)
-	if err != nil {
-		return memberErr(key)
-	}
-	claimNum, ok := claims[claimKey].(float64)
-	if !ok {
-		return memberErr(key)
-	}
-	// A fractional, NaN, or Inf timestamp is not a valid second-precision
-	// Unix time; refuse rather than silently truncating.
-	if math.IsNaN(claimNum) || math.IsInf(claimNum, 0) || claimNum != math.Trunc(claimNum) {
-		return memberErr(key)
-	}
-	if t.Unix() != int64(claimNum) {
-		return memberErr(key)
-	}
-	return nil
 }
 
 // jsonDeepEqual compares two values by normalizing them through a JSON
@@ -480,43 +272,16 @@ func bindingErr(msg string) error {
 }
 
 func memberErr(key string) error {
-	quoted := key
-	if len(quoted) > 64 {
-		quoted = quoted[:64]
-	}
-	return fmt.Errorf("member %q not covered by JWT: %w", quoted, ErrJwtProofBinding)
+	return fmt.Errorf("member %q not covered by JWT: %w", shownValue(key), ErrJwtProofBinding)
 }
 
-// bodyHasAny returns true when the body contains at least one of the given keys.
-func bodyHasAny(body map[string]interface{}, keys []string) bool {
-	for _, k := range keys {
-		if _, ok := body[k]; ok {
-			return true
-		}
+// shownValue cuts a value from the token or the body (a member name, an alg)
+// to 64 bytes before an error shows it: it comes from untrusted input.
+func shownValue(name string) string {
+	if len(name) > 64 {
+		return name[:64]
 	}
-	return false
-}
-
-// subjectHasID reports whether the subject a signed sub stands for carries an
-// "id": the object itself, or the first element of an array.
-func subjectHasID(raw interface{}) bool {
-	switch v := raw.(type) {
-	case map[string]interface{}:
-		_, ok := v["id"]
-		return ok
-	case []interface{}:
-		// sub stands for the first subject: VC-JWT 1.1 moves that subject's id
-		// into it, and checkSubjectIDMovedToSub compares it with the first
-		// element only. An id on another subject must not stand in for it.
-		if len(v) == 0 {
-			return false
-		}
-		if m, ok := v[0].(map[string]interface{}); ok {
-			_, hasID := m["id"]
-			return hasID
-		}
-	}
-	return false
+	return name
 }
 
 func getSignatureAndMessage(jwtToken string) ([]byte, []byte, error) {

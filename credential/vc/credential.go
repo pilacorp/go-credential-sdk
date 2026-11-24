@@ -73,8 +73,8 @@ type CredentialContents struct {
 	ID               string         `json:"id,omitempty"`               // Credential identifier
 	Types            []string       `json:"type,omitempty"`             // Credential types
 	Issuer           string         `json:"issuer,omitempty"`           // Issuer identifier
-	ValidFrom        time.Time      `json:"validFrom,omitempty"`        // Issuance date
-	ValidUntil       time.Time      `json:"validUntil,omitempty"`       // Expiration date
+	ValidFrom        time.Time      `json:"validFrom,omitempty"`        // validFrom (VCDM 2.0); zero for a VCDM 1.1 credential
+	ValidUntil       time.Time      `json:"validUntil,omitempty"`       // validUntil (VCDM 2.0); zero for a VCDM 1.1 credential
 	CredentialStatus []Status       `json:"credentialStatus,omitempty"` // Credential status entries
 	Subject          []Subject      `json:"subject,omitempty"`          // Credential subjects
 	Schemas          []Schema       `json:"schemas,omitempty"`          // Credential schemas
@@ -298,7 +298,14 @@ func WithVerifyProof() CredentialOpt {
 	}
 }
 
-// WithCheckExpiration enables expiration check during credential parsing.
+// WithCheckExpiration refuses a credential outside the validity period it
+// states, at the current time widened by WithLeeway: validFrom/validUntil
+// (VCDM 2.0 §4.9) and issuanceDate/expirationDate (VCDM 1.1 §4.6, §4.8), each
+// when present and whatever @context says. A date member that is there but is
+// not a date-time string, empty included, is an error; one without a time
+// zone is read as UTC. For a JWT credential, and for the JWT of a
+// JwtProof2020 proof, it also enforces nbf and exp (RFC 7519 §4.1.4,
+// §4.1.5).
 func WithCheckExpiration() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckExpiration = true
@@ -306,7 +313,8 @@ func WithCheckExpiration() CredentialOpt {
 }
 
 // WithLeeway tolerates clock skew between issuer and verifier: every time check
-// against the current time — validFrom/validUntil and the JWT nbf/exp claims —
+// against the current time — validFrom/validUntil, issuanceDate/expirationDate
+// and the JWT nbf/exp claims —
 // is widened by d on both sides. It turns no check on by itself. Zero, the
 // default, compares exactly; a negative d counts as zero. It does not touch the
 // revocation check, which compares iat with the time a key was revoked, not
