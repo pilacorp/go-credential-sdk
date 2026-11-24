@@ -258,6 +258,34 @@ func TestVerifyProof_SDProofs_CanonicalizesOnce(t *testing.T) {
 	}
 }
 
+func TestVerifyProof_MixedRDFCAndSD_CanonicalizesOnce(t *testing.T) {
+	t.Parallel()
+	m, sdResolver := signedSDCredential(t, 1)
+	sdDoc, err := sdResolver.ResolveDocument(context.Background(), "did:example:sd-issuer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp, pub := p256Signer(t)
+	vm, err := verificationmethod.NewP256VM("did:example:sd-issuer", "rdfc", pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&m).AddECDSAProof(sp, vm.ID, "assertionMethod", WithVMPublicKey(pub)); err != nil {
+		t.Fatal(err)
+	}
+	resolver := verificationmethod.NewStaticResolver(
+		verificationmethod.NewDIDDocument("did:example:sd-issuer", append(sdDoc.VerificationMethod, vm)...),
+	)
+
+	ok, misses := verifyWithCache(t, &m, resolver)
+	if !ok {
+		t.Fatal("VerifyProof = false, want true for one sd and one rdfc proof")
+	}
+	if misses != 1 {
+		t.Fatalf("misses = %d, want 1 (rdfc and sd share the body N-Quads)", misses)
+	}
+}
+
 // A derived proof value whose CBOR does not parse is refused with the parse
 // error, before the body is canonicalized.
 func TestVerifyProof_SDMalformedProofValue_RefusedBeforeCanonicalizing(t *testing.T) {

@@ -1,6 +1,11 @@
 package jsonmap
 
-import "github.com/pilacorp/go-credential-sdk/credential/internal/sdverify"
+import (
+	"crypto/sha256"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/nquads"
+)
 
 // digestCache lazily computes and caches canonicalization results for a single
 // JSONMap, so that verifying N proofs over the same body pays the
@@ -14,11 +19,22 @@ import "github.com/pilacorp/go-credential-sdk/credential/internal/sdverify"
 // The cache is not safe for concurrent use: it is scoped to a single
 // VerifyProof call which runs the loop sequentially.
 type digestCache struct {
-	// DocumentDigest result: SHA-256 of processor.Canonicalize(bodyWithoutProof).
-	// Used by ecdsa-rdfc-2019 and EcdsaSecp256k1Signature2019.
-	docDigest    []byte
-	docDigestErr error
-	docDigestOK  bool
+	// bodyWithoutProof result: deep copy of the document without proof.
+	bodyNoProof    map[string]interface{}
+	bodyNoProofErr error
+	bodyNoProofOK  bool
+
+	// URDNA2015 N-Quads of the body without proof. ecdsa-rdfc-2019 and
+	// EcdsaSecp256k1Signature2019 hash them; ecdsa-sd-2023 relabels them. One
+	// result serves every proof of either kind.
+	bodyNQuads    []string
+	bodyNQuadsErr error
+	bodyNQuadsOK  bool
+
+	// SHA-256 of the joined N-Quads, for the rdfc and secp256k1 suites.
+	bodyDigest    []byte
+	bodyDigestErr error
+	bodyDigestOK  bool
 
 	// LegacyHexCanonicalize result: ComputeDigest(CanonicalizeDocument(body)).
 	// Used by legacy hex proofs and JsonWebSignature2020.
@@ -26,39 +42,49 @@ type digestCache struct {
 	legacyDigestErr error
 	legacyDigestOK  bool
 
-	// bodyWithoutProof result: deep copy of the document without proof.
-	// Used by ecdsa-sd-2023 (which has its own canonicalization pipeline).
-	bodyNoProof    map[string]interface{}
-	bodyNoProofErr error
-	bodyNoProofOK  bool
-
-	// sdDoc: a DocVerifier that lazily canonicalizes the body-without-proof
-	// for ecdsa-sd-2023 verification. The DocVerifier caches the URDNA2015
-	// canonical N-Quads so multiple sd proofs reuse the same canonicalization.
-	sdDoc    *sdverify.DocVerifier
-	sdDocErr error
-	sdDocOK  bool
-
-	// misses counts the number of canonical forms computed by this cache (one
-	// per "compute" branch). Tests use it to verify that multi-proof
-	// verification reuses the cached result.
+	// misses counts the canonical forms this cache computed. Tests use it to
+	// check that a proof set reuses them.
 	misses int
 }
 
-// documentDigest returns the DocumentDigest, caching the result when the
-// receiver is non-nil. A nil receiver computes fresh without storing.
+// documentDigest returns SHA-256 of the canonical body, with the errors of
+// JSONMap.DocumentDigest. A nil receiver computes fresh without storing.
 func (c *digestCache) documentDigest(m *JSONMap) ([]byte, error) {
 	if c == nil {
 		return m.DocumentDigest()
 	}
-	if !c.docDigestOK {
-		c.docDigest, c.docDigestErr = m.DocumentDigest()
-		c.docDigestOK = true
-		if c.docDigestErr == nil {
+	if !c.bodyDigestOK {
+		c.bodyDigest, c.bodyDigestErr = c.computeDocumentDigest(m)
+		c.bodyDigestOK = true
+	}
+	return c.bodyDigest, c.bodyDigestErr
+}
+
+func (c *digestCache) computeDocumentDigest(m *JSONMap) ([]byte, error) {
+	body, err := c.bodyWithoutProof(m)
+	if err != nil {
+		return nil, err
+	}
+	canonical, err := nquads.Join(c.canonicalNQuads(body))
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(canonical)
+	return digest[:], nil
+}
+
+// canonicalNQuads runs URDNA2015 on body the first time and returns the cached
+// result, or the cached error, after that. body must be the cache's own
+// bodyWithoutProof result.
+func (c *digestCache) canonicalNQuads(body map[string]interface{}) ([]string, error) {
+	if !c.bodyNQuadsOK {
+		c.bodyNQuads, c.bodyNQuadsErr = processor.CanonicalizeNQuads(body)
+		c.bodyNQuadsOK = true
+		if c.bodyNQuadsErr == nil {
 			c.misses++
 		}
 	}
-	return c.docDigest, c.docDigestErr
+	return c.bodyNQuads, c.bodyNQuadsErr
 }
 
 // legacyHexCanonicalize returns the legacy digest, caching the result when the
@@ -90,27 +116,17 @@ func (c *digestCache) bodyWithoutProof(m *JSONMap) (map[string]interface{}, erro
 	return c.bodyNoProof, c.bodyNoProofErr
 }
 
-// sdDocument returns a DocVerifier that lazily canonicalizes the body-without-
-// proof for ecdsa-sd-2023 verification. URDNA2015 runs the first time a proof
-// gets past its header and parse checks; later proofs reuse the result.
-// When the receiver is nil, a standalone DocVerifier is returned (no caching
-// across calls — the single-proof path).
-func (c *digestCache) sdDocument(m *JSONMap) (*sdverify.DocVerifier, error) {
+// sdCanonicalizer returns the canon function an ecdsa-sd-2023 proof check
+// calls once the proof value has passed its header and parse checks. With a
+// cache it shares the N-Quads that documentDigest hashes; a nil receiver
+// canonicalizes on each call (the single-proof path).
+func (c *digestCache) sdCanonicalizer(m *JSONMap) (func() ([]string, error), error) {
+	body, err := c.bodyWithoutProof(m)
+	if err != nil {
+		return nil, err
+	}
 	if c == nil {
-		doc, err := m.bodyWithoutProof()
-		if err != nil {
-			return nil, err
-		}
-		return sdverify.NewDocVerifier(doc, nil), nil
+		return func() ([]string, error) { return processor.CanonicalizeNQuads(body) }, nil
 	}
-	if !c.sdDocOK {
-		doc, err := c.bodyWithoutProof(m)
-		if err != nil {
-			c.sdDocErr = err
-		} else {
-			c.sdDoc = sdverify.NewDocVerifier(doc, &c.misses)
-		}
-		c.sdDocOK = true
-	}
-	return c.sdDoc, c.sdDocErr
+	return func() ([]string, error) { return c.canonicalNQuads(body) }, nil
 }

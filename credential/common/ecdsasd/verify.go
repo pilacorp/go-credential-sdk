@@ -80,10 +80,7 @@ func verifyProof(canon func() ([]string, error), proofConfig map[string]interfac
 // canonicalizer returns the canon function verifyDerivedProof expects for a
 // document that is verified once.
 func canonicalizer(document map[string]interface{}) func() ([]string, error) {
-	return func() ([]string, error) {
-		nquads, _, err := processor.CanonicalizeWithIdMap(document)
-		return nquads, err
-	}
+	return func() ([]string, error) { return processor.CanonicalizeNQuads(document) }
 }
 
 // verifyDerivedProof verifies an ecdsa-sd-2023 derived (disclosure) proof

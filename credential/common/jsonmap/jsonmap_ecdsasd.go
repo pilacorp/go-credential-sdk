@@ -9,6 +9,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/sdverify"
 )
 
 // ECDSASD2023 is the cryptosuite identifier for the ecdsa-sd-2023
@@ -187,7 +188,7 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, err
 	}
 
-	sdDoc, err := cache.sdDocument(m)
+	canon, err := cache.sdCanonicalizer(m)
 	if err != nil {
 		return false, err
 	}
@@ -197,7 +198,7 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, fmt.Errorf("failed to build proof configuration: %w", err)
 	}
 
-	if err := sdDoc.VerifyProof(proofConfig, proof.ProofValue, pub); err != nil {
+	if err := sdverify.VerifyProof(canon, proofConfig, proof.ProofValue, pub); err != nil {
 		return false, err
 	}
 	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
