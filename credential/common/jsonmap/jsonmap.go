@@ -630,10 +630,41 @@ func (m *JSONMap) verifyECDSASpecConformant(pub *ecdsa.PublicKey, proof *dto.Pro
 }
 
 func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto.Proof) (bool, error) {
-	vmURL, err := jwtVerificationMethodURL((*m))
-	if err != nil {
-		return false, err
+	// Extract the JWT from THIS proof, not from the document, so proof sets
+	// verify each proof against its own JWT.
+	jwtStr, _ := proof.Extra["jwt"].(string)
+	if jwtStr == "" {
+		return false, fmt.Errorf("JwtProof2020 proof is missing jwt")
 	}
+
+	// Resolve the VM from the proof's own verificationMethod, with kid fallback.
+	vmURL := proof.VerificationMethod
+	if kid, hasKid := crypto.JwtKid(jwtStr); hasKid {
+		if vmURL == "" {
+			vmURL = kid
+		} else {
+			// Both kid (signed header) and proof.verificationMethod (unsigned)
+			// are present — they must name the same VM. Normalise a relative
+			// "#fragment" kid against the DID document ID before comparing.
+			normKid := kid
+			if strings.HasPrefix(kid, "#") && doc != nil {
+				normKid = doc.ID + kid
+			}
+			normVM := proof.VerificationMethod
+			if strings.HasPrefix(normVM, "#") && doc != nil {
+				normVM = doc.ID + normVM
+			}
+			if normKid != normVM {
+				return false, fmt.Errorf(
+					"JWT kid %q does not match proof.verificationMethod %q: %w",
+					kid, proof.VerificationMethod, crypto.ErrJwtProofBinding)
+			}
+		}
+	}
+	if vmURL == "" {
+		return false, fmt.Errorf("token is missing verification method id (kid/verificationMethod)")
+	}
+
 	vm, err := verificationmethod.FindVerificationMethod(doc, vmURL)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve verification method: %w", err)
@@ -643,11 +674,35 @@ func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto
 		return false, err
 	}
 
-	ok, err := crypto.VerifyJwtProof((*map[string]interface{})(m), pub)
-	if err != nil || !ok {
-		return ok, err
+	signedAt, err := crypto.VerifyJwtProofToken((map[string]interface{})(*m), jwtStr, pub)
+	if err != nil {
+		return false, err
 	}
-	if err := strictPurposeCheck(doc, vm, "assertionMethod", proof.Created); err != nil {
+
+	// The signed time from the JWT (iat, else nbf) is the trustworthy
+	// creation timestamp. proof.created sits in the unsigned proof object;
+	// if present it must agree with the signed time, to the second.
+	signedAtStr := ""
+	if !signedAt.IsZero() {
+		signedAtStr = signedAt.UTC().Format(time.RFC3339)
+		if proof.Created != "" {
+			created, err := time.Parse(time.RFC3339, proof.Created)
+			if err != nil {
+				return false, fmt.Errorf("invalid proof.created: %w", err)
+			}
+			if created.Unix() != signedAt.Unix() {
+				return false, fmt.Errorf(
+					"proof.created %s differs from JWT signed time %s: %w",
+					proof.Created, signedAtStr, crypto.ErrJwtProofBinding)
+			}
+		}
+	}
+
+	purpose := "assertionMethod"
+	if crypto.BodyIsPresentation((map[string]interface{})(*m)) {
+		purpose = "authentication"
+	}
+	if err := strictPurposeCheck(doc, vm, purpose, signedAtStr); err != nil {
 		return false, err
 	}
 	return true, nil
