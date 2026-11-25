@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -667,7 +668,7 @@ func (failResolver) ResolveDocument(_ context.Context, _ string) (*verificationm
 
 func TestVerifyAndCheckStatus_UnresolvableIssuer_Refused(t *testing.T) {
 	priv, _ := testKeyPair(t)
-	encoded := buildLegacyEncodedList(t, 128, []int{})
+	encoded := buildW3CEncodedList(t, []int{})
 
 	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", encoded)
 	server := serveStatusList(t, vc)
@@ -1262,6 +1263,40 @@ func TestVerifyAndCheckStatus_ValidFromClockSkew(t *testing.T) {
 				return
 			}
 			assert.NoError(t, err)
+		})
+	}
+}
+
+// countingResolver counts DID resolutions, which the proof check makes.
+type countingResolver struct {
+	inner verificationmethod.ResolverProvider
+	n     atomic.Int32
+}
+
+func (r *countingResolver) ResolveDocument(ctx context.Context, did string) (*verificationmethod.DIDDocument, error) {
+	r.n.Add(1)
+	return r.inner.ResolveDocument(ctx, did)
+}
+
+// TestVerifyAndCheckStatus_CheapChecksBeforeProof checks that a list refused
+// for its issuer or its statusPurpose is refused before its proof is checked,
+// so no DID is resolved for it.
+func TestVerifyAndCheckStatus_CheapChecksBeforeProof(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", buildW3CEncodedList(t, nil))
+	server := serveStatusList(t, vc)
+
+	for _, tt := range []struct {
+		name, purpose, issuer string
+	}{
+		{"issuer mismatch", "revocation", "did:example:someone-else"},
+		{"purpose mismatch", "suspension", testIssuerDID},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			counter := &countingResolver{inner: resolver}
+			client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(counter))
+			assert.Error(t, client.VerifyAndCheckStatus(server.URL, 7, tt.purpose, tt.issuer))
+			assert.Zero(t, counter.n.Load(), "DID resolutions before the refusal")
 		})
 	}
 }

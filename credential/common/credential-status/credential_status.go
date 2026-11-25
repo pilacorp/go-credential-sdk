@@ -162,9 +162,9 @@ func (c *Client) fetchStatusListBody(url string) ([]byte, error) {
 	return body, nil
 }
 
-// VerifyAndCheckStatus fetches the status list credential, verifies its proof,
-// checks the issuer match, checks validity period, and then reads the bit at
-// position. entryPurpose is the statusPurpose from the VC entry's
+// VerifyAndCheckStatus fetches the status list credential, checks its types,
+// statusPurpose, issuer and validity period, verifies its proof, and then
+// reads the bit at position. entryPurpose is the statusPurpose from the VC entry's
 // credentialStatus; issuerDID is the issuer of the credential being checked.
 //
 // A resolver must be set via WithResolver; calling this method without one
@@ -204,22 +204,22 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 		return err
 	}
 
-	// Verify the status list credential's proof for assertionMethod, the purpose
-	// vc.Verify expects of a credential's proof; Data Integrity 1.0 §4.4 refuses
-	// a proof that names another purpose.
-	ok, err := vcMap.VerifyProof(c.resolver, "", jsonmap.WithExpectedProofPurpose("assertionMethod"))
-	if err != nil {
-		return fmt.Errorf("status list credential proof verification failed: %w", err)
-	}
-	if !ok {
-		return fmt.Errorf("status list credential proof is invalid")
-	}
-
-	// Read status fields from the verified map, not from a separate struct
-	// decode that could read case-variant sibling keys the proof did not cover.
+	// Read status fields from the map whose proof is verified below, not from a
+	// separate struct decode that could read case-variant sibling keys the proof
+	// did not cover. The checks on them run first because they cost nothing,
+	// while the proof check canonicalizes the list and resolves the issuer DID.
 	sl, err := readStatusList(vcMap, entryPurpose)
 	if err != nil {
 		return err
+	}
+
+	// The list must serve the entry's purpose and carry a bitstring; both are
+	// read again by CheckBitStatus, but checking here spares the proof check.
+	if sl.subject.StatusPurpose != entryPurpose {
+		return fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", clip(sl.subject.StatusPurpose), clip(entryPurpose))
+	}
+	if sl.subject.EncodedList == "" {
+		return fmt.Errorf("encodedList is empty")
 	}
 
 	// Verify the issuer matches the credential being checked.
@@ -260,6 +260,17 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 		return fmt.Errorf("status list encodedList is not multibase base64url; pass WithLegacyStatusList to read authen-service legacy lists")
 	}
 
+	// Verify the status list credential's proof for assertionMethod, the purpose
+	// vc.Verify expects of a credential's proof; Data Integrity 1.0 §4.4 refuses
+	// a proof that names another purpose.
+	ok, err := vcMap.VerifyProof(c.resolver, "", jsonmap.WithExpectedProofPurpose("assertionMethod"))
+	if err != nil {
+		return fmt.Errorf("status list credential proof verification failed: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("status list credential proof is invalid")
+	}
+
 	// Check the bit.
 	isSet, err := CheckBitStatus(position, sl.subject, entryPurpose)
 	if err != nil {
@@ -290,13 +301,14 @@ func statusListFromBody(body []byte) (jsonmap.JSONMap, error) {
 }
 
 // statusListView holds the fields the status check reads, taken by exact key
-// from the same map whose proof was verified.
+// from the same map whose proof is verified.
 type statusListView struct {
 	issuerDID string
 	subject   StatusListCredentialSubject
 }
 
-// readStatusList reads the status list fields from the verified map.
+// readStatusList reads the status list fields from the map whose proof is
+// verified after these fields are checked.
 // It checks the credential type, credentialSubject.type, and reads the
 // statusPurpose as a string or array per Bitstring Status List v1.0 §2.2.
 func readStatusList(m jsonmap.JSONMap, entryPurpose string) (statusListView, error) {
