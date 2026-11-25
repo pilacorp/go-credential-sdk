@@ -260,7 +260,7 @@ func (d *DIDGenerator) GenerateIssuerSignature(
 		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
 	}
 
-	contract, release, err := d.resolveContract(cfg)
+	contract, release, err := d.resolveContract(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +323,7 @@ func (d *DIDGenerator) GenerateDIDCreateTransaction(
 		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
 	}
 
-	contract, release, err := d.resolveContract(cfg)
+	contract, release, err := d.resolveContract(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +382,7 @@ func (d *DIDGenerator) GenerateSetDocumentHashTransaction(
 		return nil, fmt.Errorf("issuer signature is required")
 	}
 
-	contract, release, err := d.resolveContract(cfg)
+	contract, release, err := d.resolveContract(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +431,7 @@ func (d *DIDGenerator) GenerateSetDocumentHashByIssuerTransaction(
 		return nil, fmt.Errorf("issuer signer is required")
 	}
 
-	contract, release, err := d.resolveContract(cfg)
+	contract, release, err := d.resolveContract(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -488,7 +488,9 @@ func (d *DIDGenerator) resolveConfig(options ...DIDOption) (*DIDConfig, error) {
 // contract address or chain ID compared to the base config, a new contract
 // client is built for that single call and release closes it. When all match,
 // the shared d.didContract is returned and release is a no-op.
-func (d *DIDGenerator) resolveContract(cfg *DIDConfig) (*didcontract.Contract, func(), error) {
+// The deadline of ctx bounds the dial of a per-call ws or ipc client; an http
+// URL does no I/O at dial time.
+func (d *DIDGenerator) resolveContract(ctx context.Context, cfg *DIDConfig) (*didcontract.Contract, func(), error) {
 	noop := func() {}
 
 	if strings.EqualFold(cfg.DIDSMCAddr, d.baseConfig.DIDSMCAddr) &&
@@ -497,7 +499,7 @@ func (d *DIDGenerator) resolveContract(cfg *DIDConfig) (*didcontract.Contract, f
 		return d.didContract, noop, nil
 	}
 
-	c, err := didcontract.NewContract(&didcontract.Config{
+	c, err := didcontract.NewContractContext(ctx, &didcontract.Config{
 		RPCURL:          cfg.RPC,
 		ContractAddress: cfg.DIDSMCAddr,
 		ChainID:         cfg.ChainID,

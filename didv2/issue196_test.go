@@ -2,9 +2,11 @@ package didv2
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -358,7 +360,7 @@ func TestIssue196_ResolveContract_PerCallRelease(t *testing.T) {
 
 	// No override: returns the shared client and a no-op release.
 	baseCfg := *g.baseConfig
-	c1, release1, err := g.resolveContract(&baseCfg)
+	c1, release1, err := g.resolveContract(context.Background(), &baseCfg)
 	if err != nil {
 		t.Fatalf("resolveContract (no override): %v", err)
 	}
@@ -370,7 +372,7 @@ func TestIssue196_ResolveContract_PerCallRelease(t *testing.T) {
 	// Override: returns a new client and a release that closes it.
 	overrideCfg := *g.baseConfig
 	overrideCfg.DIDSMCAddr = overrideContract
-	c2, release2, err := g.resolveContract(&overrideCfg)
+	c2, release2, err := g.resolveContract(context.Background(), &overrideCfg)
 	if err != nil {
 		t.Fatalf("resolveContract (override): %v", err)
 	}
@@ -569,4 +571,48 @@ func waitConns(t *testing.T, n *atomic.Int32, want int32) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("connections = %d, want %d", n.Load(), want)
+}
+
+// TestIssue196_PerCallRPCDialHonoursContext checks that a per-call RPC override
+// is dialled under the caller's context: a ws endpoint that accepts the TCP
+// connection but never answers the handshake must not block past the deadline.
+func TestIssue196_PerCallRPCDialHonoursContext(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { conn.Close() })
+		}
+	}()
+
+	g, issuerSigner := newTestGenerator(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 111)
+	key, err := did.GenerateECDSAKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	capID, err := issuer.GenerateCapID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = g.GenerateIssuerSignature(ctx, did.DIDTypeItem, key.GetAddress(), issuerSigner.GetAddress(),
+			WithRPC("ws://"+ln.Addr().String()), WithCapID(capID))
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("GenerateIssuerSignature still blocked 5s after a 200ms deadline")
+	}
 }

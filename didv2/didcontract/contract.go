@@ -81,6 +81,12 @@ type Contract struct {
 //
 // Returns a Contract instance or an error if configuration is invalid or ABI loading fails.
 func NewContract(cfg *Config) (*Contract, error) {
+	return NewContractContext(context.Background(), cfg)
+}
+
+// NewContractContext is NewContract with a context that bounds the RPC dial,
+// so a slow or silent RPC endpoint cannot block the caller past its deadline.
+func NewContractContext(ctx context.Context, cfg *Config) (*Contract, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -88,7 +94,7 @@ func NewContract(cfg *Config) (*Contract, error) {
 	cfg.Standardize()
 
 	// ignore error when connect RPC fail.
-	client, err := ethclient.Dial(cfg.RPCURL)
+	client, err := ethclient.DialContext(ctx, cfg.RPCURL)
 	if err != nil {
 		fmt.Println("failed to init RPC client, some features may not work: ", err.Error())
 	}
