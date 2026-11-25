@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	whatwgurl "github.com/nlnwa/whatwg-url/url"
-	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
 )
 
 // RenderMethod is a SuiteRenderMethod entry of W3C VC Rendering Methods,
