@@ -21,7 +21,8 @@ import (
 // The key is the Concat KDF of RFC 7518 §4.6.2 over the ECDH X coordinate,
 // with AlgorithmID "A256GCM", empty PartyUInfo and PartyVInfo, and
 // keydatalen 256. Both keys are static, so the key is the same for every
-// message between the same two parties, and only they can derive it.
+// message between the same two parties, and only they can derive it. That
+// key may encrypt at most 2^32 messages (RFC 7518 §8.4); see Encrypt.
 func GetFromKeys(peerPubHex, ownPrivHex string) ([]byte, error) {
 	peerPubBytes, err := hex.DecodeString(peerPubHex)
 	if err != nil {

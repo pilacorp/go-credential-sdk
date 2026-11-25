@@ -365,3 +365,22 @@ func rawSharedX(t *testing.T, peerPubHex, ownPrivHex string) []byte {
 	priv, _ := hex.DecodeString(ownPrivHex)
 	return secp256k1.GenerateSharedSecret(secp256k1.PrivKeyFromBytes(priv), pub)
 }
+
+func TestDecryptJWE_WrongKey(t *testing.T) {
+	out, err := Encrypt(testKey(), "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := testKey()
+	other[0] ^= 1
+	_, err = DecryptJWE(out, other)
+	wantErr(t, err, "decryption failed")
+}
+
+func TestDecryptJWE_NotAJSONObject(t *testing.T) {
+	for _, s := range []string{`[]`, `"x"`, `null`, `1`} {
+		if _, err := DecryptJWE(s, testKey()); err == nil {
+			t.Fatalf("%s: expected an error", s)
+		}
+	}
+}

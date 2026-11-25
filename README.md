@@ -1417,7 +1417,8 @@ func main() {
 - Decryption that checks the protected header and authenticates it as AAD (RFC 7516 §5.2)
 
 Messages are readable by any JOSE library that supports `dir` with `A256GCM`. Both keys are static, so the
-key is the same for every message between the same two parties, and only they can derive it. This is not
+key is the same for every message between the same two parties, and only they can derive it. RFC 7518 §8.4
+allows at most 2^32 messages under one AES-GCM key, so rotate a key pair before reaching that. This is not
 DIDComm v2 encryption (ECDH-ES+A256KW / ECDH-1PU+A256KW with recipients).
 
 ## <a name="didcomm-usage"></a>Usage Example
@@ -1431,6 +1432,9 @@ import (
 
     "github.com/pilacorp/go-credential-sdk/didcomm"
 )
+
+// Hex-encoded secp256k1 keys; fill in real values.
+var recipientPublicKeyHex, recipientPrivateKeyHex, senderPublicKeyHex, senderPrivateKeyHex string
 
 func main() {
     // Sender: recipient's public key and the sender's own private key (hex).
