@@ -61,6 +61,11 @@ var binaryEscapes = []byte{'\\', '"', '\b', '\f', '\n', '\r', '\t'}
 // JSON literals
 var literals = []string{"true", "false", "null"}
 
+// maxNestingDepth bounds how deeply arrays and objects may nest. Parsing and
+// writing recurse once per level and Go cannot recover from a stack overflow.
+// RFC 8259 §9 lets a parser limit nesting; encoding/json stops at the same depth.
+const maxNestingDepth = 10000
+
 // isValidJSONNumber checks whether s matches the RFC 8259 §6 number grammar:
 //
 //	number = [ "-" ] int [ frac ] [ exp ]
@@ -177,6 +182,9 @@ func Transform(jsonData []byte) (result []byte, e error) {
 	var parseArray func() jsonValue
 
 	var globalError error = nil
+
+	// Current nesting depth of arrays and objects
+	var depth int = 0
 
 	checkError := func(e error) {
 		// We only honor the first reported error
@@ -392,7 +400,20 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		}
 	}
 
+	enterNesting := func() bool {
+		depth++
+		if depth > maxNestingDepth {
+			setError("Nesting deeper than " + strconv.Itoa(maxNestingDepth) + " levels")
+			return false
+		}
+		return true
+	}
+
 	parseArray = func() jsonValue {
+		defer func() { depth-- }()
+		if !enterNesting() {
+			return jsonValue{}
+		}
 		array := jsonValue{kind: kindArray}
 		var next bool = false
 		for globalError == nil && testNextNonWhiteSpaceChar() != ']' {
@@ -408,6 +429,10 @@ func Transform(jsonData []byte) (result []byte, e error) {
 	}
 
 	parseObject = func() jsonValue {
+		defer func() { depth-- }()
+		if !enterNesting() {
+			return jsonValue{}
+		}
 		object := jsonValue{kind: kindObject}
 		var next bool = false
 		for globalError == nil && testNextNonWhiteSpaceChar() != '}' {
