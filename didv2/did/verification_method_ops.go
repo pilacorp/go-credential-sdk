@@ -356,7 +356,9 @@ func keyFingerprint(vm VerificationMethod) string {
 	case len(vm.PublicKeyJwk) > 0:
 		// Its own namespace: the key a secp256k1 method publishes as hex may
 		// also sit in a JsonWebKey method, but only once in each form. The
-		// decoded point makes member order and encoding irrelevant.
+		// decoded point makes member order and encoding irrelevant. A JWK that
+		// does not parse gets no fingerprint; vmTypeFor has refused it before
+		// any caller compares fingerprints.
 		if crv, point, err := publicJWKPoint(vm.PublicKeyJwk); err == nil {
 			return "publicKeyJwk:" + crv + ":" + hex.EncodeToString(compressPoint(point))
 		}
