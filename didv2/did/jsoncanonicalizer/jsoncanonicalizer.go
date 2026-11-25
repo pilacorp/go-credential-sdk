@@ -14,11 +14,11 @@
 //  limitations under the License.
 //
 
-// This package transforms JSON data in UTF-8 according to:
-// https://tools.ietf.org/html/draft-rundgren-json-canonicalization-scheme-02
+// This package transforms JSON data in UTF-8 according to RFC 8785, JSON
+// Canonicalization Scheme (JCS): https://www.rfc-editor.org/rfc/rfc8785
 
-// TODO: This package is written by owner of RFC 8785, consider to replace with json/v2
-// when go 1.25 is released
+// TODO: encoding/json/jsontext Value.Canonicalize implements RFC 8785 too;
+// consider it once Go builds it without GOEXPERIMENT=jsonv2 (still needed in Go 1.27).
 package jsoncanonicalizer
 
 import (
@@ -179,18 +179,21 @@ func errorExcerpt(token string) string {
 //
 // The transformation process:
 //   - Removes all whitespace
-//   - Sorts object members lexicographically by their UTF-16 code units
-//   - Normalizes number formatting (ES6 format)
-//   - Normalizes string escaping (UTF-16 surrogate pairs)
-//   - Ensures consistent representation of JSON literals
+//   - Sorts object members by their names as UTF-16 code units (RFC 8785 §3.2.3)
+//   - Serializes numbers as ECMAScript does (RFC 8785 §3.2.2.3)
+//   - Writes strings in their shortest escaped form (RFC 8785 §3.2.2.2)
+//   - Writes the literals null, true and false as they are
 //
-// The jsonData parameter must be valid UTF-8 encoded JSON.
-// The input is parsed and transformed into canonical form.
+// The jsonData parameter is UTF-8 encoded JSON whose top-level value is an object
+// or an array. Non-ASCII characters are accepted inside strings only.
 //
-// Returns the canonicalized JSON as a byte slice, or an error if:
+// Transform returns a nil slice and an error if:
 //   - The input is not valid JSON
-//   - The input contains non-ASCII characters (must be UTF-8)
-//   - The JSON structure is malformed
+//   - A string holds a lone surrogate or bytes that are not UTF-8 (RFC 8785 §3.1, §3.2.2.2)
+//   - An object has two members with the same name (RFC 8785 §3.1)
+//   - A number is too large for an IEEE 754 double, so it would be Infinity (RFC 8785 §3.2.2.3)
+//   - A number is negative zero (RFC 8785 §5, erratum 7920)
+//   - Arrays and objects nest deeper than 10000 levels (RFC 8259 §9 allows the limit)
 //
 // Example use case: Hashing DID Documents for blockchain transactions.
 func Transform(jsonData []byte) (result []byte, e error) {
@@ -404,8 +407,8 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		}
 		ieeeF64, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			// RFC 8785 §3.1: numbers must be expressible as IEEE 754 doubles. The
-			// grammar check above leaves only a range error here.
+			// RFC 8785 §3.2.2.3: Infinity MUST end canonicalization with an error.
+			// The grammar check above leaves only this overflow error here.
 			setError("JSON number out of IEEE 754 range: " + errorExcerpt(value))
 			return jsonValue{}
 		}
