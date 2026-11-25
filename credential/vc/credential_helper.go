@@ -617,8 +617,8 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 	return vcdm.CheckValidity("credential", c, leeway)
 }
 
-// checkRevocation checks that credentialStatus is present and, if using a
-// status list, verifies the credential is not revoked. It also verifies the
+// checkRevocation checks each credentialStatus entry, when there is one, and,
+// for a status list entry, verifies the credential is not revoked. It also verifies the
 // status list credential itself: its proof, issuer match, and validity period.
 //
 // Only BitstringStatusListEntry entries are read. An entry of another type is
@@ -663,12 +663,28 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 		issuerDID, _ = jsonmap.DIDFromField(c["issuer"])
 	}
 
+	clientOpts := []credentialstatus.Option{credentialstatus.WithResolver(resolver)}
+	if acceptLegacyList {
+		clientOpts = append(clientOpts, credentialstatus.WithLegacyStatusList())
+	}
+	lists := &statusLists{
+		client:    credentialstatus.NewClient(clientOpts...),
+		issuerDID: issuerDID,
+		verified:  map[statusListKey]*credentialstatus.StatusList{},
+		remaining: map[statusListKey]int{},
+	}
+	for _, raw := range entries {
+		if key, ok := statusListKeyOf(raw); ok {
+			lists.remaining[key]++
+		}
+	}
+
 	for i, raw := range entries {
 		statusMap, ok := raw.(map[string]interface{})
 		if !ok {
 			return fmt.Errorf("credentialStatus[%d] must be an object", i)
 		}
-		if err := checkStatusEntry(statusMap, resolver, acceptLegacyList, issuerDID); err != nil {
+		if err := checkStatusEntry(statusMap, lists); err != nil {
 			if len(entries) > 1 {
 				return fmt.Errorf("credentialStatus[%d]: %w", i, err)
 			}
@@ -678,9 +694,54 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 	return nil
 }
 
-// checkStatusEntry checks one credentialStatus entry for the credential issued
-// by issuerDID.
-func checkStatusEntry(statusMap map[string]interface{}, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, issuerDID string) error {
+// statusListKey names one status list read for one statusPurpose.
+type statusListKey struct {
+	url, purpose string
+}
+
+// statusListKeyOf returns the list key of a BitstringStatusListEntry, for
+// counting how many entries will read each list.
+func statusListKeyOf(raw interface{}) (statusListKey, bool) {
+	entry, ok := raw.(map[string]interface{})
+	if !ok || !hasType(entry["type"], "BitstringStatusListEntry") {
+		return statusListKey{}, false
+	}
+	url, _ := entry["statusListCredential"].(string)
+	purpose, _ := entry["statusPurpose"].(string)
+	return statusListKey{url: url, purpose: purpose}, true
+}
+
+// statusLists fetches and verifies each status list once per credential, so
+// entries that share a list cost one fetch and one proof check between them.
+// A list is kept only while a later entry still reads it: a decoded list can
+// be 16 MiB, and a credential can name many lists.
+type statusLists struct {
+	client    *credentialstatus.Client
+	issuerDID string
+	verified  map[statusListKey]*credentialstatus.StatusList
+	remaining map[statusListKey]int // entries still to read each list
+}
+
+// check reads the entry's bit from the list at url, verifying the list first
+// if no earlier entry of this credential has.
+func (s *statusLists) check(url, purpose string, position int) error {
+	key := statusListKey{url: url, purpose: purpose}
+	list, ok := s.verified[key]
+	if !ok {
+		var err error
+		if list, err = s.client.VerifyStatusList(url, purpose, s.issuerDID); err != nil {
+			return err
+		}
+		s.verified[key] = list
+	}
+	if s.remaining[key]--; s.remaining[key] <= 0 {
+		delete(s.verified, key)
+	}
+	return list.Check(position)
+}
+
+// checkStatusEntry checks one credentialStatus entry against lists.
+func checkStatusEntry(statusMap map[string]interface{}, lists *statusLists) error {
 	// If credentialStatus is an empty object, also treat it as "no revocation info".
 	if len(statusMap) == 0 {
 		return nil
@@ -730,12 +791,7 @@ func checkStatusEntry(statusMap map[string]interface{}, resolver verificationmet
 	}
 
 	// Fetch, verify, and check the status list credential.
-	clientOpts := []credentialstatus.Option{credentialstatus.WithResolver(resolver)}
-	if acceptLegacyList {
-		clientOpts = append(clientOpts, credentialstatus.WithLegacyStatusList())
-	}
-	client := credentialstatus.NewClient(clientOpts...)
-	if err := client.VerifyAndCheckStatus(statusListCredential, position, entryPurpose, issuerDID); err != nil {
+	if err := lists.check(statusListCredential, entryPurpose, position); err != nil {
 		return fmt.Errorf("failed to check revocation: %w", err)
 	}
 
