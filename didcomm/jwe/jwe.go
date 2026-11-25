@@ -6,6 +6,20 @@ import (
 	"fmt"
 )
 
+const (
+	// Algorithm is the "alg" of every message: the key both parties hold is
+	// the content encryption key itself (RFC 7518 §4.5).
+	Algorithm = "dir"
+	// Encryption is the "enc" of every message (RFC 7518 §5.3).
+	Encryption = "A256GCM"
+	// ProtectedHeader is the encoded protected header of every message,
+	// BASE64URL(UTF8(`{"alg":"dir","enc":"A256GCM"}`)). Its ASCII bytes are
+	// the additional authenticated data (RFC 7516 §5.1 step 14).
+	ProtectedHeader = "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0"
+)
+
+// JWE is the flattened JWE JSON serialization (RFC 7516 §7.2.2) of a message
+// with no encrypted key, as "dir" produces.
 type JWE struct {
 	Protected  string `json:"protected"`
 	IV         string `json:"iv"`
@@ -17,24 +31,17 @@ func base64url(input []byte) string {
 	return base64.RawURLEncoding.EncodeToString(input)
 }
 
-func BuildJWE(iv, ciphertext, tag []byte) string {
-	header := map[string]string{
-		"alg": "ECDH-ES",
-		"enc": "A256GCM",
-		"crv": "secp256k1",
-		"typ": "application/didcomm-encrypted+json",
-	}
-	headerBytes, _ := json.Marshal(header)
-	jwe := JWE{
-		Protected:  base64url(headerBytes),
+// BuildJWE returns the flattened JWE JSON serialization of a message whose
+// encoded protected header is protected.
+func BuildJWE(protected string, iv, ciphertext, tag []byte) (string, error) {
+	result, err := json.MarshalIndent(JWE{
+		Protected:  protected,
 		IV:         base64url(iv),
 		Ciphertext: base64url(ciphertext),
-		Tag:        base64url(tag), // real AES-GCM authentication tag
-	}
-	result, err := json.MarshalIndent(jwe, "", "  ")
+		Tag:        base64url(tag),
+	}, "", "  ")
 	if err != nil {
-		fmt.Println("Error marshalling JWE:", err)
-		return ""
+		return "", fmt.Errorf("marshal JWE: %w", err)
 	}
-	return string(result)
+	return string(result), nil
 }
