@@ -24,6 +24,7 @@ package jsoncanonicalizer
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -380,6 +381,12 @@ func Transform(jsonData []byte) (result []byte, e error) {
 			// RFC 8785 §3.1: numbers must be expressible as IEEE 754 doubles. The
 			// grammar check above leaves only a range error here.
 			setError("JSON number out of IEEE 754 range: " + errorExcerpt(value))
+			return jsonValue{}
+		}
+		// RFC 8785 §5 (erratum 7920): -0 is serialized as 0, so a parser SHOULD
+		// refuse it rather than let it share a canonical form with 0.
+		if ieeeF64 == 0 && math.Signbit(ieeeF64) {
+			setError("Negative zero is not allowed: " + errorExcerpt(value))
 			return jsonValue{}
 		}
 		value, err = NumberToJSON(ieeeF64)
