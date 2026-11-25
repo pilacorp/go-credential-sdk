@@ -298,8 +298,7 @@ func TestIssue196_PerCallOverride_SetDocumentHashByIssuerTransaction(t *testing.
 }
 
 // TestIssue196_NoOverride_Unchanged verifies that calls without per-call
-// overrides still use the base contract and chain (byte-for-byte identical
-// behavior).
+// overrides still target the base contract and chain.
 func TestIssue196_NoOverride_Unchanged(t *testing.T) {
 	baseContract := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	baseChain := int64(111)
@@ -360,7 +359,7 @@ func TestIssue196_ResolveContract_PerCallRelease(t *testing.T) {
 
 	// No override: returns the shared client and a no-op release.
 	baseCfg := *g.baseConfig
-	c1, release1, err := g.resolveContract(context.Background(), &baseCfg)
+	c1, release1, err := g.resolveContract(context.Background(), &baseCfg, true)
 	if err != nil {
 		t.Fatalf("resolveContract (no override): %v", err)
 	}
@@ -372,7 +371,7 @@ func TestIssue196_ResolveContract_PerCallRelease(t *testing.T) {
 	// Override: returns a new client and a release that closes it.
 	overrideCfg := *g.baseConfig
 	overrideCfg.DIDSMCAddr = overrideContract
-	c2, release2, err := g.resolveContract(context.Background(), &overrideCfg)
+	c2, release2, err := g.resolveContract(context.Background(), &overrideCfg, true)
 	if err != nil {
 		t.Fatalf("resolveContract (override): %v", err)
 	}
@@ -380,7 +379,7 @@ func TestIssue196_ResolveContract_PerCallRelease(t *testing.T) {
 		t.Error("expected a new contract for override config, got shared")
 	}
 	release2() // closes the per-call client
-	release2() // second call must be safe (Close is idempotent)
+	release2() // a second release must not panic
 }
 
 // TestIssue196_WithRPC_ReadUsesOverrideServer requires a SyncNonce read to
@@ -519,7 +518,8 @@ func recoverIssuer(t *testing.T, payload []byte, sig *issuer.Signature) string {
 type wsRPC struct {
 	url   string
 	reads atomic.Int32
-	conns atomic.Int32
+	conns atomic.Int32 // open now
+	dials atomic.Int32 // opened in total
 	close func()
 }
 
@@ -532,6 +532,7 @@ func newWSServer(t *testing.T) *wsRPC {
 		if err != nil {
 			return
 		}
+		srv.dials.Add(1)
 		srv.conns.Add(1)
 		defer srv.conns.Add(-1)
 		defer conn.Close()
@@ -558,7 +559,12 @@ func rpcResult(msg []byte) []byte {
 	if err := json.Unmarshal(msg, &one); err != nil || len(one.ID) == 0 {
 		return []byte(`{"jsonrpc":"2.0","id":1,"result":"0x0"}`)
 	}
-	return []byte(`{"jsonrpc":"2.0","id":` + string(one.ID) + `,"result":"0x0"}`)
+	result := `"0x0"`
+	if strings.Contains(string(msg), "eth_call") {
+		// One ABI-encoded uint64 word, so getCapabilityEpoch decodes to 0.
+		result = `"0x` + strings.Repeat("0", 64) + `"`
+	}
+	return []byte(`{"jsonrpc":"2.0","id":` + string(one.ID) + `,"result":` + result + `}`)
 }
 
 func waitConns(t *testing.T, n *atomic.Int32, want int32) {
@@ -608,11 +614,72 @@ func TestIssue196_PerCallRPCDialHonoursContext(t *testing.T) {
 	go func() {
 		defer close(done)
 		_, _ = g.GenerateIssuerSignature(ctx, did.DIDTypeItem, key.GetAddress(), issuerSigner.GetAddress(),
-			WithRPC("ws://"+ln.Addr().String()), WithCapID(capID))
+			WithRPC("ws://"+ln.Addr().String()), WithCapID(capID), WithSyncEpoch(true))
 	}()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("GenerateIssuerSignature still blocked 5s after a 200ms deadline")
+	}
+}
+
+// TestIssue196_NoReadNoDial checks that a per-call RPC is not dialled by a call
+// that reads nothing from the chain, and that GenerateDIDTX dials it once when
+// it reads both the epoch and the nonce.
+func TestIssue196_NoReadNoDial(t *testing.T) {
+	srv := newWSServer(t)
+	t.Cleanup(srv.close)
+	g, issuerSigner := newTestGenerator(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 111)
+	key, err := did.GenerateECDSAKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := g.GenerateDID(t.Context(), did.DIDTypeItem, "", nil, WithRPC(srv.url)); err != nil {
+		t.Fatalf("GenerateDID: %v", err)
+	}
+	if _, err := g.GenerateIssuerSignature(t.Context(), did.DIDTypeItem, key.GetAddress(), issuerSigner.GetAddress(), WithRPC(srv.url)); err != nil {
+		t.Fatalf("GenerateIssuerSignature: %v", err)
+	}
+	if _, err := g.GenerateDID(t.Context(), did.DIDTypeItem, "", nil,
+		WithRPC(srv.url), WithDIDAddressSMC("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")); err != nil {
+		t.Fatalf("GenerateDID with a contract override: %v", err)
+	}
+	if got := srv.dials.Load(); got != 0 {
+		t.Fatalf("dials without a chain read = %d, want 0", got)
+	}
+
+	if _, err := g.GenerateDID(t.Context(), did.DIDTypeItem, "", nil,
+		WithRPC(srv.url), WithSyncNonce(true), WithSyncEpoch(true)); err != nil {
+		t.Fatalf("GenerateDID with both syncs: %v", err)
+	}
+	if got := srv.reads.Load(); got < 1 {
+		t.Fatalf("nonce reads = %d, want at least 1", got)
+	}
+	if got := srv.dials.Load(); got != 1 {
+		t.Fatalf("dials for one GenerateDID that reads epoch and nonce = %d, want 1", got)
+	}
+}
+
+// TestIssue196_PerCallChainOnly checks that a chain-ID override alone, with the
+// base contract, signs the transaction for that chain (EIP-155).
+func TestIssue196_PerCallChainOnly(t *testing.T) {
+	baseContract := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	g, _ := newTestGenerator(t, baseContract, 111)
+
+	res, err := g.GenerateDID(t.Context(), did.DIDTypeItem, "", nil, WithDIDChainID(999))
+	if err != nil {
+		t.Fatalf("GenerateDID: %v", err)
+	}
+	tx := decodeTx(t, res.Transaction.TxHex)
+	if got := tx.ChainId().Int64(); got != 999 {
+		t.Fatalf("tx.ChainId = %d, want 999", got)
+	}
+	sender, err := types.Sender(types.NewEIP155Signer(big.NewInt(999)), tx)
+	if err != nil {
+		t.Fatalf("recover sender for chain 999: %v", err)
+	}
+	if want := common.HexToAddress(strings.TrimPrefix(res.DID, "did:nda:")); sender != want {
+		t.Errorf("tx sender = %s, want the DID address %s", sender.Hex(), want.Hex())
 	}
 }
