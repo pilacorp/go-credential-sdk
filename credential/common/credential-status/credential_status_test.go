@@ -100,6 +100,13 @@ func testKeyPair(t *testing.T) (*ecdsa.PrivateKey, verificationmethod.ResolverPr
 // JSONMap, the same way authen-service does (ecdsa-rdfc-2019 proof).
 func signStatusListCredential(t *testing.T, priv *ecdsa.PrivateKey, issuer, purpose, encodedList string) map[string]interface{} {
 	t.Helper()
+	return signStatusListCredentialFor(t, priv, issuer, purpose, encodedList, "assertionMethod")
+}
+
+// signStatusListCredentialFor is signStatusListCredential with the proof made
+// for proofPurpose.
+func signStatusListCredentialFor(t *testing.T, priv *ecdsa.PrivateKey, issuer, purpose, encodedList, proofPurpose string) map[string]interface{} {
+	t.Helper()
 	now := time.Now().UTC()
 	vc := jsonmap.JSONMap{
 		"@context": []interface{}{
@@ -120,7 +127,7 @@ func signStatusListCredential(t *testing.T, priv *ecdsa.PrivateKey, issuer, purp
 
 	sp, err := signer.NewP256Provider(priv)
 	require.NoError(t, err)
-	err = vc.AddECDSAProof(sp, testVMID, "assertionMethod")
+	err = vc.AddECDSAProof(sp, testVMID, proofPurpose)
 	require.NoError(t, err)
 
 	return map[string]interface{}(vc)
@@ -324,6 +331,21 @@ func TestVerifyAndCheckStatus_Signed_W3C(t *testing.T) {
 	// Position 7 is not set -> not revoked.
 	err = client.VerifyAndCheckStatus(server.URL, 7, "revocation", testIssuerDID)
 	assert.NoError(t, err)
+}
+
+// TestVerifyAndCheckStatus_ProofForOtherPurpose_Refused checks that a status
+// list whose proof was made for another purpose, such as authentication, is
+// not accepted as the issuer's assertion of the list.
+func TestVerifyAndCheckStatus_ProofForOtherPurpose_Refused(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	encoded := buildW3CEncodedList(t, nil)
+	vc := signStatusListCredentialFor(t, priv, testIssuerDID, "revocation", encoded, "authentication")
+	server := serveStatusList(t, vc)
+
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	err := client.VerifyAndCheckStatus(server.URL, 7, "revocation", testIssuerDID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "proof")
 }
 
 func TestVerifyAndCheckStatus_Signed_Legacy(t *testing.T) {

@@ -204,8 +204,10 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 		return err
 	}
 
-	// Verify the status list credential's proof.
-	ok, err := vcMap.VerifyProof(c.resolver, "")
+	// Verify the status list credential's proof for assertionMethod, the purpose
+	// vc.Verify expects of a credential's proof; Data Integrity 1.0 §4.4 refuses
+	// a proof that names another purpose.
+	ok, err := vcMap.VerifyProof(c.resolver, "", jsonmap.WithExpectedProofPurpose("assertionMethod"))
 	if err != nil {
 		return fmt.Errorf("status list credential proof verification failed: %w", err)
 	}
