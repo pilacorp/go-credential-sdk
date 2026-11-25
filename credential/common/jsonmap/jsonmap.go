@@ -549,8 +549,9 @@ func signatureField(proofType string) string {
 
 // ecdsaProofConfig builds the proof configuration of section 3.2.5: a copy of
 // the whole proof object with proofValue removed, plus the document's
-// @context (VC DI ECDSA v1.0 §3.2.2 step 2 for ecdsa-rdfc-2019 verify, §3.6.4
-// for an ecdsa-sd-2023 base proof, §3.5.9 for ecdsa-sd-2023 derived verify).
+// @context (VC DI ECDSA v1.0 §3.2.5 step 4, §3.6.4 step 4). Verify takes the
+// proof without proofValue in §3.2.2 step 2 (ecdsa-rdfc-2019) and hashes the
+// proof options in §3.5.9 step 1 (ecdsa-sd-2023).
 // No property is filtered here — every option the signer put on the proof,
 // including ones this SDK does not model, is part of the hash; the document's
 // @context decides which terms are meaningful.

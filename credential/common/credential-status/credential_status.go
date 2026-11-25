@@ -5,9 +5,11 @@ import (
 	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -156,11 +158,11 @@ func (c *Client) FetchStatusListCredential(statusListCredentialURL string) (*Sta
 func (c *Client) fetchStatusListBody(url string) ([]byte, error) {
 	resp, err := c.client.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to call status list credential endpoint: %w", err)
+		return nil, fmt.Errorf("failed to call status list credential endpoint: %w", clippedError{err})
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status list credential API returned non-200 status: %s", resp.Status)
+		return nil, fmt.Errorf("status list credential API returned non-200 status: %s", errtext.Clip(resp.Status))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize+1))
 	if err != nil {
@@ -172,10 +174,27 @@ func (c *Client) fetchStatusListBody(url string) ([]byte, error) {
 	return body, nil
 }
 
+// clippedError prints its error clipped and unwraps to it, so a long URL,
+// scheme or host from the credential, which *url.Error and its causes print
+// in full, stays bounded while errors.As still finds *url.Error and the
+// net.Error under it.
+type clippedError struct{ err error }
+
+func (e clippedError) Error() string {
+	var ue *neturl.Error
+	if errors.As(e.err, &ue) {
+		return fmt.Sprintf("%s %q: %s", ue.Op, errtext.Clip(ue.URL), errtext.Clip(ue.Err.Error()))
+	}
+	return errtext.Clip(e.err.Error())
+}
+func (e clippedError) Unwrap() error { return e.err }
+
 // VerifyAndCheckStatus fetches the status list credential, checks its types,
 // statusPurpose, issuer and validity period, verifies its proof, and then
 // reads the bit at position. entryPurpose is the statusPurpose from the VC entry's
 // credentialStatus; issuerDID is the issuer of the credential being checked.
+// Only revocation and suspension are read; any other entryPurpose is refused
+// before the fetch. vc.Verify skips refresh entries itself.
 //
 // A resolver must be set via WithResolver; calling this method without one
 // returns an error. The deprecated FetchAndCheckRevocation path does not
@@ -198,11 +217,86 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 // StatusList is a status list credential that VerifyStatusList fetched and
 // checked for one statusPurpose. IsSet reads its bits without fetching or
 // verifying it again, so a credential with several entries on one list
-// costs one fetch and one proof check.
+// costs one fetch and one proof check. ForPurpose reuses it for another
+// purpose the list also serves.
 type StatusList struct {
 	purpose  string
+	purposes purposeSet // what the list's statusPurpose holds
 	bits     []byte
 	msbFirst bool // the W3C form; the authen-service legacy form is LSB-first
+}
+
+// ForPurpose returns the list for another statusPurpose it serves, without
+// fetching or verifying it again. Bitstring Status List v1.0 §2.2 lets a
+// list's statusPurpose be one or more strings, and §3.2 step 5 accepts an
+// entry whose purpose is one of them (example: Appendix A.4).
+func (l *StatusList) ForPurpose(purpose string) (*StatusList, error) {
+	if l == nil {
+		return nil, fmt.Errorf("status list is nil")
+	}
+	if err := checkSupportedPurpose(purpose); err != nil {
+		return nil, err
+	}
+	if !l.purposes.serves(purpose) {
+		return nil, l.purposes.mismatch(purpose)
+	}
+	out := *l
+	out.purpose = purpose
+	return &out, nil
+}
+
+// purposeSet records a list's statusPurpose in constant space: whether it
+// serves each purpose this reader reads, the first few values for error text,
+// and how many there are. A list can carry millions of purposes, and every
+// entry on it asks whether it serves one.
+type purposeSet struct {
+	revocation, suspension bool
+	shown                  []string // the first purposesShown values, clipped
+	total                  int
+}
+
+const purposesShown = 4
+
+func (p *purposeSet) add(purpose string) {
+	switch purpose {
+	case "revocation":
+		p.revocation = true
+	case "suspension":
+		p.suspension = true
+	}
+	if len(p.shown) < purposesShown {
+		p.shown = append(p.shown, errtext.Clip(purpose))
+	}
+	p.total++
+}
+
+func (p purposeSet) serves(purpose string) bool {
+	switch purpose {
+	case "revocation":
+		return p.revocation
+	case "suspension":
+		return p.suspension
+	}
+	return false
+}
+
+// mismatch reports a list that does not serve the entry's purpose, in text
+// bounded whatever the list holds.
+func (p purposeSet) mismatch(entryPurpose string) error {
+	more := ""
+	if p.total > len(p.shown) {
+		more = fmt.Sprintf(" and %d more", p.total-len(p.shown))
+	}
+	return fmt.Errorf("statusPurpose mismatch: status list serves %q%s, credential entry has %q", p.shown, more, errtext.Clip(entryPurpose))
+}
+
+// checkSupportedPurpose refuses a statusPurpose this reader does not check.
+func checkSupportedPurpose(purpose string) error {
+	switch purpose {
+	case "revocation", "suspension":
+		return nil
+	}
+	return fmt.Errorf("statusPurpose %q is not supported: only revocation and suspension are", errtext.Clip(purpose))
 }
 
 // VerifyStatusList does every step of VerifyAndCheckStatus except reading a
@@ -215,10 +309,8 @@ func (c *Client) VerifyStatusList(statusListCredentialURL, entryPurpose, issuerD
 	}
 
 	// Refuse unsupported purposes before fetching.
-	switch entryPurpose {
-	case "revocation", "suspension":
-	default:
-		return nil, fmt.Errorf("statusPurpose %q is not supported: only revocation and suspension are", entryPurpose)
+	if err := checkSupportedPurpose(entryPurpose); err != nil {
+		return nil, err
 	}
 
 	if statusListCredentialURL == "" {
@@ -250,10 +342,10 @@ func (c *Client) VerifyStatusList(statusListCredentialURL, entryPurpose, issuerD
 		return nil, err
 	}
 
-	// The list must serve the entry's purpose and carry a bitstring; both are
-	// read again by CheckBitStatus, but checking here spares the proof check.
+	// The list must serve the entry's purpose and carry a bitstring; checking
+	// both here spares the proof check. StatusList.Check reads the bit later.
 	if sl.subject.StatusPurpose != entryPurpose {
-		return nil, fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", errtext.Clip(sl.subject.StatusPurpose), errtext.Clip(entryPurpose))
+		return nil, sl.purposes.mismatch(entryPurpose)
 	}
 	if sl.subject.EncodedList == "" {
 		return nil, fmt.Errorf("encodedList is empty")
@@ -312,7 +404,7 @@ func (c *Client) VerifyStatusList(statusListCredentialURL, entryPurpose, issuerD
 	if err != nil {
 		return nil, err
 	}
-	return &StatusList{purpose: entryPurpose, bits: bits, msbFirst: msbFirst}, nil
+	return &StatusList{purpose: entryPurpose, purposes: sl.purposes, bits: bits, msbFirst: msbFirst}, nil
 }
 
 // statusListFromBody accepts the status list credential served as is, or
@@ -337,6 +429,7 @@ func statusListFromBody(body []byte) (jsonmap.JSONMap, error) {
 type statusListView struct {
 	issuerDID string
 	subject   StatusListCredentialSubject
+	purposes  purposeSet
 }
 
 // readStatusList reads the status list fields from the map whose proof is
@@ -370,12 +463,23 @@ func readStatusList(m jsonmap.JSONMap, entryPurpose string) (statusListView, err
 	switch p := subject["statusPurpose"].(type) {
 	case string:
 		sl.subject.StatusPurpose = p
+		sl.purposes.add(p)
 	case []interface{}:
+		if len(p) == 0 {
+			return sl, fmt.Errorf("status list credentialSubject.statusPurpose must be one or more strings")
+		}
 		for _, v := range p {
-			if s, ok := v.(string); ok && s == entryPurpose {
+			s, ok := v.(string)
+			if !ok {
+				return sl, fmt.Errorf("status list credentialSubject.statusPurpose must be one or more strings")
+			}
+			sl.purposes.add(s)
+			if s == entryPurpose {
 				sl.subject.StatusPurpose = entryPurpose
 			}
 		}
+	default:
+		return sl, fmt.Errorf("status list credentialSubject.statusPurpose must be one or more strings")
 	}
 
 	return sl, nil
@@ -407,7 +511,9 @@ const statusListClockSkew = time.Minute
 // If subject.StatusPurpose does not match entryPurpose, an error is returned.
 func CheckBitStatus(position int, subject StatusListCredentialSubject, entryPurpose string) (bool, error) {
 	if subject.StatusPurpose != entryPurpose {
-		return false, fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", errtext.Clip(subject.StatusPurpose), errtext.Clip(entryPurpose))
+		var listPurpose purposeSet
+		listPurpose.add(subject.StatusPurpose)
+		return false, listPurpose.mismatch(entryPurpose)
 	}
 	bits, msbFirst, err := decodeBitstring(subject.EncodedList)
 	if err != nil {

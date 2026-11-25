@@ -335,7 +335,14 @@ func WithLeeway(d time.Duration) CredentialOpt {
 	}
 }
 
-// WithCheckRevocation enables revocation check during credential parsing.
+// WithCheckRevocation makes Verify read each BitstringStatusListEntry and
+// refuse the credential when its revocation or suspension bit is set. One
+// status list is fetched and verified once, also when it serves several
+// statusPurpose values (Bitstring Status List v1.0 §2.2, §3.2 step 5). A refresh
+// entry's list is not read, since §2.1 says a refresh status "does not
+// invalidate the verifiable credential". Any other purpose, message included,
+// is refused: a message status carries an issuer-defined message this SDK
+// does not read.
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckRevocation = true
@@ -355,13 +362,12 @@ func WithLegacyStatusList() CredentialOpt {
 
 // WithMaxStatusLists makes WithCheckRevocation refuse a credential whose
 // credentialStatus names more than n status lists, before any list is
-// fetched; the error wraps ErrTooManyStatusLists. Entries on one list for one
-// statusPurpose count once, since they share one fetch. A list that serves
-// several statusPurpose values (Bitstring Status List v1.0 Appendix B) is
-// fetched, and counted, once per purpose. Each list costs a
-// fetch of up to 16 MiB and a proof check, so a verifier that serves
-// untrusted callers sets the most lists its credentials name. n <= 0 leaves
-// the number unbounded, which is the default.
+// fetched; the error wraps ErrTooManyStatusLists. Lists are counted by URL:
+// entries on one list share one fetch, whatever statusPurpose each names. A
+// refresh entry is not counted, since its list is not read.
+// Each list costs a fetch of up to 16 MiB and a proof check, so a verifier
+// that serves untrusted callers sets the most lists its credentials name.
+// n <= 0 leaves the number unbounded, which is the default.
 func WithMaxStatusLists(n int) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.maxStatusLists = n

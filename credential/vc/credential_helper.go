@@ -3,7 +3,6 @@ package vc
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -623,6 +622,8 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 // Only BitstringStatusListEntry entries are read. An entry of another type is
 // ignored, the same rule the SDK applies to a credentialSchema type it does
 // not implement, rather than having its index read as a bitstring position.
+// Every entry's fields are checked against §2.1; a refresh entry's list is not
+// read.
 //
 // options supplies the resolver, WithLegacyStatusList, the proof cap of each
 // status list (the WithMaxProofs value) and WithMaxStatusLists.
@@ -672,48 +673,57 @@ func checkRevocation(c CredentialData, options *credentialOptions, issuerDIDFall
 	lists := &statusLists{
 		client:    credentialstatus.NewClient(clientOpts...),
 		issuerDID: issuerDID,
-		verified:  map[statusListKey]*credentialstatus.StatusList{},
-		remaining: map[statusListKey]int{},
+		verified:  map[string]*credentialstatus.StatusList{},
+		remaining: map[string]int{},
 	}
-	for _, raw := range entries {
-		if key, ok := statusListKeyOf(raw); ok {
-			lists.remaining[key]++
-		}
+	// Check every entry before any list is fetched, so a malformed entry or
+	// too many lists costs no fetch.
+	type readEntry struct {
+		index    int
+		entry    credentialstatus.Entry
+		position int
 	}
-	if n := options.maxStatusLists; n > 0 && len(lists.remaining) > n {
-		return fmt.Errorf("%w: credentialStatus names %d status lists (one per URL and statusPurpose) and this verifier accepts at most %d; raise WithMaxStatusLists", ErrTooManyStatusLists, len(lists.remaining), n)
-	}
-
+	var reads []readEntry
 	for i, raw := range entries {
 		statusMap, ok := raw.(map[string]interface{})
 		if !ok {
 			return fmt.Errorf("credentialStatus[%d] must be an object", i)
 		}
-		if err := checkStatusEntry(statusMap, lists); err != nil {
-			if len(entries) > 1 {
-				return fmt.Errorf("credentialStatus[%d]: %w", i, err)
+		// An empty object carries no status; another type is not this
+		// reader's to read.
+		if len(statusMap) == 0 || !hasType(statusMap["type"], "BitstringStatusListEntry") {
+			continue
+		}
+		entry, err := credentialstatus.ParseEntry(statusMap)
+		if err == nil && !entry.IsRefresh() {
+			var position int
+			if position, err = entry.Position(); err == nil {
+				reads = append(reads, readEntry{index: i, entry: entry, position: position})
+				lists.remaining[entry.ListURL]++
 			}
-			return err
+		}
+		if err != nil {
+			return entryError(len(entries), i, err)
+		}
+	}
+	if n := options.maxStatusLists; n > 0 && len(lists.remaining) > n {
+		return fmt.Errorf("%w: credentialStatus names %d status lists and this verifier accepts at most %d; raise WithMaxStatusLists", ErrTooManyStatusLists, len(lists.remaining), n)
+	}
+
+	for _, r := range reads {
+		if err := lists.check(r.entry.ListURL, r.entry.Purpose, r.position); err != nil {
+			return entryError(len(entries), r.index, fmt.Errorf("failed to check revocation: %w", err))
 		}
 	}
 	return nil
 }
 
-// statusListKey names one status list read for one statusPurpose.
-type statusListKey struct {
-	url, purpose string
-}
-
-// statusListKeyOf returns the list key of a BitstringStatusListEntry, for
-// counting how many entries will read each list.
-func statusListKeyOf(raw interface{}) (statusListKey, bool) {
-	entry, ok := raw.(map[string]interface{})
-	if !ok || !hasType(entry["type"], "BitstringStatusListEntry") {
-		return statusListKey{}, false
+// entryError names the entry's index when credentialStatus holds several.
+func entryError(count, i int, err error) error {
+	if count > 1 {
+		return fmt.Errorf("credentialStatus[%d]: %w", i, err)
 	}
-	url, _ := entry["statusListCredential"].(string)
-	purpose, _ := entry["statusPurpose"].(string)
-	return statusListKey{url: url, purpose: purpose}, true
+	return err
 }
 
 // statusLists fetches and verifies each status list once per credential, so
@@ -723,84 +733,31 @@ func statusListKeyOf(raw interface{}) (statusListKey, bool) {
 type statusLists struct {
 	client    *credentialstatus.Client
 	issuerDID string
-	verified  map[statusListKey]*credentialstatus.StatusList
-	remaining map[statusListKey]int // entries still to read each list
+	verified  map[string]*credentialstatus.StatusList // by list URL
+	remaining map[string]int                          // entries still to read each list
 }
 
 // check reads the entry's bit from the list at url, verifying the list first
-// if no earlier entry of this credential has.
+// if no earlier entry of this credential has. A list verified for another
+// purpose is reused when it also serves this one (Bitstring Status List v1.0
+// §2.2, §3.2 step 5), so one list costs one fetch whatever purposes it serves.
 func (s *statusLists) check(url, purpose string, position int) error {
-	key := statusListKey{url: url, purpose: purpose}
-	list, ok := s.verified[key]
+	cached, ok := s.verified[url]
 	if !ok {
 		var err error
-		if list, err = s.client.VerifyStatusList(url, purpose, s.issuerDID); err != nil {
+		if cached, err = s.client.VerifyStatusList(url, purpose, s.issuerDID); err != nil {
 			return err
 		}
-		s.verified[key] = list
+		s.verified[url] = cached
 	}
-	if s.remaining[key]--; s.remaining[key] <= 0 {
-		delete(s.verified, key)
+	if s.remaining[url]--; s.remaining[url] <= 0 {
+		delete(s.verified, url)
+	}
+	list, err := cached.ForPurpose(purpose)
+	if err != nil {
+		return err
 	}
 	return list.Check(position)
-}
-
-// checkStatusEntry checks one credentialStatus entry against lists.
-func checkStatusEntry(statusMap map[string]interface{}, lists *statusLists) error {
-	// If credentialStatus is an empty object, also treat it as "no revocation info".
-	if len(statusMap) == 0 {
-		return nil
-	}
-
-	// Only process BitstringStatusListEntry; ignore unknown types.
-	// type may be a string or an array (VCDM); reading only the string form
-	// skipped ["BitstringStatusListEntry"] as unknown and read no list at all.
-	if !hasType(statusMap["type"], "BitstringStatusListEntry") {
-		return nil
-	}
-
-	// For a BitstringStatusListEntry, statusPurpose is required (§2.1).
-	entryPurpose, _ := statusMap["statusPurpose"].(string)
-	if entryPurpose == "" {
-		return fmt.Errorf("credentialStatus.statusPurpose is required")
-	}
-
-	// statusSize other than 1 is not supported (this reader handles 1-bit entries).
-	if size, ok := statusMap["statusSize"]; ok && size != float64(1) {
-		return fmt.Errorf("credentialStatus.statusSize %v is not supported: only 1-bit status entries are", size)
-	}
-
-	rawStatusListCredential, ok := statusMap["statusListCredential"]
-	if !ok || rawStatusListCredential == nil {
-		return fmt.Errorf("credentialStatus.statusListCredential is required")
-	}
-
-	statusListCredential, ok := rawStatusListCredential.(string)
-	if !ok || statusListCredential == "" {
-		return fmt.Errorf("credentialStatus.statusListCredential must be a non-empty string")
-	}
-
-	rawStatusListIndex, ok := statusMap["statusListIndex"]
-	if !ok || rawStatusListIndex == nil {
-		return fmt.Errorf("credentialStatus.statusListIndex is required")
-	}
-
-	statusListIndex, ok := rawStatusListIndex.(string)
-	if !ok || statusListIndex == "" {
-		return fmt.Errorf("credentialStatus.statusListIndex must be a non-empty string")
-	}
-
-	position, err := strconv.Atoi(statusListIndex)
-	if err != nil {
-		return fmt.Errorf("invalid credentialStatus.statusListIndex: %w", err)
-	}
-
-	// Fetch, verify, and check the status list credential.
-	if err := lists.check(statusListCredential, entryPurpose, position); err != nil {
-		return fmt.Errorf("failed to check revocation: %w", err)
-	}
-
-	return nil
 }
 
 // convertToArray ensures a value is represented as an array.

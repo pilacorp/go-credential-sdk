@@ -145,8 +145,8 @@ func TestStatusLists_ListDroppedAfterLastEntry(t *testing.T) {
 	lists := &statusLists{
 		client:    credentialstatus.NewClient(credentialstatus.WithResolver(resolver)),
 		issuerDID: entriesIssuer,
-		verified:  map[statusListKey]*credentialstatus.StatusList{},
-		remaining: map[statusListKey]int{{url: url, purpose: "revocation"}: 2},
+		verified:  map[string]*credentialstatus.StatusList{},
+		remaining: map[string]int{url: 2},
 	}
 	require.NoError(t, lists.check(url, "revocation", 1))
 	assert.Len(t, lists.verified, 1, "kept for the second entry")

@@ -782,6 +782,7 @@ func TestCheckRevocation_UnsupportedStatusSize_Refused(t *testing.T) {
 			"statusListIndex":      "5",
 			"statusPurpose":        "revocation",
 			"statusSize":           float64(2),
+			"statusMessage":        []interface{}{map[string]interface{}{"status": "0x0", "message": "a"}, map[string]interface{}{"status": "0x1", "message": "b"}, map[string]interface{}{"status": "0x2", "message": "c"}, map[string]interface{}{"status": "0x3", "message": "d"}},
 		},
 	}
 	err := checkRevocation(data, &credentialOptions{})

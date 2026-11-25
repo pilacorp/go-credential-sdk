@@ -490,10 +490,10 @@ A proof set may also mix in a `JsonWebSignature2020` proof produced through
 
 On `Verify`, **every** proof must pass (AND), each checked against the DID
 document resolved from its own `verificationMethod`. A derived `ecdsa-sd-2023`
-document carries only its derived proof (VC DI ECDSA §3.6.6 step 4), and
+document carries only its derived proof (VC DI ECDSA v1.0 §3.6.6 step 4), and
 `AddECDSASDBaseProof` refuses a document that already has a proof. A proof
 added after derivation, over the revealed document, forms a proof set with the
-derived proof; `Verify` checks every member (Data Integrity 1.0 §4.5).
+derived proof (Data Integrity 1.0 §4.3); `Verify` checks every member (§4.5).
 
 A proof set has no size limit by default. A verifier that serves untrusted
 callers bounds it with `vc.WithMaxProofs` / `vp.WithMaxProofs` (below).
@@ -565,11 +565,12 @@ non-mandatory revealed statement plus the base signature, so its cost grows with
 
 With `vc.WithCheckRevocation()`, refuses a credential whose `credentialStatus`
 names more than `n` status lists, before any list is fetched; the error wraps
-`vc.ErrTooManyStatusLists`. Entries on one list for one `statusPurpose` count
-once, since they share one fetch. A list that serves several `statusPurpose`
-values (Bitstring Status List v1.0 Appendix B) is fetched, and counted, once
-per purpose. Each list costs a fetch of up to 16 MiB and a
-proof check. `n <= 0` leaves the number unbounded, which is the default.
+`vc.ErrTooManyStatusLists`. Lists are counted by URL: entries on one list
+share one fetch, whatever `statusPurpose` each names (Bitstring Status List
+v1.0 §2.2, §3.2 step 5; example in Appendix A.4). A `refresh` entry is not counted and its list is not
+read, since §2.1 says a refresh status "does not invalidate the verifiable
+credential". Each list costs a fetch of up to 16 MiB and a proof check.
+`n <= 0` leaves the number unbounded, which is the default.
 
 ```go
 err := credential.Verify(vc.WithResolver(resolver), vc.WithCheckRevocation(),
