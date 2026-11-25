@@ -75,16 +75,24 @@ type DIDConfig struct {
 type DIDOption func(*DIDConfig)
 
 // WithRPC sets the RPC endpoint URL for blockchain connectivity.
+//
+// Passed to a Generate… call, it applies to that call only. A call that reads
+// the chain (WithSyncEpoch or WithSyncNonce) then opens its own client to this
+// RPC and closes it before returning; only the deadline of the call's context
+// bounds that dial. A call that reads nothing does not dial.
 func WithRPC(rpc string) DIDOption {
 	return func(c *DIDConfig) { c.RPC = rpc }
 }
 
-// WithDIDChainID sets the blockchain chain ID.
+// WithDIDChainID sets the blockchain chain ID. Passed to a Generate… call, it
+// sets the EIP-155 chain ID that call's transaction is signed for.
 func WithDIDChainID(chainID int64) DIDOption {
 	return func(c *DIDConfig) { c.ChainID = chainID }
 }
 
-// WithDIDAddressSMC sets the DID Registry smart contract address.
+// WithDIDAddressSMC sets the DID Registry smart contract address. Passed to a
+// Generate… call, it sets both that call's transaction target and the contract
+// address in its issuer signature payload.
 func WithDIDAddressSMC(addr string) DIDOption {
 	return func(c *DIDConfig) { c.DIDSMCAddr = addr }
 }
