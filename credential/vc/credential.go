@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -160,6 +161,11 @@ type credentialOptions struct {
 	maxProofs int
 	// maxStatusLists caps the status lists WithCheckRevocation fetches; 0 means no cap.
 	maxStatusLists int
+	// statusListIssuers maps a credential issuer to list issuers trusted for
+	// its credentials besides itself.
+	statusListIssuers map[string][]string
+	// statusListHTTPClient fetches status lists; nil means the package default.
+	statusListHTTPClient *http.Client
 }
 
 // WithReplaceProof (signing) lets a signing call replace a signature the
@@ -371,6 +377,35 @@ func WithLegacyStatusList() CredentialOpt {
 func WithMaxStatusLists(n int) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.maxStatusLists = n
+	}
+}
+
+// WithStatusListIssuers makes WithCheckRevocation accept, for a credential
+// issued by credentialIssuer, a status list issued by one of listIssuers as
+// well as one issued by credentialIssuer itself. Bitstring Status List v1.0
+// §2.2 lets the two differ and leaves the trust to the verifier. The trust is
+// per credential issuer: a list authority named for one issuer vouches for no
+// other issuer's credentials. Without the option only the credential's issuer
+// is trusted. An empty credentialIssuer or list issuer is ignored.
+func WithStatusListIssuers(credentialIssuer string, listIssuers ...string) CredentialOpt {
+	return func(c *credentialOptions) {
+		if c.statusListIssuers == nil {
+			c.statusListIssuers = map[string][]string{}
+		}
+		c.statusListIssuers[credentialIssuer] = append(c.statusListIssuers[credentialIssuer], listIssuers...)
+	}
+}
+
+// WithStatusListHTTPClient sets the HTTP client WithCheckRevocation fetches
+// status lists with. Bitstring Status List v1.0 §3.2 says verifiers SHOULD
+// cache retrieved lists and SHOULD use proxies; a client with a caching or
+// proxying transport does both. It replaces the package default client,
+// which refuses non-public addresses; start from
+// credentialstatus.NewPublicOnlyHTTPClient and wrap its Transport to keep that
+// rule. nil keeps the default.
+func WithStatusListHTTPClient(client *http.Client) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.statusListHTTPClient = client
 	}
 }
 

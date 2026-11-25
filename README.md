@@ -577,6 +577,34 @@ err := credential.Verify(vc.WithResolver(resolver), vc.WithCheckRevocation(),
     vc.WithMaxStatusLists(2), vc.WithMaxProofs(2))
 ```
 
+#### **vc.WithStatusListIssuers(dids...)** and **vc.WithStatusListHTTPClient(client)**
+
+With `vc.WithCheckRevocation()`, a status list must be issued by the
+credential's issuer. `WithStatusListIssuers(credentialIssuer, listIssuers...)`
+also trusts, for that issuer's credentials only, lists issued by the DIDs
+given: Bitstring Status List v1.0 §2.2 lets the two issuers differ and leaves
+that trust to the verifier. `WithStatusListHTTPClient` sets the client lists
+are fetched with; §3.2 says verifiers SHOULD cache lists and SHOULD use
+proxies, which a caching or proxying transport does. Start from
+`credentialstatus.NewPublicOnlyHTTPClient()` and wrap its `Transport`, so the
+client still refuses non-public addresses.
+
+Status errors wrap the error types of Bitstring Status List v1.0 §3 and §3.5
+in `credentialstatus`: `ErrStatusRetrieval`, `ErrStatusVerification`,
+`ErrStatusListLength`, `ErrMalformedValue` and `ErrRange`. Two SDK kinds sit
+beside them: `ErrUnsupported` (a purpose other than revocation and suspension,
+or statusSize above 1) and `ErrStatusListTooLarge` (over the 16 MiB limit;
+retrying does not help). A set bit is none of them.
+
+```go
+err := credential.Verify(vc.WithResolver(resolver), vc.WithCheckRevocation(),
+    vc.WithStatusListIssuers("did:example:issuer", "did:example:status-authority"),
+    vc.WithStatusListHTTPClient(cachingClient))
+if errors.Is(err, credentialstatus.ErrStatusRetrieval) {
+    // the list could not be fetched; retry later
+}
+```
+
 #### **vc.WithBaseURL(url)**
 
 Sets a custom DID resolver base URL for proof verification.
@@ -1831,6 +1859,8 @@ vc.WithSDDisclosures(disclosures)           // Issue SD-JWT: disclosures you bui
 vc.WithReplaceProof()                       // Allow signing to replace a signature already present
 vc.WithMaxProofs(n)                         // Refuse more than n proofs on the credential and its status lists
 vc.WithMaxStatusLists(n)                    // With WithCheckRevocation: refuse more than n status lists
+vc.WithStatusListIssuers(iss, dids...)      // With WithCheckRevocation: also trust lists by dids for iss's credentials
+vc.WithStatusListHTTPClient(client)         // With WithCheckRevocation: fetch lists with client (cache, proxy)
 
 // VP options
 vp.WithVCValidation()                       // Enable VC validation within presentation

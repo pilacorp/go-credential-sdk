@@ -28,8 +28,16 @@ type Entry struct {
 // whether or not its list is read. An optional field set to null counts as
 // absent. Values echoed in errors are clipped. ListURL is the URL's WHATWG
 // serialization without its fragment, so the list fetched and counted is the
-// one checked here.
+// one checked here. Every error wraps ErrMalformedValue.
 func ParseEntry(m map[string]interface{}) (Entry, error) {
+	e, err := parseEntry(m)
+	if err != nil {
+		return Entry{}, withKind(ErrMalformedValue, err)
+	}
+	return e, nil
+}
+
+func parseEntry(m map[string]interface{}) (Entry, error) {
 	var e Entry
 
 	// §2.1: type MUST be BitstringStatusListEntry.
@@ -130,16 +138,16 @@ func (e Entry) Position() (int, error) {
 		return 0, err
 	}
 	if !isBase10Digits(e.Index) {
-		return 0, fmt.Errorf("invalid credentialStatus.statusListIndex %q: must be a base-10 integer, 0 or more", errtext.Clip(e.Index))
+		return 0, withKind(ErrMalformedValue, fmt.Errorf("invalid credentialStatus.statusListIndex %q: must be a base-10 integer, 0 or more", errtext.Clip(e.Index)))
 	}
 	if e.Size != 1 {
-		return 0, fmt.Errorf("credentialStatus.statusSize %d is not supported: only 1-bit status entries are", e.Size)
+		return 0, fmt.Errorf("%w: credentialStatus.statusSize %d is not supported: only 1-bit status entries are", ErrUnsupported, e.Size)
 	}
 	// The digits are checked above, so Atoi fails only on range; the NumError
 	// would echo the whole index, so it is not wrapped.
 	position, err := strconv.Atoi(e.Index)
 	if err != nil {
-		return 0, fmt.Errorf("invalid credentialStatus.statusListIndex %q: %w", errtext.Clip(e.Index), strconv.ErrRange)
+		return 0, withKind(ErrRange, fmt.Errorf("invalid credentialStatus.statusListIndex %q: %w", errtext.Clip(e.Index), strconv.ErrRange))
 	}
 	return position, nil
 }

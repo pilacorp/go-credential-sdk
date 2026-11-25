@@ -43,5 +43,6 @@ func TestParseEntry_Section21(t *testing.T) {
 		c.edit(m)
 		_, err := ParseEntry(m)
 		assert.ErrorContains(t, err, c.want, name)
+		assert.ErrorIs(t, err, ErrMalformedValue, name)
 	}
 }

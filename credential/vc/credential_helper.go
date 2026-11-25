@@ -670,6 +670,12 @@ func checkRevocation(c CredentialData, options *credentialOptions, issuerDIDFall
 	if options.acceptLegacyStatusList {
 		clientOpts = append(clientOpts, credentialstatus.WithLegacyStatusList())
 	}
+	for credentialIssuer, listIssuers := range options.statusListIssuers {
+		clientOpts = append(clientOpts, credentialstatus.WithAcceptedListIssuers(credentialIssuer, listIssuers...))
+	}
+	if options.statusListHTTPClient != nil {
+		clientOpts = append(clientOpts, credentialstatus.WithHTTPClient(options.statusListHTTPClient))
+	}
 	lists := &statusLists{
 		client:    credentialstatus.NewClient(clientOpts...),
 		issuerDID: issuerDID,
