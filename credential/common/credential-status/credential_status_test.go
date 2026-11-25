@@ -1300,3 +1300,12 @@ func TestVerifyAndCheckStatus_CheapChecksBeforeProof(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckBitStatus_PurposeMismatch_TextBounded checks that a long
+// statusPurpose is cut in the mismatch error rather than copied whole.
+func TestCheckBitStatus_PurposeMismatch_TextBounded(t *testing.T) {
+	long := strings.Repeat("p", 1<<20)
+	_, err := CheckBitStatus(0, StatusListCredentialSubject{StatusPurpose: long, EncodedList: "u"}, "revocation")
+	assert.Error(t, err)
+	assert.Less(t, len(err.Error()), 1024)
+}

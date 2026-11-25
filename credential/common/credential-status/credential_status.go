@@ -386,7 +386,7 @@ func clip(s string) string {
 // If subject.StatusPurpose does not match entryPurpose, an error is returned.
 func CheckBitStatus(position int, subject StatusListCredentialSubject, entryPurpose string) (bool, error) {
 	if subject.StatusPurpose != entryPurpose {
-		return false, fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", subject.StatusPurpose, entryPurpose)
+		return false, fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", clip(subject.StatusPurpose), clip(entryPurpose))
 	}
 
 	encoded := subject.EncodedList
