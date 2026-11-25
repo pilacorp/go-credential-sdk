@@ -178,30 +178,52 @@ func (c *Client) fetchStatusListBody(url string) ([]byte, error) {
 // The HTTP response body is capped at 16 MiB; decompressed bitstrings are
 // capped at 16 MiB.
 func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position int, entryPurpose, issuerDID string) error {
+	list, err := c.VerifyStatusList(statusListCredentialURL, entryPurpose, issuerDID)
+	if err != nil {
+		return err
+	}
+	return list.Check(position)
+}
+
+// StatusList is a status list credential that VerifyStatusList fetched and
+// checked for one statusPurpose. IsSet reads its bits without fetching or
+// verifying it again, so a credential with several entries on one list
+// costs one fetch and one proof check.
+type StatusList struct {
+	purpose  string
+	bits     []byte
+	msbFirst bool // the W3C form; the authen-service legacy form is LSB-first
+}
+
+// VerifyStatusList does every step of VerifyAndCheckStatus except reading a
+// bit: it fetches the status list credential, checks its types, statusPurpose
+// against entryPurpose, issuer against issuerDID and validity period, verifies
+// its proof, and decodes its bitstring.
+func (c *Client) VerifyStatusList(statusListCredentialURL, entryPurpose, issuerDID string) (*StatusList, error) {
 	if c.resolver == nil {
-		return fmt.Errorf("resolver is required for VerifyAndCheckStatus: use WithResolver when creating the client")
+		return nil, fmt.Errorf("resolver is required for VerifyAndCheckStatus: use WithResolver when creating the client")
 	}
 
 	// Refuse unsupported purposes before fetching.
 	switch entryPurpose {
 	case "revocation", "suspension":
 	default:
-		return fmt.Errorf("statusPurpose %q is not supported: only revocation and suspension are", entryPurpose)
+		return nil, fmt.Errorf("statusPurpose %q is not supported: only revocation and suspension are", entryPurpose)
 	}
 
 	if statusListCredentialURL == "" {
-		return fmt.Errorf("statusListCredential URL is empty")
+		return nil, fmt.Errorf("statusListCredential URL is empty")
 	}
 
 	body, err := c.fetchStatusListBody(statusListCredentialURL)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Accept the credential served as is, or wrapped as {"data": <credential>}.
 	vcMap, err := statusListFromBody(body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Read status fields from the map whose proof is verified below, not from a
@@ -210,38 +232,38 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 	// while the proof check canonicalizes the list and resolves the issuer DID.
 	sl, err := readStatusList(vcMap, entryPurpose)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// The list must serve the entry's purpose and carry a bitstring; both are
 	// read again by CheckBitStatus, but checking here spares the proof check.
 	if sl.subject.StatusPurpose != entryPurpose {
-		return fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", clip(sl.subject.StatusPurpose), clip(entryPurpose))
+		return nil, fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", clip(sl.subject.StatusPurpose), clip(entryPurpose))
 	}
 	if sl.subject.EncodedList == "" {
-		return fmt.Errorf("encodedList is empty")
+		return nil, fmt.Errorf("encodedList is empty")
 	}
 
 	// Verify the issuer matches the credential being checked.
 	if sl.issuerDID == "" {
-		return fmt.Errorf("status list credential has no issuer")
+		return nil, fmt.Errorf("status list credential has no issuer")
 	}
 	if sl.issuerDID != issuerDID {
-		return fmt.Errorf("status list credential issuer %q does not match credential issuer %q", clip(sl.issuerDID), clip(issuerDID))
+		return nil, fmt.Errorf("status list credential issuer %q does not match credential issuer %q", clip(sl.issuerDID), clip(issuerDID))
 	}
 
 	// Verify that every proof was signed by the issuer.
 	proofs, err := vcMap.Proofs()
 	if err != nil {
-		return fmt.Errorf("failed to parse status list credential proofs: %w", err)
+		return nil, fmt.Errorf("failed to parse status list credential proofs: %w", err)
 	}
 	for i, p := range proofs {
 		proofDID := didFromVM(p.VerificationMethod)
 		if proofDID == "" {
-			return fmt.Errorf("status list credential proof %d has no DID in verificationMethod %q", i, clip(p.VerificationMethod))
+			return nil, fmt.Errorf("status list credential proof %d has no DID in verificationMethod %q", i, clip(p.VerificationMethod))
 		}
 		if proofDID != sl.issuerDID {
-			return fmt.Errorf("status list credential proof %d signed by %q, but issuer is %q", i, clip(proofDID), clip(sl.issuerDID))
+			return nil, fmt.Errorf("status list credential proof %d signed by %q, but issuer is %q", i, clip(proofDID), clip(sl.issuerDID))
 		}
 	}
 
@@ -249,15 +271,15 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 	// issuer, which stamps validFrom when it serves the list, and this
 	// verifier: with no leeway a verifier a second behind refused a fresh list.
 	if err := vcdm.CheckValidity("status list credential", vcMap, statusListClockSkew); err != nil {
-		return err
+		return nil, err
 	}
 	if err := vcMap.CheckJwtProofTimes(statusListClockSkew); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Refuse legacy lists unless the caller opted in.
 	if !strings.HasPrefix(sl.subject.EncodedList, "u") && !c.acceptLegacyList {
-		return fmt.Errorf("status list encodedList is not multibase base64url; pass WithLegacyStatusList to read authen-service legacy lists")
+		return nil, fmt.Errorf("status list encodedList is not multibase base64url; pass WithLegacyStatusList to read authen-service legacy lists")
 	}
 
 	// Verify the status list credential's proof for assertionMethod, the purpose
@@ -265,22 +287,17 @@ func (c *Client) VerifyAndCheckStatus(statusListCredentialURL string, position i
 	// a proof that names another purpose.
 	ok, err := vcMap.VerifyProof(c.resolver, "", jsonmap.WithExpectedProofPurpose("assertionMethod"))
 	if err != nil {
-		return fmt.Errorf("status list credential proof verification failed: %w", err)
+		return nil, fmt.Errorf("status list credential proof verification failed: %w", err)
 	}
 	if !ok {
-		return fmt.Errorf("status list credential proof is invalid")
+		return nil, fmt.Errorf("status list credential proof is invalid")
 	}
 
-	// Check the bit.
-	isSet, err := CheckBitStatus(position, sl.subject, entryPurpose)
+	bits, msbFirst, err := decodeBitstring(sl.subject.EncodedList)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if isSet {
-		return fmt.Errorf("credential status is set for purpose %q", entryPurpose)
-	}
-
-	return nil
+	return &StatusList{purpose: entryPurpose, bits: bits, msbFirst: msbFirst}, nil
 }
 
 // statusListFromBody accepts the status list credential served as is, or
@@ -388,49 +405,65 @@ func CheckBitStatus(position int, subject StatusListCredentialSubject, entryPurp
 	if subject.StatusPurpose != entryPurpose {
 		return false, fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", clip(subject.StatusPurpose), clip(entryPurpose))
 	}
-
-	encoded := subject.EncodedList
-	if encoded == "" {
-		return false, fmt.Errorf("encodedList is empty")
+	bits, msbFirst, err := decodeBitstring(subject.EncodedList)
+	if err != nil {
+		return false, err
 	}
+	return (&StatusList{bits: bits, msbFirst: msbFirst}).IsSet(position)
+}
 
-	isW3C := strings.HasPrefix(encoded, "u")
-
-	if isW3C {
+// decodeBitstring decodes an encodedList in the form its prefix names (see
+// CheckBitStatus) and reports whether its bits are read MSB-first.
+func decodeBitstring(encoded string) ([]byte, bool, error) {
+	if encoded == "" {
+		return nil, false, fmt.Errorf("encodedList is empty")
+	}
+	if strings.HasPrefix(encoded, "u") {
 		// W3C Bitstring Status List: strip the multibase 'u' prefix.
-		raw := encoded[1:]
-		byteString, err := decompressFromBase64URLWithLimit(raw, maxDecompressedSize)
+		bits, err := decompressFromBase64URLWithLimit(encoded[1:], maxDecompressedSize)
 		if err != nil {
-			return false, fmt.Errorf("failed to decode encodedList: %w", err)
+			return nil, false, fmt.Errorf("failed to decode encodedList: %w", err)
 		}
 		// §2.2: the uncompressed bitstring MUST be at least 16 KB.
-		if len(byteString) < 16384 {
-			return false, fmt.Errorf("bitstring status list must be at least 16 KB (131072 bits), got %d bytes (%d bits)", len(byteString), len(byteString)*8)
+		if len(bits) < 16384 {
+			return nil, false, fmt.Errorf("bitstring status list must be at least 16 KB (131072 bits), got %d bytes (%d bits)", len(bits), len(bits)*8)
 		}
-		maxPosition := len(byteString)*8 - 1
-		if position < 0 || position > maxPosition {
-			return false, fmt.Errorf("position %d is out of range for bitstring of %d bits (max position: %d)", position, len(byteString)*8, maxPosition)
-		}
-		// MSB-first: index 0 is the most significant bit of byte 0.
-		byteIndex := position / 8
-		bitIndex := 7 - (position % 8)
-		isSet := (byteString[byteIndex]>>uint(bitIndex))&1 == 1
-		return isSet, nil
+		return bits, true, nil
 	}
-
 	// Legacy form: base64url-no-pad of gzip data, LSB-first, no minimum size.
-	byteString, err := decompressFromBase64URLWithLimit(encoded, maxDecompressedSize)
+	bits, err := decompressFromBase64URLWithLimit(encoded, maxDecompressedSize)
 	if err != nil {
-		return false, fmt.Errorf("failed to decode legacy encodedList: %w", err)
+		return nil, false, fmt.Errorf("failed to decode legacy encodedList: %w", err)
 	}
-	maxPosition := len(byteString)*8 - 1
+	return bits, false, nil
+}
+
+// Check returns an error when the bit at position is set, naming the list's
+// statusPurpose, or when position is out of range.
+func (l *StatusList) Check(position int) error {
+	isSet, err := l.IsSet(position)
+	if err != nil {
+		return err
+	}
+	if isSet {
+		return fmt.Errorf("credential status is set for purpose %q", l.purpose)
+	}
+	return nil
+}
+
+// IsSet reports whether the bit at position is set.
+func (l *StatusList) IsSet(position int) (bool, error) {
+	maxPosition := len(l.bits)*8 - 1
 	if position < 0 || position > maxPosition {
-		return false, fmt.Errorf("position %d is out of range for bitstring of %d bits (max position: %d)", position, len(byteString)*8, maxPosition)
+		return false, fmt.Errorf("position %d is out of range for bitstring of %d bits (max position: %d)", position, len(l.bits)*8, maxPosition)
 	}
 	byteIndex := position / 8
 	bitIndex := position % 8
-	isSet := (byteString[byteIndex]>>uint(bitIndex))&1 == 1
-	return isSet, nil
+	if l.msbFirst {
+		// MSB-first: index 0 is the most significant bit of byte 0.
+		bitIndex = 7 - bitIndex
+	}
+	return (l.bits[byteIndex]>>uint(bitIndex))&1 == 1, nil
 }
 
 // IsRevoked checks whether a credential is revoked based on the encoded list
