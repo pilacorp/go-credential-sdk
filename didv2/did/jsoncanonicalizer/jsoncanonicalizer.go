@@ -128,6 +128,16 @@ func isValidJSONNumber(s string) bool {
 	return i == len(s)
 }
 
+// errorExcerpt quotes a token for an error message and cuts it short: the
+// input may come from outside, and a long token would end up whole in logs.
+func errorExcerpt(token string) string {
+	const maxLen = 32
+	if len(token) > maxLen {
+		return strconv.Quote(token[:maxLen]) + "..."
+	}
+	return strconv.Quote(token)
+}
+
 // Transform canonicalizes JSON data according to RFC 8785 (JSON Canonicalization Scheme).
 //
 // Canonicalization ensures that semantically equivalent JSON documents produce
@@ -209,7 +219,7 @@ func Transform(jsonData []byte) (result []byte, e error) {
 	scanFor := func(expected byte) {
 		c := scan()
 		if c != expected {
-			setError("Expected '" + string(expected) + "' but got '" + string(c) + "'")
+			setError("Expected '" + string(expected) + "' but got " + errorExcerpt(string([]byte{c})))
 		}
 	}
 
@@ -307,7 +317,7 @@ func Transform(jsonData []byte) (result []byte, e error) {
 							continue CoreLoop
 						}
 					}
-					setError("Unexpected escape: \\" + string(c))
+					setError("Unexpected escape: " + errorExcerpt(string([]byte{'\\', c})))
 				}
 			} else {
 				// Just an ordinary ASCII character alternatively a UTF-8 byte
@@ -354,11 +364,16 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		// before parsing. strconv.ParseFloat accepts forms like "01", "1.",
 		// "+1", ".5" that are not valid JSON.
 		if !isValidJSONNumber(value) {
-			setError("Invalid JSON number: " + value)
+			setError("Invalid JSON number: " + errorExcerpt(value))
 			return jsonValue{}
 		}
 		ieeeF64, err := strconv.ParseFloat(value, 64)
-		checkError(err)
+		if err != nil {
+			// RFC 8785 §3.1: numbers must be expressible as IEEE 754 doubles. The
+			// grammar check above leaves only a range error here.
+			setError("JSON number out of IEEE 754 range: " + errorExcerpt(value))
+			return jsonValue{}
+		}
 		value, err = NumberToJSON(ieeeF64)
 		checkError(err)
 		return jsonValue{scalar: value}
@@ -425,7 +440,7 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		})
 		for i := 1; i < len(object.members); i++ {
 			if slices.Equal(object.members[i-1].sortKey, object.members[i].sortKey) {
-				setError("Duplicate key: " + object.members[i].name)
+				setError("Duplicate key: " + errorExcerpt(object.members[i].name))
 				break
 			}
 		}
