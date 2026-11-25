@@ -22,7 +22,7 @@ func threeKeyDoc() *DIDDocument {
 				ID:           did + "#key-1",
 				Type:         "EcdsaSecp256k1VerificationKey2019",
 				Controller:   did,
-				PublicKeyHex: "02ba5734d8f7091719471e7f7ed6b9df170dc70cc661ca05e698601ad984f068b0",
+				PublicKeyHex: "02ba5734d8f7091719471e7f7ed6b9df170dc70cc661ca05e688601ad984f068b0",
 			},
 			{
 				ID:                 did + "#key-2",
@@ -124,7 +124,7 @@ func TestSelectDefaultSigningVM_Key1RevokedKey3Active_FallsBackToJsonWebKey(t *t
 				ID:           did + "#key-1",
 				Type:         "EcdsaSecp256k1VerificationKey2019",
 				Controller:   did,
-				PublicKeyHex: "02ba5734d8f7091719471e7f7ed6b9df170dc70cc661ca05e698601ad984f068b0",
+				PublicKeyHex: "02ba5734d8f7091719471e7f7ed6b9df170dc70cc661ca05e688601ad984f068b0",
 				Revoked:      &revoked,
 			},
 			{
