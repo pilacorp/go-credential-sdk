@@ -634,11 +634,53 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 		return nil
 	}
 
-	statusMap, ok := rawStatus.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("credentialStatus must be an object")
+	// VC Data Model v2.0 §4.10: credentialStatus is a single object or a set
+	// of one or more objects; every entry is checked.
+	var entries []interface{}
+	switch v := rawStatus.(type) {
+	case map[string]interface{}:
+		entries = []interface{}{v}
+	case []interface{}:
+		if len(v) == 0 {
+			return fmt.Errorf("credentialStatus must not be an empty array")
+		}
+		entries = v
+	default:
+		return fmt.Errorf("credentialStatus must be an object or an array of objects")
 	}
 
+	// Extract the credential's issuer DID for the issuer-match check.
+	// For JWT VCs, VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
+	// is present it sets the issuer.
+	var issuerDID string
+	for _, fb := range issuerDIDFallbacks {
+		if fb != "" {
+			issuerDID = fb
+			break
+		}
+	}
+	if issuerDID == "" {
+		issuerDID, _ = jsonmap.DIDFromField(c["issuer"])
+	}
+
+	for i, raw := range entries {
+		statusMap, ok := raw.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("credentialStatus[%d] must be an object", i)
+		}
+		if err := checkStatusEntry(statusMap, resolver, acceptLegacyList, issuerDID); err != nil {
+			if len(entries) > 1 {
+				return fmt.Errorf("credentialStatus[%d]: %w", i, err)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// checkStatusEntry checks one credentialStatus entry for the credential issued
+// by issuerDID.
+func checkStatusEntry(statusMap map[string]interface{}, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, issuerDID string) error {
 	// If credentialStatus is an empty object, also treat it as "no revocation info".
 	if len(statusMap) == 0 {
 		return nil
@@ -685,20 +727,6 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 	position, err := strconv.Atoi(statusListIndex)
 	if err != nil {
 		return fmt.Errorf("invalid credentialStatus.statusListIndex: %w", err)
-	}
-
-	// Extract the credential's issuer DID for the issuer-match check.
-	// For JWT VCs, VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
-	// is present it sets the issuer.
-	var issuerDID string
-	for _, fb := range issuerDIDFallbacks {
-		if fb != "" {
-			issuerDID = fb
-			break
-		}
-	}
-	if issuerDID == "" {
-		issuerDID, _ = jsonmap.DIDFromField(c["issuer"])
 	}
 
 	// Fetch, verify, and check the status list credential.
