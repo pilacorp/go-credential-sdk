@@ -625,9 +625,12 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 // ignored, the same rule the SDK applies to a credentialSchema type it does
 // not implement, rather than having its index read as a bitstring position.
 //
+// maxProofs caps the proofs of each status list credential, as
+// WithMaxProofs caps the credential's own; 0 means no cap.
+//
 // issuerDIDFallbacks supplies additional DID strings to try when c["issuer"]
 // is missing (e.g. the JWT "iss" claim for VC Data Model v1.1 §6.3.1).
-func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, issuerDIDFallbacks ...string) error {
+func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, maxProofs int, issuerDIDFallbacks ...string) error {
 	// If there's no credentialStatus at all, treat as not using revocation → no error.
 	rawStatus, ok := c["credentialStatus"]
 	if !ok || rawStatus == nil {
@@ -663,7 +666,7 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 		issuerDID, _ = jsonmap.DIDFromField(c["issuer"])
 	}
 
-	clientOpts := []credentialstatus.Option{credentialstatus.WithResolver(resolver)}
+	clientOpts := []credentialstatus.Option{credentialstatus.WithResolver(resolver), credentialstatus.WithMaxProofs(maxProofs)}
 	if acceptLegacyList {
 		clientOpts = append(clientOpts, credentialstatus.WithLegacyStatusList())
 	}

@@ -26,7 +26,7 @@ type digestCache struct {
 	bodyNoProofErr error
 	bodyNoProofOK  bool
 
-	// URDNA2015 N-Quads of the body without proof. ecdsa-rdfc-2019 and
+	// RDFC-1.0 N-Quads of the body without proof. ecdsa-rdfc-2019 and
 	// EcdsaSecp256k1Signature2019 hash them; ecdsa-sd-2023 relabels them. One
 	// result serves every proof of either kind.
 	bodyNQuads    []string
@@ -75,7 +75,7 @@ func (c *digestCache) computeDocumentDigest(m *JSONMap) ([]byte, error) {
 	return digest[:], nil
 }
 
-// canonicalNQuads runs URDNA2015 on body the first time and returns the cached
+// canonicalNQuads runs RDFC-1.0 on body the first time and returns the cached
 // result, or the cached error, after that. body must be the cache's own
 // bodyWithoutProof result.
 func (c *digestCache) canonicalNQuads(body map[string]interface{}) ([]string, error) {

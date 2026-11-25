@@ -489,9 +489,14 @@ A proof set may also mix in a `JsonWebSignature2020` proof produced through
 `jsonmap.AddJWSProof` (see above); `Verify` handles each proof by its own type.
 
 On `Verify`, **every** proof must pass (AND), each checked against the DID
-document resolved from its own `verificationMethod`. (Note: `ecdsa-sd-2023`
-rewrites the document body and is always a single proof — it cannot be combined
-into a proof set.)
+document resolved from its own `verificationMethod`. A derived `ecdsa-sd-2023`
+document carries only its derived proof (VC DI ECDSA §3.6.6 step 4), and
+`AddECDSASDBaseProof` refuses a document that already has a proof. A proof
+added after derivation, over the revealed document, forms a proof set with the
+derived proof; `Verify` checks every member (Data Integrity 1.0 §4.5).
+
+A proof set has no size limit by default. A verifier that serves untrusted
+callers bounds it with `vc.WithMaxProofs` / `vp.WithMaxProofs` (below).
 
 ### Available Options
 
@@ -537,6 +542,24 @@ err := credential.AddCustomProof(proof, vc.WithVerifyProof(), vc.WithResolver(re
 Import: `verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"`. `proofValue` must be the multibase `z…` string, not the raw signature: a raw or hex value is refused by the prefix check before the signature is ever looked at.
 
 Costs one DID resolution and one canonicalization, and only when you pass the option — without it the proof is attached unchecked, as before. Only `ecdsa-rdfc-2019` can be checked this way (the suite the external signing flow produces); with the option set, another suite is refused rather than checked against bytes nobody signed — attach it without the option and call `Verify()`. The signing calls that make their own signature (`AddProof`, `AddProofByProvider`) already check it against the verification method, so the option changes nothing there.
+
+#### **vc.WithMaxProofs(n)**
+
+Refuses a JSON-LD credential that carries more than `n` proofs, before any DID
+is resolved; the error wraps `jsonmap.ErrTooManyProofs`. With
+`vc.WithCheckRevocation()` the same cap applies to each status list credential
+`Verify` fetches. `n <= 0` leaves the proof set unbounded, which is the default.
+
+```go
+err := credential.Verify(vc.WithResolver(resolver), vc.WithMaxProofs(2))
+if errors.Is(err, jsonmap.ErrTooManyProofs) {
+    // the credential carries more than 2 proofs
+}
+```
+
+Each proof costs one DID resolution (shared by proofs from one DID) and one
+signature check; an `ecdsa-sd-2023` derived proof costs one signature check per
+non-mandatory revealed statement plus the base signature, so its cost grows with the credential, not with the count.
 
 #### **vc.WithBaseURL(url)**
 
@@ -1225,6 +1248,18 @@ presentation, err := vp.ParsePresentation(data,
 > VC Data Model, so schema validation is now opt-in via
 > `vc.WithSchemaValidation()`.
 
+#### **vp.WithMaxProofs(n)**
+
+Refuses a JSON-LD presentation that carries more than `n` proofs, before its
+embedded credentials are verified and before any DID is resolved. It caps the
+presentation's own proofs only; pass `vc.WithMaxProofs` through
+`vp.WithVCValidation` to cap the embedded credentials' proofs.
+
+```go
+err := presentation.Verify(vp.WithResolver(resolver), vp.WithMaxProofs(1),
+    vp.WithVCValidation(vc.WithMaxProofs(2)))
+```
+
 #### **vp.WithVerifyProof()**
 
 Enables proof verification during presentation parsing.
@@ -1778,6 +1813,7 @@ vc.WithVerificationMethodKey(key)           // Set custom verification method ke
 vc.WithSDSelectivePaths(paths)              // Issue SD-JWT: claims at these paths are selectively disclosable
 vc.WithSDDisclosures(disclosures)           // Issue SD-JWT: disclosures you built, matching digests already in the contents
 vc.WithReplaceProof()                       // Allow signing to replace a signature already present
+vc.WithMaxProofs(n)                         // Refuse more than n proofs on the credential and its status lists
 
 // VP options
 vp.WithVCValidation()                       // Enable VC validation within presentation
@@ -1785,6 +1821,7 @@ vp.WithVerifyProof()                        // Enable proof verification
 vp.WithBaseURL(url)                         // Set custom DID resolver URL
 vp.WithVerificationMethodKey(key)           // Set custom verification method key
 vp.WithReplaceProof()                       // Allow signing to replace a signature already present
+vp.WithMaxProofs(n)                         // Refuse more than n proofs on the presentation
 ```
 
 ---

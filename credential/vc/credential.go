@@ -242,9 +242,11 @@ func WithProofVerificationMethod(vm string) CredentialOpt {
 // WithMaxProofs makes Verify refuse a JSON-LD credential that carries more
 // than n proofs, before any DID is resolved. A verifier that serves untrusted
 // callers sets the most proofs its credentials carry. The count is of the
-// whole credential, also with WithProofVerificationMethod. n <= 0 leaves the
-// proof set unbounded, which is the default. A JWT credential holds one signature,
-// so the option does not change it.
+// whole credential, also with WithProofVerificationMethod. The same cap
+// applies to each status list credential that Verify fetches with
+// WithCheckRevocation. n <= 0 leaves the proof sets unbounded, which is the
+// default. A JWT credential holds one signature, so the cap applies to it only
+// through its status lists.
 func WithMaxProofs(n int) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.maxProofs = n

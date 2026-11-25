@@ -51,6 +51,7 @@ type Client struct {
 	client           *http.Client
 	resolver         verificationmethod.ResolverProvider
 	acceptLegacyList bool
+	maxProofs        int
 }
 
 type Option func(*Client)
@@ -92,6 +93,14 @@ func SetDefaultHTTPClient(c *http.Client) {
 // legacy lists (no multibase prefix, least significant bit first).
 func WithLegacyStatusList() Option {
 	return func(c *Client) { c.acceptLegacyList = true }
+}
+
+// WithMaxProofs makes VerifyStatusList refuse a status list credential that
+// carries more than n proofs, with an error wrapping jsonmap.ErrTooManyProofs,
+// before any DID is resolved. n <= 0 leaves the proof set unbounded, which is
+// the default.
+func WithMaxProofs(n int) Option {
+	return func(c *Client) { c.maxProofs = n }
 }
 
 func NewClient(options ...Option) *Client {
@@ -226,6 +235,11 @@ func (c *Client) VerifyStatusList(statusListCredentialURL, entryPurpose, issuerD
 	if err != nil {
 		return nil, err
 	}
+	// Count the proofs before any of them is parsed: an oversized set is
+	// refused at the cost of the body decode alone.
+	if err := vcMap.CheckProofCount(c.maxProofs); err != nil {
+		return nil, fmt.Errorf("status list credential proof verification failed: %w", err)
+	}
 
 	// Read status fields from the map whose proof is verified below, not from a
 	// separate struct decode that could read case-variant sibling keys the proof
@@ -286,7 +300,7 @@ func (c *Client) VerifyStatusList(statusListCredentialURL, entryPurpose, issuerD
 	// Verify the status list credential's proof for assertionMethod, the purpose
 	// vc.Verify expects of a credential's proof; Data Integrity 1.0 §4.4 refuses
 	// a proof that names another purpose.
-	ok, err := vcMap.VerifyProof(c.resolver, "", jsonmap.WithExpectedProofPurpose("assertionMethod"))
+	ok, err := vcMap.VerifyProof(c.resolver, "", jsonmap.WithExpectedProofPurpose("assertionMethod"), jsonmap.WithMaxProofs(c.maxProofs))
 	if err != nil {
 		return nil, fmt.Errorf("status list credential proof verification failed: %w", err)
 	}

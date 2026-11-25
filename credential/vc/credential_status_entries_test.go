@@ -27,6 +27,12 @@ const entriesIssuer = "did:example:status-issuer"
 // set, and counts how many times it is fetched.
 func serveSignedStatusList(t *testing.T, set ...int) (url string, resolver verificationmethod.ResolverProvider, hits *atomic.Int32) {
 	t.Helper()
+	return serveStatusList(t, 1, set...)
+}
+
+// serveStatusList is serveSignedStatusList with a proof set of the given size.
+func serveStatusList(t *testing.T, proofs int, set ...int) (url string, resolver verificationmethod.ResolverProvider, hits *atomic.Int32) {
+	t.Helper()
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	vm, err := verificationmethod.NewP256VM(entriesIssuer, "key-1", &priv.PublicKey)
@@ -55,7 +61,9 @@ func serveSignedStatusList(t *testing.T, set ...int) (url string, resolver verif
 	}
 	sp, err := signer.NewP256Provider(priv)
 	require.NoError(t, err)
-	require.NoError(t, list.AddECDSAProof(sp, entriesIssuer+"#key-1", "assertionMethod"))
+	for range proofs {
+		require.NoError(t, list.AddECDSAProof(sp, entriesIssuer+"#key-1", "assertionMethod"))
+	}
 
 	hits = &atomic.Int32{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -86,12 +94,12 @@ func TestCheckRevocation_StatusArray_EveryEntryRead(t *testing.T) {
 		"issuer":           entriesIssuer,
 		"credentialStatus": []interface{}{revocationEntry(url, "3"), revocationEntry(url, "9")},
 	}
-	err := checkRevocation(data, resolver, false)
+	err := checkRevocation(data, resolver, false, 0)
 	assert.ErrorContains(t, err, "credentialStatus[1]")
 	assert.ErrorContains(t, err, "credential status is set")
 
 	data["credentialStatus"] = []interface{}{revocationEntry(url, "3"), revocationEntry(url, "4")}
-	assert.NoError(t, checkRevocation(data, resolver, false))
+	assert.NoError(t, checkRevocation(data, resolver, false, 0))
 }
 
 // TestCheckRevocation_StatusArray_ListFetchedOnce checks that entries sharing a
@@ -102,8 +110,17 @@ func TestCheckRevocation_StatusArray_ListFetchedOnce(t *testing.T) {
 	for i := range entries {
 		entries[i] = revocationEntry(url, "5")
 	}
-	require.NoError(t, checkRevocation(CredentialData{"issuer": entriesIssuer, "credentialStatus": entries}, resolver, false))
+	require.NoError(t, checkRevocation(CredentialData{"issuer": entriesIssuer, "credentialStatus": entries}, resolver, false, 0))
 	assert.Equal(t, int32(1), hits.Load(), "status list fetches")
+}
+
+// TestCheckRevocation_StatusListProofCap checks that the credential's proof
+// cap also bounds the proof set of a status list it fetches.
+func TestCheckRevocation_StatusListProofCap(t *testing.T) {
+	url, resolver, _ := serveStatusList(t, 2)
+	data := CredentialData{"issuer": entriesIssuer, "credentialStatus": revocationEntry(url, "3")}
+	assert.ErrorIs(t, checkRevocation(data, resolver, false, 1), jsonmap.ErrTooManyProofs)
+	assert.NoError(t, checkRevocation(data, resolver, false, 2))
 }
 
 // TestStatusLists_ListDroppedAfterLastEntry checks that a verified list is

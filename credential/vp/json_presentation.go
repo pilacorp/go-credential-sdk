@@ -272,6 +272,14 @@ func (e *JSONPresentation) ExtractField(path string) interface{} {
 func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
+	// Count the presentation's proofs before its embedded credentials are
+	// verified, so an oversized set costs no credential verification.
+	if options.isVerifyProof {
+		if err := (*jsonmap.JSONMap)(&e.presentationData).CheckProofCount(options.maxProofs); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+	}
+
 	if options.isValidateVC {
 		if err := verifyCredentials(PresentationData(e.presentationData), options); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)

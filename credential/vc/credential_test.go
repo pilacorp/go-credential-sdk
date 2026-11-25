@@ -769,7 +769,7 @@ func TestCheckRevocation_MissingStatusPurpose_Refused(t *testing.T) {
 			// no statusPurpose
 		},
 	}
-	err := checkRevocation(data, nil, false)
+	err := checkRevocation(data, nil, false, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "statusPurpose is required")
 }
@@ -784,7 +784,7 @@ func TestCheckRevocation_UnsupportedStatusSize_Refused(t *testing.T) {
 			"statusSize":           float64(2),
 		},
 	}
-	err := checkRevocation(data, nil, false)
+	err := checkRevocation(data, nil, false, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "statusSize")
 	assert.Contains(t, err.Error(), "not supported")
@@ -2531,7 +2531,7 @@ func TestCheckRevocation_ArrayTypedEntryIsRead(t *testing.T) {
 			"statusListIndex":      "5",
 		},
 	}
-	err := checkRevocation(data, nil, false)
+	err := checkRevocation(data, nil, false, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "statusPurpose is required")
 }
@@ -2553,17 +2553,17 @@ func TestCheckRevocation_StatusArray(t *testing.T) {
 	unknown := map[string]interface{}{"type": "StatusList2021Entry", "statusListIndex": "5"}
 
 	// The second entry is refused before any fetch, so the error proves it was read.
-	err := checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, bitstringEntry("")}}, nil, false)
+	err := checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, bitstringEntry("")}}, nil, false, 0)
 	assert.ErrorContains(t, err, "credentialStatus[1]")
 	assert.ErrorContains(t, err, "statusPurpose is required")
 
 	// Entries of types the SDK does not read are ignored, as for a single entry.
-	assert.NoError(t, checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, unknown}}, nil, false))
+	assert.NoError(t, checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, unknown}}, nil, false, 0))
 
 	// An empty set is not "one or more objects".
-	assert.ErrorContains(t, checkRevocation(CredentialData{"credentialStatus": []interface{}{}}, nil, false), "empty array")
+	assert.ErrorContains(t, checkRevocation(CredentialData{"credentialStatus": []interface{}{}}, nil, false, 0), "empty array")
 
 	// An entry that is not an object is refused.
-	err = checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, "x"}}, nil, false)
+	err = checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, "x"}}, nil, false, 0)
 	assert.ErrorContains(t, err, "credentialStatus[1] must be an object")
 }

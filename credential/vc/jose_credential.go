@@ -616,7 +616,7 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	// forged credential must not trigger a GET to the statusListCredential
 	// URL the attacker chose.
 	if options.isCheckRevocation {
-		if err := checkRevocation(j.payloadData, options.resolver, options.acceptLegacyStatusList); err != nil {
+		if err := checkRevocation(j.payloadData, options.resolver, options.acceptLegacyStatusList, options.maxProofs); err != nil {
 			return fmt.Errorf("credential verification failed: check revocation: %w", err)
 		}
 	}
