@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 type nameValueType struct {
@@ -281,13 +282,15 @@ func Transform(jsonData []byte) (result []byte, e error) {
 					// The \u escape
 					firstUTF16 := getUEscape()
 					if utf16.IsSurrogate(firstUTF16) {
-						// If the first UTF-16 code unit has a certain value there must be
-						// another succeeding UTF-16 code unit as well
+						// RFC 8785 §3.2.2.2: a lone surrogate MUST end canonicalization
+						// with an error. Only a high surrogate followed by a low one is a
+						// code point; DecodeRune returns RuneError for any other pair.
 						if nextChar() != '\\' || nextChar() != 'u' {
-							setError("Missing surrogate")
+							setError("Lone surrogate in string")
+						} else if r := utf16.DecodeRune(firstUTF16, getUEscape()); r == utf8.RuneError {
+							setError("Lone surrogate in string")
 						} else {
-							// Output the UTF-32 code point as UTF-8
-							rawString.WriteRune(utf16.DecodeRune(firstUTF16, getUEscape()))
+							rawString.WriteRune(r)
 						}
 					} else {
 						// Single UTF-16 code identical to UTF-32.  Output as UTF-8
@@ -314,6 +317,11 @@ func Transform(jsonData []byte) (result []byte, e error) {
 				// as expected.
 				rawString.WriteByte(c)
 			}
+		}
+		// RFC 8785 §3.1: string data must be Unicode. Raw bytes are copied as
+		// they are, so a byte sequence that is not UTF-8 is refused here.
+		if globalError == nil && !utf8.ValidString(rawString.String()) {
+			setError("Invalid UTF-8 in string")
 		}
 		return rawString.String()
 	}
