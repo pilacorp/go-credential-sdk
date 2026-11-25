@@ -2535,3 +2535,35 @@ func TestCheckRevocation_ArrayTypedEntryIsRead(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "statusPurpose is required")
 }
+
+// TestCheckRevocation_StatusArray checks VC Data Model v2.0 §4.10: a
+// credentialStatus set of several entries is read, and each entry is checked.
+func TestCheckRevocation_StatusArray(t *testing.T) {
+	bitstringEntry := func(purpose string) map[string]interface{} {
+		e := map[string]interface{}{
+			"type":                 "BitstringStatusListEntry",
+			"statusListCredential": "https://example.com/status/0",
+			"statusListIndex":      "5",
+		}
+		if purpose != "" {
+			e["statusPurpose"] = purpose
+		}
+		return e
+	}
+	unknown := map[string]interface{}{"type": "StatusList2021Entry", "statusListIndex": "5"}
+
+	// The second entry is refused before any fetch, so the error proves it was read.
+	err := checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, bitstringEntry("")}}, nil, false)
+	assert.ErrorContains(t, err, "credentialStatus[1]")
+	assert.ErrorContains(t, err, "statusPurpose is required")
+
+	// Entries of types the SDK does not read are ignored, as for a single entry.
+	assert.NoError(t, checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, unknown}}, nil, false))
+
+	// An empty set is not "one or more objects".
+	assert.ErrorContains(t, checkRevocation(CredentialData{"credentialStatus": []interface{}{}}, nil, false), "empty array")
+
+	// An entry that is not an object is refused.
+	err = checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, "x"}}, nil, false)
+	assert.ErrorContains(t, err, "credentialStatus[1] must be an object")
+}
