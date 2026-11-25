@@ -101,3 +101,15 @@ func TestErrorReturnsNil(t *testing.T) {
 		}
 	}
 }
+
+// TestMemberOrderPrefixFirst checks RFC 8785 §3.2.3: a name that is a prefix of
+// another sorts first, and array order is kept.
+func TestMemberOrderPrefixFirst(t *testing.T) {
+	got, err := Transform([]byte(`{"ab":1,"b":[3,1],"a":2,"":0}`))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if want := `{"":0,"a":2,"ab":1,"b":[3,1]}`; string(got) != want {
+		t.Errorf("Transform = %s, want %s", got, want)
+	}
+}

@@ -22,6 +22,7 @@
 package jsoncanonicalizer
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
@@ -33,26 +34,51 @@ import (
 )
 
 type nameValueType struct {
-	name    string
-	sortKey []uint16
-	value   jsonValue
+	name  string
+	value jsonValue
 }
 
-type valueKind int
-
-const (
-	kindScalar valueKind = iota
-	kindArray
-	kindObject
-)
-
-// jsonValue is one parsed value. A scalar holds its canonical text; arrays and
-// objects hold their children, so the output is written in a single pass.
+// jsonValue is one parsed value: a scalar holds its canonical text, an array or
+// object its children, so the output is written in a single pass. It is kept to
+// three words because one exists for every array element.
 type jsonValue struct {
-	kind     valueKind
-	scalar   string
+	scalar    string
+	container *jsonContainer
+}
+
+type jsonContainer struct {
+	isObject bool
 	elements []jsonValue
 	members  []nameValueType
+}
+
+// compareUTF16 orders two valid UTF-8 strings by their UTF-16 code units, as
+// RFC 8785 §3.2.3 requires. Code point order differs from it only where a code
+// point above U+FFFF (a surrogate pair) meets one in U+E000-U+FFFF.
+func compareUTF16(a, b string) int {
+	for a != "" && b != "" {
+		ra, na := utf8.DecodeRuneInString(a)
+		rb, nb := utf8.DecodeRuneInString(b)
+		if ra != rb {
+			ha, la := utf16Units(ra)
+			hb, lb := utf16Units(rb)
+			if c := cmp.Compare(ha, hb); c != 0 {
+				return c
+			}
+			return cmp.Compare(la, lb)
+		}
+		a, b = a[na:], b[nb:]
+	}
+	return cmp.Compare(len(a), len(b))
+}
+
+// utf16Units returns the first and second UTF-16 code unit of r; the second is
+// zero for a code point that needs one unit.
+func utf16Units(r rune) (uint16, uint16) {
+	if r1, r2 := utf16.EncodeRune(r); r1 != utf8.RuneError {
+		return uint16(r1), uint16(r2)
+	}
+	return uint16(r), 0
 }
 
 // JSON standard escapes (modulo \u)
@@ -421,7 +447,7 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		if !enterNesting() {
 			return jsonValue{}
 		}
-		array := jsonValue{kind: kindArray}
+		array := &jsonContainer{}
 		var next bool = false
 		for globalError == nil && testNextNonWhiteSpaceChar() != ']' {
 			if next {
@@ -432,7 +458,7 @@ func Transform(jsonData []byte) (result []byte, e error) {
 			array.elements = append(array.elements, parseElement())
 		}
 		scan()
-		return array
+		return jsonValue{container: array}
 	}
 
 	parseObject = func() jsonValue {
@@ -440,7 +466,7 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		if !enterNesting() {
 			return jsonValue{}
 		}
-		object := jsonValue{kind: kindObject}
+		object := &jsonContainer{isObject: true}
 		var next bool = false
 		for globalError == nil && testNextNonWhiteSpaceChar() != '}' {
 			if next {
@@ -452,31 +478,25 @@ func Transform(jsonData []byte) (result []byte, e error) {
 			if globalError != nil {
 				break
 			}
-			// Sort keys on UTF-16 code units
-			// Since UTF-8 doesn't have endianess this is just a value transformation
-			// In the Go case the transformation is UTF-8 => UTF-32 => UTF-16
-			sortKey := utf16.Encode([]rune(rawUTF8))
 			scanFor(':')
-			object.members = append(object.members, nameValueType{rawUTF8, sortKey, parseElement()})
+			object.members = append(object.members, nameValueType{rawUTF8, parseElement()})
 		}
 		// Scan away '}'
 		scan()
 		if globalError != nil {
-			return object
+			return jsonValue{container: object}
 		}
-		// RFC 8785 §3.2.3: members are ordered by their names as arrays of UTF-16
-		// code units compared as unsigned integers, a shorter prefix first, which
-		// is exactly what slices.Compare does on []uint16.
 		slices.SortFunc(object.members, func(a, b nameValueType) int {
-			return slices.Compare(a.sortKey, b.sortKey)
+			return compareUTF16(a.name, b.name)
 		})
+		// Names are valid UTF-8 here, so equal bytes means equal names.
 		for i := 1; i < len(object.members); i++ {
-			if slices.Equal(object.members[i-1].sortKey, object.members[i].sortKey) {
+			if object.members[i-1].name == object.members[i].name {
 				setError("Duplicate key: " + errorExcerpt(object.members[i].name))
 				break
 			}
 		}
-		return object
+		return jsonValue{container: object}
 	}
 
 	// The output is written once, after parsing: building it level by level
@@ -484,19 +504,21 @@ func Transform(jsonData []byte) (result []byte, e error) {
 	var canonical strings.Builder
 	var writeValue func(v jsonValue)
 	writeValue = func(v jsonValue) {
-		switch v.kind {
-		case kindArray:
+		switch {
+		case v.container == nil:
+			canonical.WriteString(v.scalar)
+		case !v.container.isObject:
 			canonical.WriteByte('[')
-			for i, element := range v.elements {
+			for i, element := range v.container.elements {
 				if i > 0 {
 					canonical.WriteByte(',')
 				}
 				writeValue(element)
 			}
 			canonical.WriteByte(']')
-		case kindObject:
+		default:
 			canonical.WriteByte('{')
-			for i, member := range v.members {
+			for i, member := range v.container.members {
 				if i > 0 {
 					canonical.WriteByte(',')
 				}
@@ -505,8 +527,6 @@ func Transform(jsonData []byte) (result []byte, e error) {
 				writeValue(member.value)
 			}
 			canonical.WriteByte('}')
-		default:
-			canonical.WriteString(v.scalar)
 		}
 	}
 
