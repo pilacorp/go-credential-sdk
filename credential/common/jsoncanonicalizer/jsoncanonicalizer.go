@@ -22,9 +22,9 @@
 package jsoncanonicalizer
 
 import (
-	"container/list"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -33,7 +33,24 @@ import (
 type nameValueType struct {
 	name    string
 	sortKey []uint16
-	value   string
+	value   jsonValue
+}
+
+type valueKind int
+
+const (
+	kindScalar valueKind = iota
+	kindArray
+	kindObject
+)
+
+// jsonValue is one parsed value. A scalar holds its canonical text; arrays and
+// objects hold their children, so the output is written in a single pass.
+type jsonValue struct {
+	kind     valueKind
+	scalar   string
+	elements []jsonValue
+	members  []nameValueType
 }
 
 // JSON standard escapes (modulo \u)
@@ -119,11 +136,11 @@ func Transform(jsonData []byte) (result []byte, e error) {
 	var index int = 0
 
 	// "Forward" declarations are needed for closures referring each other
-	var parseElement func() string
-	var parseSimpleType func() string
+	var parseElement func() jsonValue
+	var parseSimpleType func() jsonValue
 	var parseQuotedString func() string
-	var parseObject func() string
-	var parseArray func() string
+	var parseObject func() jsonValue
+	var parseArray func() jsonValue
 
 	var globalError error = nil
 
@@ -278,7 +295,7 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		return rawString.String()
 	}
 
-	parseSimpleType = func() string {
+	parseSimpleType = func() jsonValue {
 		var token strings.Builder
 		index--
 		for globalError == nil {
@@ -299,7 +316,7 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		// Is it a JSON literal?
 		for _, literal := range literals {
 			if literal == value {
-				return literal
+				return jsonValue{scalar: literal}
 			}
 		}
 		// Validate that the token is a valid JSON number per RFC 8259 §6
@@ -307,21 +324,21 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		// "+1", ".5" that are not valid JSON.
 		if !isValidJSONNumber(value) {
 			setError("Invalid JSON number: " + value)
-			return value
+			return jsonValue{}
 		}
 		ieeeF64, err := strconv.ParseFloat(value, 64)
 		checkError(err)
 		value, err = NumberToJSON(ieeeF64)
 		checkError(err)
-		return value
+		return jsonValue{scalar: value}
 	}
 
-	parseElement = func() string {
+	parseElement = func() jsonValue {
 		switch scan() {
 		case '{':
 			return parseObject()
 		case '"':
-			return decorateString(parseQuotedString())
+			return jsonValue{scalar: decorateString(parseQuotedString())}
 		case '[':
 			return parseArray()
 		default:
@@ -329,58 +346,24 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		}
 	}
 
-	parseArray = func() string {
-		var arrayData strings.Builder
-		arrayData.WriteByte('[')
+	parseArray = func() jsonValue {
+		array := jsonValue{kind: kindArray}
 		var next bool = false
 		for globalError == nil && testNextNonWhiteSpaceChar() != ']' {
 			if next {
 				scanFor(',')
-				arrayData.WriteByte(',')
 			} else {
 				next = true
 			}
-			arrayData.WriteString(parseElement())
+			array.elements = append(array.elements, parseElement())
 		}
 		scan()
-		arrayData.WriteByte(']')
-		return arrayData.String()
+		return array
 	}
 
-	lexicographicallyPrecedes := func(sortKey []uint16, e *list.Element) bool {
-		// Find the minimum length of the sortKeys
-		oldSortKey := e.Value.(nameValueType).sortKey
-		minLength := len(oldSortKey)
-		if minLength > len(sortKey) {
-			minLength = len(sortKey)
-		}
-		for q := 0; q < minLength; q++ {
-			diff := int(sortKey[q]) - int(oldSortKey[q])
-			if diff < 0 {
-				// Smaller => Precedes
-				return true
-			} else if diff > 0 {
-				// Bigger => No match
-				return false
-			}
-			// Still equal => Continue
-		}
-		// The sortKeys compared equal up to minLength
-		if len(sortKey) < len(oldSortKey) {
-			// Shorter => Precedes
-			return true
-		}
-		if len(sortKey) == len(oldSortKey) {
-			setError("Duplicate key: " + e.Value.(nameValueType).name)
-		}
-		// Longer => No match
-		return false
-	}
-
-	parseObject = func() string {
-		nameValueList := list.New()
+	parseObject = func() jsonValue {
+		object := jsonValue{kind: kindObject}
 		var next bool = false
-	CoreLoop:
 		for globalError == nil && testNextNonWhiteSpaceChar() != '}' {
 			if next {
 				scanFor(',')
@@ -396,51 +379,70 @@ func Transform(jsonData []byte) (result []byte, e error) {
 			// In the Go case the transformation is UTF-8 => UTF-32 => UTF-16
 			sortKey := utf16.Encode([]rune(rawUTF8))
 			scanFor(':')
-			nameValue := nameValueType{rawUTF8, sortKey, parseElement()}
-			for e := nameValueList.Front(); e != nil; e = e.Next() {
-				// Check if the key is smaller than a previous key
-				if lexicographicallyPrecedes(sortKey, e) {
-					// Precedes => Insert before and exit sorting
-					nameValueList.InsertBefore(nameValue, e)
-					continue CoreLoop
-				}
-				// Continue searching for a possibly succeeding sortKey
-				// (which is straightforward since the list is ordered)
-			}
-			// The sortKey is either the first or is succeeding all previous sortKeys
-			nameValueList.PushBack(nameValue)
+			object.members = append(object.members, nameValueType{rawUTF8, sortKey, parseElement()})
 		}
 		// Scan away '}'
 		scan()
-		// Now everything is sorted so we can properly serialize the object
-		var objectData strings.Builder
-		objectData.WriteByte('{')
-		next = false
-		for e := nameValueList.Front(); e != nil; e = e.Next() {
-			if next {
-				objectData.WriteByte(',')
-			}
-			next = true
-			nameValue := e.Value.(nameValueType)
-			objectData.WriteString(decorateString(nameValue.name))
-			objectData.WriteByte(':')
-			objectData.WriteString(nameValue.value)
+		if globalError != nil {
+			return object
 		}
-		objectData.WriteByte('}')
-		return objectData.String()
+		// RFC 8785 §3.2.3: members are ordered by their names as arrays of UTF-16
+		// code units compared as unsigned integers, a shorter prefix first, which
+		// is exactly what slices.Compare does on []uint16.
+		slices.SortFunc(object.members, func(a, b nameValueType) int {
+			return slices.Compare(a.sortKey, b.sortKey)
+		})
+		for i := 1; i < len(object.members); i++ {
+			if slices.Equal(object.members[i-1].sortKey, object.members[i].sortKey) {
+				setError("Duplicate key: " + object.members[i].name)
+				break
+			}
+		}
+		return object
+	}
+
+	// The output is written once, after parsing: building it level by level
+	// copied every nested value once per enclosing level.
+	var canonical strings.Builder
+	var writeValue func(v jsonValue)
+	writeValue = func(v jsonValue) {
+		switch v.kind {
+		case kindArray:
+			canonical.WriteByte('[')
+			for i, element := range v.elements {
+				if i > 0 {
+					canonical.WriteByte(',')
+				}
+				writeValue(element)
+			}
+			canonical.WriteByte(']')
+		case kindObject:
+			canonical.WriteByte('{')
+			for i, member := range v.members {
+				if i > 0 {
+					canonical.WriteByte(',')
+				}
+				canonical.WriteString(decorateString(member.name))
+				canonical.WriteByte(':')
+				writeValue(member.value)
+			}
+			canonical.WriteByte('}')
+		default:
+			canonical.WriteString(v.scalar)
+		}
 	}
 
 	/////////////////////////////////////////////////
 	// This is where Transform actually begins...  //
 	/////////////////////////////////////////////////
-	var transformed string
+	var root jsonValue
 
 	if testNextNonWhiteSpaceChar() == '[' {
 		scan()
-		transformed = parseArray()
+		root = parseArray()
 	} else {
 		scanFor('{')
-		transformed = parseObject()
+		root = parseObject()
 	}
 	for index < jsonDataLength {
 		if !isWhiteSpace(jsonData[index]) {
@@ -449,5 +451,9 @@ func Transform(jsonData []byte) (result []byte, e error) {
 		}
 		index++
 	}
-	return []byte(transformed), globalError
+	if globalError != nil {
+		return nil, globalError
+	}
+	writeValue(root)
+	return []byte(canonical.String()), nil
 }
