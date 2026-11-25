@@ -2,6 +2,8 @@ package didv2
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -132,5 +134,53 @@ func TestGenerateDID_WithP256VM(t *testing.T) {
 	}
 	if !hasCID {
 		t.Error("CID context missing for a Multikey VM")
+	}
+}
+
+// WithSecp256k1JsonWebKeyVerificationMethod adds #key-3, the secp256k1 key of
+// #key-1 as a JsonWebKey, beside #key-2 when that is asked for too.
+func TestGenerateDID_WithJsonWebKeyVM(t *testing.T) {
+	for name, tc := range map[string]struct {
+		opts []DIDOption
+		want []string
+	}{
+		"jwk only":   {[]DIDOption{WithSecp256k1JsonWebKeyVerificationMethod()}, []string{"#key-1", "#key-3"}},
+		"p256 + jwk": {[]DIDOption{WithP256VerificationMethod(), WithSecp256k1JsonWebKeyVerificationMethod()}, []string{"#key-1", "#key-2", "#key-3"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, err := newOfflineGenerator(t).GenerateDID(t.Context(), did.DIDTypeItem, "", nil, tc.opts...)
+			if err != nil {
+				t.Fatalf("GenerateDID: %v", err)
+			}
+
+			var got []string
+			for _, vm := range res.Document.VerificationMethod {
+				got = append(got, strings.TrimPrefix(vm.Id, res.DID))
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("verification methods %v, want %v", got, tc.want)
+			}
+
+			key1 := res.Document.FindVerificationMethod("#key-1")
+			key3 := res.Document.FindVerificationMethod("#key-3")
+			if key3.Type != "JsonWebKey" || key3.PublicKeyHex != "" || len(key3.PublicKeyJwk) != 4 {
+				t.Fatalf("#key-3 must be a JsonWebKey carrying a JWK only: %+v", key3)
+			}
+			same, err := did.NewSecp256k1JsonWebKeyVM(res.DID, "#key-3", key1.PublicKeyHex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if key3.PublicKeyJwk["x"] != same.PublicKeyJwk["x"] || key3.PublicKeyJwk["y"] != same.PublicKeyJwk["y"] {
+				t.Fatal("#key-3 does not hold the key of #key-1")
+			}
+			for _, rel := range [][]string{res.Document.Authentication, res.Document.AssertionMethod} {
+				if !slices.Contains(rel, res.DID+"#key-3") {
+					t.Errorf("#key-3 missing from %v", rel)
+				}
+			}
+			if err := res.Document.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
 	}
 }

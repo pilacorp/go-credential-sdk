@@ -69,18 +69,20 @@ type DIDDocument struct {
 type VerificationMethod struct {
 	// Id is the unique identifier of this verification method (e.g., "did:nda:0x...#key-1").
 	Id string `json:"id"`
-	// Type specifies the cryptographic suite (e.g., "EcdsaSecp256k1VerificationKey2019",
-	// "JsonWebKey2020").
+	// Type specifies the verification method type, derived from the key
+	// material field: "EcdsaSecp256k1VerificationKey2019" (publicKeyHex),
+	// "Multikey" (publicKeyMultibase) or "JsonWebKey" (publicKeyJwk).
 	Type string `json:"type"`
 	// Controller is the DID that controls this verification method.
 	Controller string `json:"controller"`
 	// PublicKeyHex is the hex-encoded public key (compressed format).
 	// Mutually exclusive with PublicKeyJwk and PublicKeyMultibase.
 	PublicKeyHex string `json:"publicKeyHex,omitempty"`
-	// PublicKeyJwk is the JWK representation of the public key, used for
-	// non-secp256k1 keys (e.g. RSA CA keys with Type="JsonWebKey2020").
+	// PublicKeyJwk is the key of a JsonWebKey method: a public EC JWK with
+	// exactly kty, crv (secp256k1 or P-256), x and y. VC-JOSE-COSE requires this
+	// shape for a key taken from a DID document; NewSecp256k1JsonWebKeyVM builds
+	// it from the hex a secp256k1 method publishes.
 	// Mutually exclusive with PublicKeyHex and PublicKeyMultibase.
-	// Deprecated: Use PublicKeyMultibase for P-256 keys instead of JWK.
 	PublicKeyJwk map[string]any `json:"publicKeyJwk,omitempty"`
 	// PublicKeyMultibase is the Multikey encoding used for P-256 keys.
 	// Mutually exclusive with PublicKeyHex and PublicKeyJwk.

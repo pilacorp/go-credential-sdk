@@ -22,7 +22,8 @@ const (
 	secp256k1VMType = "EcdsaSecp256k1VerificationKey2019"
 	multikeyVMType  = "Multikey"
 
-	// cidContext defines Multikey, publicKeyMultibase and revoked.
+	// cidContext defines Multikey, publicKeyMultibase, JsonWebKey,
+	// publicKeyJwk and revoked.
 	cidContext = "https://www.w3.org/ns/cid/v1"
 )
 
@@ -163,7 +164,7 @@ func NewVerificationMethods(
 
 // documentContext builds @context: DID Core 1.0 §6.1 requires did/v1 first,
 // then the security context, plus the CID context when the document publishes
-// a Multikey VM.
+// a Multikey or JsonWebKey VM.
 func documentContext(vms []VerificationMethod) []string {
 	ctx := []string{
 		"https://www.w3.org/ns/did/v1",
@@ -171,12 +172,18 @@ func documentContext(vms []VerificationMethod) []string {
 	}
 
 	for i := range vms {
-		if vms[i].Type == multikeyVMType {
+		if needsCIDContext(vms[i].Type) {
 			return append(ctx, cidContext)
 		}
 	}
 
 	return ctx
+}
+
+// needsCIDContext reports whether a VM type is defined by the CID context
+// rather than the security context.
+func needsCIDContext(vmType string) bool {
+	return vmType == multikeyVMType || vmType == jsonWebKeyVMType
 }
 
 // NewSecp256k1VM builds a complete secp256k1 VM from a "#name" fragment.

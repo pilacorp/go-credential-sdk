@@ -136,13 +136,29 @@ func (d *DIDGenerator) GenerateDID(
 		options = append(options, WithVerificationMethods(did.NewSpec(p256VM)))
 	}
 
-	// 3. Generate DID TX.
+	// 3. Publish the secp256k1 key a second time at #key-3, as the JsonWebKey a
+	// VC JOSE verifier needs, only when asked. #key-1 keeps it as hex.
+	if cfg.EnableSecp256k1JsonWebKeyVM {
+		didAddr, err := did.AddressFromPublicKeyHex(keyPair.GetPublicKeyHex())
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert public key hex to address: %w", err)
+		}
+
+		jwkVM, err := did.NewSecp256k1JsonWebKeyVM(did.ToDID(cfg.Method, didAddr), "#key-3", keyPair.GetPublicKeyHex())
+		if err != nil {
+			return nil, fmt.Errorf("failed to build JsonWebKey verification method: %w", err)
+		}
+
+		options = append(options, WithVerificationMethods(did.NewSpec(jwkVM)))
+	}
+
+	// 4. Generate DID TX.
 	didTx, err := d.GenerateDIDTX(ctx, didType, keyPair.GetPublicKeyHex(), hash, metadata, options...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate DID TX: %w", err)
 	}
 
-	// 4. add secret to did tx result.
+	// 5. add secret to did tx result.
 	didTx.Secret = &Secret{PrivateKeyHex: keyPair.GetPrivateKeyHex()}
 
 	return didTx, nil

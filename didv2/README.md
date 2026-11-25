@@ -615,6 +615,7 @@ curves, so a single secret backs both the chain identity and W3C credentials:
 |---|---|---|---|
 | `#key-1` | secp256k1 | `EcdsaSecp256k1VerificationKey2019` (`publicKeyHex`) | DID transactions, JWT VCs (`ES256K`) |
 | `#key-2` | P-256 | `Multikey` (`publicKeyMultibase`) | W3C Data Integrity VCs (`ecdsa-rdfc-2019`, `ecdsa-sd-2023`), JWT VCs (`ES256`) |
+| `#key-3` (opt-in) | secp256k1, the key of `#key-1` | `JsonWebKey` (`publicKeyJwk`) | VC JOSE (`vc+jwt`, `ES256K`) that a VC-JOSE-COSE verifier accepts |
 
 `res.Secret.PrivateKeyHex` is that scalar. Feed it to the P-256 signer of the
 `credential` module and pin `#key-2` when issuing — the two fragments are
@@ -683,6 +684,28 @@ if err != nil {
 }
 err = jwtCred.AddProofByProvider(p256Signer)
 ```
+
+### VC JOSE that conformant verifiers accept
+
+VC-JOSE-COSE accepts a key from a DID document only in a `JsonWebKey`
+method with the key in `publicKeyJwk`; `#key-1` (`publicKeyHex`) and `#key-2`
+(`Multikey`) do not qualify. `WithSecp256k1JsonWebKeyVerificationMethod()`
+publishes the secp256k1 key once more at `#key-3` in that shape:
+
+```go
+res, err := didGenerator.GenerateDID(ctx, did.DIDTypePeople, "", nil,
+    didv2.WithP256VerificationMethod(),
+    didv2.WithSecp256k1JsonWebKeyVerificationMethod())
+```
+
+For an existing DID, add the same method with
+`did.NewSecp256k1JsonWebKeyVM(doc.Id, "#key-3", publicKeyHexOfKey1)` and
+`AddVerificationMethod`, then anchor the updated document.
+
+Sign VC JOSE with `#key-3` pinned and the secp256k1 signer (`ES256K`). A
+signing call with no key pinned never picks a `JsonWebKey` method while
+another one is usable, so adding `#key-3` does not change which key existing
+callers sign with.
 
 See the root [README](../README.md) for the credential API.
 

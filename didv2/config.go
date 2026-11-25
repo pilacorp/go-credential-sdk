@@ -69,6 +69,9 @@ type DIDConfig struct {
 	ExtraVMs []did.VerificationMethodSpec
 	// EnableP256VM publishes the P-256 key at #key-2. Off by default.
 	EnableP256VM bool
+	// EnableSecp256k1JsonWebKeyVM publishes the secp256k1 key of #key-1 again
+	// at #key-3, as a JsonWebKey. Off by default.
+	EnableSecp256k1JsonWebKeyVM bool
 }
 
 // DIDOption is a functional option type for configuring DIDGenerator.
@@ -171,6 +174,15 @@ func WithP256VerificationMethod() DIDOption {
 	return func(c *DIDConfig) { c.EnableP256VM = true }
 }
 
+// WithSecp256k1JsonWebKeyVerificationMethod publishes the DID's secp256k1 key a
+// second time, at #key-3, as a JsonWebKey method with the key in publicKeyJwk.
+// VC-JOSE-COSE accepts only that shape for a key taken from a DID document, so a
+// VC JOSE signed with kid #key-3 is the one a conformant verifier accepts.
+// #key-1 keeps the key as publicKeyHex.
+func WithSecp256k1JsonWebKeyVerificationMethod() DIDOption {
+	return func(c *DIDConfig) { c.EnableSecp256k1JsonWebKeyVM = true }
+}
+
 // WithDIDConfig sets the complete DID configuration from a DIDConfig struct.
 func WithDIDConfig(config *DIDConfig) DIDOption {
 	return func(c *DIDConfig) {
@@ -187,5 +199,6 @@ func WithDIDConfig(config *DIDConfig) DIDOption {
 		c.SyncNonce = config.SyncNonce
 		c.ExtraVMs = slices.Clone(config.ExtraVMs)
 		c.EnableP256VM = config.EnableP256VM
+		c.EnableSecp256k1JsonWebKeyVM = config.EnableSecp256k1JsonWebKeyVM
 	}
 }

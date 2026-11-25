@@ -124,7 +124,7 @@ func TestDIDDocument_Validate_KeyMaterial(t *testing.T) {
 			PublicKeyHex:       "0x02aa",
 			PublicKeyMultibase: w3cP256PublicMultibase,
 		},
-		"deprecated jwk": {
+		"jwk without x, y": {
 			Id: testDID + "#key-1", Type: "JsonWebKey2020", Controller: testDID,
 			PublicKeyJwk: map[string]any{"kty": "EC", "crv": "P-256"},
 		},

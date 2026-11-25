@@ -54,3 +54,22 @@ func TestEnableP256VM_OptIn(t *testing.T) {
 		t.Fatal("EnableP256VM dropped by WithDIDConfig")
 	}
 }
+
+// The JsonWebKey VM is opt-in, and WithDIDConfig carries the flag.
+func TestEnableSecp256k1JsonWebKeyVM_OptIn(t *testing.T) {
+	var cfg DIDConfig
+	if cfg.EnableSecp256k1JsonWebKeyVM {
+		t.Fatal("EnableSecp256k1JsonWebKeyVM must default to false")
+	}
+
+	WithSecp256k1JsonWebKeyVerificationMethod()(&cfg)
+	if !cfg.EnableSecp256k1JsonWebKeyVM {
+		t.Fatal("WithSecp256k1JsonWebKeyVerificationMethod did not set the flag")
+	}
+
+	var dst DIDConfig
+	WithDIDConfig(&cfg)(&dst)
+	if !dst.EnableSecp256k1JsonWebKeyVM {
+		t.Fatal("EnableSecp256k1JsonWebKeyVM dropped by WithDIDConfig")
+	}
+}
