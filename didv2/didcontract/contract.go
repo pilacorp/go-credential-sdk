@@ -70,7 +70,9 @@ func loadABI() (abi.ABI, error) {
 type Contract struct {
 	contract  *bind.BoundContract
 	rpcClient *ethclient.Client
-	cfg       *Config
+	// dialErr says why rpcClient is nil; read operations return it.
+	dialErr error
+	cfg     *Config
 }
 
 // NewContract creates a new Contract client for the DID Registry smart contract.
@@ -93,15 +95,20 @@ func NewContractContext(ctx context.Context, cfg *Config) (*Contract, error) {
 
 	cfg.Standardize()
 
-	// ignore error when connect RPC fail.
-	client, err := ethclient.DialContext(ctx, cfg.RPCURL)
-	if err != nil {
-		fmt.Println("failed to init RPC client, some features may not work: ", err.Error())
-	}
-
+	// Load the ABI first, so that no dialled client is left open on its error.
 	contractABI, err := loadABI()
 	if err != nil {
 		return nil, err
+	}
+
+	// A failed dial is not an error here: transactions are still built offline,
+	// and read operations report dialErr when they are called.
+	var dialErr error
+	var client *ethclient.Client
+	if cfg.RPCURL == "" {
+		dialErr = errors.New("no RPC URL is configured")
+	} else {
+		client, dialErr = ethclient.DialContext(ctx, cfg.RPCURL)
 	}
 
 	contract := bind.NewBoundContract(common.HexToAddress(cfg.ContractAddress), contractABI, client, client, nil)
@@ -109,6 +116,7 @@ func NewContractContext(ctx context.Context, cfg *Config) (*Contract, error) {
 	return &Contract{
 		contract:  contract,
 		rpcClient: client,
+		dialErr:   dialErr,
 		cfg:       cfg,
 	}, nil
 }
@@ -295,7 +303,7 @@ func (e *Contract) GetCapabilityEpoch(ctx context.Context, signerAddr string) (u
 	}
 
 	if e.rpcClient == nil {
-		return 0, fmt.Errorf("RPC client is not initialized, please check RPC URL and try again")
+		return 0, fmt.Errorf("RPC client is not available: %w", e.dialErr)
 	}
 
 	var out []interface{}
@@ -327,7 +335,7 @@ func (e *Contract) GetCapabilityEpoch(ctx context.Context, signerAddr string) (u
 // Requires a valid RPC client. Returns the current nonce or an error if the query fails.
 func (e *Contract) GetNonce(ctx context.Context, address common.Address) (uint64, error) {
 	if e.rpcClient == nil {
-		return 0, fmt.Errorf("RPC client is not initialized, please check RPC URL and try again")
+		return 0, fmt.Errorf("RPC client is not available: %w", e.dialErr)
 	}
 
 	nonce, err := e.rpcClient.PendingNonceAt(ctx, address)
