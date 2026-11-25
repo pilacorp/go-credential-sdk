@@ -12,7 +12,6 @@ import (
 	credentialstatus "github.com/pilacorp/go-credential-sdk/credential/common/credential-status"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
-	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
@@ -625,12 +624,12 @@ func checkExpiration(c CredentialData, leeway time.Duration) error {
 // ignored, the same rule the SDK applies to a credentialSchema type it does
 // not implement, rather than having its index read as a bitstring position.
 //
-// maxProofs caps the proofs of each status list credential, as
-// WithMaxProofs caps the credential's own; 0 means no cap.
+// options supplies the resolver, WithLegacyStatusList, the proof cap of each
+// status list (the WithMaxProofs value) and WithMaxStatusLists.
 //
 // issuerDIDFallbacks supplies additional DID strings to try when c["issuer"]
 // is missing (e.g. the JWT "iss" claim for VC Data Model v1.1 §6.3.1).
-func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvider, acceptLegacyList bool, maxProofs int, issuerDIDFallbacks ...string) error {
+func checkRevocation(c CredentialData, options *credentialOptions, issuerDIDFallbacks ...string) error {
 	// If there's no credentialStatus at all, treat as not using revocation → no error.
 	rawStatus, ok := c["credentialStatus"]
 	if !ok || rawStatus == nil {
@@ -666,8 +665,8 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 		issuerDID, _ = jsonmap.DIDFromField(c["issuer"])
 	}
 
-	clientOpts := []credentialstatus.Option{credentialstatus.WithResolver(resolver), credentialstatus.WithMaxProofs(maxProofs)}
-	if acceptLegacyList {
+	clientOpts := []credentialstatus.Option{credentialstatus.WithResolver(options.resolver), credentialstatus.WithMaxProofs(options.maxProofs)}
+	if options.acceptLegacyStatusList {
 		clientOpts = append(clientOpts, credentialstatus.WithLegacyStatusList())
 	}
 	lists := &statusLists{
@@ -680,6 +679,9 @@ func checkRevocation(c CredentialData, resolver verificationmethod.ResolverProvi
 		if key, ok := statusListKeyOf(raw); ok {
 			lists.remaining[key]++
 		}
+	}
+	if n := options.maxStatusLists; n > 0 && len(lists.remaining) > n {
+		return fmt.Errorf("%w: credentialStatus names %d status lists (one per URL and statusPurpose) and this verifier accepts at most %d; raise WithMaxStatusLists", ErrTooManyStatusLists, len(lists.remaining), n)
 	}
 
 	for i, raw := range entries {

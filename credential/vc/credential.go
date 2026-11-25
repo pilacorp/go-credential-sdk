@@ -28,6 +28,11 @@ import (
 var ErrSDJWTRequiresJOSE = errors.New(
 	"selective disclosure is supported only as vc+sd-jwt; use NewJOSECredential / ParseJOSECredential")
 
+// ErrTooManyStatusLists is returned, wrapped with the counts, when a
+// credential's credentialStatus names more status lists than
+// WithMaxStatusLists allows.
+var ErrTooManyStatusLists = errors.New("too many status lists")
+
 // Config holds package configuration.
 var config = struct {
 	BaseURL string
@@ -153,6 +158,8 @@ type credentialOptions struct {
 	replaceProof         bool
 	// maxProofs caps the proofs a JSON-LD credential may carry; 0 means no cap.
 	maxProofs int
+	// maxStatusLists caps the status lists WithCheckRevocation fetches; 0 means no cap.
+	maxStatusLists int
 }
 
 // WithReplaceProof (signing) lets a signing call replace a signature the
@@ -343,6 +350,21 @@ func WithCheckRevocation() CredentialOpt {
 func WithLegacyStatusList() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.acceptLegacyStatusList = true
+	}
+}
+
+// WithMaxStatusLists makes WithCheckRevocation refuse a credential whose
+// credentialStatus names more than n status lists, before any list is
+// fetched; the error wraps ErrTooManyStatusLists. Entries on one list for one
+// statusPurpose count once, since they share one fetch. A list that serves
+// several statusPurpose values (Bitstring Status List v1.0 Appendix B) is
+// fetched, and counted, once per purpose. Each list costs a
+// fetch of up to 16 MiB and a proof check, so a verifier that serves
+// untrusted callers sets the most lists its credentials name. n <= 0 leaves
+// the number unbounded, which is the default.
+func WithMaxStatusLists(n int) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.maxStatusLists = n
 	}
 }
 

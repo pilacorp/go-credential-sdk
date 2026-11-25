@@ -552,7 +552,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	// forged credential must not trigger a GET to the statusListCredential
 	// URL the attacker chose.
 	if options.isCheckRevocation {
-		if err := checkRevocation(e.credentialData, options.resolver, options.acceptLegacyStatusList, options.maxProofs); err != nil {
+		if err := checkRevocation(e.credentialData, options); err != nil {
 			return fmt.Errorf("credential verification failed: check revocation: %w", err)
 		}
 	}

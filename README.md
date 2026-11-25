@@ -561,6 +561,21 @@ Each proof costs one DID resolution (shared by proofs from one DID) and one
 signature check; an `ecdsa-sd-2023` derived proof costs one signature check per
 non-mandatory revealed statement plus the base signature, so its cost grows with the credential, not with the count.
 
+#### **vc.WithMaxStatusLists(n)**
+
+With `vc.WithCheckRevocation()`, refuses a credential whose `credentialStatus`
+names more than `n` status lists, before any list is fetched; the error wraps
+`vc.ErrTooManyStatusLists`. Entries on one list for one `statusPurpose` count
+once, since they share one fetch. A list that serves several `statusPurpose`
+values (Bitstring Status List v1.0 Appendix B) is fetched, and counted, once
+per purpose. Each list costs a fetch of up to 16 MiB and a
+proof check. `n <= 0` leaves the number unbounded, which is the default.
+
+```go
+err := credential.Verify(vc.WithResolver(resolver), vc.WithCheckRevocation(),
+    vc.WithMaxStatusLists(2), vc.WithMaxProofs(2))
+```
+
 #### **vc.WithBaseURL(url)**
 
 Sets a custom DID resolver base URL for proof verification.
@@ -1814,6 +1829,7 @@ vc.WithSDSelectivePaths(paths)              // Issue SD-JWT: claims at these pat
 vc.WithSDDisclosures(disclosures)           // Issue SD-JWT: disclosures you built, matching digests already in the contents
 vc.WithReplaceProof()                       // Allow signing to replace a signature already present
 vc.WithMaxProofs(n)                         // Refuse more than n proofs on the credential and its status lists
+vc.WithMaxStatusLists(n)                    // With WithCheckRevocation: refuse more than n status lists
 
 // VP options
 vp.WithVCValidation()                       // Enable VC validation within presentation
