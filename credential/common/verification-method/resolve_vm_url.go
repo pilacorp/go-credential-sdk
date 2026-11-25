@@ -27,8 +27,11 @@ func ResolveVerificationMethodURLForKey(ctx context.Context, did, purpose string
 
 // ResolveSigningVM resolves the DID document and returns the verification method
 // to sign with: the pinned kid when given, otherwise SelectDefaultSigningVM
-// (the only VM, or the latest active one for purpose). The returned entry lets
-// the caller read the key type and pick the cryptosuite.
+// (the only VM, or the latest active non-JsonWebKey one for purpose). Without a
+// pinned kid, JsonWebKey VMs are skipped so that adding one does not silently
+// move every un-pinned signature to the new key; conformant VC JOSE callers that
+// target the JWK method pin the kid explicitly (e.g. #key-3). The returned entry
+// lets the caller read the key type and pick the cryptosuite.
 func ResolveSigningVM(ctx context.Context, did, purpose, pinnedKid string, resolver ResolverProvider) (*VerificationMethodEntry, string, error) {
 	if resolver == nil {
 		return nil, "", fmt.Errorf("document resolver is not configured")
