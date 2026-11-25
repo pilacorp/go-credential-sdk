@@ -1195,20 +1195,6 @@ func TestSetDefaultHTTPClient_ConcurrentAccess(t *testing.T) {
 	<-done
 }
 
-// ---------------------------------------------------------------------------
-// Clip error values (review comment 4661774564)
-// ---------------------------------------------------------------------------
-
-func TestClip(t *testing.T) {
-	short := "did:example:issuer"
-	assert.Equal(t, short, clip(short))
-
-	long := strings.Repeat("x", 300)
-	clipped := clip(long)
-	assert.Equal(t, 259, len(clipped)) // 256 + "..."
-	assert.True(t, strings.HasSuffix(clipped, "..."))
-}
-
 // credentialSubject.type may be an array (#203 review).
 func TestReadStatusList_ArraySubjectType(t *testing.T) {
 	m := jsonmap.JSONMap{

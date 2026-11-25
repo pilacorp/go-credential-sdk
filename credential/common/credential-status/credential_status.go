@@ -14,6 +14,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/safehttp"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
@@ -238,7 +239,7 @@ func (c *Client) VerifyStatusList(statusListCredentialURL, entryPurpose, issuerD
 	// The list must serve the entry's purpose and carry a bitstring; both are
 	// read again by CheckBitStatus, but checking here spares the proof check.
 	if sl.subject.StatusPurpose != entryPurpose {
-		return nil, fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", clip(sl.subject.StatusPurpose), clip(entryPurpose))
+		return nil, fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", errtext.Clip(sl.subject.StatusPurpose), errtext.Clip(entryPurpose))
 	}
 	if sl.subject.EncodedList == "" {
 		return nil, fmt.Errorf("encodedList is empty")
@@ -249,7 +250,7 @@ func (c *Client) VerifyStatusList(statusListCredentialURL, entryPurpose, issuerD
 		return nil, fmt.Errorf("status list credential has no issuer")
 	}
 	if sl.issuerDID != issuerDID {
-		return nil, fmt.Errorf("status list credential issuer %q does not match credential issuer %q", clip(sl.issuerDID), clip(issuerDID))
+		return nil, fmt.Errorf("status list credential issuer %q does not match credential issuer %q", errtext.Clip(sl.issuerDID), errtext.Clip(issuerDID))
 	}
 
 	// Verify that every proof was signed by the issuer.
@@ -260,10 +261,10 @@ func (c *Client) VerifyStatusList(statusListCredentialURL, entryPurpose, issuerD
 	for i, p := range proofs {
 		proofDID := didFromVM(p.VerificationMethod)
 		if proofDID == "" {
-			return nil, fmt.Errorf("status list credential proof %d has no DID in verificationMethod %q", i, clip(p.VerificationMethod))
+			return nil, fmt.Errorf("status list credential proof %d has no DID in verificationMethod %q", i, errtext.Clip(p.VerificationMethod))
 		}
 		if proofDID != sl.issuerDID {
-			return nil, fmt.Errorf("status list credential proof %d signed by %q, but issuer is %q", i, clip(proofDID), clip(sl.issuerDID))
+			return nil, fmt.Errorf("status list credential proof %d signed by %q, but issuer is %q", i, errtext.Clip(proofDID), errtext.Clip(sl.issuerDID))
 		}
 	}
 
@@ -371,17 +372,6 @@ func readStatusList(m jsonmap.JSONMap, entryPurpose string) (statusListView, err
 // each time it serves the list.
 const statusListClockSkew = time.Minute
 
-// clip truncates a string to at most 256 bytes for safe inclusion in error
-// messages. Values echoed in errors come from the fetched list and are bounded
-// only by the 16 MiB body limit.
-func clip(s string) string {
-	const max = 256
-	if len(s) > max {
-		return s[:max] + "..."
-	}
-	return s
-}
-
 // CheckBitStatus checks whether the bit at position in the encoded bitstring
 // is set. It detects the encoding from the encodedList value:
 //
@@ -403,7 +393,7 @@ func clip(s string) string {
 // If subject.StatusPurpose does not match entryPurpose, an error is returned.
 func CheckBitStatus(position int, subject StatusListCredentialSubject, entryPurpose string) (bool, error) {
 	if subject.StatusPurpose != entryPurpose {
-		return false, fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", clip(subject.StatusPurpose), clip(entryPurpose))
+		return false, fmt.Errorf("statusPurpose mismatch: status list has %q, credential entry has %q", errtext.Clip(subject.StatusPurpose), errtext.Clip(entryPurpose))
 	}
 	bits, msbFirst, err := decodeBitstring(subject.EncodedList)
 	if err != nil {

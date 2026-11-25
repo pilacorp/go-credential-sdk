@@ -18,6 +18,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
@@ -400,11 +401,11 @@ func (m *JSONMap) verifyProofSet(resolver verificationmethod.ResolverProvider, p
 	resolver = &didMemo{inner: resolver}
 	for i := range proofs {
 		if err := rejectPreviousProof(raw[i]); err != nil {
-			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+			return false, fmt.Errorf("proof %d (%s): %w", i, errtext.Clip(proofs[i].VerificationMethod), err)
 		}
 		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, cache)
 		if err != nil {
-			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+			return false, fmt.Errorf("proof %d (%s): %w", i, errtext.Clip(proofs[i].VerificationMethod), err)
 		}
 		if !ok {
 			return false, nil
@@ -461,7 +462,7 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 		return m.verifyJWSProof(doc, proof, cache)
 
 	default:
-		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
+		return false, fmt.Errorf("unsupported proof type: %s", errtext.Clip(proof.Type))
 	}
 }
 
@@ -929,7 +930,7 @@ func proofPurposeDisagrees(proof *dto.Proof, expected string) error {
 	}
 	return fmt.Errorf(
 		"proof.proofPurpose %q does not match the proof purpose %q this verifier expects",
-		proof.ProofPurpose, expected)
+		errtext.Clip(proof.ProofPurpose), expected)
 }
 
 // parseCreated reads proof.created, a dateTimeStamp.
