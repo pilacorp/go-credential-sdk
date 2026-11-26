@@ -9,8 +9,10 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/compactform"
 )
 
 type JSONPresentation struct {
@@ -112,6 +114,11 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 
 	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
+	}
+	// Verify refuses a presentation whose JSON is not in compacted form, so
+	// the SDK does not sign one.
+	if err := e.verifyCompactedForm(); err != nil {
+		return fmt.Errorf("cannot sign: %w", err)
 	}
 
 	vm, vmURL, err := e.resolveSigningVMEntry(opts...)
@@ -223,7 +230,6 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 	if options.challenge != "" || options.domain != "" || options.verificationMethodKey != "" {
 		return fmt.Errorf("WithChallenge / WithDomain / WithVerificationMethodKey cannot be applied by AddCustomProof: set proof.Challenge, proof.Domain and proof.VerificationMethod on the proof you sign")
 	}
-
 	m := (*jsonmap.JSONMap)(&e.presentationData)
 
 	// Before the content options, because this is the question the caller just
@@ -237,6 +243,9 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 
 	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
+	}
+	if err := e.verifyCompactedForm(); err != nil {
+		return fmt.Errorf("cannot attach proof: %w", err)
 	}
 
 	return m.AddCustomProof(proof)
@@ -273,20 +282,17 @@ func (e *JSONPresentation) ExtractField(path string) interface{} {
 func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
-	// Count the presentation's proofs before its embedded credentials are
-	// verified, so an oversized set costs no credential verification.
+	// Count the presentation's proofs before anything else is verified, so an
+	// oversized set costs no proof or credential verification.
 	if options.isVerifyProof {
 		if err := (*jsonmap.JSONMap)(&e.presentationData).CheckProofCount(options.maxProofs); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}
 
-	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(e.presentationData), options); err != nil {
-			return fmt.Errorf("failed to verify presentation: %w", err)
-		}
-	}
-
+	// Step 1: verify the proof first. The proof check works on the canonical
+	// RDF, so it accepts any equivalent JSON shape. All later checks read the
+	// raw JSON by key name, so they need the compacted form.
 	if options.isVerifyProof {
 		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
 			options.resolver,
@@ -300,7 +306,30 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		if !isValid {
 			return fmt.Errorf("invalid proof")
 		}
+
+		// The properties the SDK reads by name must say what the signed
+		// document says (see vpCompactedForm). As for a credential, a document
+		// secured only by JwtProof2020 is not checked: the JWT binds its body
+		// key by key, a departure from VC Data Model 2.0 §7.1 step 2.
+		signsCanonical, err := (*jsonmap.JSONMap)(&e.presentationData).SignsCanonicalForm()
+		if err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+		if signsCanonical {
+			if err := e.verifyCompactedForm(); err != nil {
+				return fmt.Errorf("failed to verify presentation: %w", err)
+			}
+		}
+
 		if err := e.checkChallengeAndDomain(options); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+	}
+
+	// The embedded credentials and the presentation's dates are checked after
+	// its proof.
+	if options.isValidateVC {
+		if err := verifyCredentials(PresentationData(e.presentationData), options); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}
@@ -320,6 +349,32 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	}
 
 	return nil
+}
+
+// vpCompactedForm lists the properties SDK checks take from a presentation by
+// name. Embedded credentials are compared by number only: each one is a signed
+// document verified on its own.
+var vpCompactedForm = compactform.Rules{
+	OwnSingle: []string{"validFrom", "validUntil", "issuanceDate", "expirationDate"},
+	Nodes:     []string{"holder"},
+	Counts:    []string{"verifiableCredential"},
+}
+
+// ErrNotCompactedForm is returned, wrapped with the property path, when the
+// JSON of a JSON-LD document does not say what its signed meaning says for a
+// property the SDK reads by name. It is processor.ErrNotCompactedForm.
+var ErrNotCompactedForm = processor.ErrNotCompactedForm
+
+// verifyCompactedForm refuses a presentation whose JSON, for a property in
+// vpCompactedForm, does not say what its signed meaning says. The raw data is
+// never mutated.
+func (e *JSONPresentation) verifyCompactedForm() error {
+	body, err := (*jsonmap.JSONMap)(&e.presentationData).ToMap()
+	if err != nil {
+		return fmt.Errorf("compact form check: serialize body: %w", err)
+	}
+	delete(body, "proof")
+	return compactform.Check(body, vpCompactedForm)
 }
 
 // checkChallengeAndDomain enforces WithExpectedChallenge / WithExpectedDomain

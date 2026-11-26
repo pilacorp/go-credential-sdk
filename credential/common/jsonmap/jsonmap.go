@@ -806,6 +806,24 @@ func (m *JSONMap) CheckJwtProofTimes(leeway time.Duration) error {
 	return nil
 }
 
+// SignsCanonicalForm reports whether any proof on the document signs its
+// JSON-LD canonical form. Every suite but JwtProof2020 does. A JwtProof2020
+// proof signs the JWT, whose claims the document must repeat key by key, so
+// its JSON is already bound by name and not through JSON-LD. Proofs are read
+// with Proofs, as VerifyProof reads them.
+func (m *JSONMap) SignsCanonicalForm() (bool, error) {
+	proofs, err := m.Proofs()
+	if err != nil {
+		return false, err
+	}
+	for i := range proofs {
+		if proofs[i].Type != JwtProof2020 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // rawProofList normalizes the proof field into a slice of raw proof entries,
 // accepting a single object, []interface{}, or []map[string]interface{}.
 func (m *JSONMap) rawProofList() []interface{} {
