@@ -83,7 +83,11 @@ func TestSelectDefaultSigningVM_Key2Revoked_ReturnsKey1(t *testing.T) {
 	}
 }
 
-func TestSelectDefaultSigningVM_OnlyJsonWebKey_FallsBack(t *testing.T) {
+// A document whose only method is #key-3 still signs without a kid. This goes
+// through the single-method branch; the multi-method fallback is
+// TestSelectDefaultSigningVM_Key1RevokedKey3Active_FallsBackToJsonWebKey and
+// TestSelectDefaultSigningVM_AllJsonWebKey_FallsBack.
+func TestSelectDefaultSigningVM_OnlyMethodIsJsonWebKey(t *testing.T) {
 	const did = "did:pila:only-jwk"
 	doc := &DIDDocument{
 		ID: did,
@@ -223,6 +227,36 @@ func TestSelectLatestActiveSigningVMForPurpose_FallbackToJsonWebKey(t *testing.T
 	}
 	if vm.ID != did+"#key-4" {
 		t.Errorf("got %q, want %q (fallback picks highest JsonWebKey)", vm.ID, did+"#key-4")
+	}
+}
+
+// Two methods, both JsonWebKey: SelectDefaultSigningVM takes the multi-method
+// branch, finds no other type and must fall back instead of failing.
+func TestSelectDefaultSigningVM_AllJsonWebKey_FallsBack(t *testing.T) {
+	const did = "did:pila:all-jwk"
+	jwk := func(fragment string) VerificationMethodEntry {
+		return VerificationMethodEntry{
+			ID: did + fragment, Type: "JsonWebKey", Controller: did,
+			PublicKeyJwk: &JWK{
+				Kty: "EC", Crv: "secp256k1",
+				X: "ulc02PcJFxlHHn9-1rnfFw3HDMZhygXmiGAa2YTwaLA",
+				Y: "1nNR5fBgcwkkmTNqsIOe-KUhr9M05TgHIF-i8I7sdPQ",
+			},
+		}
+	}
+	doc := &DIDDocument{
+		ID:                 did,
+		VerificationMethod: []VerificationMethodEntry{jwk("#key-3"), jwk("#key-4")},
+		Authentication:     []string{did + "#key-3", did + "#key-4"},
+		AssertionMethod:    []string{did + "#key-3", did + "#key-4"},
+	}
+
+	vm, err := SelectDefaultSigningVM(doc, "assertionMethod")
+	if err != nil {
+		t.Fatalf("SelectDefaultSigningVM: %v", err)
+	}
+	if vm == nil || vm.ID != did+"#key-4" {
+		t.Fatalf("got %v, want %q", vm, did+"#key-4")
 	}
 }
 

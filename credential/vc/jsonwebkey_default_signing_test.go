@@ -20,10 +20,10 @@ import (
 
 // A DID as authen-service publishes it once #key-3 is added: one scalar as
 // #key-1 (secp256k1 hex), #key-2 (P-256 Multikey) and #key-3 (the secp256k1 key
-// again, as a JsonWebKey). Adding #key-3 must not move a VC JOSE signed with no
-// key pinned off #key-2; pinning #key-3 gives the ES256K token a VC-JOSE-COSE
-// verifier accepts, and it verifies.
-func TestJOSECredential_JsonWebKeyMethodOnlyWhenPinned(t *testing.T) {
+// again, as a JsonWebKey). Adding #key-3 must not move a VC JOSE or a JSON-LD
+// proof signed with no key pinned off #key-2; pinning #key-3 gives the ES256K
+// token a VC-JOSE-COSE verifier accepts, and it verifies.
+func TestDefaultSigningKey_JsonWebKeyMethodOnlyWhenPinned(t *testing.T) {
 	const did = "did:example:jose-jwk"
 
 	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -89,6 +89,33 @@ func TestJOSECredential_JsonWebKeyMethodOnlyWhenPinned(t *testing.T) {
 		kid, alg := tokenKidAlg(t, issue(t, p256Prov))
 		if kid != did+"#key-2" || alg != "ES256" {
 			t.Fatalf("kid %q alg %q, want %s#key-2 ES256", kid, alg, did)
+		}
+	})
+
+	// Before the rule, the latest method was #key-3, a secp256k1 key, so the
+	// proof moved to EcdsaSecp256k1Signature2019 on a JsonWebKey method.
+	t.Run("JSON-LD with no key pinned stays on #key-2", func(t *testing.T) {
+		cred, err := vc.NewJSONCredential(vc.CredentialContents{
+			Context:   []interface{}{"https://www.w3.org/ns/credentials/v2"},
+			Types:     []string{"VerifiableCredential"},
+			Issuer:    did,
+			ValidFrom: time.Now().Add(-time.Hour),
+			Subject:   []vc.Subject{{ID: "did:example:subject"}},
+		})
+		if err != nil {
+			t.Fatalf("NewJSONCredential: %v", err)
+		}
+		if err := cred.AddProofByProvider(p256Prov, vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("AddProofByProvider: %v", err)
+		}
+
+		proof, _ := proofOnDocument(t, cred).(map[string]interface{})
+		if proof["verificationMethod"] != did+"#key-2" || proof["cryptosuite"] != "ecdsa-rdfc-2019" {
+			t.Fatalf("proof verificationMethod %v cryptosuite %v, want %s#key-2 ecdsa-rdfc-2019",
+				proof["verificationMethod"], proof["cryptosuite"], did)
+		}
+		if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("Verify: %v", err)
 		}
 	})
 
