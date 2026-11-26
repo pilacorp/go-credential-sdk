@@ -24,10 +24,36 @@ func NewJSONPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JS
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize presentation contents: %w", err)
 	}
+	if err := refuseNonObjectCredentials(m); err != nil {
+		return nil, err
+	}
 
 	e := &JSONPresentation{presentationData: m}
 
 	return e, e.executeOptions(opts...)
+}
+
+// refuseNonObjectCredentials enforces VCDM 2.0 §4.13: verifiableCredential
+// values "MUST NOT be non-object values such as numbers, strings, or URLs". A
+// JWT, vc+jwt or SD-JWT credential serializes to a string, which JSON-LD cannot
+// turn into statements, so the presentation's proof could not cover it.
+func refuseNonObjectCredentials(m PresentationData) error {
+	value, present := m["verifiableCredential"]
+	if !present || value == nil {
+		return nil
+	}
+	list, isList := value.([]interface{})
+	if !isList {
+		list = []interface{}{value}
+	}
+	for i, entry := range list {
+		if _, isObject := entry.(map[string]interface{}); !isObject {
+			return fmt.Errorf("%w: credential at index %d is a %T; "+
+				"present JWT credentials with NewJWTPresentation or NewJOSEPresentation",
+				ErrCredentialNotObject, i, entry)
+		}
+	}
+	return nil
 }
 
 func ParseJSONPresentation(rawJSON []byte, opts ...PresentationOpt) (*JSONPresentation, error) {
@@ -67,8 +93,9 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 // The second suite needs its terms defined, so its @context is added to the
 // presentation unless it already defines them.
 //
-// Verification stays permissive: secp256k1, hex proofValues and
-// JsonWebSignature2020 presentations issued by earlier versions still verify.
+// Verification also accepts secp256k1, legacy hex proofValues and
+// JsonWebSignature2020 (ES256 or PS256). A JsonWebSignature2020 proof made
+// before the SDK signed its proof options does not verify.
 //
 // A resolver is REQUIRED at signing time: the SDK reads the VM's key type from
 // the resolved DID document.
@@ -77,6 +104,9 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 		return fmt.Errorf("signer provider cannot be nil")
 	}
 	if err := refuseReplaceOnJSONLD(getOptions(opts...)); err != nil {
+		return err
+	}
+	if err := refuseNonObjectCredentials(e.presentationData); err != nil {
 		return err
 	}
 
@@ -136,6 +166,9 @@ func (e *JSONPresentation) resolveSigningVMEntry(opts ...PresentationOpt) (*veri
 // body. For an ecdsa-rdfc-2019 proof, pass it to CreateProofSigning to obtain
 // the digest the external signer signs.
 func (e *JSONPresentation) GetSigningInput() ([]byte, error) {
+	if err := refuseNonObjectCredentials(e.presentationData); err != nil {
+		return nil, err
+	}
 	return (*jsonmap.JSONMap)(&e.presentationData).DocumentDigest()
 }
 
@@ -175,6 +208,9 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 	if err := refuseReplaceOnJSONLD(getOptions(opts...)); err != nil {
 		return err
 	}
+	if err := refuseNonObjectCredentials(e.presentationData); err != nil {
+		return err
+	}
 
 	if proof.Type == jsonmap.DataIntegrityProof && proof.Cryptosuite == jsonmap.ECDSARDFC2019 &&
 		!strings.HasPrefix(proof.ProofValue, jsonmap.MultibaseBase58BTCPrefix) {
@@ -194,7 +230,7 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 	// asked by handing over a proof, and before attaching, so a proof that does
 	// not check out leaves nothing behind.
 	if options.isVerifyProof {
-		if err := m.VerifyDetachedProof(options.resolver, proof); err != nil {
+		if err := m.VerifyDetachedProof(options.resolver, proof, jsonmap.WithExpectedProofPurpose(options.diProofPurpose())); err != nil {
 			return err
 		}
 	}
@@ -237,15 +273,17 @@ func (e *JSONPresentation) ExtractField(path string) interface{} {
 func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
-	if options.isValidateVC {
-		if err := verifyCredentials(PresentationData(e.presentationData), options); err != nil {
+	// Count the presentation's proofs before its embedded credentials are
+	// verified, so an oversized set costs no credential verification.
+	if options.isVerifyProof {
+		if err := (*jsonmap.JSONMap)(&e.presentationData).CheckProofCount(options.maxProofs); err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}
 
-	if options.isCheckExpiration {
-		if err := checkExpiration(PresentationData(e.presentationData), options.leeway); err != nil {
-			return fmt.Errorf("failed to check expiration: %w", err)
+	if options.isValidateVC {
+		if err := verifyCredentials(PresentationData(e.presentationData), options); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 	}
 
@@ -253,6 +291,8 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		isValid, err := (*jsonmap.JSONMap)(&e.presentationData).VerifyProof(
 			options.resolver,
 			options.proofVerificationMethod,
+			jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
+			jsonmap.WithMaxProofs(options.maxProofs),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
@@ -265,6 +305,20 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 		}
 	}
 
+	// Expiry runs after the proof, as for a credential: a forged document is
+	// reported as a proof failure, not as an expired one.
+	if options.isCheckExpiration {
+		if err := checkExpiration(PresentationData(e.presentationData), options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+		// The JWT of a JwtProof2020 proof is checked as the JWT path checks
+		// it: VCDM 1.1 §6.3.1 moves no exp of a presentation to a member, so
+		// the JWT may be the only place its expiry is.
+		if err := (*jsonmap.JSONMap)(&e.presentationData).CheckJwtProofTimes(options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -272,10 +326,11 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 // on the proofs VerifyProof just validated: every checked proof (or only the
 // WithProofVerificationMethod one) must carry the expected values.
 //
-// It runs after signature verification, but only an ecdsa-rdfc-2019 proof signs
-// its challenge and domain. A legacy hex or JsonWebSignature2020 signature
-// covers the document alone, so on those proofs these values are not bound to
-// the signer and prove nothing about who the presentation was made for.
+// It runs after signature verification. ecdsa-rdfc-2019,
+// EcdsaSecp256k1Signature2019 and JsonWebSignature2020 proofs sign their
+// challenge and domain. A legacy hex signature covers the document alone, so
+// on such a proof these values are not bound to the signer and prove nothing
+// about who the presentation was made for.
 func (e *JSONPresentation) checkChallengeAndDomain(options *presentationOptions) error {
 	// The same rule the JWT path applies, so the option cannot mean one thing
 	// here and another there. A JSON-LD presentation names its verifier in

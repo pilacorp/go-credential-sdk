@@ -12,6 +12,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
+- [Upgrading from piprate/json-gold](#upgrading-from-pipratejson-gold)
 - [Verifiable Credential (VC) Package](#verifiable-credential-vc-package)
   - [Features](#vc-features)
   - [Usage](#vc-usage)
@@ -44,12 +45,12 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
 
 ## Prerequisites
 
-- Go 1.25 or higher
+- Go 1.27 or higher
 - For VC/VP: Secure private key generation using `crypto/ecdsa` package and verification method for signing/verifying
 - Internet access for DID resolution and JSON-LD context fetching
 - Dependencies:
   - `github.com/xeipuuv/gojsonschema`
-  - `github.com/piprate/json-gold/ld`
+  - `github.com/pilacorp/json-gold/ld` (a fork of `piprate/json-gold` that follows JSON-LD 1.1)
   - `crypto/ecdsa` (standard library)
   - `crypto/elliptic` (standard library)
   - `crypto/rand` (standard library)
@@ -66,8 +67,59 @@ Ensure dependencies are installed:
 
 ```bash
 go get github.com/xeipuuv/gojsonschema
-go get github.com/piprate/json-gold/ld
+go get github.com/pilacorp/json-gold/ld
 ```
+
+## Upgrading from piprate/json-gold
+
+This release needs Go 1.27: update Docker images, CI, and golangci-lint (built with Go 1.27
+or later) before bumping the SDK.
+
+Canonicalization now follows JSON-LD 1.1 and RDFC-1.0, so the canonical N-Quads, and with
+them signatures and `Hash()`, change for documents that hold the values listed below.
+
+The list names two paths. The multibase path is the signature of an `ecdsa-rdfc-2019`,
+`ecdsa-sd-2023`, `EcdsaSecp256k1Signature2019` or `JsonWebSignature2020` proof, and the
+`Hash()` of a credential whose first proof has a multibase `proofValue`. The legacy hex path
+is the signature of a hex proof from SDK v1.7.0 or earlier, and the `Hash()`
+of a credential whose first proof is any other, `EcdsaSecp256k1Signature2019` and
+`JsonWebSignature2020` included. A
+case that names no path applies to both.
+
+- a string with a control character other than tab, line feed and carriage return, or DEL,
+  U+FFFE or U+FFFF: it is now escaped;
+- an IRI that is not well-formed, such as `urn:ex:a|b`, `https://ex.com/{1}` or
+  `did:example:a%zz`: vc and vp signing and `Hash()` on the multibase path refuse it, and
+  the legacy hex path drops the node it names, with every statement about that node;
+- an `http` or `https` IRI of 2,083 characters or more: earlier releases dropped it, and it
+  is now kept;
+- a language tag that is not well-formed: now refused on the multibase path; the legacy hex
+  path drops it as before;
+- a type its contexts do not define, on the legacy hex path
+  (see [Terms of Use](#terms-of-use));
+- for an `ecdsa-sd-2023` credential, a string with a backslash before `n`, `r` or `t`, such
+  as `C:\new`: its base proof from an earlier release no longer verifies, so re-issue it;
+- a value of an `@json` term that is an array, a string or null: earlier releases signed an
+  error text in its place, so the signature did not cover the value. It is now signed in
+  its JCS form, so re-issue it. On the multibase path a fractional number under an `@json`
+  term also changes, from `1.5E0` to `1.5`;
+- on the multibase path, an integer from 2^63 up to 10^21, such as `1e20`: earlier releases
+  wrote it as an `xsd:double` (and 2^63 on arm64 as the integer 9223372036854775807), and it
+  is now the exact `xsd:integer`;
+- a context that JSON-LD 1.1 rejects, even in a term the document does not use, such as
+  `"@container": []` or an invalid scoped context: signing and `Hash()` now refuse it;
+- on the multibase path, a node with only an id directly inside a `@graph` container term:
+  earlier releases dropped it, and signing and `Hash()` now refuse it.
+
+Credentials outside these cases keep their signatures and `Hash()`. A store keyed by
+`Hash()` should be scanned for these cases before upgrading.
+
+JSON presentations under the `credentials/v2` context change in both directions. A
+presentation with an embedded credential now signs that credential as its own named
+graph, so one signed by an earlier release does not verify here, and one signed here does
+not verify on an earlier release: re-sign stored presentations, and move the holders and
+verifiers of one flow in the same release. A JSON presentation that holds a JWT credential
+no longer verifies, and building or signing one is refused with `vp.ErrCredentialNotObject`.
 
 ---
 
@@ -214,18 +266,19 @@ against:
 
 ```
 // @context: ["https://www.w3.org/ns/credentials/v2"]
-_:c14n0 <...#type> <PresentationRequiredPolicy> .           // relative IRI — not a valid absolute IRI
+// signing refuses the type; the legacy hex path drops it from the canonical form
 
 // @context: [..., {"@vocab": "https://ndadid.vn/ns#"}]
 _:c14n0 <...#type> <https://ndadid.vn/ns#PresentationRequiredPolicy> .
 ```
 
 This is **mandatory** for the `ecdsa-rdfc-2019` and `ecdsa-sd-2023` proof suites, which sign
-over canonicalized RDF: a relative IRI is resolved differently by different JSON-LD
-processors, producing a different canonical form and therefore a different hash, so a
-third-party verifier can reject a credential this SDK considers valid. JWT credentials do
-not canonicalize and are unaffected — but a credential issued today may be re-issued under
-a Data Integrity proof later.
+over canonicalized RDF. An undeclared type is a relative IRI, which has no RDF form: signing
+refuses it, and verifying a legacy hex proof drops it, so the proof does not cover the type.
+Credentials signed by SDK releases before the `pilacorp/json-gold` fork kept such a type as
+a relative IRI in the signed bytes; their legacy hex proofs and `Hash()` no longer match.
+JWT credentials do not canonicalize and are unaffected — but a credential issued today may
+be re-issued under a Data Integrity proof later.
 
 #### Selective disclosure and `mandatoryPointers`
 
@@ -325,8 +378,8 @@ P-384 is **not supported yet**: the ECDSA cryptosuites spec also defines a P-384
 profile (SHA-384, 96-byte signature), and the key-material helpers already parse
 P-384 JWKs and Multikeys, but signing and verification are wired for P-256
 (SHA-256, 64-byte signature) only — a P-384 verification method is reported as
-an unrecognized key type. RSA / `JsonWebSignature2020` is **verify-only**
-(see below).
+an unrecognized key type. `JsonWebSignature2020` is signed only through the
+low-level `jsonmap` layer (see below).
 
 Built-in providers: `NewDefaultProvider(hex)` (secp256k1);
 `NewP256Provider` / `NewP256ProviderFromHex` / `NewP256Func` (P-256);
@@ -387,13 +440,22 @@ triples, so this does not change the statements being signed.
 > issue in the old format. Because an older SDK will reject the new format,
 > **upgrade every verifying component before any issuing component.**
 
-#### JsonWebSignature2020 (RSA) — verify-only
+#### JsonWebSignature2020
 
 `JSONCredential` / `JSONPresentation` **verify** `JsonWebSignature2020` proofs
-(detached JWS, `b64:false`, RS256/384/512 and PS256/384/512) issued by other
-systems: the signer DID must expose a `JsonWebKey2020` verification method with
-an RSA `publicKeyJwk`, and `Verify` checks the JWS against it like any other
-proof in the set.
+(W3C CCG, CG-FINAL 2022-07-21): a detached JWS (`b64:false`, RFC 7797) over the
+Linked Data Proofs input, SHA-256 of the canonical proof options followed by
+SHA-256 of the canonical document, so `proofPurpose`, `created`, `challenge`
+and `domain` are signed. The algorithm is ES256 or PS256, the two of the
+suite's table this SDK implements; RS256/384/512 and PS384/512 are refused. The
+signer DID must expose a `JsonWebKey2020` verification method with a P-256 or
+RSA (2048 bits or more) `publicKeyJwk` that carries no `d`.
+
+> **Breaking change.** Before this, the SDK signed only the document hash, and
+> defaulted to RS256. A `JsonWebSignature2020` proof made by an older SDK does
+> not verify now, and one made now does not verify on an older SDK. Re-issue
+> such proofs with ES256 or PS256. A PS256 signature whose salt is not 32 bytes
+> (RFC 7518 §3.5) is refused.
 
 The public signing API does **not** issue them: `AddProofByProvider` on a JSON
 credential/presentation binds to a P-256 or secp256k1 VM and returns
@@ -404,7 +466,7 @@ produce a JWS proof (e.g. test fixtures for interop), go through the low-level
 ```go
 var m jsonmap.JSONMap
 _ = json.Unmarshal(rawJSON, &m)
-rsaProvider, _ := signer.NewRSAProvider(rsaPrivateKey, "PS256") // alg defaults to RS256
+rsaProvider, _ := signer.NewRSAProvider(rsaPrivateKey) // PS256; refuses another alg or a key under 2048 bits
 err := m.AddJWSProof(rsaProvider, "did:example:issuer#key-2", "assertionMethod")
 signed, _ := json.Marshal(m)
 cred, _ := vc.ParseJSONCredential(signed) // verifies like any other proof
@@ -437,9 +499,14 @@ A proof set may also mix in a `JsonWebSignature2020` proof produced through
 `jsonmap.AddJWSProof` (see above); `Verify` handles each proof by its own type.
 
 On `Verify`, **every** proof must pass (AND), each checked against the DID
-document resolved from its own `verificationMethod`. (Note: `ecdsa-sd-2023`
-rewrites the document body and is always a single proof — it cannot be combined
-into a proof set.)
+document resolved from its own `verificationMethod`. A derived `ecdsa-sd-2023`
+document carries only its derived proof (VC DI ECDSA v1.0 §3.6.6 step 4), and
+`AddECDSASDBaseProof` refuses a document that already has a proof. A proof
+added after derivation, over the revealed document, forms a proof set with the
+derived proof (Data Integrity 1.0 §4.3); `Verify` checks every member (§4.5).
+
+A proof set has no size limit by default. A verifier that serves untrusted
+callers bounds it with `vc.WithMaxProofs` / `vp.WithMaxProofs` (below).
 
 ### Available Options
 
@@ -486,6 +553,68 @@ Import: `verificationmethod "github.com/pilacorp/go-credential-sdk/credential/co
 
 Costs one DID resolution and one canonicalization, and only when you pass the option — without it the proof is attached unchecked, as before. Only `ecdsa-rdfc-2019` can be checked this way (the suite the external signing flow produces); with the option set, another suite is refused rather than checked against bytes nobody signed — attach it without the option and call `Verify()`. The signing calls that make their own signature (`AddProof`, `AddProofByProvider`) already check it against the verification method, so the option changes nothing there.
 
+#### **vc.WithMaxProofs(n)**
+
+Refuses a JSON-LD credential that carries more than `n` proofs, before any DID
+is resolved; the error wraps `jsonmap.ErrTooManyProofs`. With
+`vc.WithCheckRevocation()` the same cap applies to each status list credential
+`Verify` fetches. `n <= 0` leaves the proof set unbounded, which is the default.
+
+```go
+err := credential.Verify(vc.WithResolver(resolver), vc.WithMaxProofs(2))
+if errors.Is(err, jsonmap.ErrTooManyProofs) {
+    // the credential carries more than 2 proofs
+}
+```
+
+Each proof costs one DID resolution (shared by proofs from one DID) and one
+signature check; an `ecdsa-sd-2023` derived proof costs one signature check per
+non-mandatory revealed statement plus the base signature, so its cost grows with the credential, not with the count.
+
+#### **vc.WithMaxStatusLists(n)**
+
+With `vc.WithCheckRevocation()`, refuses a credential whose `credentialStatus`
+names more than `n` status lists, before any list is fetched; the error wraps
+`vc.ErrTooManyStatusLists`. Lists are counted by URL: entries on one list
+share one fetch, whatever `statusPurpose` each names (Bitstring Status List
+v1.0 §2.2, §3.2 step 5; example in Appendix A.4). A `refresh` entry is not counted and its list is not
+read, since §2.1 says a refresh status "does not invalidate the verifiable
+credential". Each list costs a fetch of up to 16 MiB and a proof check.
+`n <= 0` leaves the number unbounded, which is the default.
+
+```go
+err := credential.Verify(vc.WithResolver(resolver), vc.WithCheckRevocation(),
+    vc.WithMaxStatusLists(2), vc.WithMaxProofs(2))
+```
+
+#### **vc.WithStatusListIssuers(credentialIssuer, listIssuers...)** and **vc.WithStatusListHTTPClient(client)**
+
+With `vc.WithCheckRevocation()`, a status list must be issued by the
+credential's issuer. `WithStatusListIssuers(credentialIssuer, listIssuers...)`
+also trusts, for that issuer's credentials only, lists issued by the DIDs
+given: Bitstring Status List v1.0 §2.2 lets the two issuers differ and leaves
+that trust to the verifier. `WithStatusListHTTPClient` sets the client lists
+are fetched with; §3.2 says verifiers SHOULD cache lists and SHOULD use
+proxies, which a caching or proxying transport does. Start from
+`credentialstatus.NewPublicOnlyHTTPClient()` and wrap its `Transport`, so the
+client still refuses non-public addresses.
+
+Status errors wrap the error types of Bitstring Status List v1.0 §3 and §3.5
+in `credentialstatus`: `ErrStatusRetrieval`, `ErrStatusVerification`,
+`ErrStatusListLength`, `ErrMalformedValue` and `ErrRange`. Two SDK kinds sit
+beside them: `ErrUnsupported` (a purpose other than revocation and suspension,
+or statusSize above 1) and `ErrStatusListTooLarge` (over the 16 MiB limit;
+retrying does not help). A set bit is none of them.
+
+```go
+err := credential.Verify(vc.WithResolver(resolver), vc.WithCheckRevocation(),
+    vc.WithStatusListIssuers("did:example:issuer", "did:example:status-authority"),
+    vc.WithStatusListHTTPClient(cachingClient))
+if errors.Is(err, credentialstatus.ErrStatusRetrieval) {
+    // the list could not be fetched; retry later
+}
+```
+
 #### **vc.WithBaseURL(url)**
 
 Sets a custom DID resolver base URL for proof verification.
@@ -509,6 +638,8 @@ err := credential.AddProofByProvider(signer, vc.WithVerificationMethodKey("key-2
 #### **vc.WithReplaceProof()**
 
 Lets a signing call replace a signature the credential already carries. Without it, signing an already-signed JWT credential (`vc+jwt` or VC 1.1 JWT) is refused.
+
+It works only on a credential built with `New*`. A parsed JWT credential cannot be signed at all, with or without the option: build it again with `New*`.
 
 A JWT holds one signature, so signing again always throws the old one away. Even with the same key and the same claims the new signature is different (ECDSA is randomized), so the token and its `Hash()` change too. The option makes that a choice instead of a side effect.
 
@@ -546,9 +677,9 @@ err = pres.Verify(
     vp.WithExpectedDomain("https://verifier.example"))
 ```
 
-> On a JSON-LD presentation only an `ecdsa-rdfc-2019` proof signs its challenge and
-> domain. A legacy hex or `JsonWebSignature2020` signature covers the document alone, so
-> on those proofs the values are not bound to the signer.
+> On a JSON-LD presentation `ecdsa-rdfc-2019`, `EcdsaSecp256k1Signature2019` and
+> `JsonWebSignature2020` proofs sign their challenge and domain. A legacy hex signature
+> covers the document alone, so on those proofs the values are not bound to the signer.
 
 #### **vp.WithRequireAudience()**
 
@@ -583,7 +714,7 @@ Supported Proof:
 - type: DataIntegrityProof
   - cryptosuite: ecdsa-rdfc-2019 (standard signing, P-256 only; `proofValue` is multibase base58btc — see above), ecdsa-sd-2023 (selective disclosure for JSON-LD, P-256 only — see below)
 - type: EcdsaSecp256k1Signature2019 (secp256k1, detached JWS in `jws`; either data model — see above)
-- type: JsonWebSignature2020 (RSA, detached JWS — verify-only, see above)
+- type: JsonWebSignature2020 (ES256 or PS256, detached JWS over the proof options and the document — see above)
 
 ### <a name="sd-jwt-selective-disclosure"></a>SD-JWT (Selective Disclosure)
 
@@ -1120,7 +1251,10 @@ To create a Verifiable Presentation, you need:
 1. Initialize the VP package with a DID resolver endpoint
 2. Create or obtain Verifiable Credentials to include
 3. Define presentation contents using `vp.PresentationContents`
-4. Create the presentation using `vp.NewJSONPresentation()` or `vp.NewJWTPresentation()`
+4. Create the presentation using `vp.NewJSONPresentation()` or `vp.NewJWTPresentation()`.
+   A JSON presentation embeds JSON credentials only (VCDM 2.0 §4.13), so
+   `NewJSONPresentation` and signing refuse a JWT credential with `vp.ErrCredentialNotObject`.
+   Present JWT credentials with `vp.NewJWTPresentation()` or `vp.NewJOSEPresentation()`.
 5. Add a cryptographic proof using `AddProof()` with a signer provider
 6. Serialize and verify the presentation
 
@@ -1168,6 +1302,18 @@ presentation, err := vp.ParsePresentation(data,
 > VC Data Model, so schema validation is now opt-in via
 > `vc.WithSchemaValidation()`.
 
+#### **vp.WithMaxProofs(n)**
+
+Refuses a JSON-LD presentation that carries more than `n` proofs, before its
+embedded credentials are verified and before any DID is resolved. It caps the
+presentation's own proofs only; pass `vc.WithMaxProofs` through
+`vp.WithVCValidation` to cap the embedded credentials' proofs.
+
+```go
+err := presentation.Verify(vp.WithResolver(resolver), vp.WithMaxProofs(1),
+    vp.WithVCValidation(vc.WithMaxProofs(2)))
+```
+
 #### **vp.WithVerifyProof()**
 
 Enables proof verification during presentation parsing.
@@ -1210,6 +1356,8 @@ err := presentation.AddProofByProvider(signer, vp.WithVerificationMethodKey("key
 #### **vp.WithReplaceProof()**
 
 Lets a signing call replace a signature the presentation already carries. Without it, signing an already-signed JWT presentation (`vp+jwt` or VC 1.1 JWT) is refused.
+
+It works only on a presentation built with `New*`. A parsed JWT presentation cannot be signed at all, with or without the option: build it again with `New*`.
 
 The usual reason to need it: the verifier hands out a new challenge and the holder signs again.
 
@@ -1719,6 +1867,10 @@ vc.WithVerificationMethodKey(key)           // Set custom verification method ke
 vc.WithSDSelectivePaths(paths)              // Issue SD-JWT: claims at these paths are selectively disclosable
 vc.WithSDDisclosures(disclosures)           // Issue SD-JWT: disclosures you built, matching digests already in the contents
 vc.WithReplaceProof()                       // Allow signing to replace a signature already present
+vc.WithMaxProofs(n)                         // Refuse more than n proofs on the credential and its status lists
+vc.WithMaxStatusLists(n)                    // With WithCheckRevocation: refuse more than n status lists
+vc.WithStatusListIssuers(iss, dids...)      // With WithCheckRevocation: also trust lists by dids for iss's credentials
+vc.WithStatusListHTTPClient(client)         // With WithCheckRevocation: fetch lists with client (cache, proxy)
 
 // VP options
 vp.WithVCValidation()                       // Enable VC validation within presentation
@@ -1726,6 +1878,7 @@ vp.WithVerifyProof()                        // Enable proof verification
 vp.WithBaseURL(url)                         // Set custom DID resolver URL
 vp.WithVerificationMethodKey(key)           // Set custom verification method key
 vp.WithReplaceProof()                       // Allow signing to replace a signature already present
+vp.WithMaxProofs(n)                         // Refuse more than n proofs on the presentation
 ```
 
 ---

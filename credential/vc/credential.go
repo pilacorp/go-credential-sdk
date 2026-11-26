@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -27,6 +28,11 @@ import (
 // ParseJOSECredential.
 var ErrSDJWTRequiresJOSE = errors.New(
 	"selective disclosure is supported only as vc+sd-jwt; use NewJOSECredential / ParseJOSECredential")
+
+// ErrTooManyStatusLists is returned, wrapped with the counts, when a
+// credential's credentialStatus names more status lists than
+// WithMaxStatusLists allows.
+var ErrTooManyStatusLists = errors.New("too many status lists")
 
 // Config holds package configuration.
 var config = struct {
@@ -73,8 +79,8 @@ type CredentialContents struct {
 	ID               string         `json:"id,omitempty"`               // Credential identifier
 	Types            []string       `json:"type,omitempty"`             // Credential types
 	Issuer           string         `json:"issuer,omitempty"`           // Issuer identifier
-	ValidFrom        time.Time      `json:"validFrom,omitempty"`        // Issuance date
-	ValidUntil       time.Time      `json:"validUntil,omitempty"`       // Expiration date
+	ValidFrom        time.Time      `json:"validFrom,omitempty"`        // validFrom (VCDM 2.0); zero for a VCDM 1.1 credential
+	ValidUntil       time.Time      `json:"validUntil,omitempty"`       // validUntil (VCDM 2.0); zero for a VCDM 1.1 credential
 	CredentialStatus []Status       `json:"credentialStatus,omitempty"` // Credential status entries
 	Subject          []Subject      `json:"subject,omitempty"`          // Credential subjects
 	Schemas          []Schema       `json:"schemas,omitempty"`          // Credential schemas
@@ -137,6 +143,7 @@ type credentialOptions struct {
 	isCheckExpiration       bool
 	leeway                  time.Duration
 	isCheckRevocation       bool
+	acceptLegacyStatusList  bool
 	didBaseURL              string
 	verificationMethodKey   string
 	sdDisclosures           []string
@@ -147,7 +154,18 @@ type credentialOptions struct {
 	loadedSchemaLoader      SchemaLoaderFunc
 	resolver                verificationmethod.ResolverProvider
 	proofVerificationMethod string
-	replaceProof            bool
+	// expectedProofPurpose overrides the assertionMethod a VC verifier expects.
+	expectedProofPurpose string
+	replaceProof         bool
+	// maxProofs caps the proofs a JSON-LD credential may carry; 0 means no cap.
+	maxProofs int
+	// maxStatusLists caps the status lists WithCheckRevocation fetches; 0 means no cap.
+	maxStatusLists int
+	// statusListIssuers maps a credential issuer to list issuers trusted for
+	// its credentials besides itself.
+	statusListIssuers map[string][]string
+	// statusListHTTPClient fetches status lists; nil means the package default.
+	statusListHTTPClient *http.Client
 }
 
 // WithReplaceProof (signing) lets a signing call replace a signature the
@@ -171,10 +189,10 @@ func WithReplaceProof() CredentialOpt {
 // refuseOverwrite stops a JWT signing call from replacing a signature the
 // credential already carries, unless the caller passed WithReplaceProof.
 //
-// Signing with a key the header does not name already failed, because
-// signingKey.Accept checks the fresh signature before it is stored. What went
-// through in silence was the other case: signing again with the right key
-// succeeded, and Hash() changed. Shared by the VC 1.1 JWT and the vc+jwt
+// Signing with a wrong key or on a parsed token (no key bound) already fails,
+// because signingKey.Accept checks the fresh signature before it is stored.
+// What went through in silence was the other case: signing again with the right
+// key succeeded, and Hash() changed. Shared by the VC 1.1 JWT and the vc+jwt
 // credential, which both hold exactly one signature.
 func refuseOverwrite(current string, options *credentialOptions) error {
 	if current == "" || options.replaceProof {
@@ -203,6 +221,27 @@ func (o *credentialOptions) hasSDOptions() bool {
 	return len(o.sdDisclosures) > 0 || len(o.sdSelectivePaths) > 0 || o.sdAlg != "" || o.sdShuffle || len(o.sdDecoys) > 0
 }
 
+// WithExpectedProofPurpose tells Verify to expect this proof purpose instead of
+// assertionMethod. Data Integrity 1.0 §4.4 requires the comparison: a proof
+// that names another purpose is refused even when the key is granted that
+// other purpose. An empty purpose leaves the default in place.
+func WithExpectedProofPurpose(purpose string) CredentialOpt {
+	return func(c *credentialOptions) {
+		if purpose == "" {
+			return
+		}
+		c.expectedProofPurpose = purpose
+	}
+}
+
+// diProofPurpose is the purpose a VC verifier compares with proof.proofPurpose.
+func (o *credentialOptions) diProofPurpose() string {
+	if o.expectedProofPurpose != "" {
+		return o.expectedProofPurpose
+	}
+	return "assertionMethod"
+}
+
 // WithProofVerificationMethod restricts proof verification to the single proof
 // bound to the given verification method URL (e.g. "did:example:issuer#key-2").
 // By default all proofs in the set must verify; with this option only the
@@ -210,6 +249,20 @@ func (o *credentialOptions) hasSDOptions() bool {
 func WithProofVerificationMethod(vm string) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.proofVerificationMethod = vm
+	}
+}
+
+// WithMaxProofs makes Verify refuse a JSON-LD credential that carries more
+// than n proofs, before any DID is resolved. A verifier that serves untrusted
+// callers sets the most proofs its credentials carry. The count is of the
+// whole credential, also with WithProofVerificationMethod. The same cap
+// applies to each status list credential that Verify fetches with
+// WithCheckRevocation. n <= 0 leaves the proof sets unbounded, which is the
+// default. A JWT credential holds one signature, so the cap applies to it only
+// through its status lists.
+func WithMaxProofs(n int) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.maxProofs = n
 	}
 }
 
@@ -260,7 +313,14 @@ func WithVerifyProof() CredentialOpt {
 	}
 }
 
-// WithCheckExpiration enables expiration check during credential parsing.
+// WithCheckExpiration refuses a credential outside the validity period it
+// states, at the current time widened by WithLeeway: validFrom/validUntil
+// (VCDM 2.0 §4.9) and issuanceDate/expirationDate (VCDM 1.1 §4.6, §4.8), each
+// when present and whatever @context says. A date member that is there but is
+// not a date-time string, empty included, is an error; one without a time
+// zone is read as UTC. For a JWT credential, and for the JWT of a
+// JwtProof2020 proof, it also enforces nbf and exp (RFC 7519 §4.1.4,
+// §4.1.5).
 func WithCheckExpiration() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckExpiration = true
@@ -268,7 +328,8 @@ func WithCheckExpiration() CredentialOpt {
 }
 
 // WithLeeway tolerates clock skew between issuer and verifier: every time check
-// against the current time — validFrom/validUntil and the JWT nbf/exp claims —
+// against the current time — validFrom/validUntil, issuanceDate/expirationDate
+// and the JWT nbf/exp claims —
 // is widened by d on both sides. It turns no check on by itself. Zero, the
 // default, compares exactly; a negative d counts as zero. It does not touch the
 // revocation check, which compares iat with the time a key was revoked, not
@@ -280,10 +341,71 @@ func WithLeeway(d time.Duration) CredentialOpt {
 	}
 }
 
-// WithCheckRevocation enables revocation check during credential parsing.
+// WithCheckRevocation makes Verify read each BitstringStatusListEntry and
+// refuse the credential when its revocation or suspension bit is set. One
+// status list is fetched and verified once, also when it serves several
+// statusPurpose values (Bitstring Status List v1.0 §2.2, §3.2 step 5). A refresh
+// entry's list is not read, since §2.1 says a refresh status "does not
+// invalidate the verifiable credential". Any other purpose, message included,
+// is refused: a message status carries an issuer-defined message this SDK
+// does not read.
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckRevocation = true
+	}
+}
+
+// WithLegacyStatusList lets WithCheckRevocation read authen-service's legacy
+// status lists: an encodedList with no multibase prefix, least significant bit
+// first. Without it such a list is refused, because Bitstring Status List v1.0
+// requires the multibase base64url form. Pass it only while the issuer still
+// serves legacy lists.
+func WithLegacyStatusList() CredentialOpt {
+	return func(c *credentialOptions) {
+		c.acceptLegacyStatusList = true
+	}
+}
+
+// WithMaxStatusLists makes WithCheckRevocation refuse a credential whose
+// credentialStatus names more than n status lists, before any list is
+// fetched; the error wraps ErrTooManyStatusLists. Lists are counted by URL:
+// entries on one list share one fetch, whatever statusPurpose each names. A
+// refresh entry is not counted, since its list is not read.
+// Each list costs a fetch of up to 16 MiB and a proof check, so a verifier
+// that serves untrusted callers sets the most lists its credentials name.
+// n <= 0 leaves the number unbounded, which is the default.
+func WithMaxStatusLists(n int) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.maxStatusLists = n
+	}
+}
+
+// WithStatusListIssuers makes WithCheckRevocation accept, for a credential
+// issued by credentialIssuer, a status list issued by one of listIssuers as
+// well as one issued by credentialIssuer itself. Bitstring Status List v1.0
+// §2.2 lets the two differ and leaves the trust to the verifier. The trust is
+// per credential issuer: a list authority named for one issuer vouches for no
+// other issuer's credentials. Without the option only the credential's issuer
+// is trusted. An empty credentialIssuer or list issuer is ignored.
+func WithStatusListIssuers(credentialIssuer string, listIssuers ...string) CredentialOpt {
+	return func(c *credentialOptions) {
+		if c.statusListIssuers == nil {
+			c.statusListIssuers = map[string][]string{}
+		}
+		c.statusListIssuers[credentialIssuer] = append(c.statusListIssuers[credentialIssuer], listIssuers...)
+	}
+}
+
+// WithStatusListHTTPClient sets the HTTP client WithCheckRevocation fetches
+// status lists with. Bitstring Status List v1.0 §3.2 says verifiers SHOULD
+// cache retrieved lists and SHOULD use proxies; a client with a caching or
+// proxying transport does both. It replaces the package default client,
+// which refuses non-public addresses; start from
+// credentialstatus.NewPublicOnlyHTTPClient and wrap its Transport to keep that
+// rule. nil keeps the default.
+func WithStatusListHTTPClient(client *http.Client) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.statusListHTTPClient = client
 	}
 }
 

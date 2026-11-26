@@ -368,7 +368,7 @@ func TestW3CConformance_Phase5_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issuer pub: %v", err)
 	}
-	if err := verifyDerivedProof(dd.revealDoc, w3cProofConfig(exp, dd.revealDoc["@context"]), derivedPV, issuerPub); err != nil {
+	if err := verifyDerivedProof(canonicalizer(dd.revealDoc), w3cProofConfig(exp, dd.revealDoc["@context"]), derivedPV, issuerPub); err != nil {
 		t.Fatalf("round-trip verify: %v", err)
 	}
 }
@@ -454,7 +454,7 @@ func TestW3CConformance_Phase8_VerifyDerived(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode issuer pub: %v", err)
 	}
-	if err := verifyDerivedProof(dd.revealDoc, w3cProofConfig(exp, dd.revealDoc["@context"]), derivedPV, issuerPub); err != nil {
+	if err := verifyDerivedProof(canonicalizer(dd.revealDoc), w3cProofConfig(exp, dd.revealDoc["@context"]), derivedPV, issuerPub); err != nil {
 		t.Fatalf("verify derived (W3C round-trip): %v", err)
 	}
 }
@@ -535,15 +535,20 @@ func hashToIntECDSA(hash []byte, q *big.Int) *big.Int {
 	return ret
 }
 
-func signRFC6979(priv *ecdsa.PrivateKey, hash []byte) []byte {
+func signRFC6979(priv *ecdsa.PrivateKey, hash []byte) ([]byte, error) {
+	raw, err := priv.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	d := new(big.Int).SetBytes(raw)
 	c := priv.Curve
 	q := c.Params().N
-	k := rfc6979Nonce(priv.D, q, hash)
+	k := rfc6979Nonce(d, q, hash)
 	kx, _ := c.ScalarBaseMult(k.Bytes()) //nolint:staticcheck // need scalar*G; stdlib has no non-deprecated path
 	r := new(big.Int).Mod(kx, q)
 	e := hashToIntECDSA(hash, q)
 	kInv := new(big.Int).ModInverse(k, q)
-	s := new(big.Int).Mul(r, priv.D)
+	s := new(big.Int).Mul(r, d)
 	s.Add(s, e)
 	s.Mul(s, kInv)
 	s.Mod(s, q)
@@ -552,7 +557,7 @@ func signRFC6979(priv *ecdsa.PrivateKey, hash []byte) []byte {
 	out := make([]byte, 64)
 	r.FillBytes(out[:32])
 	s.FillBytes(out[32:])
-	return out
+	return out, nil
 }
 
 // createBaseProofDeterministic reproduces a base proof byte-for-byte given fixed
@@ -573,7 +578,9 @@ func createBaseProofDeterministic(document, proofConfig map[string]interface{}, 
 	signatures := make([][]byte, len(nonMandatory))
 	for i, nq := range nonMandatory {
 		d := sha256.Sum256([]byte(nq))
-		signatures[i] = signRFC6979(ephemeralPriv, d[:])
+		if signatures[i], err = signRFC6979(ephemeralPriv, d[:]); err != nil {
+			return "", err
+		}
 	}
 	ephPub, err := verificationmethod.PubToMultikeyBytes(&ephemeralPriv.PublicKey)
 	if err != nil {
@@ -585,7 +592,10 @@ func createBaseProofDeterministic(document, proofConfig map[string]interface{}, 
 	toSign = append(toSign, ephPub...)
 	toSign = append(toSign, mandatoryHash...)
 	d := sha256.Sum256(toSign)
-	baseSig := signRFC6979(issuerPriv, d[:])
+	baseSig, err := signRFC6979(issuerPriv, d[:])
+	if err != nil {
+		return "", err
+	}
 
 	return serializeBaseProofValue(&specBaseProof{
 		BaseSignature:     baseSig,

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -148,7 +149,7 @@ func TestJSONMap_AddECDSAProof_RoundTripsThroughSpecConformantBranch(t *testing.
 		t.Fatalf("proofValue is not multibase base58btc: %s", proof.ProofValue)
 	}
 
-	ok, err := m.verifyECDSA(pub, &proof)
+	ok, err := m.verifyECDSA(pub, &proof, nil)
 	if err != nil {
 		t.Fatalf("verifyECDSA error: %v", err)
 	}
@@ -187,7 +188,7 @@ func TestJSONMap_VerifyECDSA_RejectsTamperedProofOptions(t *testing.T) {
 				proof.Type = "SomeOtherProof"
 			}
 
-			ok, err := m.verifyECDSA(pub, &proof)
+			ok, err := m.verifyECDSA(pub, &proof, nil)
 			if err == nil && ok {
 				t.Fatalf("tampered %s verified successfully", field)
 			}
@@ -209,7 +210,7 @@ func TestJSONMap_VerifyECDSA_RejectsTamperedBody(t *testing.T) {
 	}
 	m["credentialSubject"].(map[string]interface{})["name"] = "Mallory"
 
-	ok, err := m.verifyECDSA(pub, &proof)
+	ok, err := m.verifyECDSA(pub, &proof, nil)
 	if err == nil && ok {
 		t.Fatalf("tampered body verified successfully")
 	}
@@ -301,7 +302,7 @@ _:c14n0 <https://w3id.org/security#verificationMethod> <did:example:issuer#key-1
 		ProofPurpose:       "assertionMethod",
 	}
 
-	hashData, err := m.ecdsaHashData(proof)
+	hashData, err := m.ecdsaHashData(proof, nil)
 	if err != nil {
 		t.Fatalf("ecdsaHashData: %v", err)
 	}
@@ -357,7 +358,7 @@ func TestJSONMap_VerifyECDSA_RejectsMalformedMultibaseProofValue(t *testing.T) {
 				ProofValue:         proofValue,
 			}
 
-			if _, err := m.verifyECDSA(pub, proof); err == nil {
+			if _, err := m.verifyECDSA(pub, proof, nil); err == nil {
 				t.Fatalf("expected an error for proofValue %q", proofValue)
 			}
 		})
@@ -1228,9 +1229,11 @@ func TestCanonicalize_Errors(t *testing.T) {
 		wantErr string // substring the returned error must contain
 	}{
 		{
+			// SafeMode refuses a node object that states nothing, before
+			// canonicalization could come out empty.
 			name:    "empty document",
 			doc:     `{}`,
-			wantErr: "canonicalization produced no N-Quads",
+			wantErr: "has no subject and would be dropped",
 		},
 		{
 			name: "context but no terms",
@@ -1240,7 +1243,7 @@ func TestCanonicalize_Errors(t *testing.T) {
 				"https://www.w3.org/ns/credentials/examples/v2"
 			]
 		}`,
-			wantErr: "canonicalization produced no N-Quads",
+			wantErr: "has no subject and would be dropped",
 		},
 		{
 			// An id alone states nothing about the subject.
@@ -1252,7 +1255,7 @@ func TestCanonicalize_Errors(t *testing.T) {
 			],
 			"id": "urn:uuid:subject"
 		}`,
-			wantErr: "canonicalization produced no N-Quads",
+			wantErr: "has no subject and would be dropped",
 		},
 		{
 			name: "no @context",
@@ -1295,10 +1298,8 @@ func TestCanonicalize_Errors(t *testing.T) {
 	}
 }
 
-// TestCanonicalize_RejectsNonJSONInput covers the inputs that cannot be
-// written as JSON: a nil map, and Go types json.Unmarshal never produces.
-// Those panic inside the JSON-LD processor and come back as an error, so
-// callers must round-trip through JSON first, as bodyWithoutProof does.
+// TestCanonicalize_RejectsNonJSONInput covers the inputs that have no JSON
+// form: a nil map, a channel and NaN. Each comes back as an error.
 func TestCanonicalize_RejectsNonJSONInput(t *testing.T) {
 	t.Run("nil document", func(t *testing.T) {
 		got, err := processor.Canonicalize(nil)
@@ -1314,26 +1315,55 @@ func TestCanonicalize_RejectsNonJSONInput(t *testing.T) {
 		name  string
 		value interface{}
 	}{
-		{"int", int(42)},
-		{"int64", int64(42)},
-		{"float32", float32(1.5)},
 		{"channel", make(chan int)},
+		{"NaN", math.NaN()},
 	} {
 		t.Run(tc.name+" value", func(t *testing.T) {
-			doc := map[string]interface{}{
-				"@context": []interface{}{
-					"https://www.w3.org/ns/credentials/v2",
-					"https://www.w3.org/ns/credentials/examples/v2",
-				},
-				"id":    "urn:uuid:subject",
-				"value": tc.value,
-			}
-			got, err := processor.Canonicalize(doc)
+			got, err := processor.Canonicalize(documentWithValue(tc.value))
 			if err == nil {
 				t.Fatalf("expected an error for a %s value, got:\n%s", tc.name, got)
 			}
 			if !strings.Contains(err.Error(), "failed to canonicalize document") {
 				t.Fatalf("error = %q, want it wrapped as a canonicalization failure", err)
+			}
+		})
+	}
+}
+
+// documentWithValue is a credential whose value property is set to value.
+func documentWithValue(value interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/credentials/v2",
+			"https://www.w3.org/ns/credentials/examples/v2",
+		},
+		"id":    "urn:uuid:subject",
+		"value": value,
+	}
+}
+
+// A Go number gives the N-Quads of the JSON text it marshals to.
+func TestCanonicalize_ReadsGoNumbersAsJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value interface{}
+		json  float64
+	}{
+		{"int", int(42), 42},
+		{"int64", int64(42), 42},
+		{"float32", float32(1.5), 1.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := processor.Canonicalize(documentWithValue(tc.value))
+			if err != nil {
+				t.Fatalf("Canonicalize of a %s value: %v", tc.name, err)
+			}
+			want, err := processor.Canonicalize(documentWithValue(tc.json))
+			if err != nil {
+				t.Fatalf("Canonicalize of the JSON number: %v", err)
+			}
+			if string(got) != string(want) {
+				t.Fatalf("N-Quads = %q, want %q", got, want)
 			}
 		})
 	}
@@ -1364,23 +1394,23 @@ func TestJSONMap_AddECDSAProof_SignsChallengeAndDomain(t *testing.T) {
 	if proof.Challenge != "nonce-123" || !reflect.DeepEqual(proof.Domain, dto.StringOrStrings{"verifier.example"}) {
 		t.Fatalf("ParseRawToProof dropped challenge/domain: %+v", proof)
 	}
-	if ok, err := m.verifyECDSA(pub, &proof); err != nil || !ok {
+	if ok, err := m.verifyECDSA(pub, &proof, nil); err != nil || !ok {
 		t.Fatalf("untampered proof failed: ok=%v err=%v", ok, err)
 	}
 
 	tampered := proof
 	tampered.Challenge = "nonce-456"
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("changed challenge verified successfully")
 	}
 	tampered = proof
 	tampered.Domain = dto.StringOrStrings{"attacker.example"}
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("changed domain verified successfully")
 	}
 	tampered = proof
 	tampered.Challenge, tampered.Domain = "", nil
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("stripped challenge/domain verified successfully")
 	}
 }
@@ -1410,7 +1440,7 @@ func signProofObject(t *testing.T, m *JSONMap, sp signer.SignerProvider, proofOb
 	t.Helper()
 	m.ensureDataIntegrityContext()
 	proof := dto.ProofFromMap(proofObj)
-	hashData, err := m.ecdsaHashData(&proof)
+	hashData, err := m.ecdsaHashData(&proof, nil)
 	if err != nil {
 		t.Fatalf("ecdsaHashData: %v", err)
 	}
@@ -1448,18 +1478,18 @@ func TestJSONMap_VerifyECDSA_SignsStandardOptionalProperties(t *testing.T) {
 	if proof.Expires == "" || proof.Nonce == "" || proof.Id == "" || len(proof.PreviousProof) != 1 {
 		t.Fatalf("ParseRawToProof dropped standard properties: %+v", proof)
 	}
-	if ok, err := m.verifyECDSA(pub, &proof); err != nil || !ok {
+	if ok, err := m.verifyECDSA(pub, &proof, nil); err != nil || !ok {
 		t.Fatalf("untampered proof failed: ok=%v err=%v", ok, err)
 	}
 
 	tampered := proof
 	tampered.Expires = "2099-01-01T00:00:00Z"
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("changed expires verified successfully")
 	}
 	tampered = proof
 	tampered.Nonce = ""
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("stripped nonce verified successfully")
 	}
 }
@@ -1489,7 +1519,7 @@ func TestJSONMap_VerifyECDSA_SignsExtraProofProperty(t *testing.T) {
 	if proof.Extra["customTerm"] != "custom-value" {
 		t.Fatalf("ParseRawToProof dropped customTerm: %+v", proof)
 	}
-	if ok, err := m.verifyECDSA(pub, &proof); err != nil || !ok {
+	if ok, err := m.verifyECDSA(pub, &proof, nil); err != nil || !ok {
 		t.Fatalf("untampered proof failed: ok=%v err=%v", ok, err)
 	}
 
@@ -1502,12 +1532,12 @@ func TestJSONMap_VerifyECDSA_SignsExtraProofProperty(t *testing.T) {
 
 	tampered := proof
 	tampered.Extra = map[string]interface{}{"customTerm": "other"}
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("changed extra property verified successfully")
 	}
 	tampered = proof
 	tampered.Extra = nil
-	if ok, err := m.verifyECDSA(pub, &tampered); err == nil && ok {
+	if ok, err := m.verifyECDSA(pub, &tampered, nil); err == nil && ok {
 		t.Fatal("stripped extra property verified successfully")
 	}
 }
@@ -1532,7 +1562,7 @@ func TestJSONMap_VerifyECDSA_RejectsUndefinedProofTerm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse proof: %v", err)
 	}
-	if _, err := m.verifyECDSA(pub, &proof); err == nil {
+	if _, err := m.verifyECDSA(pub, &proof, nil); err == nil {
 		t.Fatal("expected an error for a proof term the @context does not define")
 	}
 }
@@ -1557,13 +1587,13 @@ func TestJSONMap_VerifyECDSA_P256OnlyAppliesToMultibaseProofs(t *testing.T) {
 	}
 	pub := &secp.PublicKey
 
-	if _, err := m.verifyECDSA(pub, &proof); err == nil || !strings.Contains(err.Error(), "supports P-256 only") {
+	if _, err := m.verifyECDSA(pub, &proof, nil); err == nil || !strings.Contains(err.Error(), "supports P-256 only") {
 		t.Fatalf("z proof with secp256k1 key: want P-256-only error, got %v", err)
 	}
 
 	legacy := proof
 	legacy.ProofValue = strings.Repeat("00", 64) // hex, not multibase
-	if _, err := m.verifyECDSA(pub, &legacy); err != nil && strings.Contains(err.Error(), "supports P-256 only") {
+	if _, err := m.verifyECDSA(pub, &legacy, nil); err != nil && strings.Contains(err.Error(), "supports P-256 only") {
 		t.Fatalf("hex proof must not hit the P-256-only check, got %v", err)
 	}
 }
@@ -1581,4 +1611,158 @@ func TestJSONMap_HasMultibaseProof(t *testing.T) {
 	if (&JSONMap{}).HasMultibaseProof() {
 		t.Error("no proof: HasMultibaseProof must be false")
 	}
+}
+
+// Data Integrity 1.0 §4.5 needs the referenced proofs inside the signed input,
+// which this SDK does not build. Any proof carrying previousProof is refused.
+func TestVerifyProof_RefusesPreviousProof(t *testing.T) {
+	sp, pub := testKeyPair(t)
+
+	// A dangling previousProof is refused.
+	m := testCredential()
+	proof := &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+		Id:                 "urn:uuid:proof-1",
+		PreviousProof:      dto.StringOrStrings{"urn:uuid:does-not-exist"},
+	}
+	attachSignedECDSAProof(t, &m, sp, proof)
+
+	ok, err := (&m).VerifyProof(issuerResolver(t, pub), "")
+	if err == nil && ok {
+		t.Fatal("a proof with previousProof verified")
+	}
+	if err == nil || !strings.Contains(err.Error(), "previousProof") {
+		t.Fatalf("refused, but not for previousProof: %v", err)
+	}
+
+	// A self-referencing previousProof is also refused: the SDK cannot bind a
+	// chain, even when the referenced id exists.
+	linked := testCredential()
+	self := &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+		Id:                 "urn:uuid:proof-1",
+		PreviousProof:      dto.StringOrStrings{"urn:uuid:proof-1"},
+	}
+	attachSignedECDSAProof(t, &linked, sp, self)
+	ok, err = (&linked).VerifyProof(issuerResolver(t, pub), "")
+	if err == nil && ok {
+		t.Fatal("a proof whose previousProof is its own id verified")
+	}
+	if err == nil || !strings.Contains(err.Error(), "previousProof") {
+		t.Fatalf("refused, but not for previousProof: %v", err)
+	}
+}
+
+// A detached proof carrying previousProof is refused: the SDK does not bind
+// proof chains.
+func TestVerifyDetachedProof_RefusesPreviousProof(t *testing.T) {
+	_, pub := testKeyPair(t)
+	m := testCredential()
+	proof := &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+		Id:                 "urn:uuid:proof-1",
+		PreviousProof:      dto.StringOrStrings{"urn:uuid:proof-1"},
+		ProofValue:         "z1111",
+	}
+
+	err := (&m).VerifyDetachedProof(issuerResolver(t, pub), proof)
+	if err == nil || !strings.Contains(err.Error(), "previousProof") {
+		t.Fatalf("detached proof with previousProof: got %v, want a previousProof error", err)
+	}
+}
+
+// CID 1.0 §3.3: the verification method's controller must be the document that
+// was resolved. The signature does not cover that field, so a document can
+// name another DID as controller and still verify today.
+func TestVerifyProof_RefusesForeignController(t *testing.T) {
+	sp, pub := testKeyPair(t)
+	m := testCredential()
+	attachSignedECDSAProof(t, &m, sp, &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+	})
+
+	vm, err := verificationmethod.NewP256VM("did:example:issuer", "key-1", pub)
+	if err != nil {
+		t.Fatalf("vm: %v", err)
+	}
+	vm.Controller = "did:example:someone-else"
+	doc := verificationmethod.NewDIDDocument("did:example:issuer", vm)
+
+	ok, err := (&m).VerifyProof(verificationmethod.NewStaticResolver(doc), "")
+	if err == nil && ok {
+		t.Fatal("a verification method controlled by another DID verified")
+	}
+	if err == nil || !strings.Contains(err.Error(), "controller") {
+		t.Fatalf("refused, but not for the controller: %v", err)
+	}
+}
+
+// CID 1.0 §3.3: a resolver that returns did:other for a did:issuer request,
+// with both doc.ID and vm.Controller set to did:other, used to pass because
+// only the two were compared. Now both must match the DID in the VM URL.
+func TestVerifyProof_RefusesDocIDMismatchingVMURL(t *testing.T) {
+	sp, pub := testKeyPair(t)
+	m := testCredential()
+	attachSignedECDSAProof(t, &m, sp, &dto.Proof{
+		Type:               DataIntegrityProof,
+		Created:            "2024-01-01T00:00:00Z",
+		VerificationMethod: "did:example:issuer#key-1",
+		ProofPurpose:       "assertionMethod",
+		Cryptosuite:        ECDSARDFC2019,
+	})
+
+	vm, err := verificationmethod.NewP256VM("did:example:issuer", "key-1", pub)
+	if err != nil {
+		t.Fatalf("vm: %v", err)
+	}
+	vm.Controller = "did:example:other"
+	doc := verificationmethod.NewDIDDocument("did:example:other", vm)
+
+	ok, err := (&m).VerifyProof(verificationmethod.NewStaticResolver(doc), "")
+	if err == nil && ok {
+		t.Fatal("doc.ID and vm.Controller agree but differ from the DID in the VM URL; want refusal")
+	}
+}
+
+func attachSignedECDSAProof(t *testing.T, m *JSONMap, sp signer.SignerProvider, proof *dto.Proof) {
+	t.Helper()
+	m.ensureDataIntegrityContext()
+	hashData, err := m.ecdsaHashData(proof, nil)
+	if err != nil {
+		t.Fatalf("hash data: %v", err)
+	}
+	digest := sha256.Sum256(hashData)
+	sig, err := sp.Sign(digest[:])
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	proof.ProofValue = verificationmethod.EncodeMultibaseKey(sig)
+	if err := m.AddCustomProof(proof); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+}
+
+func issuerResolver(t *testing.T, pub *ecdsa.PublicKey) verificationmethod.ResolverProvider {
+	t.Helper()
+	vm, err := verificationmethod.NewP256VM("did:example:issuer", "key-1", pub)
+	if err != nil {
+		t.Fatalf("vm: %v", err)
+	}
+	return verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument("did:example:issuer", vm))
 }

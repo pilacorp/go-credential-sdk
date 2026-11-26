@@ -3,7 +3,6 @@ package vc
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -344,7 +343,7 @@ func parseIssuer(c CredentialData, contents *CredentialContents) error {
 // parseDates extracts validFrom and validUntil fields from a Credential.
 func parseDates(c CredentialData, contents *CredentialContents) error {
 	if validFrom, ok := c["validFrom"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validFrom)
+		t, err := vcdm.ParseDateTime(validFrom)
 		if err != nil {
 			return fmt.Errorf("failed to parse validFrom: %w", err)
 		}
@@ -352,7 +351,7 @@ func parseDates(c CredentialData, contents *CredentialContents) error {
 	}
 
 	if validUntil, ok := c["validUntil"].(string); ok {
-		t, err := time.Parse(time.RFC3339, validUntil)
+		t, err := vcdm.ParseDateTime(validUntil)
 		if err != nil {
 			return fmt.Errorf("failed to parse validUntil: %w", err)
 		}
@@ -611,75 +610,176 @@ func validateCredential(m CredentialData, opts *credentialOptions) error {
 	return nil
 }
 
-// checkExpiration checks that the credential is inside its validFrom/validUntil
-// window, widened by leeway on both sides to absorb clock skew.
+// checkExpiration checks the validity period the credential states (vcdm.CheckValidity),
+// widened by leeway on both sides to absorb clock skew.
 func checkExpiration(c CredentialData, leeway time.Duration) error {
-	validFrom, err := parseStringField(c, "validFrom")
-	if err != nil {
-		return fmt.Errorf("failed to parse validFrom: %w", err)
-	}
-	validUntil, err := parseStringField(c, "validUntil")
-	if err != nil {
-		return fmt.Errorf("failed to parse validUntil: %w", err)
-	}
-
-	return vcdm.CheckValidityPeriod("credential", validFrom, validUntil, leeway)
+	return vcdm.CheckValidity("credential", c, leeway)
 }
 
-// checkRevocation checks that credentialStatus is present and, if using a
-// status list, verifies the credential is not revoked.
-func checkRevocation(c CredentialData) error {
+// checkRevocation checks each credentialStatus entry, when there is one, and,
+// for a status list entry, verifies the credential is not revoked. It also verifies the
+// status list credential itself: its proof, issuer match, and validity period.
+//
+// Only BitstringStatusListEntry entries are read. An entry of another type is
+// ignored, the same rule the SDK applies to a credentialSchema type it does
+// not implement, rather than having its index read as a bitstring position.
+// Every entry's fields are checked against §2.1; a refresh entry's list is not
+// read.
+//
+// options supplies the resolver, WithLegacyStatusList, the proof cap of each
+// status list (the WithMaxProofs value) and WithMaxStatusLists.
+//
+// issuerDIDFallbacks supplies additional DID strings to try when c["issuer"]
+// is missing (e.g. the JWT "iss" claim for VC Data Model v1.1 §6.3.1).
+func checkRevocation(c CredentialData, options *credentialOptions, issuerDIDFallbacks ...string) error {
 	// If there's no credentialStatus at all, treat as not using revocation → no error.
 	rawStatus, ok := c["credentialStatus"]
 	if !ok || rawStatus == nil {
 		return nil
 	}
 
-	statusMap, ok := rawStatus.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("credentialStatus must be an object")
+	// VC Data Model v2.0 §4.10: credentialStatus is a single object or a set
+	// of one or more objects; every entry is checked.
+	var entries []interface{}
+	switch v := rawStatus.(type) {
+	case map[string]interface{}:
+		entries = []interface{}{v}
+	case []interface{}:
+		if len(v) == 0 {
+			return fmt.Errorf("credentialStatus must not be an empty array")
+		}
+		entries = v
+	default:
+		return fmt.Errorf("credentialStatus must be an object or an array of objects")
 	}
 
-	// If credentialStatus is an empty object, also treat it as "no revocation info".
-	if len(statusMap) == 0 {
-		return nil
+	// Extract the credential's issuer DID for the issuer-match check.
+	// For JWT VCs, VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
+	// is present it sets the issuer.
+	var issuerDID string
+	for _, fb := range issuerDIDFallbacks {
+		if fb != "" {
+			issuerDID = fb
+			break
+		}
+	}
+	if issuerDID == "" {
+		issuerDID, _ = jsonmap.DIDFromField(c["issuer"])
 	}
 
-	rawStatusListCredential, ok := statusMap["statusListCredential"]
-	if !ok || rawStatusListCredential == nil {
-		return fmt.Errorf("credentialStatus.statusListCredential is required")
+	clientOpts := []credentialstatus.Option{credentialstatus.WithResolver(options.resolver), credentialstatus.WithMaxProofs(options.maxProofs)}
+	if options.acceptLegacyStatusList {
+		clientOpts = append(clientOpts, credentialstatus.WithLegacyStatusList())
 	}
-
-	statusListCredential, ok := rawStatusListCredential.(string)
-	if !ok || statusListCredential == "" {
-		return fmt.Errorf("credentialStatus.statusListCredential must be a non-empty string")
+	for credentialIssuer, listIssuers := range options.statusListIssuers {
+		clientOpts = append(clientOpts, credentialstatus.WithAcceptedListIssuers(credentialIssuer, listIssuers...))
 	}
-
-	rawStatusListIndex, ok := statusMap["statusListIndex"]
-	if !ok || rawStatusListIndex == nil {
-		return fmt.Errorf("credentialStatus.statusListIndex is required")
+	if options.statusListHTTPClient != nil {
+		clientOpts = append(clientOpts, credentialstatus.WithHTTPClient(options.statusListHTTPClient))
 	}
-
-	statusListIndex, ok := rawStatusListIndex.(string)
-	if !ok || statusListIndex == "" {
-		return fmt.Errorf("credentialStatus.statusListIndex must be a non-empty string")
+	lists := &statusLists{
+		client:    credentialstatus.NewClient(clientOpts...),
+		issuerDID: issuerDID,
+		verified:  map[string]*credentialstatus.StatusList{},
+		remaining: map[string]int{},
 	}
-
-	position, err := strconv.Atoi(statusListIndex)
+	// Check every entry before any list is fetched, so a malformed entry or
+	// too many lists costs no fetch.
+	reads, err := readStatusEntries(entries)
 	if err != nil {
-		return fmt.Errorf("invalid credentialStatus.statusListIndex: %w", err)
+		return err
+	}
+	for _, r := range reads {
+		lists.remaining[r.entry.ListURL]++
+	}
+	if n := options.maxStatusLists; n > 0 && len(lists.remaining) > n {
+		return fmt.Errorf("%w: credentialStatus names %d status lists and this verifier accepts at most %d; raise WithMaxStatusLists", ErrTooManyStatusLists, len(lists.remaining), n)
 	}
 
-	// Call status list API and check revocation based on encodedList bits.
-	isRevoked, err := credentialstatus.FetchAndCheckRevocation(statusListCredential, position)
-	if err != nil {
-		return fmt.Errorf("failed to check revocation: %w", err)
+	for _, r := range reads {
+		if err := lists.check(r.entry.ListURL, r.entry.Purpose, r.position); err != nil {
+			return entryError(len(entries), r.index, fmt.Errorf("failed to check revocation: %w", err))
+		}
 	}
-	if isRevoked {
-		return fmt.Errorf("credential is revoked")
-	}
-
 	return nil
+}
+
+// readEntry is a credentialStatus entry whose list will be read.
+type readEntry struct {
+	index    int
+	entry    credentialstatus.Entry
+	position int
+}
+
+// readStatusEntries checks every entry of credentialStatus and returns the
+// ones whose list is read. An empty object and an entry of another type are
+// skipped, as is a refresh entry once its fields are checked.
+func readStatusEntries(entries []interface{}) ([]readEntry, error) {
+	var reads []readEntry
+	for i, raw := range entries {
+		statusMap, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("credentialStatus[%d] must be an object", i)
+		}
+		if len(statusMap) == 0 || !hasType(statusMap["type"], "BitstringStatusListEntry") {
+			continue
+		}
+		entry, err := credentialstatus.ParseEntry(statusMap)
+		if err != nil {
+			return nil, entryError(len(entries), i, err)
+		}
+		if entry.IsRefresh() {
+			continue
+		}
+		position, err := entry.Position()
+		if err != nil {
+			return nil, entryError(len(entries), i, err)
+		}
+		reads = append(reads, readEntry{index: i, entry: entry, position: position})
+	}
+	return reads, nil
+}
+
+// entryError names the entry's index when credentialStatus holds several.
+func entryError(count, i int, err error) error {
+	if count > 1 {
+		return fmt.Errorf("credentialStatus[%d]: %w", i, err)
+	}
+	return err
+}
+
+// statusLists fetches and verifies each status list once per credential, so
+// entries that share a list cost one fetch and one proof check between them.
+// A list is kept only while a later entry still reads it: a decoded list can
+// be 16 MiB, and a credential can name many lists.
+type statusLists struct {
+	client    *credentialstatus.Client
+	issuerDID string
+	verified  map[string]*credentialstatus.StatusList // by list URL
+	remaining map[string]int                          // entries still to read each list
+}
+
+// check reads the entry's bit from the list at url, verifying the list first
+// if no earlier entry of this credential has. A list verified for another
+// purpose is reused when it also serves this one (Bitstring Status List v1.0
+// §2.2, §3.2 step 5), so one list costs one fetch whatever purposes it serves.
+func (s *statusLists) check(url, purpose string, position int) error {
+	cached, ok := s.verified[url]
+	if !ok {
+		var err error
+		if cached, err = s.client.VerifyStatusList(url, purpose, s.issuerDID); err != nil {
+			return err
+		}
+		s.verified[url] = cached
+	}
+	if s.remaining[url]--; s.remaining[url] <= 0 {
+		delete(s.verified, url)
+	}
+	list, err := cached.ForPurpose(purpose)
+	if err != nil {
+		return err
+	}
+	return list.Check(position)
 }
 
 // convertToArray ensures a value is represented as an array.
