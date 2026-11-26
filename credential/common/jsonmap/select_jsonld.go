@@ -20,23 +20,15 @@ func SelectJSONLD(document map[string]interface{}, pointers []string) (map[strin
 	initJSONLDSelection(selection, document)
 	paths := make([][]string, len(pointers))
 	selected := &pointerNode{}
-	for i, pointer := range pointers {
-		if pointer == "" || strings.HasPrefix(pointer, "/") {
-			tokens, err := jsonpointer.ParseTokens(pointer)
-			if err != nil {
-				return nil, fmt.Errorf("pointer %.64q: %w", pointer, err)
-			}
-			paths[i] = tokens
-			selected.add(document, paths[i])
-		}
-	}
-
 	root := false
-	for i, path := range paths {
-		if pointers[i] != "" && !strings.HasPrefix(pointers[i], "/") {
-			return nil, fmt.Errorf("pointer %.64q must start with /", pointers[i])
+	for i, pointer := range pointers {
+		tokens, err := jsonpointer.ParseTokens(pointer)
+		if err != nil {
+			return nil, err
 		}
-		root = root || len(path) == 0
+		paths[i] = tokens
+		selected.add(document, tokens)
+		root = root || len(tokens) == 0
 	}
 	if root {
 		// The root pointer selects the whole document, but a pointer next to it
@@ -80,8 +72,8 @@ type pointerNode struct {
 // matches nothing covers no other pointer, and its tokens are not kept.
 func (n *pointerNode) add(document interface{}, path []string) {
 	for _, token := range path {
-		child, err := jsonpointer.GetChild(document, token)
-		if err != nil {
+		child, ok := jsonpointer.Child(document, token)
+		if !ok {
 			return
 		}
 		document = child
@@ -160,8 +152,8 @@ func selectJSONLDInto(source interface{}, path []string, selection interface{}) 
 			return source, nil
 		}
 	}
-	child, err := jsonpointer.GetChild(source, path[0])
-	if err != nil {
+	child, ok := jsonpointer.Child(source, path[0])
+	if !ok {
 		return nil, fmt.Errorf("JSON Pointer does not match document")
 	}
 	// A hole an earlier pointer left is not selected yet: a later pointer
@@ -188,19 +180,7 @@ func initJSONLDSelectionMap(source interface{}) map[string]interface{} {
 }
 
 func getJSONChild(parent interface{}, token string) (interface{}, bool) {
-	switch value := parent.(type) {
-	case map[string]interface{}:
-		child, ok := value[token]
-		return child, ok
-	case []interface{}:
-		index, ok := jsonpointer.ArrayIndex(token)
-		if !ok || index >= len(value) {
-			return nil, false
-		}
-		return value[index], true
-	default:
-		return nil, false
-	}
+	return jsonpointer.Child(parent, token)
 }
 
 func setJSONChild(parent interface{}, token string, value interface{}) interface{} {

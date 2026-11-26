@@ -214,7 +214,7 @@ func TestValidate(t *testing.T) {
 			t.Errorf("Validate(%q) = %v, want nil", p, err)
 		}
 	}
-	invalid := []string{"foo", "foo/bar", "/~", "/~2", "/bad~", "/a~2b"}
+	invalid := []string{"foo", "foo/bar", "/~", "/~2", "/bad~", "/a~2b", "/\xff"}
 	for _, p := range invalid {
 		if err := Validate(p); err == nil {
 			t.Errorf("Validate(%q) = nil, want error", p)

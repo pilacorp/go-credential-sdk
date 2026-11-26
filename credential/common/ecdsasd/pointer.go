@@ -7,21 +7,16 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
 )
 
-// checkPointers refuses a pointer a caller supplies that is not "" and does not
-// start with "/" (RFC 6901 §3), or that matches nothing in document
-// (VC-DI-ECDSA §3.4.12). CreateBaseProof and DeriveProof check their pointers
-// here. selectJsonLd does not: it also reads the mandatory pointers stored in
-// an issued base proof, which released versions signed without these checks.
+// checkPointers refuses a pointer a caller supplies that is not valid RFC 6901
+// (UTF-8, "" or starting with "/", only ~0 and ~1; RFC 6901 §3), or
+// that matches nothing in document (VC-DI-ECDSA §3.4.12). CreateBaseProof and
+// DeriveProof check their pointers here. selectJsonLd does not: it also reads
+// the mandatory pointers stored in an issued base proof.
 func checkPointers(document map[string]interface{}, pointers []string) error {
-	for _, pointer := range pointers {
-		if pointer != "" && !strings.HasPrefix(pointer, "/") {
-			return fmt.Errorf("pointer %.64q must start with /", pointer)
-		}
-	}
 	for _, pointer := range pointers {
 		tokens, err := jsonpointer.ParseTokens(pointer)
 		if err != nil {
-			return fmt.Errorf("pointer %.64q: %w", pointer, err)
+			return err
 		}
 		if !jsonpointer.Matches(document, tokens) {
 			return fmt.Errorf("pointer %.64q: JSON pointer does not match document", pointer)
@@ -36,9 +31,9 @@ func checkPointers(document map[string]interface{}, pointers []string) error {
 // selectJsonLd builds a JSON-LD selection document containing only the values
 // addressed by pointers, carrying @context and the id/type of every traversed
 // node. Ports digitalbazaar di-sd-primitives selectJsonLd (includeTypes=true).
-// Like the reference, it reads a pointer by dropping its first token, and
-// returns the whole document when it reaches the root pointer: a stored pointer
-// is read as it was issued. checkPointers is for a caller's pointers.
+// Like the reference, it drops the text before a pointer's first "/" and
+// returns the whole document for the root pointer; see storedPointerTokens.
+// checkPointers is for a caller's pointers.
 func selectJsonLd(document map[string]interface{}, pointers []string) (map[string]interface{}, error) {
 	if len(pointers) == 0 {
 		return nil, nil
@@ -52,7 +47,7 @@ func selectJsonLd(document map[string]interface{}, pointers []string) (map[strin
 	for _, pointer := range pointers {
 		tokens, err := storedPointerTokens(pointer)
 		if err != nil {
-			return nil, fmt.Errorf("pointer %.64q: %w", pointer, err)
+			return nil, err
 		}
 		if len(tokens) == 0 {
 			cloned, _ := deepCopy(document).(map[string]interface{})
@@ -66,10 +61,13 @@ func selectJsonLd(document map[string]interface{}, pointers []string) (map[strin
 	return sel, nil
 }
 
-// storedPointerTokens reads a pointer the way the reference reads a stored
-// mandatory pointer: the text before the first "/" is dropped. "x/validFrom"
-// reads as /validFrom, and a pointer with no "/" (such as "credentialSubject")
-// reads as the root pointer. A pointer that starts with "/" is plain RFC 6901.
+// storedPointerTokens reads a stored mandatory pointer. Like the reference
+// (VC-DI-ECDSA §3.4.10, pointer.split('/').slice(1)) it drops the text before
+// the first "/": "x/validFrom" reads as /validFrom, and a pointer with no "/"
+// reads as the root pointer. After that it is strict RFC 6901 (UTF-8, ~0 and
+// ~1 only, canonical array indexes), unlike §3.4.10, which converts any token
+// that parses as an integer: a base proof whose stored pointer uses 01, +1, -0
+// or a bad "~" no longer derives. No issuer uses ecdsa-sd-2023 yet.
 func storedPointerTokens(pointer string) ([]string, error) {
 	i := strings.Index(pointer, "/")
 	if i < 0 {
@@ -143,19 +141,7 @@ func initSelection(sel map[string]interface{}, source interface{}) map[string]in
 }
 
 func getChild(parent interface{}, token string) (interface{}, bool) {
-	switch p := parent.(type) {
-	case map[string]interface{}:
-		v, ok := p[token]
-		return v, ok
-	case []interface{}:
-		idx, ok := jsonpointer.ArrayIndex(token)
-		if !ok || idx >= len(p) {
-			return nil, false
-		}
-		return p[idx], true
-	default:
-		return nil, false
-	}
+	return jsonpointer.Child(parent, token)
 }
 
 func setChild(parent interface{}, token string, val interface{}) interface{} {

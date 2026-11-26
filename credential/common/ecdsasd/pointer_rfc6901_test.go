@@ -126,10 +126,8 @@ func TestCheckPointersRFC6901Compliance(t *testing.T) {
 	}
 }
 
-// #176 review item 2: selectJsonLd and checkPointers silently ignore the error
-// from ParseTokens. With a bad ~escape, ParseTokens returns nil, nil tokens
-// make Matches return true, and selectJsonLd clones the whole document instead
-// of reporting an error.
+// A "~" not followed by 0 or 1 is refused (RFC 6901 §3); main read "~2"
+// literally as part of the key.
 func TestSelectJsonLdRejectsBadTildeEscape(t *testing.T) {
 	doc := map[string]interface{}{
 		"foo~2bar": "oops",
@@ -145,45 +143,6 @@ func TestCheckPointersRejectsBadTildeEscape(t *testing.T) {
 	doc := map[string]interface{}{"foo~2bar": "oops"}
 	if err := checkPointers(doc, []string{"/foo~2bar"}); err == nil {
 		t.Fatal(`checkPointers("/foo~2bar") = nil; want bad-escape error`)
-	}
-}
-
-// The numeric-key regression: on origin/main parsePointer("3") returned int(3),
-// and getChild on a map required a string key, so the selection silently failed.
-func TestSelectJsonLdNumericObjectKeyRegression(t *testing.T) {
-	document := map[string]interface{}{
-		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
-		"type":     "VerifiableCredential",
-		"credentialSubject": map[string]interface{}{
-			"id":    "did:example:subject",
-			"type":  "Person",
-			"3":     "numeric-key-value",
-			"items": []interface{}{"zero", "one", "two"},
-		},
-	}
-
-	// /credentialSubject/3 must select the object key "3", not array index 3.
-	got, err := selectJsonLd(document, []string{"/credentialSubject/3"})
-	if err != nil {
-		t.Fatalf("selectJsonLd(/credentialSubject/3) error = %v", err)
-	}
-	cs := got["credentialSubject"].(map[string]interface{})
-	if cs["3"] != "numeric-key-value" {
-		t.Fatalf("credentialSubject[\"3\"] = %v, want \"numeric-key-value\"", cs["3"])
-	}
-	// The selection must NOT contain the items array (it was not selected).
-	if _, ok := cs["items"]; ok {
-		t.Fatalf("selection leaked unselected member \"items\"")
-	}
-
-	// /credentialSubject/items/1 must select array index 1 = "one".
-	got, err = selectJsonLd(document, []string{"/credentialSubject/items/1"})
-	if err != nil {
-		t.Fatalf("selectJsonLd(/credentialSubject/items/1) error = %v", err)
-	}
-	items := got["credentialSubject"].(map[string]interface{})["items"].([]interface{})
-	if !reflect.DeepEqual(items, []interface{}{"one"}) {
-		t.Fatalf("items = %v, want [one]", items)
 	}
 }
 

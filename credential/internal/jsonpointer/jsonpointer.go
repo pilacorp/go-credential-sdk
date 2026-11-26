@@ -11,37 +11,29 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Validate checks whether pointer is a syntactically valid RFC 6901 JSON
-// Pointer. The empty string is the root pointer and is valid. Any other pointer
-// must start with "/" and use only "~0" and "~1" as escape sequences.
+// Pointer: valid UTF-8, and the root pointer "" or a pointer that starts with
+// "/" and uses only "~0" and "~1" as escape sequences (RFC 6901 §3). It applies ParseTokens, so
+// a refusal reads the same wherever a pointer is checked.
 func Validate(pointer string) error {
-	if pointer == "" {
-		return nil
-	}
-	if !strings.HasPrefix(pointer, "/") {
-		return fmt.Errorf("must be a valid RFC 6901 JSON Pointer")
-	}
-	for i := 0; i < len(pointer); i++ {
-		if pointer[i] != '~' {
-			continue
-		}
-		if i+1 >= len(pointer) || (pointer[i+1] != '0' && pointer[i+1] != '1') {
-			return fmt.Errorf("must be a valid RFC 6901 JSON Pointer")
-		}
-		i++
-	}
-	return nil
+	_, err := ParseTokens(pointer)
+	return err
 }
 
 // ParseTokens splits an RFC 6901 pointer into unescaped reference tokens.
 // The root pointer "" returns nil, nil. A non-empty pointer that does not
-// start with "/" returns an error. Tokens containing a "~" not followed by
-// "0" or "1" are rejected (RFC 6901 §4).
+// start with "/", that is not valid UTF-8 (RFC 6901 §3: "a Unicode string"),
+// or that holds a "~" not followed by "0" or "1" (RFC 6901 §3) returns an
+// error.
 func ParseTokens(pointer string) ([]string, error) {
 	if pointer == "" {
 		return nil, nil
+	}
+	if !utf8.ValidString(pointer) {
+		return nil, fmt.Errorf("pointer %.64q is not valid UTF-8", pointer)
 	}
 	if !strings.HasPrefix(pointer, "/") {
 		return nil, fmt.Errorf("pointer %.64q must start with /", pointer)
@@ -58,7 +50,7 @@ func ParseTokens(pointer string) ([]string, error) {
 }
 
 // validateEscapes checks that every ~ in a raw (pre-unescape) reference token
-// is followed by 0 or 1. RFC 6901 §4: "… the string '~' (%x7E) is not used".
+// is followed by 0 or 1 (RFC 6901 §3: escaped = "~" ( "0" / "1" )).
 func validateEscapes(raw string) error {
 	for i := 0; i < len(raw); i++ {
 		if raw[i] != '~' {
@@ -81,7 +73,7 @@ func Unescape(token string) string {
 }
 
 // Escape replaces "~" with "~0" and "/" with "~1" in a single reference token
-// (RFC 6901 §4). The order matters: "~" is replaced first, then "/".
+// (RFC 6901 §3). The order matters: "~" is replaced first, then "/".
 func Escape(token string) string {
 	token = strings.ReplaceAll(token, "~", "~0")
 	token = strings.ReplaceAll(token, "/", "~1")
@@ -101,8 +93,9 @@ func ArrayIndex(token string) (int, bool) {
 			return 0, false
 		}
 	}
+	// The digit check above excludes signs, so Atoi fails only on overflow.
 	index, err := strconv.Atoi(token)
-	if err != nil || index < 0 {
+	if err != nil {
 		return 0, false
 	}
 	return index, true
@@ -117,9 +110,6 @@ func ArrayIndex(token string) (int, bool) {
 // for map[string]interface{} parents every token is a key lookup, including
 // all-digit tokens like "3".
 func Resolve(document interface{}, pointer string) (interface{}, error) {
-	if pointer == "" {
-		return document, nil
-	}
 	tokens, err := ParseTokens(pointer)
 	if err != nil {
 		return nil, err
@@ -141,36 +131,47 @@ func ResolveTokens(document interface{}, tokens []string) (interface{}, error) {
 	return current, nil
 }
 
-// GetChild returns the child of parent addressed by a single unescaped
-// reference token. For a map it is a key lookup; for a slice it parses the
-// token as an RFC 6901 array index.
-func GetChild(parent interface{}, token string) (interface{}, error) {
+// Child returns the child of parent addressed by a single unescaped reference
+// token, and whether there is one. For a map it is a key lookup, for a slice
+// an RFC 6901 array index.
+func Child(parent interface{}, token string) (interface{}, bool) {
 	switch p := parent.(type) {
 	case map[string]interface{}:
 		v, ok := p[token]
-		if !ok {
-			return nil, fmt.Errorf("JSON Pointer segment %.64q not found", token)
-		}
-		return v, nil
+		return v, ok
 	case []interface{}:
 		index, ok := ArrayIndex(token)
 		if !ok || index >= len(p) {
-			return nil, fmt.Errorf("JSON Pointer array index %.64q is invalid or out of range", token)
+			return nil, false
 		}
-		return p[index], nil
+		return p[index], true
+	default:
+		return nil, false
+	}
+}
+
+// GetChild is Child with an error that says why the token does not match.
+func GetChild(parent interface{}, token string) (interface{}, error) {
+	if v, ok := Child(parent, token); ok {
+		return v, nil
+	}
+	switch parent.(type) {
+	case map[string]interface{}:
+		return nil, fmt.Errorf("JSON Pointer segment %.64q not found", token)
+	case []interface{}:
+		return nil, fmt.Errorf("JSON Pointer array index %.64q is invalid or out of range", token)
 	default:
 		return nil, fmt.Errorf("cannot resolve JSON Pointer segment %.64q through %T", token, parent)
 	}
 }
 
-// Matches reports whether the pointer addresses a value in document. It
-// performs the same token walk as ResolveTokens, returning false instead of
-// an error when a token does not match.
+// Matches reports whether tokens address a value in document: the walk of
+// ResolveTokens, with false instead of an error.
 func Matches(document interface{}, tokens []string) bool {
 	current := document
 	for _, token := range tokens {
-		child, err := GetChild(current, token)
-		if err != nil {
+		child, ok := Child(current, token)
+		if !ok {
 			return false
 		}
 		current = child

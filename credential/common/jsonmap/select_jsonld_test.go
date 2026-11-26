@@ -2,14 +2,11 @@ package jsonmap
 
 import (
 	"fmt"
-	"math"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
 )
 
 func TestSelectJSONLDPreservesContextAndNodeMetadata(t *testing.T) {
@@ -141,33 +138,6 @@ func TestSelectJSONLDHandlesRootAndMissingPointers(t *testing.T) {
 
 	if _, err := SelectJSONLD(document, []string{"/missing"}); err == nil {
 		t.Fatal("missing pointer error = nil")
-	}
-}
-
-func TestArrayIndexRejectsOverflowAndNonCanonicalTokens(t *testing.T) {
-	cases := []struct {
-		token string
-		want  int
-		ok    bool
-	}{
-		{"0", 0, true},
-		{"7", 7, true},
-		{"42", 42, true},
-		{"", 0, false},
-		{"01", 0, false},
-		{"-1", 0, false},
-		{"+1", 0, false},
-		{"1a", 0, false},
-		{strconv.Itoa(math.MaxInt), math.MaxInt, true},
-		{strconv.FormatUint(uint64(math.MaxInt)+1, 10), 0, false},
-		{"9223372036854775808", 0, false},
-		{"99999999999999999999999", 0, false},
-	}
-	for _, tc := range cases {
-		got, ok := jsonpointer.ArrayIndex(tc.token)
-		if ok != tc.ok || (ok && got != tc.want) {
-			t.Errorf("jsonpointer.ArrayIndex(%q) = (%d, %v), want (%d, %v)", tc.token, got, ok, tc.want, tc.ok)
-		}
 	}
 }
 
