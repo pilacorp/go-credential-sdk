@@ -505,6 +505,13 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
 	}
 
+	// Count the proofs before schema validation and proof verification run.
+	if options.isVerifyProof {
+		if err := (*jsonmap.JSONMap)(&e.credentialData).CheckProofCount(options.maxProofs); err != nil {
+			return fmt.Errorf("credential verification failed: verify proof: %w", err)
+		}
+	}
+
 	g := &errgroup.Group{}
 
 	if options.isValidateSchema {
@@ -545,7 +552,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 	// forged credential must not trigger a GET to the statusListCredential
 	// URL the attacker chose.
 	if options.isCheckRevocation {
-		if err := checkRevocation(e.credentialData, options.resolver, options.acceptLegacyStatusList); err != nil {
+		if err := checkRevocation(e.credentialData, options); err != nil {
 			return fmt.Errorf("credential verification failed: check revocation: %w", err)
 		}
 	}

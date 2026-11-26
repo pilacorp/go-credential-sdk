@@ -63,13 +63,16 @@ var w3cSecurityV2Context []byte
 //go:embed w3c.security.secp256k1-2019.v1.json
 var w3cSecuritySecp256k1V1Context []byte
 
+//go:embed w3c.security.jws-2020.v1.json
+var w3cSecurityJWS2020V1Context []byte
+
 // Well-known W3C context URLs mapped to their embedded JSON bytes. These are
 // frozen, immutable published contexts, so serving them from embedded copies is
 // byte-for-byte equivalent to fetching them — it only removes the network
 // dependency (and avoids w3.org rate-limiting / 403s).
 //
 // Two URLs pointing at the same document is a fact callers outside this package
-// have to agree with: jsonmap.definesSecp256k1Suite decides whether a document
+// have to agree with: jsonmap's suite contexts decide whether a document
 // already defines the secp256k1 suite by comparing these URLs, so a spelling
 // known here but not there makes it append a context on top of @protected terms
 // and fail. Adding an entry means checking that list too.
@@ -94,6 +97,10 @@ var wellKnownContexts = map[string][]byte{
 	// document gets this one: credentials/v2 does not define the suite, and
 	// this defines nothing else that could collide with it.
 	"https://w3id.org/security/suites/secp256k1-2019/v1": w3cSecuritySecp256k1V1Context,
+	// The context of JsonWebSignature2020 (W3C CCG, CG-FINAL 2022-07-21). No
+	// base context defines that suite, so signing adds this one to the
+	// document, and the proof configuration is canonicalized against it.
+	"https://w3id.org/security/suites/jws-2020/v1": w3cSecurityJWS2020V1Context,
 }
 
 // localContextDocumentLoader wraps a default loader and checks for local context files first
