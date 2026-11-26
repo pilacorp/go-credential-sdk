@@ -18,6 +18,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
@@ -354,6 +355,10 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	if resolver == nil {
 		return false, fmt.Errorf("document resolver is required")
 	}
+	cfg := proofVerifyConfigFrom(opts)
+	if err := m.CheckProofCount(cfg.maxProofs); err != nil {
+		return false, err
+	}
 
 	proofs, err := m.Proofs()
 	if err != nil {
@@ -361,10 +366,6 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	}
 	if len(proofs) == 0 {
 		return false, fmt.Errorf("credential has no proof")
-	}
-	cfg := proofVerifyConfigFrom(opts)
-	if cfg.maxProofs > 0 && len(proofs) > cfg.maxProofs {
-		return false, fmt.Errorf("%w: the document carries %d and this verifier accepts at most %d; send at most %d, or raise WithMaxProofs", ErrTooManyProofs, len(proofs), cfg.maxProofs, cfg.maxProofs)
 	}
 	raw := m.rawProofList()
 	expectedPurpose := cfg.expectedPurpose
@@ -400,11 +401,11 @@ func (m *JSONMap) verifyProofSet(resolver verificationmethod.ResolverProvider, p
 	resolver = &didMemo{inner: resolver}
 	for i := range proofs {
 		if err := rejectPreviousProof(raw[i]); err != nil {
-			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+			return false, fmt.Errorf("proof %d (%s): %w", i, errtext.Clip(proofs[i].VerificationMethod), err)
 		}
 		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, cache)
 		if err != nil {
-			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+			return false, fmt.Errorf("proof %d (%s): %w", i, errtext.Clip(proofs[i].VerificationMethod), err)
 		}
 		if !ok {
 			return false, nil
@@ -461,7 +462,7 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 		return m.verifyJWSProof(doc, proof, cache)
 
 	default:
-		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
+		return false, fmt.Errorf("unsupported proof type: %s", errtext.Clip(proof.Type))
 	}
 }
 
@@ -539,7 +540,7 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof, cache *dig
 // signatureField names the proof property that carries the signature for a
 // proof type, and so the one property the proof configuration leaves out.
 func signatureField(proofType string) string {
-	if proofType == EcdsaSecp256k1Signature2019 {
+	if proofType == EcdsaSecp256k1Signature2019 || proofType == JsonWebSignature2020 {
 		return "jws"
 	}
 
@@ -547,10 +548,13 @@ func signatureField(proofType string) string {
 }
 
 // ecdsaProofConfig builds the proof configuration of section 3.2.5: a copy of
-// the whole proof object with proofValue removed (Data Integrity § 4.4), plus
-// the document's @context. No property is filtered here — every option the
-// signer put on the proof, including ones this SDK does not model, is part of
-// the hash; the document's @context decides which terms are meaningful.
+// the whole proof object with proofValue removed, plus the document's
+// @context (VC DI ECDSA v1.0 §3.2.5 step 4, §3.6.4 step 4). Verify takes the
+// proof without proofValue in §3.2.2 step 2 (ecdsa-rdfc-2019) and hashes the
+// proof options in §3.5.9 step 1 (ecdsa-sd-2023).
+// No property is filtered here — every option the signer put on the proof,
+// including ones this SDK does not model, is part of the hash; the document's
+// @context decides which terms are meaningful.
 func (m *JSONMap) ecdsaProofConfig(proof *dto.Proof) (map[string]interface{}, error) {
 	if proof == nil {
 		return nil, fmt.Errorf("proof is nil")
@@ -761,6 +765,20 @@ func (m *JSONMap) Proofs() ([]dto.Proof, error) {
 	return out, nil
 }
 
+// CheckProofCount returns an error wrapping ErrTooManyProofs when the
+// document carries more than n proofs; n <= 0 accepts any number. It parses
+// no proof, so a caller runs it before costlier steps, as VerifyProof does
+// for WithMaxProofs.
+func (m *JSONMap) CheckProofCount(n int) error {
+	if m == nil || n <= 0 {
+		return nil
+	}
+	if count := len(m.rawProofList()); count > n {
+		return fmt.Errorf("%w: the document carries %d and this verifier accepts at most %d; send at most %d, or raise WithMaxProofs", ErrTooManyProofs, count, n, n)
+	}
+	return nil
+}
+
 // CheckJwtProofTimes checks the nbf and exp of the JWT of each JwtProof2020
 // proof at the current time, widened by leeway, as the JWT path does
 // (jwtutil.CheckTimeClaims). Such a document is a VC-JWT or VP-JWT in JSON
@@ -910,11 +928,14 @@ func WithExpectedProofPurpose(purpose string) ProofVerifyOpt {
 var ErrTooManyProofs = errors.New("too many proofs")
 
 // WithMaxProofs refuses a document that carries more than n proofs, before any
-// DID is resolved. Each proof costs a resolution, a signature check and a
-// canonicalization of its own configuration, so a verifier that serves
-// untrusted callers sets the most proofs its documents carry. The count is of
-// the whole document, also when VerifyProof checks only the proof of one
-// targetVM. n <= 0 leaves the set unbounded, which is the default.
+// proof is parsed or DID resolved. Each proof costs a signature check and a
+// canonicalization of its own configuration; proofs from one DID share one
+// resolution. An ecdsa-sd-2023 derived proof also costs one signature check
+// per non-mandatory revealed statement, so the cap bounds the number of
+// proofs, not the cost of each. A verifier that serves untrusted callers sets
+// the most proofs its documents carry. The count is of the whole document,
+// also when VerifyProof checks only the proof of one targetVM. n <= 0 leaves
+// the set unbounded, which is the default.
 func WithMaxProofs(n int) ProofVerifyOpt {
 	return func(cfg *proofVerifyConfig) {
 		cfg.maxProofs = max(n, 0)
@@ -947,7 +968,7 @@ func proofPurposeDisagrees(proof *dto.Proof, expected string) error {
 	}
 	return fmt.Errorf(
 		"proof.proofPurpose %q does not match the proof purpose %q this verifier expects",
-		proof.ProofPurpose, expected)
+		errtext.Clip(proof.ProofPurpose), expected)
 }
 
 // parseCreated reads proof.created, a dateTimeStamp.

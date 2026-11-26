@@ -55,7 +55,7 @@ func Canonicalize(doc map[string]interface{}) ([]byte, error) {
 }
 
 // CanonicalizeNQuads is CanonicalizeWithIdMap without the blank-node map: the
-// same URDNA2015 N-Quads, one per element, each ending in "\n".
+// same RDFC-1.0 N-Quads, one per element, each ending in "\n".
 func CanonicalizeNQuads(doc map[string]interface{}) (nquads []string, err error) {
 	if doc == nil {
 		return nil, fmt.Errorf("canonicalize: document is nil")

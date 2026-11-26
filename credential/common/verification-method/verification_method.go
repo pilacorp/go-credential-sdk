@@ -1,6 +1,9 @@
 package verificationmethod
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // JWK represents a JSON Web Key. It supports EC (secp256k1) and RSA keys.
 type JWK struct {
@@ -10,6 +13,27 @@ type JWK struct {
 	Y   string `json:"y,omitempty"`   // EC Y coordinate (base64url, raw)
 	N   string `json:"n,omitempty"`   // RSA modulus (base64url)
 	E   string `json:"e,omitempty"`   // RSA public exponent (base64url)
+	// hasPrivate records that the decoded JWK carried d, the private key, so
+	// the key parsers refuse it (RFC 7517; JsonWebSignature2020 §3.2.1 "MUST
+	// never contain d"). The value itself is never kept, so it is never
+	// marshalled again.
+	hasPrivate bool
+}
+
+// UnmarshalJSON decodes a JWK and notes whether it carried d without keeping
+// it.
+func (j *JWK) UnmarshalJSON(b []byte) error {
+	type plain JWK
+	var aux struct {
+		plain
+		D json.RawMessage `json:"d"` // "d": null counts as present too
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*j = JWK(aux.plain)
+	j.hasPrivate = len(aux.D) > 0
+	return nil
 }
 
 // VerificationMethodEntry represents a single verification method in a

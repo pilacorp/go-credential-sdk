@@ -5,9 +5,11 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
@@ -178,4 +180,19 @@ func mustP256VM(t *testing.T, did, fragment string, pub *ecdsa.PublicKey) vmpkg.
 		t.Fatalf("NewP256VM(%s, %s): %v", did, fragment, err)
 	}
 	return entry
+}
+
+// An oversized proof set is refused before the embedded credentials are
+// verified: the tampered credential is not reached.
+func TestWithMaxProofs_RefusedBeforeVCValidation(t *testing.T) {
+	pres, resolver := vpWithSignedVC(t, func(vcMap map[string]interface{}) {
+		vcMap["credentialSubject"].(map[string]interface{})["id"] = "did:example:someone-else"
+	})
+	jp := pres.(*JSONPresentation)
+	jp.presentationData["proof"] = []interface{}{jp.presentationData["proof"], jp.presentationData["proof"]}
+
+	err := pres.Verify(WithResolver(resolver), WithVCValidation(), WithMaxProofs(1))
+	if !errors.Is(err, jsonmap.ErrTooManyProofs) {
+		t.Fatalf("err = %v, want ErrTooManyProofs", err)
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
@@ -282,7 +283,7 @@ func genRSA(t *testing.T) *rsa.PrivateKey {
 }
 
 // Three proofs of mixed key types/cryptosuites: P-256 ecdsa-rdfc-2019, RSA
-// RS256 JsonWebSignature2020, RSA PS256 JsonWebSignature2020.
+// PS256 JsonWebSignature2020 twice, with two RSA keys.
 func TestMultiProof_MixedKeyTypes(t *testing.T) {
 	did := "did:example:mp2-mixed"
 	p256Priv := genP256(t)
@@ -302,7 +303,7 @@ func TestMultiProof_MixedKeyTypes(t *testing.T) {
 	}
 
 	p256, _ := signer.NewP256Provider(p256Priv)
-	rs, _ := signer.NewRSAProvider(rsaRS, "RS256")
+	rs, _ := signer.NewRSAProvider(rsaRS, "PS256")
 	ps, _ := signer.NewRSAProvider(rsaPS, "PS256")
 	cred = signProofs(t, cred, resolver,
 		signSpec{provider: p256, key: "key-1"},
@@ -392,31 +393,34 @@ func TestMultiProof_PartialFailureRejected(t *testing.T) {
 // One JsonWebSignature2020 proof per RSA JOSE algorithm, all in one proof set.
 func TestMultiProof_VariousJWSAlgs(t *testing.T) {
 	did := "did:example:mp2-algs"
-	algs := []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}
-
-	keys := make([]*rsa.PrivateKey, len(algs))
-	vms := make([]verificationmethod.VerificationMethodEntry, len(algs))
-	for i := range algs {
-		keys[i] = genRSA(t)
-		vms[i] = verificationmethod.NewRSAVM(did, fmt.Sprintf("key-%d", i+1), &keys[i].PublicKey)
-	}
-	resolver := verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(did, vms...))
+	key := genRSA(t)
+	vm := verificationmethod.NewRSAVM(did, "key-1", &key.PublicKey)
+	resolver := verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(did, vm))
 
 	cred, err := vc.ParseJSONCredential(mp2CredJSON(did))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	for i, alg := range algs {
-		prov, err := signer.NewRSAProvider(keys[i], alg)
-		if err != nil {
-			t.Fatalf("rsa provider %s: %v", alg, err)
+	// JsonWebSignature2020 §3.1 lists PS256 for RSA; the RS* and other PS*
+	// algorithms are not in the suite's table. The RSA signer refuses them,
+	// and AddJWSProof refuses a signer that declares one.
+	for _, alg := range []string{"RS256", "RS384", "RS512", "PS384", "PS512"} {
+		if _, err := signer.NewRSAProvider(key, alg); err == nil {
+			t.Fatalf("NewRSAProvider(%s) succeeded, want refusal", alg)
 		}
-		cred = addJWSProof(t, cred, prov, fmt.Sprintf("%s#key-%d", did, i+1))
+		var m jsonmap.JSONMap
+		if err := json.Unmarshal(mp2CredJSON(did), &m); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.AddJWSProof(declaredAlg{alg}, did+"#key-1", "assertionMethod"); err == nil || !strings.Contains(err.Error(), "is not supported") {
+			t.Fatalf("%s: AddJWSProof err = %v, want the algorithm refused", alg, err)
+		}
 	}
-
-	assertProofCount(t, cred, len(algs))
+	prov, _ := signer.NewRSAProvider(key, "PS256")
+	cred = addJWSProof(t, cred, prov, did+"#key-1")
+	assertProofCount(t, cred, 1)
 	if err := reparse(t, cred).Verify(vc.WithResolver(resolver)); err != nil {
-		t.Fatalf("verify multi-alg proof set: %v", err)
+		t.Fatalf("verify PS256 proof: %v", err)
 	}
 }
 
@@ -424,3 +428,9 @@ func TestMultiProof_VariousJWSAlgs(t *testing.T) {
 // has no key kind). On a DID holding several keys of different types, pin the VM
 // with WithVerificationMethodKey; otherwise the latest active VM for the purpose
 // is used and its key type decides the cryptosuite.
+
+// declaredAlg is a signer that declares a JOSE algorithm and never signs.
+type declaredAlg struct{ alg string }
+
+func (d declaredAlg) Algorithm() string         { return d.alg }
+func (declaredAlg) Sign([]byte) ([]byte, error) { return nil, fmt.Errorf("not reached") }

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -100,6 +101,13 @@ func testKeyPair(t *testing.T) (*ecdsa.PrivateKey, verificationmethod.ResolverPr
 // JSONMap, the same way authen-service does (ecdsa-rdfc-2019 proof).
 func signStatusListCredential(t *testing.T, priv *ecdsa.PrivateKey, issuer, purpose, encodedList string) map[string]interface{} {
 	t.Helper()
+	return signStatusListCredentialFor(t, priv, issuer, purpose, encodedList, "assertionMethod")
+}
+
+// signStatusListCredentialFor is signStatusListCredential with the proof made
+// for proofPurpose.
+func signStatusListCredentialFor(t *testing.T, priv *ecdsa.PrivateKey, issuer, purpose, encodedList, proofPurpose string) map[string]interface{} {
+	t.Helper()
 	now := time.Now().UTC()
 	vc := jsonmap.JSONMap{
 		"@context": []interface{}{
@@ -120,7 +128,7 @@ func signStatusListCredential(t *testing.T, priv *ecdsa.PrivateKey, issuer, purp
 
 	sp, err := signer.NewP256Provider(priv)
 	require.NoError(t, err)
-	err = vc.AddECDSAProof(sp, testVMID, "assertionMethod")
+	err = vc.AddECDSAProof(sp, testVMID, proofPurpose)
 	require.NoError(t, err)
 
 	return map[string]interface{}(vc)
@@ -324,6 +332,21 @@ func TestVerifyAndCheckStatus_Signed_W3C(t *testing.T) {
 	// Position 7 is not set -> not revoked.
 	err = client.VerifyAndCheckStatus(server.URL, 7, "revocation", testIssuerDID)
 	assert.NoError(t, err)
+}
+
+// TestVerifyAndCheckStatus_ProofForOtherPurpose_Refused checks that a status
+// list whose proof was made for another purpose, such as authentication, is
+// not accepted as the issuer's assertion of the list.
+func TestVerifyAndCheckStatus_ProofForOtherPurpose_Refused(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	encoded := buildW3CEncodedList(t, nil)
+	vc := signStatusListCredentialFor(t, priv, testIssuerDID, "revocation", encoded, "authentication")
+	server := serveStatusList(t, vc)
+
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	err := client.VerifyAndCheckStatus(server.URL, 7, "revocation", testIssuerDID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "proof")
 }
 
 func TestVerifyAndCheckStatus_Signed_Legacy(t *testing.T) {
@@ -645,7 +668,7 @@ func (failResolver) ResolveDocument(_ context.Context, _ string) (*verificationm
 
 func TestVerifyAndCheckStatus_UnresolvableIssuer_Refused(t *testing.T) {
 	priv, _ := testKeyPair(t)
-	encoded := buildLegacyEncodedList(t, 128, []int{})
+	encoded := buildW3CEncodedList(t, []int{})
 
 	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", encoded)
 	server := serveStatusList(t, vc)
@@ -1172,20 +1195,6 @@ func TestSetDefaultHTTPClient_ConcurrentAccess(t *testing.T) {
 	<-done
 }
 
-// ---------------------------------------------------------------------------
-// Clip error values (review comment 4661774564)
-// ---------------------------------------------------------------------------
-
-func TestClip(t *testing.T) {
-	short := "did:example:issuer"
-	assert.Equal(t, short, clip(short))
-
-	long := strings.Repeat("x", 300)
-	clipped := clip(long)
-	assert.Equal(t, 259, len(clipped)) // 256 + "..."
-	assert.True(t, strings.HasSuffix(clipped, "..."))
-}
-
 // credentialSubject.type may be an array (#203 review).
 func TestReadStatusList_ArraySubjectType(t *testing.T) {
 	m := jsonmap.JSONMap{
@@ -1242,4 +1251,47 @@ func TestVerifyAndCheckStatus_ValidFromClockSkew(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
+}
+
+// countingResolver counts DID resolutions, which the proof check makes.
+type countingResolver struct {
+	inner verificationmethod.ResolverProvider
+	n     atomic.Int32
+}
+
+func (r *countingResolver) ResolveDocument(ctx context.Context, did string) (*verificationmethod.DIDDocument, error) {
+	r.n.Add(1)
+	return r.inner.ResolveDocument(ctx, did)
+}
+
+// TestVerifyAndCheckStatus_CheapChecksBeforeProof checks that a list refused
+// for its issuer or its statusPurpose is refused before its proof is checked,
+// so no DID is resolved for it.
+func TestVerifyAndCheckStatus_CheapChecksBeforeProof(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", buildW3CEncodedList(t, nil))
+	server := serveStatusList(t, vc)
+
+	for _, tt := range []struct {
+		name, purpose, issuer string
+	}{
+		{"issuer mismatch", "revocation", "did:example:someone-else"},
+		{"purpose mismatch", "suspension", testIssuerDID},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			counter := &countingResolver{inner: resolver}
+			client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(counter))
+			assert.Error(t, client.VerifyAndCheckStatus(server.URL, 7, tt.purpose, tt.issuer))
+			assert.Zero(t, counter.n.Load(), "DID resolutions before the refusal")
+		})
+	}
+}
+
+// TestCheckBitStatus_PurposeMismatch_TextBounded checks that a long
+// statusPurpose is cut in the mismatch error rather than copied whole.
+func TestCheckBitStatus_PurposeMismatch_TextBounded(t *testing.T) {
+	long := strings.Repeat("p", 1<<20)
+	_, err := CheckBitStatus(0, StatusListCredentialSubject{StatusPurpose: long, EncodedList: "u"}, "revocation")
+	assert.Error(t, err)
+	assert.Less(t, len(err.Error()), 1024)
 }
