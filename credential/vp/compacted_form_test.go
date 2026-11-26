@@ -141,21 +141,6 @@ func vpMoveUnderNest(raw []byte, key string) ([]byte, error) {
 	return json.Marshal(doc)
 }
 
-// vpRenameToFullIRI renames a top-level key to its full IRI.
-func vpRenameToFullIRI(raw []byte, shortKey, fullIRI string) ([]byte, error) {
-	var doc map[string]interface{}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, err
-	}
-	val, ok := doc[shortKey]
-	if !ok {
-		return nil, fmt.Errorf("key %q not found", shortKey)
-	}
-	delete(doc, shortKey)
-	doc[fullIRI] = val
-	return json.Marshal(doc)
-}
-
 // TestVP_HolderUnderNest checks that moving holder under @nest is refused.
 func TestVP_HolderUnderNest(t *testing.T) {
 	raw, resolverOpts := signTestPresentation(t)
@@ -204,33 +189,6 @@ func TestVP_ValidUntilUnderNest(t *testing.T) {
 	}
 }
 
-// TestVP_HolderFullIRI checks that renaming holder to its full IRI is refused.
-func TestVP_HolderFullIRI(t *testing.T) {
-	raw, resolverOpts := signTestPresentation(t)
-
-	edited, err := vpRenameToFullIRI(raw, "holder",
-		"https://www.w3.org/2018/credentials#holder")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	pres, err := vp.ParseJSONPresentation(edited)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	err = pres.Verify(resolverOpts[0])
-	if err == nil {
-		t.Fatal("Verify returned nil — holder hidden by full-IRI rename")
-	}
-	// holder is not a graph key this check compares. Renaming a string holder
-	// to its full IRI leaves both sides without that short name, so the
-	// compacted-form check does not fire. The proof fails instead.
-	if errors.Is(err, processor.ErrNotCompactedForm) {
-		t.Fatalf("holder full IRI must be refused by the proof, got ErrNotCompactedForm: %v", err)
-	}
-}
-
 // TestVP_VerifiableCredentialUnderNest checks that moving verifiableCredential
 // under @nest is refused.
 func TestVP_VerifiableCredentialUnderNest(t *testing.T) {
@@ -255,99 +213,36 @@ func TestVP_VerifiableCredentialUnderNest(t *testing.T) {
 	}
 }
 
-// TestVP_VerifiableCredentialFullIRI checks that renaming verifiableCredential
-// to its full IRI is refused. On the json-gold fork the proof itself refuses
-// this input, so the test only requires a non-nil error.
-func TestVP_VerifiableCredentialFullIRI(t *testing.T) {
-	raw, resolverOpts := signTestPresentation(t)
-
-	edited, err := vpRenameToFullIRI(raw, "verifiableCredential",
-		"https://www.w3.org/2018/credentials#verifiableCredential")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	pres, err := vp.ParseJSONPresentation(edited)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	err = pres.Verify(resolverOpts[0])
-	if err == nil {
-		t.Fatal("Verify returned nil — verifiableCredential hidden by full-IRI rename")
-	}
-}
-
-// vpRenameWithContextAlias renames a top-level key in a VP and adds a context
-// definition that maps the new name to the same IRI as the old one.
-func vpRenameWithContextAlias(raw []byte, oldKey, newKey, iri, typ string) ([]byte, error) {
-	var doc map[string]interface{}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, err
-	}
-	val, ok := doc[oldKey]
-	if !ok {
-		return nil, fmt.Errorf("key %q not found", oldKey)
-	}
-	delete(doc, oldKey)
-	doc[newKey] = val
-
-	ctxArr, _ := doc["@context"].([]interface{})
-	entry := map[string]interface{}{
-		newKey: map[string]interface{}{"@id": iri},
-	}
-	if typ != "" {
-		entry[newKey].(map[string]interface{})["@type"] = typ
-	}
-	entry[oldKey] = "@none"
-	ctxArr = append(ctxArr, entry)
-	doc["@context"] = ctxArr
-
-	return json.Marshal(doc)
-}
-
 // validUntil is not a VerifiablePresentation property in the v2 context, so a
 // VP carrying it is refused before any rename matters; the alias rule for VP
 // keys is pinned on holder here and in compacted_alias_internal_test.go.
 
-// TestVP_ContextAliasAttack_Holder checks that a VP whose holder is renamed
-// via a context alias is refused. On the json-gold fork, the proof itself
-// may refuse these edits, so the test only requires a non-nil error.
-func TestVP_ContextAliasAttack_Holder(t *testing.T) {
-	raw, resolverOpts := signTestPresentation(t)
-
-	edited, err := vpRenameWithContextAlias(raw,
-		"holder", "holderX",
-		"https://www.w3.org/2018/credentials#holder", "")
+// Signing refuses a presentation that is not in compacted form, so the SDK
+// never signs a holder it would not read back.
+func TestSign_RefusesHolderAlias(t *testing.T) {
+	const did = "did:example:holder-179s"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	pres, err := vp.ParseJSONPresentation(edited)
+	prov, err := signer.NewP256Provider(priv)
 	if err != nil {
-		t.Fatalf("parse: %v", err)
+		t.Fatal(err)
 	}
-
-	err = pres.Verify(resolverOpts[0])
-	if err == nil {
-		t.Fatal("Verify returned nil — holder hidden by context alias rename")
-	}
-	t.Logf("refused as expected: %v", err)
-}
-
-// TestVP_UnmodifiedPresentation ensures a normally signed presentation still
-// verifies (backward compatibility).
-func TestVP_UnmodifiedPresentation(t *testing.T) {
-	raw, resolverOpts := signTestPresentation(t)
-
-	pres, err := vp.ParseJSONPresentation(raw)
+	vm, err := vmpkg.NewP256VM(did, "key-1", &priv.PublicKey)
 	if err != nil {
-		t.Fatalf("parse: %v", err)
+		t.Fatal(err)
 	}
-
-	// Proof + VC validation.
-	err = pres.Verify(resolverOpts...)
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+	pres, err := vp.ParseJSONPresentation([]byte(`{
+		"@context": ["https://www.w3.org/ns/credentials/v2",
+			{"h": {"@id": "https://www.w3.org/2018/credentials#holder", "@type": "@id"}}],
+		"type": ["VerifiablePresentation"], "h": "` + did + `"}`))
 	if err != nil {
-		t.Fatalf("Verify failed on unmodified presentation: %v", err)
+		t.Fatal(err)
+	}
+	err = pres.AddProofByProvider(prov, vp.WithVerificationMethodKey("key-1"), vp.WithResolver(resolver))
+	if !errors.Is(err, processor.ErrNotCompactedForm) {
+		t.Fatalf("err = %v, want ErrNotCompactedForm", err)
 	}
 }

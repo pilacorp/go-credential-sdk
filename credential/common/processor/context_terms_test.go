@@ -38,10 +38,14 @@ func termEntries() map[string]func(map[string]interface{}) error {
 	entries["ExpandJSONLD"] = func(d map[string]interface{}) error { _, err := ExpandJSONLD(d); return err }
 	entries["ToRDFNQuads"] = func(d map[string]interface{}) error { _, err := ToRDFNQuads(d); return err }
 	entries["ToNQuads"] = func(d map[string]interface{}) error { _, err := ToNQuads(d); return err }
-	// The compacted-form check expands permissively, without SafeMode, for
-	// proofs that do not canonicalize (JwtProof2020, legacy hex); it must hold
-	// to the same inline-context limit (#207 review).
-	entries["CompactDocumentForm"] = func(d map[string]interface{}) error { _, _, err := CompactDocumentForm(d); return err }
+	// The compacted-form check expands again after the proof, whatever suite
+	// verified it, so it holds to the same inline-context limit. It needs a
+	// bundled context next to the inline one.
+	entries["CompactedForms"] = func(d map[string]interface{}) error {
+		d["@context"] = []interface{}{"https://www.w3.org/ns/credentials/v2", d["@context"]}
+		_, _, err := CompactedForms(d)
+		return err
+	}
 	return entries
 }
 
