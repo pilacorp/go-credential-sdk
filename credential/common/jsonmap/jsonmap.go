@@ -540,7 +540,7 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof, cache *dig
 // signatureField names the proof property that carries the signature for a
 // proof type, and so the one property the proof configuration leaves out.
 func signatureField(proofType string) string {
-	if proofType == EcdsaSecp256k1Signature2019 {
+	if proofType == EcdsaSecp256k1Signature2019 || proofType == JsonWebSignature2020 {
 		return "jws"
 	}
 

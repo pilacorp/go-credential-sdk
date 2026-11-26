@@ -684,33 +684,12 @@ func checkRevocation(c CredentialData, options *credentialOptions, issuerDIDFall
 	}
 	// Check every entry before any list is fetched, so a malformed entry or
 	// too many lists costs no fetch.
-	type readEntry struct {
-		index    int
-		entry    credentialstatus.Entry
-		position int
+	reads, err := readStatusEntries(entries)
+	if err != nil {
+		return err
 	}
-	var reads []readEntry
-	for i, raw := range entries {
-		statusMap, ok := raw.(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("credentialStatus[%d] must be an object", i)
-		}
-		// An empty object carries no status; another type is not this
-		// reader's to read.
-		if len(statusMap) == 0 || !hasType(statusMap["type"], "BitstringStatusListEntry") {
-			continue
-		}
-		entry, err := credentialstatus.ParseEntry(statusMap)
-		if err == nil && !entry.IsRefresh() {
-			var position int
-			if position, err = entry.Position(); err == nil {
-				reads = append(reads, readEntry{index: i, entry: entry, position: position})
-				lists.remaining[entry.ListURL]++
-			}
-		}
-		if err != nil {
-			return entryError(len(entries), i, err)
-		}
+	for _, r := range reads {
+		lists.remaining[r.entry.ListURL]++
 	}
 	if n := options.maxStatusLists; n > 0 && len(lists.remaining) > n {
 		return fmt.Errorf("%w: credentialStatus names %d status lists and this verifier accepts at most %d; raise WithMaxStatusLists", ErrTooManyStatusLists, len(lists.remaining), n)
@@ -722,6 +701,42 @@ func checkRevocation(c CredentialData, options *credentialOptions, issuerDIDFall
 		}
 	}
 	return nil
+}
+
+// readEntry is a credentialStatus entry whose list will be read.
+type readEntry struct {
+	index    int
+	entry    credentialstatus.Entry
+	position int
+}
+
+// readStatusEntries checks every entry of credentialStatus and returns the
+// ones whose list is read. An empty object and an entry of another type are
+// skipped, as is a refresh entry once its fields are checked.
+func readStatusEntries(entries []interface{}) ([]readEntry, error) {
+	var reads []readEntry
+	for i, raw := range entries {
+		statusMap, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("credentialStatus[%d] must be an object", i)
+		}
+		if len(statusMap) == 0 || !hasType(statusMap["type"], "BitstringStatusListEntry") {
+			continue
+		}
+		entry, err := credentialstatus.ParseEntry(statusMap)
+		if err != nil {
+			return nil, entryError(len(entries), i, err)
+		}
+		if entry.IsRefresh() {
+			continue
+		}
+		position, err := entry.Position()
+		if err != nil {
+			return nil, entryError(len(entries), i, err)
+		}
+		reads = append(reads, readEntry{index: i, entry: entry, position: position})
+	}
+	return reads, nil
 }
 
 // entryError names the entry's index when credentialStatus holds several.

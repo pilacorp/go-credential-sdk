@@ -93,8 +93,9 @@ func (e *JSONPresentation) AddProof(priv string, opts ...PresentationOpt) error 
 // The second suite needs its terms defined, so its @context is added to the
 // presentation unless it already defines them.
 //
-// Verification stays permissive: secp256k1, hex proofValues and
-// JsonWebSignature2020 presentations issued by earlier versions still verify.
+// Verification also accepts secp256k1, legacy hex proofValues and
+// JsonWebSignature2020 (ES256 or PS256). A JsonWebSignature2020 proof made
+// before the SDK signed its proof options does not verify.
 //
 // A resolver is REQUIRED at signing time: the SDK reads the VM's key type from
 // the resolved DID document.
@@ -325,10 +326,11 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 // on the proofs VerifyProof just validated: every checked proof (or only the
 // WithProofVerificationMethod one) must carry the expected values.
 //
-// It runs after signature verification, but only an ecdsa-rdfc-2019 proof signs
-// its challenge and domain. A legacy hex or JsonWebSignature2020 signature
-// covers the document alone, so on those proofs these values are not bound to
-// the signer and prove nothing about who the presentation was made for.
+// It runs after signature verification. ecdsa-rdfc-2019,
+// EcdsaSecp256k1Signature2019 and JsonWebSignature2020 proofs sign their
+// challenge and domain. A legacy hex signature covers the document alone, so
+// on such a proof these values are not bound to the signer and prove nothing
+// about who the presentation was made for.
 func (e *JSONPresentation) checkChallengeAndDomain(options *presentationOptions) error {
 	// The same rule the JWT path applies, so the option cannot mean one thing
 	// here and another there. A JSON-LD presentation names its verifier in
