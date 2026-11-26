@@ -52,6 +52,13 @@ type VerificationMethodEntry struct {
 	PublicKeyMultibase string     `json:"publicKeyMultibase,omitempty"`
 	Revoked            *time.Time `json:"revoked,omitempty"`
 	RevocationReason   string     `json:"revocationReason,omitempty"`
+	Expires            *time.Time `json:"expires,omitempty"`
+}
+
+// ExpiredAt reports whether the method is past its expires time at t.
+// A method is expired at exactly its expires instant.
+func (vm *VerificationMethodEntry) ExpiredAt(t time.Time) bool {
+	return vm.Expires != nil && !t.Before(*vm.Expires)
 }
 
 // DIDDocument represents the structure of a resolved DID Document. Only

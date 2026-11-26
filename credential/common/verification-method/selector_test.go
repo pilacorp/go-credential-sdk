@@ -1,6 +1,9 @@
 package verificationmethod
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestSelectVMForPurpose_AcceptsKidForms(t *testing.T) {
 	const did = "did:pila:abc123"
@@ -87,5 +90,34 @@ func TestVMHelpers_NilVMDoesNotPanic(t *testing.T) {
 func TestEnsureVMAuthorizedForPurpose_NilDoc(t *testing.T) {
 	if err := EnsureVMAuthorizedForPurpose(nil, "did:x:y#key-1", "assertionMethod"); err == nil {
 		t.Fatal("expected error for nil DID document")
+	}
+}
+
+// A key past its expires time is not picked for signing even when it has the
+// highest #key-N: the latest live key is chosen instead (CID 1.0 §2.2).
+func TestSelectLatestActiveVMForPurpose_SkipsExpired(t *testing.T) {
+	const did = "did:pila:abc123"
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(time.Hour)
+	doc := &DIDDocument{
+		ID: did,
+		VerificationMethod: []VerificationMethodEntry{
+			{ID: did + "#key-1", Type: "EcdsaSecp256k1VerificationKey2019", Controller: did, Expires: &future},
+			{ID: did + "#key-2", Type: "EcdsaSecp256k1VerificationKey2019", Controller: did, Expires: &past},
+		},
+		AssertionMethod: []string{did + "#key-1", did + "#key-2"},
+	}
+
+	vm, err := SelectLatestActiveVMForPurpose(doc, "assertionMethod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vm.ID != did+"#key-1" {
+		t.Fatalf("picked %s, want the live %s#key-1", vm.ID, did)
+	}
+
+	doc.VerificationMethod[0].Expires = &past
+	if _, err := SelectLatestActiveVMForPurpose(doc, "assertionMethod"); err == nil {
+		t.Fatal("picked a key although every key has expired")
 	}
 }

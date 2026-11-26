@@ -13,9 +13,9 @@ func keysWith(t *testing.T, v any, accept AcceptKeyFunc) ([]issuerkey.PublicKey,
 	return keysAt(t, v, now, accept)
 }
 
-// The rule of CID §2.2, a key verifies before its revoked and expires times and
-// not at or after them, except that a key revoked for a stated reason other
-// than keyCompromise outlives its revoked time.
+// A key verifies before its expires time and not at or after it (CID §2.2). A
+// key revoked as keyCompromise is refused unconditionally. A key revoked for
+// any other reason, or with no stated reason, is accepted.
 func TestDefaultAcceptKey(t *testing.T) {
 	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	before, after := at.Add(-time.Second), at.Add(time.Second)
@@ -25,8 +25,8 @@ func TestDefaultAcceptKey(t *testing.T) {
 	}{
 		"no time":                {KeyInfo{At: at}, true},
 		"revoked later":          {KeyInfo{At: at, Revoked: after}, true},
-		"revoked at":             {KeyInfo{At: at, Revoked: at}, false},
-		"revoked before":         {KeyInfo{At: at, Revoked: before}, false},
+		"revoked at":             {KeyInfo{At: at, Revoked: at}, true},
+		"revoked before":         {KeyInfo{At: at, Revoked: before}, true},
 		"expires later":          {KeyInfo{At: at, Expires: after}, true},
 		"expires at":             {KeyInfo{At: at, Expires: at}, false},
 		"expires before":         {KeyInfo{At: at, Expires: before}, false},
@@ -35,7 +35,9 @@ func TestDefaultAcceptKey(t *testing.T) {
 		"superseded, revoked at": {KeyInfo{At: at, Revoked: at, RevocationReason: "superseded"}, true},
 		"superseded, expired":    {KeyInfo{At: at, Revoked: before, Expires: before, RevocationReason: "superseded"}, false},
 		"compromised, revoked":   {KeyInfo{At: at, Revoked: before, RevocationReason: "keyCompromise"}, false},
-		"no reason, revoked":     {KeyInfo{At: at, Revoked: before}, false},
+		"compromised, no time":   {KeyInfo{At: at, RevocationReason: "keyCompromise"}, false},
+		"compromised, later":     {KeyInfo{At: at, Revoked: after, RevocationReason: "keyCompromise"}, false},
+		"no reason, revoked":     {KeyInfo{At: at, Revoked: before}, true},
 		"other reason, revoked":  {KeyInfo{At: at, Revoked: before, RevocationReason: "cessationOfOperation"}, true},
 		"other reason, expired":  {KeyInfo{At: at, Revoked: before, Expires: before, RevocationReason: "cessationOfOperation"}, false},
 	} {
@@ -111,8 +113,8 @@ func TestKeysUsesDefaultAcceptKeyWithoutAcceptKey(t *testing.T) {
 		"superseded, expired":  {multikeyVM("revoked", past, "expires", past, "revocationReason", "superseded"), 0},
 		"revoked other reason": {multikeyVM("revoked", past, "revocationReason", "cessationOfOperation"), 1},
 		"revoked compromised":  {multikeyVM("revoked", past, "revocationReason", "keyCompromise"), 0},
-		"revoked, no reason":   {multikeyVM("revoked", past), 0},
-		"reason not a string":  {multikeyVM("revoked", past, "revocationReason", 5), 0},
+		"revoked, no reason":   {multikeyVM("revoked", past), 1},
+		"reason not a string":  {multikeyVM("revoked", past, "revocationReason", 5), 1},
 		"expired":              {multikeyVM("expires", past), 0},
 		"revoked at year one":  {multikeyVM("revoked", "0001-01-01T00:00:00Z"), 0},
 		"expires at year one":  {multikeyVM("expires", "0001-01-01T00:00:00Z"), 0},

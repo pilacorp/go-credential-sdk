@@ -183,14 +183,18 @@ func TestMultiReadsBothKindsOfIssuer(t *testing.T) {
 }
 
 // A key rotated out is revoked in the document with the reason superseded. By
-// default its tokens still verify and those of a compromise do not; an AcceptKey
-// that drops the reason keeps CID alone, and one that says no refuses even a
-// key in force.
+// default its tokens still verify and those of a compromise do not; a CID-strict
+// AcceptKey refuses every key at or after its revoked time, and one that says no
+// refuses even a key in force.
 func TestVerifyWithAcceptKey(t *testing.T) {
 	revoked := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	cidOnly := func(k didresolver.KeyInfo) bool {
-		k.RevocationReason = ""
-		return didresolver.DefaultAcceptKey(k)
+	// cidStrict applies CID alone: a key is refused at or after its revoked
+	// time, regardless of the reason (CID §2.2).
+	cidStrict := func(k didresolver.KeyInfo) bool {
+		if !k.Expires.IsZero() && !k.At.Before(k.Expires) {
+			return false
+		}
+		return k.Revoked.IsZero() || k.At.Before(k.Revoked)
 	}
 	no := func(didresolver.KeyInfo) bool { return false }
 	for name, tc := range map[string]struct {
@@ -200,10 +204,10 @@ func TestVerifyWithAcceptKey(t *testing.T) {
 		want    dc.Code
 	}{
 		"rotated, default":            {true, "superseded", nil, ""},
-		"rotated, CID alone":          {true, "superseded", cidOnly, dc.CodeIssuerKeyNotFound},
+		"rotated, CID strict":         {true, "superseded", cidStrict, dc.CodeIssuerKeyNotFound},
 		"retired, default":            {true, "cessationOfOperation", nil, ""},
 		"compromise, default":         {true, "keyCompromise", nil, dc.CodeIssuerKeyNotFound},
-		"no reason, default":          {true, "", nil, dc.CodeIssuerKeyNotFound},
+		"no reason, default":          {true, "", nil, ""},
 		"in force, default":           {false, "", nil, ""},
 		"in force, AcceptKey says no": {false, "", no, dc.CodeIssuerKeyNotFound},
 	} {

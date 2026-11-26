@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
 
 func encodePayload(t *testing.T, payload map[string]interface{}) string {
@@ -458,5 +460,53 @@ func TestJWTIssuedAt(t *testing.T) {
 	tm3, err := jwtIssuedAt(encodePayload(t, p3))
 	if err != nil || tm3 != nil {
 		t.Fatalf("absent failed: got %v, err %v", tm3, err)
+	}
+}
+
+// TC-03 (jwt path): a verification method whose Expires is at or before the
+// verification time is refused; one still ahead is accepted.
+func TestStrictPurposeCheckExpiredVM(t *testing.T) {
+	did := "did:example:purpose"
+	vmID := did + "#key-1"
+	iat := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name    string
+		expires string
+		wantErr string
+	}{
+		{"expired VM is refused", "2020-01-01T00:00:00Z", "expired at"},
+		{"VM not yet expired is accepted", "2099-01-01T00:00:00Z", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exp, err := time.Parse(time.RFC3339, tc.expires)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vm := verificationmethod.VerificationMethodEntry{
+				ID:         vmID,
+				Type:       "EcdsaSecp256k1VerificationKey2019",
+				Controller: did,
+				Expires:    &exp,
+			}
+			doc := &verificationmethod.DIDDocument{
+				ID:                 did,
+				VerificationMethod: []verificationmethod.VerificationMethodEntry{vm},
+				AssertionMethod:    []string{"#key-1"},
+			}
+			err = strictPurposeCheck(doc, &vm, "assertionMethod", &iat)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("accepted proof was refused: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("accepted, want an error mentioning %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want one mentioning %q", err, tc.wantErr)
+			}
+		})
 	}
 }

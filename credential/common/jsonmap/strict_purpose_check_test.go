@@ -42,6 +42,7 @@ func TestStrictPurposeCheck(t *testing.T) {
 		assertionMethod []string
 		authentication  []string
 		revoked         string
+		expires         string
 		reason          string
 		proofPurpose    string
 		created         string
@@ -84,6 +85,21 @@ func TestStrictPurposeCheck(t *testing.T) {
 			proofPurpose:    "capabilityInvocation",
 			created:         "2026-06-01T00:00:00Z",
 			wantErr:         "unsupported proofPurpose 'capabilityInvocation'",
+		},
+		{
+			name:            "expired VM is refused",
+			assertionMethod: []string{"#key-1"},
+			expires:         "2020-01-01T00:00:00Z",
+			proofPurpose:    "assertionMethod",
+			created:         "2019-06-01T00:00:00Z",
+			wantErr:         "expired at",
+		},
+		{
+			name:            "VM not yet expired is accepted",
+			assertionMethod: []string{"#key-1"},
+			expires:         "2099-01-01T00:00:00Z",
+			proofPurpose:    "assertionMethod",
+			created:         "2026-06-01T00:00:00Z",
 		},
 		{
 			name:            "signed after a soft revocation",
@@ -173,6 +189,9 @@ func TestStrictPurposeCheck(t *testing.T) {
 			}
 			if tc.revoked != "" {
 				vm.Revoked = mustTime(t, tc.revoked)
+			}
+			if tc.expires != "" {
+				vm.Expires = mustTime(t, tc.expires)
 			}
 			doc := &verificationmethod.DIDDocument{
 				ID:                 purposeDID,

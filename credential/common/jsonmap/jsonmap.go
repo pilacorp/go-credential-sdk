@@ -967,13 +967,19 @@ func parseCreated(s string) (time.Time, error) {
 }
 
 // strictPurposeCheck enforces the post-crypto checks for multi-VM:
-//  1. Hard revocation reason → reject (key compromised, all signatures invalid).
-//  2. Revoked timestamp set and proof.created on/after revoked → reject.
-//  3. VM id missing from the relationship array for proofPurpose → reject.
+//  1. Key past its expires time → reject.
+//  2. Hard revocation reason → reject (key compromised, all signatures invalid).
+//  3. Revoked timestamp set and proof.created on/after revoked → reject.
+//  4. VM id missing from the relationship array for proofPurpose → reject.
 //
-// Order is significant: hard reasons short-circuit before the timestamp
-// comparison so the verifier returns the strongest failure reason first.
+// Order is significant: expires and hard reasons short-circuit before the
+// timestamp comparison so the verifier returns the strongest failure reason
+// first.
 func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmethod.VerificationMethodEntry, proofPurpose, proofCreated string) error {
+	if vm.ExpiredAt(time.Now()) {
+		return fmt.Errorf("verification method '%s' expired at %s", vm.ID, vm.Expires.UTC().Format(time.RFC3339))
+	}
+
 	if verificationmethod.IsHardRevocationReason(vm.RevocationReason) {
 		return fmt.Errorf("verification method '%s' revoked with hard reason '%s'", vm.ID, vm.RevocationReason)
 	}
