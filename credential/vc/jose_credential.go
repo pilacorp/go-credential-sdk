@@ -599,8 +599,8 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 				return fmt.Errorf("verify proof: %w", err)
 			}
 			// exp and nbf bound the signature, not the credential, so they
-			// belong to this check and not to the optional expiry check on
-			// validFrom/validUntil.
+			// belong to this check and not to the optional expiry check on the
+			// document's dates (vcdm.CheckValidity).
 			if err := jwtutil.CheckTimeClaims(j.payloadData, options.leeway); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
@@ -616,7 +616,7 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	// forged credential must not trigger a GET to the statusListCredential
 	// URL the attacker chose.
 	if options.isCheckRevocation {
-		if err := checkRevocation(j.payloadData, options.resolver, options.acceptLegacyStatusList); err != nil {
+		if err := checkRevocation(j.payloadData, options); err != nil {
 			return fmt.Errorf("credential verification failed: check revocation: %w", err)
 		}
 	}

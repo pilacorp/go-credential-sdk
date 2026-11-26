@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/crypto"
 )
 
 var (
@@ -13,35 +15,55 @@ var (
 )
 
 // RSAProvider signs a digest with an RSA key for JsonWebSignature2020, using
-// either an in-memory key or a caller-supplied callback (HSM/KMS). The JOSE
-// algorithm (RS256/384/512, PS256/384/512) is declared via Algorithm so the SDK
-// hashes the signing input with the matching SHA and writes the JWS header.
+// either an in-memory key or a caller-supplied callback (HSM/KMS). Its JOSE
+// algorithm is PS256, the one RSA algorithm of the suite's table (§3.1); the
+// SDK writes it to the JWS header and hands Sign the SHA-256 digest of the
+// signing input.
 type RSAProvider struct {
 	sign func([]byte) ([]byte, error)
 	alg  string
 }
 
-// NewRSAProvider creates an RSA JWS signer from an in-memory key. alg defaults
-// to "RS256"; supported: RS256/384/512, PS256/384/512.
+// minRSABits is the smallest RSA key RFC 7518 §3.5 and JsonWebSignature2020
+// §3.1 allow.
+const minRSABits = 2048
+
+// NewRSAProvider creates a PS256 signer from an in-memory key of at least 2048
+// bits. alg, when given, must be "PS256".
 func NewRSAProvider(priv *rsa.PrivateKey, alg ...string) (*RSAProvider, error) {
 	if priv == nil {
 		return nil, fmt.Errorf("rsa private key is nil")
 	}
-	a := jwsAlg(alg...)
+	if priv.N == nil {
+		return nil, fmt.Errorf("rsa private key has no modulus")
+	}
+	if bits := priv.N.BitLen(); bits < minRSABits {
+		return nil, fmt.Errorf("rsa key is %d bits; at least %d are required", bits, minRSABits)
+	}
+	a, err := jwsAlg(alg...)
+	if err != nil {
+		return nil, err
+	}
 	return &RSAProvider{
-		sign: func(digest []byte) ([]byte, error) { return rsaSignDigest(a, priv, digest) },
-		alg:  a,
+		sign: func(digest []byte) ([]byte, error) {
+			return rsa.SignPSS(rand.Reader, priv, stdcrypto.SHA256, digest, crypto.PSSOptions())
+		},
+		alg: a,
 	}, nil
 }
 
-// NewRSAFunc creates an RSA JWS signer that delegates to signFn. signFn receives
-// the digest (already hashed by the SDK with alg's SHA) and returns the raw
-// signature for alg.
+// NewRSAFunc creates a signer that delegates to signFn, which receives the
+// SHA-256 digest of the signing input and returns the PS256 signature (salt
+// length 32, RFC 7518 §3.5). alg, when not empty, must be "PS256".
 func NewRSAFunc(signFn func([]byte) ([]byte, error), alg string) (*RSAProvider, error) {
 	if signFn == nil {
 		return nil, fmt.Errorf("sign function is nil")
 	}
-	return &RSAProvider{sign: signFn, alg: jwsAlg(alg)}, nil
+	a, err := jwsAlg(alg)
+	if err != nil {
+		return nil, err
+	}
+	return &RSAProvider{sign: signFn, alg: a}, nil
 }
 
 func (p *RSAProvider) Algorithm() string { return p.alg }
@@ -50,29 +72,11 @@ func (p *RSAProvider) Sign(digest []byte) ([]byte, error) {
 	return p.sign(digest)
 }
 
-func jwsAlg(alg ...string) string {
-	if len(alg) > 0 && alg[0] != "" {
-		return alg[0]
+// jwsAlg returns PS256, refusing any other algorithm: JsonWebSignature2020
+// lists no other RSA algorithm.
+func jwsAlg(alg ...string) (string, error) {
+	if len(alg) == 0 || alg[0] == "" || alg[0] == "PS256" {
+		return "PS256", nil
 	}
-	return "RS256"
-}
-
-// rsaSignDigest signs a pre-hashed digest for the given JOSE alg.
-func rsaSignDigest(alg string, priv *rsa.PrivateKey, digest []byte) ([]byte, error) {
-	switch alg {
-	case "RS256":
-		return rsa.SignPKCS1v15(rand.Reader, priv, stdcrypto.SHA256, digest)
-	case "PS256":
-		return rsa.SignPSS(rand.Reader, priv, stdcrypto.SHA256, digest, nil)
-	case "RS384":
-		return rsa.SignPKCS1v15(rand.Reader, priv, stdcrypto.SHA384, digest)
-	case "PS384":
-		return rsa.SignPSS(rand.Reader, priv, stdcrypto.SHA384, digest, nil)
-	case "RS512":
-		return rsa.SignPKCS1v15(rand.Reader, priv, stdcrypto.SHA512, digest)
-	case "PS512":
-		return rsa.SignPSS(rand.Reader, priv, stdcrypto.SHA512, digest, nil)
-	default:
-		return nil, fmt.Errorf("unsupported JWS alg: %s", alg)
-	}
+	return "", fmt.Errorf("rsa signer algorithm %q is not supported: JsonWebSignature2020 lists PS256 only for RSA", alg[0])
 }

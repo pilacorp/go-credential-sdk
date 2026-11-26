@@ -48,6 +48,9 @@ func ECPubFromJWK(jwk *JWK) (*ecdsa.PublicKey, error) {
 	if jwk.Kty != "EC" {
 		return nil, fmt.Errorf("unsupported key type: %s", jwk.Kty)
 	}
+	if jwk.hasPrivate {
+		return nil, errPrivateJWK
+	}
 	curve, size, err := ecCurveForJWK(jwk.Crv)
 	if err != nil {
 		return nil, err
@@ -97,6 +100,9 @@ func RSAPubKeyFromJWK(jwk *JWK) (*rsa.PublicKey, error) {
 	if jwk.Kty != "RSA" {
 		return nil, fmt.Errorf("unsupported key type: %s", jwk.Kty)
 	}
+	if jwk.hasPrivate {
+		return nil, errPrivateJWK
+	}
 	if jwk.N == "" || jwk.E == "" {
 		return nil, fmt.Errorf("RSA jwk missing n or e")
 	}
@@ -108,11 +114,22 @@ func RSAPubKeyFromJWK(jwk *JWK) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode e: %w", err)
 	}
-	return &rsa.PublicKey{
+	pub := &rsa.PublicKey{
 		N: new(big.Int).SetBytes(nBytes),
 		E: int(new(big.Int).SetBytes(eBytes).Int64()),
-	}, nil
+	}
+	// JsonWebSignature2020 §3.1 lists RSA keys as "RSA 2048+".
+	if pub.N.BitLen() < minRSABits {
+		return nil, fmt.Errorf("RSA jwk modulus is %d bits; at least %d are required", pub.N.BitLen(), minRSABits)
+	}
+	return pub, nil
 }
+
+// minRSABits is the smallest RSA modulus accepted.
+const minRSABits = 2048
+
+// errPrivateJWK refuses a verification method JWK that carries the private key.
+var errPrivateJWK = fmt.Errorf("publicKeyJwk must not contain the private key member d")
 
 // Multicodec varint prefixes for P-256 Multikeys:
 //

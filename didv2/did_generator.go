@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pilacorp/go-credential-sdk/didv2/did"
@@ -66,12 +67,7 @@ func NewDIDGenerator(options ...DIDOption) (*DIDGenerator, error) {
 		opt(&cfg)
 	}
 
-	didContract, err := didcontract.NewContract(
-		&didcontract.Config{
-			RPCURL:          cfg.RPC,
-			ContractAddress: cfg.DIDSMCAddr,
-			ChainID:         cfg.ChainID,
-		})
+	didContract, err := didcontract.NewContract(contractConfig(cfg.RPC, &cfg))
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize did contract: %w", err)
 	}
@@ -187,6 +183,9 @@ func (d *DIDGenerator) GenerateDIDTX(
 	if cfg.IssuerSigner == nil {
 		return nil, fmt.Errorf("issuer signer is required")
 	}
+	if cfg.DIDSigner == nil {
+		return nil, fmt.Errorf("did signer is required")
+	}
 
 	issuerAddr := cfg.IssuerSigner.GetAddress()
 	didAddr, err := did.AddressFromPublicKeyHex(didPublicKeyHex)
@@ -194,7 +193,14 @@ func (d *DIDGenerator) GenerateDIDTX(
 		return nil, fmt.Errorf("failed to convert public key hex to address: %w", err)
 	}
 
-	issuerSig, err := d.GenerateIssuerSignature(ctx, didType, didAddr, issuerAddr, WithDIDConfig(cfg))
+	// One client serves both the signature and the transaction.
+	contract, release, err := d.resolveContract(ctx, cfg, cfg.SyncEpoch || cfg.SyncNonce)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	issuerSig, err := issuerSignature(ctx, contract, cfg, didType, didAddr, issuerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate issuer signature: %w", err)
 	}
@@ -214,7 +220,7 @@ func (d *DIDGenerator) GenerateDIDTX(
 	}
 
 	// 4. Create DID Tx Transaction.
-	txResult, err := d.GenerateDIDCreateTransaction(ctx, didType, docHash, didAddr, issuerAddr, issuerSig, WithDIDConfig(cfg))
+	txResult, err := createDIDTransaction(ctx, contract, cfg, didType, docHash, didAddr, issuerAddr, issuerSig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate create DID transaction: %w", err)
 	}
@@ -258,11 +264,32 @@ func (d *DIDGenerator) GenerateIssuerSignature(
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
 	}
+	if cfg.IssuerSigner == nil {
+		return nil, fmt.Errorf("issuer signer is required")
+	}
 
+	contract, release, err := d.resolveContract(ctx, cfg, cfg.SyncEpoch)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	return issuerSignature(ctx, contract, cfg, didType, didAddr, issuerAddr)
+}
+
+// issuerSignature signs the issue-DID capability for cfg against contract,
+// reading the epoch from the chain when cfg.SyncEpoch is set.
+func issuerSignature(
+	ctx context.Context,
+	contract *didcontract.Contract,
+	cfg *DIDConfig,
+	didType did.DIDType,
+	didAddr, issuerAddr string,
+) (*issuer.Signature, error) {
 	// require RPC URL valid.
 	// this is optional field, if not set, will use default value is zero.
 	if cfg.SyncEpoch {
-		epoch, err := d.didContract.GetCapabilityEpoch(ctx, issuerAddr)
+		epoch, err := contract.GetCapabilityEpoch(ctx, issuerAddr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get capability epoch: %w", err)
 		}
@@ -271,7 +298,7 @@ func (d *DIDGenerator) GenerateIssuerSignature(
 	}
 
 	issueDIDPayload := &issuer.IssueDIDPayload{
-		ContractAddress: d.baseConfig.DIDSMCAddr,
+		ContractAddress: cfg.DIDSMCAddr,
 		IssuerAddress:   issuerAddr,
 		DidAddress:      didAddr,
 		DidType:         didType,
@@ -315,11 +342,33 @@ func (d *DIDGenerator) GenerateDIDCreateTransaction(
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
 	}
+	if cfg.DIDSigner == nil {
+		return nil, fmt.Errorf("did signer is required")
+	}
 
+	contract, release, err := d.resolveContract(ctx, cfg, cfg.SyncNonce)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	return createDIDTransaction(ctx, contract, cfg, didType, docHash, didAddr, issuerAddr, issuerSig)
+}
+
+// createDIDTransaction builds and signs the createDID transaction for cfg
+// against contract, reading the nonce from the chain when cfg.SyncNonce is set.
+func createDIDTransaction(
+	ctx context.Context,
+	contract *didcontract.Contract,
+	cfg *DIDConfig,
+	didType did.DIDType,
+	docHash, didAddr, issuerAddr string,
+	issuerSig *issuer.Signature,
+) (*didcontract.Transaction, error) {
 	// require RPC URL valid.
 	// this is optional field, if not set, will use default value is zero.
 	if cfg.SyncNonce {
-		nonce, err := d.didContract.GetNonce(ctx, common.HexToAddress(didAddr))
+		nonce, err := contract.GetNonce(ctx, common.HexToAddress(didAddr))
 		if err != nil {
 			return nil, fmt.Errorf("failed to get nonce: %w", err)
 		}
@@ -336,7 +385,7 @@ func (d *DIDGenerator) GenerateDIDCreateTransaction(
 		Nonce:         cfg.Nonce,
 	}
 
-	txResult, err := d.didContract.CreateDIDTx(ctx, didCreateTxReq, cfg.DIDSigner)
+	txResult, err := contract.CreateDIDTx(ctx, didCreateTxReq, cfg.DIDSigner)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate DID TX from issuer signature: %w", err)
 	}
@@ -369,8 +418,14 @@ func (d *DIDGenerator) GenerateSetDocumentHashTransaction(
 		return nil, fmt.Errorf("issuer signature is required")
 	}
 
+	contract, release, err := d.resolveContract(ctx, cfg, cfg.SyncNonce)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	if cfg.SyncNonce {
-		nonce, err := d.didContract.GetNonce(ctx, common.HexToAddress(didAddr))
+		nonce, err := contract.GetNonce(ctx, common.HexToAddress(didAddr))
 		if err != nil {
 			return nil, fmt.Errorf("failed to get nonce: %w", err)
 		}
@@ -385,7 +440,7 @@ func (d *DIDGenerator) GenerateSetDocumentHashTransaction(
 		Nonce:      cfg.Nonce,
 	}
 
-	txResult, err := d.didContract.SetDocumentHashTx(ctx, req, cfg.DIDSigner)
+	txResult, err := contract.SetDocumentHashTx(ctx, req, cfg.DIDSigner)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate setDocumentHash Tx: %w", err)
 	}
@@ -412,8 +467,14 @@ func (d *DIDGenerator) GenerateSetDocumentHashByIssuerTransaction(
 		return nil, fmt.Errorf("issuer signer is required")
 	}
 
+	contract, release, err := d.resolveContract(ctx, cfg, cfg.SyncNonce)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	if cfg.SyncNonce {
-		nonce, err := d.didContract.GetNonce(ctx, common.HexToAddress(cfg.IssuerSigner.GetAddress()))
+		nonce, err := contract.GetNonce(ctx, common.HexToAddress(cfg.IssuerSigner.GetAddress()))
 		if err != nil {
 			return nil, fmt.Errorf("failed to get nonce: %w", err)
 		}
@@ -426,7 +487,7 @@ func (d *DIDGenerator) GenerateSetDocumentHashByIssuerTransaction(
 		Nonce:      cfg.Nonce,
 	}
 
-	txResult, err := d.didContract.SetDocumentHashByIssuerTx(ctx, req, cfg.IssuerSigner)
+	txResult, err := contract.SetDocumentHashByIssuerTx(ctx, req, cfg.IssuerSigner)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate setDocumentHashByIssuer Tx: %w", err)
 	}
@@ -456,4 +517,42 @@ func (d *DIDGenerator) resolveConfig(options ...DIDOption) (*DIDConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// resolveContract returns the contract client for one call and a release
+// function the caller must defer. needRPC says whether the call reads the chain.
+// The shared d.didContract serves a call whose RPC, contract and chain all match
+// the base config; release is then a no-op. Any other call gets its own client,
+// closed by release, and a call that reads nothing gets it without an RPC URL, so
+// nothing is dialled for it. The
+// deadline of ctx bounds the dial of a per-call ws or ipc client; an http URL
+// does no I/O at dial time.
+func (d *DIDGenerator) resolveContract(ctx context.Context, cfg *DIDConfig, needRPC bool) (*didcontract.Contract, func(), error) {
+	noop := func() {}
+
+	if strings.EqualFold(cfg.DIDSMCAddr, d.baseConfig.DIDSMCAddr) &&
+		cfg.ChainID == d.baseConfig.ChainID &&
+		cfg.RPC == d.baseConfig.RPC {
+		return d.didContract, noop, nil
+	}
+
+	rpcURL := cfg.RPC
+	if !needRPC {
+		rpcURL = ""
+	}
+	c, err := didcontract.NewContractContext(ctx, contractConfig(rpcURL, cfg))
+	if err != nil {
+		return nil, noop, fmt.Errorf("failed to initialize per-call contract client: %w", err)
+	}
+	return c, c.Close, nil
+}
+
+// contractConfig maps a generator config to a contract client config, so the
+// shared client and the per-call clients are built from the same fields.
+func contractConfig(rpcURL string, cfg *DIDConfig) *didcontract.Config {
+	return &didcontract.Config{
+		RPCURL:          rpcURL,
+		ContractAddress: cfg.DIDSMCAddr,
+		ChainID:         cfg.ChainID,
+	}
 }

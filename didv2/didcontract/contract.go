@@ -70,7 +70,9 @@ func loadABI() (abi.ABI, error) {
 type Contract struct {
 	contract  *bind.BoundContract
 	rpcClient *ethclient.Client
-	cfg       *Config
+	// dialErr says why rpcClient is nil; read operations return it.
+	dialErr error
+	cfg     *Config
 }
 
 // NewContract creates a new Contract client for the DID Registry smart contract.
@@ -81,21 +83,32 @@ type Contract struct {
 //
 // Returns a Contract instance or an error if configuration is invalid or ABI loading fails.
 func NewContract(cfg *Config) (*Contract, error) {
+	return NewContractContext(context.Background(), cfg)
+}
+
+// NewContractContext is NewContract with a context that bounds the RPC dial,
+// so a slow or silent RPC endpoint cannot block the caller past its deadline.
+func NewContractContext(ctx context.Context, cfg *Config) (*Contract, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	cfg.Standardize()
 
-	// ignore error when connect RPC fail.
-	client, err := ethclient.Dial(cfg.RPCURL)
-	if err != nil {
-		fmt.Println("failed to init RPC client, some features may not work: ", err.Error())
-	}
-
+	// Load the ABI first, so that no dialled client is left open on its error.
 	contractABI, err := loadABI()
 	if err != nil {
 		return nil, err
+	}
+
+	// A failed dial is not an error here: transactions are still built offline,
+	// and read operations report dialErr when they are called.
+	var dialErr error
+	var client *ethclient.Client
+	if cfg.RPCURL == "" {
+		dialErr = errors.New("no RPC URL is configured")
+	} else {
+		client, dialErr = ethclient.DialContext(ctx, cfg.RPCURL)
 	}
 
 	contract := bind.NewBoundContract(common.HexToAddress(cfg.ContractAddress), contractABI, client, client, nil)
@@ -103,8 +116,17 @@ func NewContract(cfg *Config) (*Contract, error) {
 	return &Contract{
 		contract:  contract,
 		rpcClient: client,
+		dialErr:   dialErr,
 		cfg:       cfg,
 	}, nil
+}
+
+// Close closes the underlying RPC client. It is safe to call on a Contract
+// whose RPC client is nil (e.g. when the dial failed at construction).
+func (e *Contract) Close() {
+	if e.rpcClient != nil {
+		e.rpcClient.Close()
+	}
 }
 
 // CreateDIDTx creates a signed raw transaction for creating a DID on-chain.
@@ -281,7 +303,7 @@ func (e *Contract) GetCapabilityEpoch(ctx context.Context, signerAddr string) (u
 	}
 
 	if e.rpcClient == nil {
-		return 0, fmt.Errorf("RPC client is not initialized, please check RPC URL and try again")
+		return 0, fmt.Errorf("RPC client is not available: %w", e.dialErr)
 	}
 
 	var out []interface{}
@@ -313,7 +335,7 @@ func (e *Contract) GetCapabilityEpoch(ctx context.Context, signerAddr string) (u
 // Requires a valid RPC client. Returns the current nonce or an error if the query fails.
 func (e *Contract) GetNonce(ctx context.Context, address common.Address) (uint64, error) {
 	if e.rpcClient == nil {
-		return 0, fmt.Errorf("RPC client is not initialized, please check RPC URL and try again")
+		return 0, fmt.Errorf("RPC client is not available: %w", e.dialErr)
 	}
 
 	nonce, err := e.rpcClient.PendingNonceAt(ctx, address)

@@ -13,8 +13,8 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/compactform"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
-	"golang.org/x/sync/errgroup"
 )
 
 type JSONCredential struct {
@@ -32,7 +32,6 @@ func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (*JSONCred
 	e := &JSONCredential{
 		credentialData: m,
 	}
-
 	return e, e.executeOptions(opts...)
 }
 
@@ -72,7 +71,7 @@ func requireCredentialProperties(m CredentialData) error {
 	return nil
 }
 
-// credentialsV2Context is the @context VC Data Model 2.0 §4.2 requires first on
+// credentialsV2Context is the @context VC Data Model 2.0 §4.3 requires first on
 // every credential. vc-jose-cose is defined against 2.0 only, so the JOSE paths
 // hold documents to it; the VC 1.1 paths do not, and keep their own context.
 const credentialsV2Context = "https://www.w3.org/ns/credentials/v2"
@@ -233,7 +232,7 @@ func carriesSDMachinery(value interface{}) bool {
 	return false
 }
 
-// requireV2Context enforces VCDM 2.0 §4.2: the v2 URL comes first. The data
+// requireV2Context enforces VCDM 2.0 §4.3: the v2 URL comes first. The data
 // model asks for an ordered set, but a lone string means the same thing and is
 // accepted rather than turned into a second way to fail.
 func requireV2Context(v interface{}) error {
@@ -317,6 +316,11 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 
 	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
+	}
+	// Verify refuses a credential whose JSON is not in compacted form, so the
+	// SDK does not sign one.
+	if err := e.verifyCompactedForm(); err != nil {
+		return fmt.Errorf("cannot sign: %w", err)
 	}
 
 	vm, vmURL, err := e.resolveSigningVMEntry(opts...)
@@ -430,6 +434,9 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
+	if err := e.verifyCompactedForm(); err != nil {
+		return fmt.Errorf("cannot attach proof: %w", err)
+	}
 
 	return m.AddCustomProof(proof)
 }
@@ -516,47 +523,62 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		}
 	}
 
-	g := &errgroup.Group{}
-
-	if options.isValidateSchema {
-		g.Go(func() error {
-			if err := validateCredential(e.credentialData, options); err != nil {
-				return fmt.Errorf("validate credential: %w", err)
-			}
-
-			return nil
-		})
-	}
-
+	// Count the proofs before schema validation and proof verification run.
 	if options.isVerifyProof {
-		g.Go(func() error {
-			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
-				options.resolver,
-				options.proofVerificationMethod,
-				jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
-				jsonmap.WithMaxProofs(options.maxProofs),
-			)
-			if err != nil {
-				return fmt.Errorf("verify proof: %w", err)
-			}
-
-			if !isValid {
-				return fmt.Errorf("invalid proof")
-			}
-
-			return nil
-		})
+		if err := (*jsonmap.JSONMap)(&e.credentialData).CheckProofCount(options.maxProofs); err != nil {
+			return fmt.Errorf("credential verification failed: verify proof: %w", err)
+		}
 	}
 
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("credential verification failed: %w", err)
+	// Step 1: verify the proof first. The proof check works on the canonical
+	// RDF of the document, so it accepts any equivalent JSON shape. All later
+	// checks read the raw JSON by key name, so they need the compacted form.
+	if options.isVerifyProof {
+		isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
+			options.resolver,
+			options.proofVerificationMethod,
+			jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
+			jsonmap.WithMaxProofs(options.maxProofs),
+		)
+		if err != nil {
+			return fmt.Errorf("credential verification failed: verify proof: %w", err)
+		}
+		if !isValid {
+			return fmt.Errorf("credential verification failed: invalid proof")
+		}
+
+		// Step 2: the properties the SDK reads by name must say what the signed
+		// document says (see vcCompactedForm). The raw data is not mutated.
+		//
+		// Only a proof over the canonical form lets the JSON-LD meaning differ
+		// from what the keys say. A document secured only by JwtProof2020 is
+		// not checked: the JWT binds its body key by key. That departs from
+		// VC Data Model 2.0 §7.1 step 2, which names no securing mechanism.
+		signsCanonical, err := (*jsonmap.JSONMap)(&e.credentialData).SignsCanonicalForm()
+		if err != nil {
+			return fmt.Errorf("credential verification failed: %w", err)
+		}
+		if signsCanonical {
+			if err := e.verifyCompactedForm(); err != nil {
+				return fmt.Errorf("credential verification failed: %w", err)
+			}
+		}
+	}
+
+	// Step 3: the remaining checks read the credential by name, which step 2
+	// proved says what the signed document says. Schema validation runs after
+	// the proof, so an unsigned credential costs no schema fetch.
+	if options.isValidateSchema {
+		if err := validateCredential(e.credentialData, options); err != nil {
+			return fmt.Errorf("credential verification failed: validate credential: %w", err)
+		}
 	}
 
 	// Revocation check runs after the proof is verified: an unsigned or
 	// forged credential must not trigger a GET to the statusListCredential
 	// URL the attacker chose.
 	if options.isCheckRevocation {
-		if err := checkRevocation(e.credentialData, options.resolver, options.acceptLegacyStatusList); err != nil {
+		if err := checkRevocation(e.credentialData, options); err != nil {
 			return fmt.Errorf("credential verification failed: check revocation: %w", err)
 		}
 	}
@@ -566,7 +588,39 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		if err := checkExpiration(e.credentialData, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
+		// The JWT of a JwtProof2020 proof is checked as the JWT path checks
+		// it. Its body dates are not a substitute: a date at the claim's
+		// second can lie later in that second, and a falsy exp (0) has no date.
+		if err := (*jsonmap.JSONMap)(&e.credentialData).CheckJwtProofTimes(options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
 	}
 
 	return nil
+}
+
+// vcCompactedForm lists the properties SDK checks and readers take from a
+// credential by name: validity dates (VC Data Model 2.0 and 1.1), the issuer,
+// and the nodes revocation, schema validation and rendering read.
+var vcCompactedForm = compactform.Rules{
+	Single:         []string{"issuer", "validFrom", "validUntil", "issuanceDate", "expirationDate"},
+	Nodes:          []string{"issuer", "credentialSubject", "credentialStatus", "credentialSchema", "renderMethod"},
+	NamedVCDMTerms: true,
+}
+
+// ErrNotCompactedForm is returned, wrapped with the property path, when the
+// JSON of a JSON-LD document does not say what its signed meaning says for a
+// property the SDK reads by name. It is processor.ErrNotCompactedForm.
+var ErrNotCompactedForm = processor.ErrNotCompactedForm
+
+// verifyCompactedForm refuses a credential whose JSON, for a property in
+// vcCompactedForm, does not say what its signed meaning says. The raw data is
+// never mutated.
+func (e *JSONCredential) verifyCompactedForm() error {
+	body, err := (*jsonmap.JSONMap)(&e.credentialData).ToMap()
+	if err != nil {
+		return fmt.Errorf("compact form check: serialize body: %w", err)
+	}
+	delete(body, "proof")
+	return compactform.Check(body, vcCompactedForm)
 }

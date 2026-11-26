@@ -1766,3 +1766,30 @@ func issuerResolver(t *testing.T, pub *ecdsa.PublicKey) verificationmethod.Resol
 	}
 	return verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument("did:example:issuer", vm))
 }
+
+// Only a document whose proofs are all JwtProof2020 is reported as not signing
+// its canonical form; one other proof alongside is enough to report it does.
+func TestSignsCanonicalForm(t *testing.T) {
+	jwtProof := map[string]interface{}{"type": "JwtProof2020", "jwt": "a.b.c"}
+	diProof := map[string]interface{}{"type": "DataIntegrityProof", "cryptosuite": "ecdsa-rdfc-2019"}
+	for _, tc := range []struct {
+		name  string
+		proof interface{}
+		want  bool
+	}{
+		{"JwtProof2020 only", jwtProof, false},
+		{"Data Integrity only", diProof, true},
+		{"JwtProof2020 and Data Integrity", []interface{}{jwtProof, diProof}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := JSONMap{"proof": tc.proof}
+			got, err := m.SignsCanonicalForm()
+			if err != nil {
+				t.Fatalf("SignsCanonicalForm: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("SignsCanonicalForm = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

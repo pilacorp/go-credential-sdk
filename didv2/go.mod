@@ -6,6 +6,7 @@ toolchain go1.24.3
 
 require (
 	github.com/ethereum/go-ethereum v1.16.8
+	github.com/gorilla/websocket v1.4.2
 	github.com/mr-tron/base58 v1.3.0
 )
 
@@ -24,7 +25,6 @@ require (
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/google/uuid v1.3.0 // indirect
-	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect

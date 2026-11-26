@@ -5,13 +5,19 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
@@ -95,6 +101,13 @@ func testKeyPair(t *testing.T) (*ecdsa.PrivateKey, verificationmethod.ResolverPr
 // JSONMap, the same way authen-service does (ecdsa-rdfc-2019 proof).
 func signStatusListCredential(t *testing.T, priv *ecdsa.PrivateKey, issuer, purpose, encodedList string) map[string]interface{} {
 	t.Helper()
+	return signStatusListCredentialFor(t, priv, issuer, purpose, encodedList, "assertionMethod")
+}
+
+// signStatusListCredentialFor is signStatusListCredential with the proof made
+// for proofPurpose.
+func signStatusListCredentialFor(t *testing.T, priv *ecdsa.PrivateKey, issuer, purpose, encodedList, proofPurpose string) map[string]interface{} {
+	t.Helper()
 	now := time.Now().UTC()
 	vc := jsonmap.JSONMap{
 		"@context": []interface{}{
@@ -115,7 +128,7 @@ func signStatusListCredential(t *testing.T, priv *ecdsa.PrivateKey, issuer, purp
 
 	sp, err := signer.NewP256Provider(priv)
 	require.NoError(t, err)
-	err = vc.AddECDSAProof(sp, testVMID, "assertionMethod")
+	err = vc.AddECDSAProof(sp, testVMID, proofPurpose)
 	require.NoError(t, err)
 
 	return map[string]interface{}(vc)
@@ -321,6 +334,21 @@ func TestVerifyAndCheckStatus_Signed_W3C(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestVerifyAndCheckStatus_ProofForOtherPurpose_Refused checks that a status
+// list whose proof was made for another purpose, such as authentication, is
+// not accepted as the issuer's assertion of the list.
+func TestVerifyAndCheckStatus_ProofForOtherPurpose_Refused(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	encoded := buildW3CEncodedList(t, nil)
+	vc := signStatusListCredentialFor(t, priv, testIssuerDID, "revocation", encoded, "authentication")
+	server := serveStatusList(t, vc)
+
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver))
+	err := client.VerifyAndCheckStatus(server.URL, 7, "revocation", testIssuerDID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "proof")
+}
+
 func TestVerifyAndCheckStatus_Signed_Legacy(t *testing.T) {
 	priv, resolver := testKeyPair(t)
 	encoded := buildLegacyEncodedList(t, 128, []int{0})
@@ -440,6 +468,46 @@ func TestVerifyAndCheckStatus_ExpiredCredential_Refused(t *testing.T) {
 	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
 	err = client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "expired")
+}
+
+// A status list whose VCDM 1.1 expirationDate has passed is refused like one
+// past validUntil. It is a JwtProof2020 list: a Data Integrity proof cannot
+// carry 1.1 dates under the 2.0 context these lists use.
+func TestVerifyAndCheckStatus_ExpiredByExpirationDate_Refused(t *testing.T) {
+	priv, err := ethcrypto.HexToECDSA("59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d")
+	require.NoError(t, err)
+	vm := verificationmethod.NewSecp256k1VM(testIssuerDID, "jwt-1", hex.EncodeToString(ethcrypto.CompressPubkey(&priv.PublicKey)))
+	resolver := verificationmethod.NewStaticResolver(verificationmethod.NewDIDDocument(testIssuerDID, vm))
+
+	list := map[string]interface{}{
+		"@context":       []interface{}{"https://www.w3.org/2018/credentials/v1"},
+		"type":           []interface{}{"VerifiableCredential", "BitstringStatusListCredential"},
+		"issuer":         testIssuerDID,
+		"issuanceDate":   time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339),
+		"expirationDate": time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+		"credentialSubject": map[string]interface{}{
+			"type": "BitstringStatusList", "statusPurpose": "revocation",
+			"encodedList": buildLegacyEncodedList(t, 128, []int{}),
+		},
+	}
+	header, _ := json.Marshal(map[string]interface{}{"typ": "JWT", "alg": "ES256K", "kid": testIssuerDID + "#jwt-1"})
+	payload, _ := json.Marshal(map[string]interface{}{"iss": testIssuerDID, "vc": list})
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+	digest := sha256.Sum256([]byte(input))
+	sig, err := ethcrypto.Sign(digest[:], priv)
+	require.NoError(t, err)
+	body := map[string]interface{}{}
+	for k, v := range list {
+		body[k] = v
+	}
+	body["proof"] = map[string]interface{}{"type": "JwtProof2020", "jwt": input + "." + base64.RawURLEncoding.EncodeToString(sig[:64]),
+		"verificationMethod": testIssuerDID + "#jwt-1"}
+
+	server := serveStatusList(t, body)
+	client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(resolver), WithLegacyStatusList())
+	err = client.VerifyAndCheckStatus(server.URL, 0, "revocation", testIssuerDID)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expired")
 }
 
@@ -600,7 +668,7 @@ func (failResolver) ResolveDocument(_ context.Context, _ string) (*verificationm
 
 func TestVerifyAndCheckStatus_UnresolvableIssuer_Refused(t *testing.T) {
 	priv, _ := testKeyPair(t)
-	encoded := buildLegacyEncodedList(t, 128, []int{})
+	encoded := buildW3CEncodedList(t, []int{})
 
 	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", encoded)
 	server := serveStatusList(t, vc)
@@ -1127,20 +1195,6 @@ func TestSetDefaultHTTPClient_ConcurrentAccess(t *testing.T) {
 	<-done
 }
 
-// ---------------------------------------------------------------------------
-// Clip error values (review comment 4661774564)
-// ---------------------------------------------------------------------------
-
-func TestClip(t *testing.T) {
-	short := "did:example:issuer"
-	assert.Equal(t, short, clip(short))
-
-	long := strings.Repeat("x", 300)
-	clipped := clip(long)
-	assert.Equal(t, 259, len(clipped)) // 256 + "..."
-	assert.True(t, strings.HasSuffix(clipped, "..."))
-}
-
 // credentialSubject.type may be an array (#203 review).
 func TestReadStatusList_ArraySubjectType(t *testing.T) {
 	m := jsonmap.JSONMap{
@@ -1197,4 +1251,47 @@ func TestVerifyAndCheckStatus_ValidFromClockSkew(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
+}
+
+// countingResolver counts DID resolutions, which the proof check makes.
+type countingResolver struct {
+	inner verificationmethod.ResolverProvider
+	n     atomic.Int32
+}
+
+func (r *countingResolver) ResolveDocument(ctx context.Context, did string) (*verificationmethod.DIDDocument, error) {
+	r.n.Add(1)
+	return r.inner.ResolveDocument(ctx, did)
+}
+
+// TestVerifyAndCheckStatus_CheapChecksBeforeProof checks that a list refused
+// for its issuer or its statusPurpose is refused before its proof is checked,
+// so no DID is resolved for it.
+func TestVerifyAndCheckStatus_CheapChecksBeforeProof(t *testing.T) {
+	priv, resolver := testKeyPair(t)
+	vc := signStatusListCredential(t, priv, testIssuerDID, "revocation", buildW3CEncodedList(t, nil))
+	server := serveStatusList(t, vc)
+
+	for _, tt := range []struct {
+		name, purpose, issuer string
+	}{
+		{"issuer mismatch", "revocation", "did:example:someone-else"},
+		{"purpose mismatch", "suspension", testIssuerDID},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			counter := &countingResolver{inner: resolver}
+			client := NewClient(WithHTTPClient(testHTTPClient()), WithResolver(counter))
+			assert.Error(t, client.VerifyAndCheckStatus(server.URL, 7, tt.purpose, tt.issuer))
+			assert.Zero(t, counter.n.Load(), "DID resolutions before the refusal")
+		})
+	}
+}
+
+// TestCheckBitStatus_PurposeMismatch_TextBounded checks that a long
+// statusPurpose is cut in the mismatch error rather than copied whole.
+func TestCheckBitStatus_PurposeMismatch_TextBounded(t *testing.T) {
+	long := strings.Repeat("p", 1<<20)
+	_, err := CheckBitStatus(0, StatusListCredentialSubject{StatusPurpose: long, EncodedList: "u"}, "revocation")
+	assert.Error(t, err)
+	assert.Less(t, len(err.Error()), 1024)
 }

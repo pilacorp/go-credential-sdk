@@ -470,45 +470,44 @@ func TestVerifyJwtProof_ForgedBodyRefused(t *testing.T) {
 
 // --- Fractional nbf ---
 
-func TestVerifyJwtProof_FractionalNbfRefused(t *testing.T) {
+// RFC 7519 §2 lets a NumericDate carry a fraction. The body's date is read at
+// the second, the precision the JWT path reads nbf with (jwtutil.NumericDate).
+func TestVerifyJwtProof_FractionalNbfReadToTheSecond(t *testing.T) {
 	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
 	if err != nil {
 		t.Fatalf("parse key: %v", err)
 	}
-
-	vcClaim := map[string]interface{}{
-		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
-		"type":     []interface{}{"VerifiableCredential"},
-		"credentialSubject": map[string]interface{}{
-			"id":   "did:example:subject",
-			"name": "Alice",
+	token := signJWT(t, testSecp256k1PrivHex, jwtHeader(), map[string]interface{}{
+		"vc": map[string]interface{}{
+			"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+			"type":              []interface{}{"VerifiableCredential"},
+			"credentialSubject": map[string]interface{}{"id": "did:example:subject", "name": "Alice"},
 		},
-	}
-	jwtPayload := map[string]interface{}{
-		"vc":  vcClaim,
 		"iss": "did:example:issuer",
 		"nbf": float64(1704067200.5),
-	}
-	token := signJWT(t, testSecp256k1PrivHex, jwtHeader(), jwtPayload)
-
-	body := map[string]interface{}{
-		"@context": []interface{}{"https://www.w3.org/2018/credentials/v1"},
-		"type":     []interface{}{"VerifiableCredential"},
-		"issuer":   "did:example:issuer",
-		"credentialSubject": map[string]interface{}{
-			"id":   "did:example:subject",
-			"name": "Alice",
-		},
-		"issuanceDate": "2024-01-01T00:00:00Z",
-	}
-	attachJwtProof2020(body, token)
-
-	ok, err := VerifyJwtProof(&body, &priv.PublicKey)
-	if ok {
-		t.Fatal("a fractional nbf was accepted")
-	}
-	if !errors.Is(err, ErrJwtProofBinding) {
-		t.Fatalf("err = %v, want one wrapping ErrJwtProofBinding", err)
+	})
+	for _, c := range []struct {
+		issuanceDate string
+		accept       bool
+	}{
+		{"2024-01-01T00:00:00Z", true},
+		{"2024-01-01T00:00:01Z", false},
+	} {
+		body := map[string]interface{}{
+			"@context":          []interface{}{"https://www.w3.org/2018/credentials/v1"},
+			"type":              []interface{}{"VerifiableCredential"},
+			"issuer":            "did:example:issuer",
+			"credentialSubject": map[string]interface{}{"id": "did:example:subject", "name": "Alice"},
+			"issuanceDate":      c.issuanceDate,
+		}
+		attachJwtProof2020(body, token)
+		ok, err := VerifyJwtProof(&body, &priv.PublicKey)
+		if c.accept && !ok {
+			t.Fatalf("issuanceDate %s refused: %v", c.issuanceDate, err)
+		}
+		if !c.accept && !errors.Is(err, ErrJwtProofBinding) {
+			t.Fatalf("issuanceDate %s: err = %v, want one wrapping ErrJwtProofBinding", c.issuanceDate, err)
+		}
 	}
 }
 
@@ -1098,5 +1097,12 @@ func TestErrJwtProofBinding_IsSentinel(t *testing.T) {
 	_, err = VerifyJwtProof(&body, &priv.PublicKey)
 	if !errors.Is(err, ErrJwtProofBinding) {
 		t.Fatalf("errors.Is(err, ErrJwtProofBinding) = false; err = %v", err)
+	}
+}
+
+func TestVerifyJwtProof_NilCredential(t *testing.T) {
+	ok, err := VerifyJwtProof(nil, nil)
+	if ok || err == nil {
+		t.Fatalf("ok = %v, err = %v, want an error", ok, err)
 	}
 }
