@@ -92,6 +92,50 @@ func BuildIssueDIDPayload(input *IssueDIDPayload) ([]byte, error) {
 	return dataToSign, nil
 }
 
+// GenerateUpdateCapabilitySignature signs the CAP_UPDATE capability that lets
+// input.DidAddress send its own setAttribute or setDocumentHash.
+func GenerateUpdateCapabilitySignature(input *UpdateCapabilityPayload, issuerSigner signer.SignerProvider) (*Signature, error) {
+	if issuerSigner == nil {
+		return nil, fmt.Errorf("issuer signer is required")
+	}
+
+	if !strings.EqualFold(issuerSigner.GetAddress(), input.IssuerAddress) {
+		return nil, fmt.Errorf("issuer signer %s does not sign for %s", issuerSigner.GetAddress(), input.IssuerAddress)
+	}
+
+	payload, err := BuildUpdateCapabilityPayload(input)
+	if err != nil {
+		return nil, err
+	}
+
+	return SignPayload(crypto.Keccak256Hash(payload).Bytes(), issuerSigner)
+}
+
+// BuildUpdateCapabilityPayload builds the bytes the contract hashes for a
+// CAP_UPDATE:
+//
+//	0x19 0x00 ‖ registry ‖ "CAP_UPDATE" ‖ issuer ‖ did ‖ uint64 epoch ‖ capId
+//
+// the same EIP-191 version-0 framing as BuildIssueDIDPayload, with no DID type.
+func BuildUpdateCapabilityPayload(input *UpdateCapabilityPayload) ([]byte, error) {
+	if err := input.Validate(); err != nil {
+		return nil, err
+	}
+
+	payload, err := abiEncodePacked(
+		[]string{"string", "address", "address", "uint64", "bytes32"},
+		[]string{CapUpdateAction, input.IssuerAddress, input.DidAddress, strconv.FormatUint(input.Epoch, 10), input.CapID},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode update capability payload: %w", err)
+	}
+
+	dataToSign := []byte{0x19, 0x00}
+	dataToSign = append(dataToSign, common.HexToAddress(input.ContractAddress).Bytes()...)
+
+	return append(dataToSign, payload...), nil
+}
+
 // SignPayload signs the provided payload using the issuer signer.
 //
 // The payload should be the hash of the EIP-191 payload (from BuildIssueDIDPayload).

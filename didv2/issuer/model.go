@@ -1,8 +1,10 @@
 package issuer
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pilacorp/go-credential-sdk/didv2/did"
@@ -10,6 +12,11 @@ import (
 
 // CapCreateAction is the action string used in issuer signature payloads.
 const CapCreateAction = "CAP_CREATE"
+
+// CapUpdateAction is the action string of the capability a DID's own
+// setAttribute and setDocumentHash carry. The contract checks it, not
+// CapCreateAction: a creation signature is refused for an update.
+const CapUpdateAction = "CAP_UPDATE"
 
 // CapIDLength is the byte length of a capability ID (32 bytes = 64 hex characters + "0x" prefix = 66 total).
 const CapIDLength = 32
@@ -77,12 +84,7 @@ func (p *IssueDIDPayload) Validate() error {
 		return fmt.Errorf("invalid did address: %s", p.DidAddress)
 	}
 
-	// +2 for "0x" prefix.
-	if len(p.CapID) != CapIDLength*2+2 {
-		return fmt.Errorf("invalid cap id length: expected %d, got %d", CapIDLength, len(p.CapID))
-	}
-
-	return nil
+	return validateCapID(p.CapID)
 }
 
 // signatureFromBytes parses a raw 65-byte signature into R, S, V components.
@@ -109,4 +111,60 @@ func signatureFromBytes(sig []byte) (*Signature, error) {
 	vInt := new(big.Int).SetBytes(sig[64:])
 
 	return &Signature{V: vInt, R: rInt, S: sInt}, nil
+}
+
+// UpdateCapabilityPayload is what an authority signs to let a DID send its own
+// document updates (setAttribute, setDocumentHash).
+//
+// The capability names no document and no nonce. It covers every later update
+// of that DID until the authority revokes CapID or bumps its epoch; mint a fresh
+// CapID per update and revoke it after use if each update must be approved on
+// its own.
+type UpdateCapabilityPayload struct {
+	// ContractAddress is the DID Registry the capability is valid on.
+	ContractAddress string `json:"contract_address"`
+	// IssuerAddress is the authority signing the capability. The transaction
+	// names it as its signer argument.
+	IssuerAddress string `json:"issuer_address"`
+	// DidAddress is the DID that will send the update, its tx sender.
+	DidAddress string `json:"did_address"`
+	// CapID is the 32-byte capability id ("0x" + 64 hex digits).
+	CapID string `json:"cap_id"`
+	// Epoch is IssuerAddress's current capability epoch on that contract.
+	Epoch uint64 `json:"epoch"`
+}
+
+// Validate checks the addresses and the CapID length.
+func (p *UpdateCapabilityPayload) Validate() error {
+	if p == nil {
+		return fmt.Errorf("update capability payload is required")
+	}
+
+	if !common.IsHexAddress(p.ContractAddress) {
+		return fmt.Errorf("invalid contract address: %s", p.ContractAddress)
+	}
+
+	if !common.IsHexAddress(p.IssuerAddress) {
+		return fmt.Errorf("invalid issuer address: %s", p.IssuerAddress)
+	}
+
+	if !common.IsHexAddress(p.DidAddress) {
+		return fmt.Errorf("invalid did address: %s", p.DidAddress)
+	}
+
+	return validateCapID(p.CapID)
+}
+
+// validateCapID is the one rule both capabilities hold their id to: "0x" and 32
+// bytes of hex, the bytes32 the contract reads it as.
+func validateCapID(capID string) error {
+	if len(capID) != CapIDLength*2+2 || !strings.HasPrefix(capID, "0x") {
+		return fmt.Errorf("invalid cap id: expected 0x and %d hex digits", CapIDLength*2)
+	}
+
+	if _, err := hex.DecodeString(capID[2:]); err != nil {
+		return fmt.Errorf("invalid cap id: not hex")
+	}
+
+	return nil
 }

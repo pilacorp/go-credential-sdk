@@ -1,6 +1,7 @@
 package didcontract
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -91,22 +92,12 @@ func (r *CreateDIDRequest) Validate() error {
 		return errors.New("issuer signature V, R, S are required")
 	}
 
-	docHashLen := len(r.DocHash)
-
-	if strings.HasPrefix(r.DocHash, "0x") {
-		docHashLen -= 2
+	if err := validateHex32("docHash", r.DocHash, DocHashHexLength); err != nil {
+		return err
 	}
 
-	if docHashLen != DocHashHexLength {
-		return fmt.Errorf("invalid docHash length: expected %d hex chars (32 bytes), got %d", DocHashHexLength, docHashLen)
-	}
-
-	capIDLen := len(r.CapID)
-	if strings.HasPrefix(r.CapID, "0x") {
-		capIDLen -= 2
-	}
-	if capIDLen != CapIDHexLength {
-		return fmt.Errorf("invalid capID length: expected %d hex chars (32 bytes), got %d", CapIDHexLength, capIDLen)
+	if err := validateHex32("capID", r.CapID, CapIDHexLength); err != nil {
+		return err
 	}
 
 	return nil
@@ -149,20 +140,12 @@ func (r *SetDocumentHashRequest) Validate() error {
 		return errors.New("issuer signature V, R, S are required")
 	}
 
-	docHashLen := len(r.DocHash)
-	if strings.HasPrefix(r.DocHash, "0x") {
-		docHashLen -= 2
-	}
-	if docHashLen != DocHashHexLength {
-		return fmt.Errorf("invalid docHash length: expected %d hex chars (32 bytes), got %d", DocHashHexLength, docHashLen)
+	if err := validateHex32("docHash", r.DocHash, DocHashHexLength); err != nil {
+		return err
 	}
 
-	capIDLen := len(r.CapID)
-	if strings.HasPrefix(r.CapID, "0x") {
-		capIDLen -= 2
-	}
-	if capIDLen != CapIDHexLength {
-		return fmt.Errorf("invalid capID length: expected %d hex chars (32 bytes), got %d", CapIDHexLength, capIDLen)
+	if err := validateHex32("capID", r.CapID, CapIDHexLength); err != nil {
+		return err
 	}
 
 	return nil
@@ -186,13 +169,111 @@ func (r *SetDocumentHashByIssuerRequest) Validate() error {
 		return fmt.Errorf("invalid did address: %s", r.DIDAddress)
 	}
 
-	docHashLen := len(r.DocHash)
-	if strings.HasPrefix(r.DocHash, "0x") {
-		docHashLen -= 2
+	if err := validateHex32("docHash", r.DocHash, DocHashHexLength); err != nil {
+		return err
 	}
-	if docHashLen != DocHashHexLength {
-		return fmt.Errorf("invalid docHash length: expected %d hex chars (32 bytes), got %d", DocHashHexLength, docHashLen)
+	return nil
+}
+
+// SetAttributeRequest builds a raw tx for
+// setAttribute(signer, name, value, docHash, capId, v, r, s), sent by the DID
+// itself under a CAP_UPDATE its authority signed.
+type SetAttributeRequest struct {
+	// IssuerAddress is the authority whose capability the tx carries: the DID's
+	// issuer, or the DID itself for an issuer updating its own DID. The contract
+	// names this argument "signer".
+	IssuerAddress string
+	// Name is the attribute name, "key/N" or "vm", at most 32 bytes.
+	Name string
+	// Value is the attribute value.
+	Value []byte
+	// DocHash is the hash of the new document (0x… 32 bytes).
+	DocHash string
+	// CapID is the capability id the signature covers (0x… 32 bytes).
+	CapID string
+	// CapabilitySig is the CAP_UPDATE signature over CapID.
+	CapabilitySig *issuer.Signature
+	// Nonce is the tx nonce of the DID's address.
+	Nonce uint64
+}
+
+func (r *SetAttributeRequest) Validate() error {
+	if r == nil {
+		return errors.New("SetAttributeRequest is required")
 	}
+	if !common.IsHexAddress(r.IssuerAddress) {
+		return fmt.Errorf("invalid issuer address: %s", r.IssuerAddress)
+	}
+	if r.CapabilitySig == nil || r.CapabilitySig.V == nil || r.CapabilitySig.R == nil || r.CapabilitySig.S == nil {
+		return errors.New("capability signature V, R, S are required")
+	}
+	if err := validateAttribute(r.Name, r.Value); err != nil {
+		return err
+	}
+	if err := validateHex32("docHash", r.DocHash, DocHashHexLength); err != nil {
+		return err
+	}
+
+	return validateHex32("capID", r.CapID, CapIDHexLength)
+}
+
+// SetAttributeByIssuerRequest builds a raw tx for
+// setAttributeByIssuer(did, name, value, docHash), sent by the issuer.
+type SetAttributeByIssuerRequest struct {
+	// DIDAddress is the DID's ethereum address (0x…).
+	DIDAddress string
+	// Name is the attribute name, "key/N" or "vm", at most 32 bytes.
+	Name string
+	// Value is the attribute value.
+	Value []byte
+	// DocHash is the hash of the new document (0x… 32 bytes).
+	DocHash string
+	// Nonce is the tx nonce of the issuer's address.
+	Nonce uint64
+}
+
+func (r *SetAttributeByIssuerRequest) Validate() error {
+	if r == nil {
+		return errors.New("SetAttributeByIssuerRequest is required")
+	}
+	if !common.IsHexAddress(r.DIDAddress) {
+		return fmt.Errorf("invalid did address: %s", r.DIDAddress)
+	}
+	if err := validateAttribute(r.Name, r.Value); err != nil {
+		return err
+	}
+
+	return validateHex32("docHash", r.DocHash, DocHashHexLength)
+}
+
+// validateAttribute refuses what the contract would take and did-registrar
+// would then refuse: an empty or over-long name, an empty value.
+func validateAttribute(name string, value []byte) error {
+	if name == "" {
+		return errors.New("attribute name is required")
+	}
+	if len(name) > 32 {
+		return fmt.Errorf("attribute name %q exceeds 32 bytes", name)
+	}
+	if len(value) == 0 {
+		return errors.New("attribute value is required")
+	}
+
+	return nil
+}
+
+// validateHex32 is the one check every request holds a docHash and a capID to:
+// 32 bytes of hex, with or without "0x".
+func validateHex32(field, value string, want int) error {
+	digits := strings.TrimPrefix(value, "0x")
+	if len(digits) != want {
+		return fmt.Errorf("invalid %s length: expected %d hex chars (32 bytes), got %d", field, want, len(digits))
+	}
+
+	if _, err := hex.DecodeString(digits); err != nil {
+		return fmt.Errorf("invalid %s: not hex", field)
+	}
+
 	return nil
 }
 

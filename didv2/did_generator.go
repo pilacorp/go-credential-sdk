@@ -433,6 +433,165 @@ func (d *DIDGenerator) GenerateSetDocumentHashByIssuerTransaction(
 	return txResult, nil
 }
 
+// GenerateUpdateCapability signs the CAP_UPDATE that lets didAddr send its own
+// document updates (GenerateSetAttributeTransaction). It is signed by
+// cfg.IssuerSigner, the DID's issuer, or the DID itself when an issuer updates
+// its own DID.
+//
+// The epoch is cfg.Epoch, or the contract's when SyncEpoch is set. The CapID is
+// cfg.CapID, generated when empty, and returned in the capability.
+//
+// The contract does not bind a capability to a document or a nonce: it stays
+// valid for every later update of didAddr until the issuer revokes CapID or
+// bumps its epoch.
+func (d *DIDGenerator) GenerateUpdateCapability(
+	ctx context.Context,
+	didAddr string,
+	options ...DIDOption,
+) (*UpdateCapability, error) {
+	cfg, err := d.resolveConfig(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
+	}
+
+	if cfg.IssuerSigner == nil {
+		return nil, fmt.Errorf("issuer signer is required")
+	}
+
+	issuerAddr := cfg.IssuerSigner.GetAddress()
+
+	if cfg.SyncEpoch {
+		epoch, err := d.didContract.GetCapabilityEpoch(ctx, issuerAddr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get capability epoch: %w", err)
+		}
+
+		cfg.Epoch = epoch
+	}
+
+	sig, err := issuer.GenerateUpdateCapabilitySignature(&issuer.UpdateCapabilityPayload{
+		ContractAddress: d.baseConfig.DIDSMCAddr,
+		IssuerAddress:   issuerAddr,
+		DidAddress:      didAddr,
+		CapID:           cfg.CapID,
+		Epoch:           cfg.Epoch,
+	}, cfg.IssuerSigner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create update capability: %w", err)
+	}
+
+	return &UpdateCapability{IssuerAddress: issuerAddr, DIDAddress: didAddr, CapID: cfg.CapID, Signature: sig}, nil
+}
+
+// GenerateSetAttributeTransaction signs the DID's own document update:
+//
+//	setAttribute(signer, name, value, docHash, capId, v, r, s)
+//
+// The tx is signed by cfg.DIDSigner, which must be the DID the capability was
+// signed for. name and value are the attribute an attribute.Update carries;
+// docHash is its DocHash.
+//
+// The nonce is cfg.Nonce, or the node's pending nonce when SyncNonce is set. A
+// registrar that reserves nonces may expect a higher one: take it from the
+// registrar when it reports one.
+func (d *DIDGenerator) GenerateSetAttributeTransaction(
+	ctx context.Context,
+	docHash, name string,
+	value []byte,
+	capability *UpdateCapability,
+	options ...DIDOption,
+) (*didcontract.Transaction, error) {
+	cfg, err := d.resolveConfig(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
+	}
+
+	if cfg.DIDSigner == nil {
+		return nil, fmt.Errorf("did signer is required")
+	}
+
+	if capability == nil || capability.Signature == nil {
+		return nil, fmt.Errorf("update capability is required")
+	}
+
+	// The contract reads the DID from the tx sender, so a capability for
+	// another DID reverts on chain; refuse it here instead.
+	if !common.IsHexAddress(capability.DIDAddress) ||
+		common.HexToAddress(capability.DIDAddress) != common.HexToAddress(cfg.DIDSigner.GetAddress()) {
+		return nil, fmt.Errorf("update capability is for %s, the did signer is %s",
+			capability.DIDAddress, cfg.DIDSigner.GetAddress())
+	}
+
+	if cfg.SyncNonce {
+		nonce, err := d.didContract.GetNonce(ctx, common.HexToAddress(cfg.DIDSigner.GetAddress()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to get nonce: %w", err)
+		}
+
+		cfg.Nonce = nonce
+	}
+
+	tx, err := d.didContract.SetAttributeTx(ctx, &didcontract.SetAttributeRequest{
+		IssuerAddress: capability.IssuerAddress,
+		Name:          name,
+		Value:         value,
+		DocHash:       docHash,
+		CapID:         capability.CapID,
+		CapabilitySig: capability.Signature,
+		Nonce:         cfg.Nonce,
+	}, cfg.DIDSigner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate setAttribute Tx: %w", err)
+	}
+
+	return tx, nil
+}
+
+// GenerateSetAttributeByIssuerTransaction signs the issuer's update of a DID it
+// issued:
+//
+//	setAttributeByIssuer(did, name, value, docHash)
+//
+// The tx is signed by cfg.IssuerSigner. The nonce is cfg.Nonce, or the node's
+// pending nonce when SyncNonce is set.
+func (d *DIDGenerator) GenerateSetAttributeByIssuerTransaction(
+	ctx context.Context,
+	docHash, didAddr, name string,
+	value []byte,
+	options ...DIDOption,
+) (*didcontract.Transaction, error) {
+	cfg, err := d.resolveConfig(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve configuration: %w", err)
+	}
+
+	if cfg.IssuerSigner == nil {
+		return nil, fmt.Errorf("issuer signer is required")
+	}
+
+	if cfg.SyncNonce {
+		nonce, err := d.didContract.GetNonce(ctx, common.HexToAddress(cfg.IssuerSigner.GetAddress()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to get nonce: %w", err)
+		}
+
+		cfg.Nonce = nonce
+	}
+
+	tx, err := d.didContract.SetAttributeByIssuerTx(ctx, &didcontract.SetAttributeByIssuerRequest{
+		DIDAddress: didAddr,
+		Name:       name,
+		Value:      value,
+		DocHash:    docHash,
+		Nonce:      cfg.Nonce,
+	}, cfg.IssuerSigner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate setAttributeByIssuer Tx: %w", err)
+	}
+
+	return tx, nil
+}
+
 // resolveConfig merges runtime options with the base configuration.
 //
 // It applies all provided options to the base config and automatically generates
