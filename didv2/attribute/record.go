@@ -240,7 +240,9 @@ func (p purposeIndex) record(vm *did.VerificationMethod) *Record {
 	}
 
 	if vm.Revoked != nil {
-		rec.Revoked = &RevokedRecord{Time: *vm.Revoked, Reason: vm.RevocationReason}
+		// UTC, so one instant is one record on chain whatever offset the
+		// document was written with.
+		rec.Revoked = &RevokedRecord{Time: vm.Revoked.UTC(), Reason: vm.RevocationReason}
 	}
 
 	return rec

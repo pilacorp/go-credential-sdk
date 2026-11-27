@@ -125,7 +125,8 @@ func TestAddingAMethodPublishesItsKeyN(t *testing.T) {
 func TestRevokingAMethodPublishesTheRevocation(t *testing.T) {
 	doc := platformDocument(t)
 	before := snapshot(t, doc)
-	at := time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)
+	// Written at +07:00; the record carries the same instant in UTC.
+	at := time.Date(2026, 11, 27, 7, 0, 0, 0, time.FixedZone("+07", 7*3600))
 
 	u, err := attribute.RevokeVerificationMethod(doc, "#key-2", "keyCompromise", at)
 	if err != nil {
