@@ -25,6 +25,9 @@ const dataIntegrityV2Context = "https://w3id.org/security/data-integrity/v2"
 // using only the 2018 credentials context), so the secured document expands
 // losslessly. A context adds no RDF triples, so the canonical statements — and
 // therefore the signature — are unchanged.
+//
+// VCDM 2.0 §5.2 requires undefined-terms/v2 to be the last @context entry.
+// When it is the trailing element, the DI context is inserted before it.
 func (m *JSONMap) ensureDataIntegrityContext() {
 	const credentialsV2 = "https://www.w3.org/ns/credentials/v2"
 	covers := func(s string) bool { return s == credentialsV2 || s == dataIntegrityV2Context }
@@ -42,7 +45,7 @@ func (m *JSONMap) ensureDataIntegrityContext() {
 				return
 			}
 		}
-		(*m)["@context"] = append(append([]interface{}{}, c...), dataIntegrityV2Context)
+		(*m)["@context"] = insertBeforeUndefinedTerms(c, dataIntegrityV2Context)
 	case []string:
 		// Go-built documents often use []string; normalize and re-run.
 		generic := make([]interface{}, len(c))

@@ -402,13 +402,21 @@ func (m *JSONMap) addSuiteContextWithoutChangingMeaning(sc suiteContext) error {
 	return nil
 }
 
+// undefinedTermsV2Context is the @vocab catch-all VCDM 2.0 §5.2 says MUST be
+// the last value of @context. When it is the trailing entry a suite context is
+// inserted before it, not appended after.
+const undefinedTermsV2Context = "https://www.w3.org/ns/credentials/undefined-terms/v2"
+
 // ensureSuiteContext makes the document's @context define the suite, adding
 // the suite's narrow context when it does not.
 //
 // The canonicalizer runs in SafeMode: a proof whose terms no context defines
 // does not expand, and signing fails. For secp256k1, VC 1.1 already defines
 // the suite in its base context with @protected terms, so nothing is added;
-// VC 2.0 defines Data Integrity only, so the suite context is appended.
+// VC 2.0 defines Data Integrity only, so the suite context is added.
+//
+// VCDM 2.0 §5.2 requires undefined-terms/v2 to be the last @context entry.
+// When it is the trailing element, the suite context goes before it.
 func (m *JSONMap) ensureSuiteContext(sc suiteContext) error {
 	if m == nil {
 		return fmt.Errorf("JSONMap is nil")
@@ -425,18 +433,42 @@ func (m *JSONMap) ensureSuiteContext(sc suiteContext) error {
 	case string:
 		(*m)["@context"] = []interface{}{c, sc.narrow}
 	case []interface{}:
-		(*m)["@context"] = append(append([]interface{}{}, c...), sc.narrow)
+		(*m)["@context"] = insertBeforeUndefinedTerms(c, sc.narrow)
 	case []string:
 		out := make([]interface{}, 0, len(c)+1)
 		for _, s := range c {
 			out = append(out, s)
 		}
-		(*m)["@context"] = append(out, sc.narrow)
+		(*m)["@context"] = insertBeforeUndefinedTerms(out, sc.narrow)
 	default:
 		return fmt.Errorf("document @context has unexpected type %T", c)
 	}
 
 	return nil
+}
+
+// isUndefinedTermsV2 reports whether s names undefined-terms/v2. The ".jsonld"
+// spelling counts too: processor.wellKnownContexts maps both URLs to the same
+// document, so a credential ending with either one must keep it last.
+func isUndefinedTermsV2(s string) bool {
+	return s == undefinedTermsV2Context || s == undefinedTermsV2Context+".jsonld"
+}
+
+// insertBeforeUndefinedTerms appends entry to contexts, except when the last
+// element is undefined-terms/v2 — then it inserts entry before that element so
+// undefined-terms/v2 stays last (VCDM 2.0 §5.2).
+func insertBeforeUndefinedTerms(contexts []interface{}, entry string) []interface{} {
+	out := append([]interface{}{}, contexts...)
+	if n := len(out); n > 0 {
+		if last, ok := out[n-1].(string); ok && isUndefinedTermsV2(last) {
+			// Insert before the trailing undefined-terms/v2.
+			out = append(out, "")
+			copy(out[n:], out[n-1:])
+			out[n-1] = entry
+			return out
+		}
+	}
+	return append(out, entry)
 }
 
 // ensureSecp256k1SuiteContext is ensureSuiteContext for the secp256k1 suite.

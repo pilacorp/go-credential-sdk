@@ -1106,16 +1106,16 @@ func main() {
 	vcc := vc.CredentialContents{
 		Context: []interface{}{
 			"https://www.w3.org/ns/credentials/v2",
-			"https://www.w3.org/ns/credentials/examples/v2",
 			map[string]interface{}{
-				// Define a namespace for your custom terms
-				"@vocab": "https://schema.org/version/latest/schemaorg-all-https.jsonld",
-				// Map your custom terms to that namespace
+				// Map custom terms to explicit IRIs when you need a specific namespace.
 				"VerifiableAttestation":      "ex:VerifiableAttestation",
 				"VerifiableEducationalID":    "ex:VerifiableEducationalID",
 				"eduPersonScopedAffiliation": "ex:eduPersonScopedAffiliation",
 				"identifier":                 "ex:identifier",
 			},
+			// VCDM 2.0 §5.2: undefined-terms/v2 must be the last @context entry
+			// when the document uses terms no other context defines.
+			"https://www.w3.org/ns/credentials/undefined-terms/v2",
 		},
 		ID: "urn:uuid:db2a23dc-80e2-4ef8-b708-5d2ea7b5deb6",
 		Types: []string{
