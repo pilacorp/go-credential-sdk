@@ -136,6 +136,17 @@ func TestUpdateCapabilityRefusesACapIDThatIsNotHex(t *testing.T) {
 	if err == nil {
 		t.Fatal("signed a capability whose id is not hex")
 	}
+
+	// The creation capability is held to the same rule.
+	_, err = issuer.GenerateIssueDIDSignature(&issuer.IssueDIDPayload{
+		ContractAddress: DefaultDIDSMCAddress,
+		IssuerAddress:   issuerSigner.GetAddress(),
+		DidAddress:      newSigner(t).GetAddress(),
+		CapID:           "0x" + strings.Repeat("z", 64),
+	}, issuerSigner)
+	if err == nil {
+		t.Fatal("signed a creation capability whose id is not hex")
+	}
 }
 
 func TestUpdateCapabilitySignatureRefusesASignerForAnotherIssuer(t *testing.T) {
