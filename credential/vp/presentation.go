@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
@@ -115,6 +116,8 @@ type presentationOptions struct {
 	replaceProof bool
 	// maxProofs caps the proofs a JSON-LD presentation may carry; 0 means no cap.
 	maxProofs int
+	// jsonldLimits bounds the JSON-LD work Verify lets a document cause.
+	jsonldLimits processor.JSONLDLimits
 }
 
 // WithExpectedProofPurpose tells Verify to expect this proof purpose instead of
@@ -359,6 +362,20 @@ func WithRequireAudience() PresentationOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.resolver = resolver
+	}
+}
+
+// WithJSONLDLimits bounds the JSON-LD work verifying the presentation can
+// cause, as vc.WithJSONLDLimits does for a credential, and is passed on to each
+// embedded credential when WithVCValidation is set. A document over a limit is
+// refused with processor.ErrTooManyValues or
+// processor.ErrTooManyScopedContextUses.
+//
+// No limit is set by default; signing calls ignore it. Limits passed in
+// WithVCValidation's own options are applied after these and win.
+func WithJSONLDLimits(limits processor.JSONLDLimits) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.jsonldLimits = limits
 	}
 }
 

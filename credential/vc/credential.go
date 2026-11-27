@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
@@ -159,6 +160,8 @@ type credentialOptions struct {
 	replaceProof         bool
 	// maxProofs caps the proofs a JSON-LD credential may carry; 0 means no cap.
 	maxProofs int
+	// jsonldLimits bounds the JSON-LD work Verify lets a document cause.
+	jsonldLimits processor.JSONLDLimits
 	// maxStatusLists caps the status lists WithCheckRevocation fetches; 0 means no cap.
 	maxStatusLists int
 	// statusListIssuers maps a credential issuer to list issuers trusted for
@@ -506,6 +509,21 @@ func WithSchemaLoader(loader SchemaLoaderFunc) CredentialOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.resolver = resolver
+	}
+}
+
+// WithJSONLDLimits bounds the JSON-LD work verifying a document can cause
+// (processor.JSONLDLimits). MaxValues is checked on the JSON before any
+// JSON-LD processing; MaxScopedContextUses is enforced by json-gold in the
+// proof's canonicalization and the compacted-form check. A document over a
+// limit is refused with processor.ErrTooManyValues or
+// processor.ErrTooManyScopedContextUses.
+//
+// No limit is set by default. Applies to Verify and to Parse with
+// WithVerifyProof; signing calls ignore it.
+func WithJSONLDLimits(limits processor.JSONLDLimits) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.jsonldLimits = limits
 	}
 }
 

@@ -22,12 +22,12 @@ func TestVerifyCompactedForm_CredentialSubjectIsChecked(t *testing.T) {
 			"credentialSubject": subject,
 		}
 	}
-	if err := (&JSONCredential{credentialData: doc(map[string]interface{}{"id": "did:example:subject"})}).verifyCompactedForm(); err != nil {
+	if err := (&JSONCredential{credentialData: doc(map[string]interface{}{"id": "did:example:subject"})}).verifyCompactedForm(processor.JSONLDLimits{}); err != nil {
 		t.Fatalf("a subject the context defines was refused: %v", err)
 	}
 	err := (&JSONCredential{credentialData: doc(map[string]interface{}{
 		"id": "did:example:subject", "permissions": []interface{}{"admin"},
-	})}).verifyCompactedForm()
+	})}).verifyCompactedForm(processor.JSONLDLimits{})
 	if !errors.Is(err, processor.ErrNotCompactedForm) {
 		t.Fatalf("err = %v, want ErrNotCompactedForm for an unsigned subject field", err)
 	}

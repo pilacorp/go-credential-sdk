@@ -784,14 +784,15 @@ func TestVerify_TypedAndContainerClaims(t *testing.T) {
 			"note": {"@container": "@language"},
 			"kind": {"@type": "@vocab"},
 			"cfg": {"@type": "@json"},
+			"cfgList": {"@type": "@json"},
 			"members": {"@container": "@type"}}],
 		"id": "urn:uuid:179-shapes", "type": ["VerifiableCredential"], "issuer": "did:example:issuer-179v",
 		"validFrom": "2025-01-01T00:00:00Z",
 		"credentialSubject": {"id": "did:example:holder", "dob": "1990-01-01", "steps": ["b", "a"],
 			"title": {"en": "Engineer", "vi": "Kỹ sư"}, "blob": {"a": 1, "b": [true]},
 			"byId": {"urn:x:1": {"name": "A"}}, "byType": {"Person": {"name": "B"}},
-			"note": {"@none": "x", "en": "y"}, "kind": "Person", "cfg": {"list": [1, null]},
-			"members": {"Person": [{"type": "Employee", "name": "C"}, "urn:x:2"]}}}`)
+			"note": {"@none": "x", "en": "y"}, "kind": "Person", "cfg": {"list": [1, null]}, "cfgList": [1, null],
+			"members": {"Person": [{"type": "Employee", "name": "C"}, "urn:x:2"]}, "address": {}}}`)
 	cred, err := ParseJSONCredential(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -835,4 +836,39 @@ func TestVerify_NullArrayElement(t *testing.T) {
 		sub["roles"] = append([]interface{}{nil}, sub["roles"].([]interface{})...)
 	})
 	requireNotCompacted(t, raw, opts, "credentialSubject.roles[0]")
+}
+
+// Two claims of a node inside a type map, swapped through an alias pair, keep
+// the RDF; the reader would see each value under the other name.
+func TestVerify_TypeMapClaimSwap(t *testing.T) {
+	raw, opts := signCredentialJSON(t, `{
+		"@context": ["https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2",
+			{"members": {"@container": "@type"}}],
+		"id": "urn:uuid:179-typemap", "type": ["VerifiableCredential"], "issuer": "did:example:issuer-179v",
+		"validFrom": "2025-01-01T00:00:00Z",
+		"credentialSubject": {"id": "did:example:holder", "members": {"Person": {"role": "user", "alt": "admin"}}}}`)
+	raw = editJSON(t, raw, func(doc map[string]interface{}) {
+		const ex = "https://www.w3.org/ns/credentials/examples#"
+		doc["@context"] = append(doc["@context"].([]interface{}), map[string]interface{}{"role": ex + "alt", "alt": ex + "role"})
+		node := doc["credentialSubject"].(map[string]interface{})["members"].(map[string]interface{})["Person"].(map[string]interface{})
+		node["role"], node["alt"] = node["alt"], node["role"]
+	})
+	requireNotCompacted(t, raw, opts, "credentialSubject.members")
+}
+
+// A null nested in an array of a property outside the read nodes: expansion
+// flattens [null] away, so the proof holds while a reader sees the values
+// shifted.
+func TestVerify_NestedNullShift(t *testing.T) {
+	raw, opts := signCredentialJSON(t, `{
+		"@context": ["https://www.w3.org/ns/credentials/v2", "https://www.w3.org/ns/credentials/examples/v2"],
+		"id": "urn:uuid:179-shift", "type": ["VerifiableCredential"], "issuer": "did:example:issuer-179v",
+		"validFrom": "2025-01-01T00:00:00Z",
+		"credentialSubject": {"id": "did:example:holder"},
+		"evidence": [{"id": "urn:ev:1", "type": "Evidence"}, {"id": "urn:ev:2", "type": "Evidence"}]}`)
+	raw = editJSON(t, raw, func(doc map[string]interface{}) {
+		ev := doc["evidence"].([]interface{})
+		doc["evidence"] = []interface{}{ev[0], []interface{}{nil}, ev[1]}
+	})
+	requireNotCompacted(t, raw, opts, "evidence[1]")
 }

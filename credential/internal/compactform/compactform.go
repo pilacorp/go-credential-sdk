@@ -66,8 +66,10 @@ type Rules struct {
 // Check compares body (a document without its proof) with its compacted forms
 // under rules. The error wraps processor.ErrNotCompactedForm and names the
 // property path.
-func Check(body map[string]interface{}, rules Rules) error {
-	own, known, err := processor.CompactedForms(body)
+//
+// limits bounds the JSON-LD work of the compactions (processor.JSONLDLimits).
+func Check(body map[string]interface{}, rules Rules, limits processor.JSONLDLimits) error {
+	own, known, err := processor.CompactedForms(body, limits)
 	if err != nil {
 		return err
 	}
@@ -77,9 +79,11 @@ func Check(body map[string]interface{}, rules Rules) error {
 		return fmt.Errorf("%w: %q", processor.ErrNotCompactedForm, errtext.Clip(path))
 	}
 
-	// Compaction drops null array elements, except inside a JSON literal, which
-	// keeps its exact JSON; a reader still sees one where it shifts the signed
-	// values.
+	// Compaction drops null array elements, except inside a JSON literal; a
+	// reader still sees one where it shifts the signed values. (Compaction
+	// spreads an array literal's elements as values at every depth, so a
+	// literal it changes, such as [1], [[1], [2]], [] or [null], is refused:
+	// closed, not open.)
 	if path, found := nullElement(body, own, ""); found {
 		return fail(path)
 	}
@@ -153,7 +157,7 @@ func unnamed(v interface{}, path string, vcdm bool) (string, bool) {
 	case map[string]interface{}:
 		for _, key := range sortedKeys(t) {
 			e := t[key]
-			if normalize(e) == nil {
+			if noValue(e) {
 				continue // no triple: nothing to misread
 			}
 			sub := key
@@ -213,6 +217,15 @@ func isVCDMIRI(s string) bool {
 // keyed by id. Those are compared by the values they hold, not by shape.
 func bound(raw, known interface{}, path string) (string, bool) {
 	known = unwrap(known)
+	if k, ok := known.(map[string]interface{}); ok && k["@value"] != nil && isJSONLiteral(k) {
+		// A JSON literal is compared before raw is unwrapped: a one-element
+		// array is its own value there. Compaction returns the literal and
+		// "add value" spreads an array (JSON-LD 1.1 API §1.4.1, §6.1.2 steps 7
+		// and 12.8.10; json-ld-api#560), so [x] comes out as x. Matching the
+		// two would let a holder swap a signed [x] with a signed x, so such
+		// literals are refused.
+		return path, reflect.DeepEqual(valueOf(raw), k["@value"])
+	}
 	raw = unwrap(raw)
 	if r, ok := raw.(map[string]interface{}); ok && r["@value"] == nil {
 		if p, ok, handled := boundContainer(r, known, path); handled {
@@ -286,8 +299,8 @@ func bound(raw, known interface{}, path string) (string, bool) {
 }
 
 // boundContainer compares a raw map that the own context reads as a language
-// map or an id map, and passes any other map to boundTypeMap, with the known values it stands for. handled is false when
-// raw is not such a map.
+// map or an id map with the known values it stands for, and passes any other
+// map to boundTypeMap. handled is false when raw is not such a map.
 func boundContainer(raw map[string]interface{}, known interface{}, path string) (string, bool, bool) {
 	items := append([]interface{}(nil), values(known)...)
 	if len(items) == 0 {
@@ -359,6 +372,9 @@ func boundContainer(raw map[string]interface{}, known interface{}, path string) 
 // are types, values nodes or node references) with the known nodes, as a
 // multiset: the map key is one more type of each node under it.
 func boundTypeMap(raw map[string]interface{}, items []interface{}, path string) (string, bool, bool) {
+	if len(raw) == 0 {
+		return path, false, false // an empty node, not a map
+	}
 	if _, isNode := raw["id"]; isNode {
 		return path, false, false
 	}
@@ -403,19 +419,12 @@ func boundTypeMap(raw map[string]interface{}, items []interface{}, path string) 
 	if len(nodes) != len(items) {
 		return path, false, true
 	}
-	used := make([]bool, len(items))
-	for _, n := range nodes {
-		matched := false
-		for i, it := range items {
-			if used[i] {
-				continue
-			}
-			if _, ok := bound(n, it, path); ok {
-				used[i], matched = true, true
-				break
-			}
-		}
-		if !matched {
+	// Both sides come from the same raw map: json-gold reads a type map's keys
+	// in sorted order (the REC orders them only when ordered is true, §5.1.2
+	// step 13.8.3) and keeps each key's array order, as sortedKeys does, so
+	// node i stands for item i.
+	for i, n := range nodes {
+		if _, ok := bound(n, items[i], path); !ok {
 			return path, false, true
 		}
 	}
@@ -448,9 +457,6 @@ func sameLanguageValues(a, b []interface{}) bool {
 // nullElement returns the path of the first null array element in raw that
 // the own form does not have at that path.
 func nullElement(raw, own interface{}, path string) (string, bool) {
-	if reflect.DeepEqual(raw, own) {
-		return path, false
-	}
 	switch t := raw.(type) {
 	case map[string]interface{}:
 		o, _ := own.(map[string]interface{})
@@ -469,15 +475,22 @@ func nullElement(raw, own interface{}, path string) (string, bool) {
 			o = []interface{}{own} // compactArrays wrote the element alone
 		}
 		for i, e := range t {
-			sub := fmt.Sprintf("%s[%d]", path, i)
 			if e == nil {
-				return sub, true
+				// Only a JSON literal keeps a null: the own form then holds
+				// this exact array. Each such array is compared once, so the
+				// walk stays linear in the size of the document.
+				if isArray && reflect.DeepEqual(t, o) {
+					return path, false
+				}
+				return fmt.Sprintf("%s[%d]", path, i), true
 			}
+		}
+		for i, e := range t {
 			var oe interface{}
 			if len(o) == len(t) {
 				oe = o[i]
 			}
-			if p, found := nullElement(e, oe, sub); found {
+			if p, found := nullElement(e, oe, fmt.Sprintf("%s[%d]", path, i)); found {
 				return p, true
 			}
 		}
@@ -575,6 +588,24 @@ func values(v interface{}) []interface{} {
 	default:
 		return []interface{}{t}
 	}
+}
+
+// noValue reports whether v is null or an array of such values, what
+// normalize turns into nil, without walking objects: unnamed asks it at every
+// level, so it must not cost the size of the subtree.
+func noValue(v interface{}) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case []interface{}:
+		for _, e := range t {
+			if !noValue(e) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // dropNulls returns a without its null elements, which expansion drops

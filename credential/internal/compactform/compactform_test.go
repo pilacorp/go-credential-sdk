@@ -19,7 +19,7 @@ func TestCheck_VCDMTermAsCompactIRI(t *testing.T) {
 		"credentialSubject": map[string]interface{}{"id": "did:example:holder"},
 		"cm":                "urn:x:1",
 	}
-	err := Check(body, Rules{Single: []string{"issuer"}, Nodes: []string{"credentialSubject"}, NamedVCDMTerms: true})
+	err := Check(body, Rules{Single: []string{"issuer"}, Nodes: []string{"credentialSubject"}, NamedVCDMTerms: true}, processor.JSONLDLimits{})
 	if !errors.Is(err, processor.ErrNotCompactedForm) {
 		t.Fatalf("err = %v, want ErrNotCompactedForm", err)
 	}

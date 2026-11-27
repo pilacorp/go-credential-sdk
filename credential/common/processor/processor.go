@@ -158,21 +158,27 @@ func finishJSONLD(err *error, op string) {
 		*err = fmt.Errorf("%s: malformed JSON-LD input: %v", op, r)
 		return
 	}
-	*err = markContextOverflow(*err)
+	*err = markScopedContextOverflow(markContextOverflow(*err))
 }
 
 // CanonicalizeDocument canonicalizes a document using JSON-LD processing.
-func CanonicalizeDocument(doc map[string]interface{}) (out []byte, err error) {
+// limits, when given, bounds the work (JSONLDLimits).
+func CanonicalizeDocument(doc map[string]interface{}, limits ...JSONLDLimits) (out []byte, err error) {
 	if doc == nil {
 		return nil, fmt.Errorf("failed to canonicalize document: document is nil")
 	}
 	defer finishJSONLD(&err, "canonicalize document")
+	l, err := limitsFor(doc, limits)
+	if err != nil {
+		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
+	}
 	processor := ld.NewJsonLdProcessor()
 	// The two steps of processor.Normalize, which cannot stop between them to
 	// check the cost. SafeMode stays off, as legacy signatures were made that
 	// way: see TestCanonicalizeDocument_SilentlyDropsUndefinedTerm.
 	jsonldOptions := ld.NewJsonLdOptions("")
 	jsonldOptions.DocumentLoader = newContextBudget()
+	l.apply(jsonldOptions)
 
 	standardizedDoc, err := standardizeToJSONLD(doc)
 	if err != nil {

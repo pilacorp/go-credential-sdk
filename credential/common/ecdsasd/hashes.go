@@ -14,8 +14,8 @@ import (
 // cryptosuites build that configuration from one place and only the hashing
 // differs. Canonicalize rejects a configuration whose terms no context
 // defines, rather than hashing an empty N-Quads set.
-func hashProofConfig(proofConfig map[string]interface{}) ([]byte, error) {
-	nquads, err := processor.Canonicalize(proofConfig)
+func hashProofConfig(proofConfig map[string]interface{}, limits ...processor.JSONLDLimits) ([]byte, error) {
+	nquads, err := processor.Canonicalize(proofConfig, limits...)
 	if err != nil {
 		return nil, fmt.Errorf("ecdsasd: hash proof config: %w", err)
 	}

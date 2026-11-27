@@ -151,8 +151,8 @@ github.com/peterh/liner v1.1.1-0.20190123174540-a2c9a5303de7 h1:oYW+YCJ1pachXTQm
 github.com/peterh/liner v1.1.1-0.20190123174540-a2c9a5303de7/go.mod h1:CRroGNssyjTd/qIG2FyxByd2S8JEAZXBl4qUrZf8GS0=
 github.com/pilacorp/go-credential-sdk/jose v0.1.0 h1:FXqHAYegvVfSGF7oXb0cxT+32D34qvNR+wzJ/RlnWvQ=
 github.com/pilacorp/go-credential-sdk/jose v0.1.0/go.mod h1:H++RuDqmQyJCTXcTiEUBzWxDhS5OVfkkLni+v4icdQI=
-github.com/pilacorp/json-gold v0.9.1-pila.6 h1:BRgLbgCSbGrgHO/+4Wk4wV1Ujtb2QCq1VfAmvNd+kWo=
-github.com/pilacorp/json-gold v0.9.1-pila.6/go.mod h1:uX1EirW/MDwsj//qdvSWaSOFMml7atktBvCT4bH5Sfo=
+github.com/pilacorp/json-gold v0.9.1-pila.8 h1:rKdswRoz90XsC2Jshfkh4XfJHNWovzj55IlivVWiG98=
+github.com/pilacorp/json-gold v0.9.1-pila.8/go.mod h1:uX1EirW/MDwsj//qdvSWaSOFMml7atktBvCT4bH5Sfo=
 github.com/pion/dtls/v2 v2.2.7 h1:cSUBsETxepsCSFSxC3mc/aDo14qQLMSL+O6IjG28yV8=
 github.com/pion/dtls/v2 v2.2.7/go.mod h1:8WiMkebSHFD0T+dIU+UeBaoV7kDhOW5oDCzZ7WZ/F9s=
 github.com/pion/logging v0.2.2 h1:M9+AIj/+pxNsDfAT64+MAVgJO0rsyLnoJKCqf//DoeY=

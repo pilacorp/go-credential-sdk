@@ -117,7 +117,7 @@ func (e *JSONPresentation) AddProofByProvider(provider signer.SignerProvider, op
 	}
 	// Verify refuses a presentation whose JSON is not in compacted form, so
 	// the SDK does not sign one.
-	if err := e.verifyCompactedForm(); err != nil {
+	if err := e.verifyCompactedForm(processor.JSONLDLimits{}); err != nil {
 		return fmt.Errorf("cannot sign: %w", err)
 	}
 
@@ -244,7 +244,7 @@ func (e *JSONPresentation) AddCustomProof(proof *dto.Proof, opts ...Presentation
 	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
-	if err := e.verifyCompactedForm(); err != nil {
+	if err := e.verifyCompactedForm(processor.JSONLDLimits{}); err != nil {
 		return fmt.Errorf("cannot attach proof: %w", err)
 	}
 
@@ -282,6 +282,16 @@ func (e *JSONPresentation) ExtractField(path string) interface{} {
 func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 	options := getOptions(opts...)
 
+	// The value limit walks the JSON, before any JSON-LD processing; the
+	// scoped-context limit goes to json-gold with the proof check below.
+	// Limits protect the verifier, so signing calls skip them.
+	if options.isVerifyProof {
+		if err := processor.CheckJSONLDLimits(
+			map[string]interface{}(e.presentationData), options.jsonldLimits); err != nil {
+			return fmt.Errorf("failed to verify presentation: %w", err)
+		}
+	}
+
 	// Count the presentation's proofs before anything else is verified, so an
 	// oversized set costs no proof or credential verification.
 	if options.isVerifyProof {
@@ -299,6 +309,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 			options.proofVerificationMethod,
 			jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
 			jsonmap.WithMaxProofs(options.maxProofs),
+			jsonmap.WithJSONLDLimits(options.jsonldLimits),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to verify presentation: %w", err)
@@ -316,7 +327,7 @@ func (e *JSONPresentation) executeOptions(opts ...PresentationOpt) error {
 			return fmt.Errorf("failed to verify presentation: %w", err)
 		}
 		if signsCanonical {
-			if err := e.verifyCompactedForm(); err != nil {
+			if err := e.verifyCompactedForm(options.jsonldLimits); err != nil {
 				return fmt.Errorf("failed to verify presentation: %w", err)
 			}
 		}
@@ -368,13 +379,13 @@ var ErrNotCompactedForm = processor.ErrNotCompactedForm
 // verifyCompactedForm refuses a presentation whose JSON, for a property in
 // vpCompactedForm, does not say what its signed meaning says. The raw data is
 // never mutated.
-func (e *JSONPresentation) verifyCompactedForm() error {
+func (e *JSONPresentation) verifyCompactedForm(limits processor.JSONLDLimits) error {
 	body, err := (*jsonmap.JSONMap)(&e.presentationData).ToMap()
 	if err != nil {
 		return fmt.Errorf("compact form check: serialize body: %w", err)
 	}
 	delete(body, "proof")
-	return compactform.Check(body, vpCompactedForm)
+	return compactform.Check(body, vpCompactedForm, limits)
 }
 
 // checkChallengeAndDomain enforces WithExpectedChallenge / WithExpectedDomain

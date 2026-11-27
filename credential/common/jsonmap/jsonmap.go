@@ -77,6 +77,10 @@ func (m *JSONMap) ToMap() (map[string]interface{}, error) {
 // to verify those proofs, never to issue new ones — ecdsaHashData is the Data
 // Integrity replacement.
 func (m *JSONMap) LegacyHexCanonicalize() ([]byte, error) {
+	return m.legacyHexCanonicalize(processor.JSONLDLimits{})
+}
+
+func (m *JSONMap) legacyHexCanonicalize(limits processor.JSONLDLimits) ([]byte, error) {
 	mCopy := make(JSONMap)
 	for k, v := range *m {
 		if k != proofField {
@@ -94,7 +98,7 @@ func (m *JSONMap) LegacyHexCanonicalize() ([]byte, error) {
 		return nil, fmt.Errorf("failed to unmarshal JSONMap copy: %w", err)
 	}
 
-	canonicalDoc, err := processor.CanonicalizeDocument(doc)
+	canonicalDoc, err := processor.CanonicalizeDocument(doc, limits)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
 	}
@@ -323,7 +327,8 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 			suite, DataIntegrityProof, ECDSARDFC2019)
 	}
 
-	ok, err := m.verifyOneProof(resolver, proof, proofVerifyConfigFrom(opts).expectedPurpose, nil)
+	cfg := proofVerifyConfigFrom(opts)
+	ok, err := m.verifyOneProof(resolver, proof, cfg.expectedPurpose, &digestCache{limits: cfg.jsonldLimits})
 	if err != nil {
 		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
 	}
@@ -369,6 +374,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	}
 	raw := m.rawProofList()
 	expectedPurpose := cfg.expectedPurpose
+	cache := &digestCache{limits: cfg.jsonldLimits}
 
 	// Verify a single, caller-selected proof.
 	if targetVM != "" {
@@ -377,7 +383,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 				if err := rejectPreviousProof(raw[i]); err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
-				ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, nil)
+				ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, cache)
 				if err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
@@ -390,7 +396,6 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	// W3C proof set: every proof must verify, each against its own
 	// verification method. The body is the same for all proofs, so the
 	// document digest is computed once per distinct canonical form and reused.
-	cache := &digestCache{}
 	return m.verifyProofSet(resolver, proofs, expectedPurpose, raw, cache)
 }
 
@@ -415,9 +420,9 @@ func (m *JSONMap) verifyProofSet(resolver verificationmethod.ResolverProvider, p
 }
 
 // verifyOneProof verifies a single proof against the DID document resolved from
-// that proof's own verification method. When cache is non-nil, canonicalization
-// results are shared across calls; when nil, each call computes them fresh
-// (the single-proof path, VerifyDetachedProof).
+// that proof's own verification method. cache shares canonicalization results
+// across the proofs of one call and carries its JSON-LD limits; a nil cache
+// computes them fresh with no limits.
 func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, expectedPurpose string, cache *digestCache) (bool, error) {
 	if err := proofPurposeDisagrees(proof, expectedPurpose); err != nil {
 		return false, err
@@ -608,7 +613,7 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof, cache *digestCache) ([]byte, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash document: %w", err)
 	}
-	return m.ProofHashData(docHash, proof)
+	return m.proofHashData(docHash, proof, cache.jsonldLimits())
 }
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,
@@ -898,6 +903,8 @@ type proofVerifyConfig struct {
 	expectedPurpose string
 	// maxProofs caps the proofs a document may carry; 0 means no cap.
 	maxProofs int
+	// jsonldLimits bounds the JSON-LD work of canonicalizing the document.
+	jsonldLimits processor.JSONLDLimits
 }
 
 func proofVerifyConfigFrom(opts []ProofVerifyOpt) proofVerifyConfig {
@@ -939,6 +946,17 @@ var ErrTooManyProofs = errors.New("too many proofs")
 func WithMaxProofs(n int) ProofVerifyOpt {
 	return func(cfg *proofVerifyConfig) {
 		cfg.maxProofs = max(n, 0)
+	}
+}
+
+// WithJSONLDLimits bounds the JSON-LD work of canonicalizing the document for
+// its proofs: json-gold refuses an operation that applies scoped contexts more
+// times than limits.MaxScopedContextUses, with
+// processor.ErrTooManyScopedContextUses, and the body or a proof configuration
+// that holds more values than limits.MaxValues, with processor.ErrTooManyValues.
+func WithJSONLDLimits(limits processor.JSONLDLimits) ProofVerifyOpt {
+	return func(cfg *proofVerifyConfig) {
+		cfg.jsonldLimits = limits
 	}
 }
 
@@ -1109,6 +1127,12 @@ func (m *JSONMap) DocumentDigest() ([]byte, error) {
 // already computed document digest (GetSigningInput) and the proof options.
 // The signer must sign SHA-256(hashData), not hashData itself.
 func (m *JSONMap) ProofHashData(docHash []byte, proof *dto.Proof) ([]byte, error) {
+	return m.proofHashData(docHash, proof, processor.JSONLDLimits{})
+}
+
+// proofHashData is ProofHashData with limits on canonicalizing the proof
+// configuration, which carries every member of the proof.
+func (m *JSONMap) proofHashData(docHash []byte, proof *dto.Proof, limits processor.JSONLDLimits) ([]byte, error) {
 	if len(docHash) != sha256.Size {
 		return nil, fmt.Errorf("document digest must be %d bytes, got %d", sha256.Size, len(docHash))
 	}
@@ -1116,7 +1140,7 @@ func (m *JSONMap) ProofHashData(docHash []byte, proof *dto.Proof) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to build proof configuration: %w", err)
 	}
-	cfgCanonical, err := processor.Canonicalize(cfg)
+	cfgCanonical, err := processor.Canonicalize(cfg, limits)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize proof configuration: %w", err)
 	}

@@ -44,6 +44,9 @@ type digestCache struct {
 	legacyDigestErr error
 	legacyDigestOK  bool
 
+	// limits bounds the JSON-LD work of each canonicalization.
+	limits processor.JSONLDLimits
+
 	// misses counts the canonical forms this cache computed. Tests use it to
 	// check that a proof set reuses them.
 	misses int
@@ -80,7 +83,7 @@ func (c *digestCache) computeDocumentDigest(m *JSONMap) ([]byte, error) {
 // bodyWithoutProof result.
 func (c *digestCache) canonicalNQuads(body map[string]interface{}) ([]string, error) {
 	if !c.bodyNQuadsOK {
-		c.bodyNQuads, c.bodyNQuadsErr = processor.CanonicalizeNQuads(body)
+		c.bodyNQuads, c.bodyNQuadsErr = processor.CanonicalizeNQuads(body, c.limits)
 		c.bodyNQuadsOK = true
 		if c.bodyNQuadsErr == nil {
 			c.misses++
@@ -96,7 +99,7 @@ func (c *digestCache) legacyHexCanonicalize(m *JSONMap) ([]byte, error) {
 		return m.LegacyHexCanonicalize()
 	}
 	if !c.legacyDigestOK {
-		c.legacyDigest, c.legacyDigestErr = m.LegacyHexCanonicalize()
+		c.legacyDigest, c.legacyDigestErr = m.legacyHexCanonicalize(c.limits)
 		c.legacyDigestOK = true
 		if c.legacyDigestErr == nil {
 			c.misses++
@@ -131,6 +134,14 @@ func (c *digestCache) sdCanonicalizer(m *JSONMap) (func() ([]string, error), err
 		return func() ([]string, error) { return processor.CanonicalizeNQuads(body) }, nil
 	}
 	return func() ([]string, error) { return c.canonicalNQuads(body) }, nil
+}
+
+// jsonldLimits returns the limits of a verification, none for a nil cache.
+func (c *digestCache) jsonldLimits() processor.JSONLDLimits {
+	if c == nil {
+		return processor.JSONLDLimits{}
+	}
+	return c.limits
 }
 
 // didMemo resolves each DID once per proof set. Proofs signed by keys of one
