@@ -581,7 +581,7 @@ func TestCanonicalize_ContextIncludingItselfIsLoadedOnce(t *testing.T) {
 	body = fmt.Sprintf(`{"@context":["%s/"%s]}`, srv.URL, strings.Repeat(",{}", pad/3))
 
 	budget := newContextBudget()
-	opts := sdOptions()
+	opts := sdOptions(JSONLDLimits{})
 	opts.DocumentLoader = budget
 	_, err := ld.NewJsonLdProcessor().Expand(docUsing(srv.URL+"/", "term"), opts)
 	var ldErr *ld.JsonLdError

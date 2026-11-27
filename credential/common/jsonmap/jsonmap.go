@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +18,9 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
 // JSONMap represents a JSON object as a map.
@@ -75,6 +77,10 @@ func (m *JSONMap) ToMap() (map[string]interface{}, error) {
 // to verify those proofs, never to issue new ones — ecdsaHashData is the Data
 // Integrity replacement.
 func (m *JSONMap) LegacyHexCanonicalize() ([]byte, error) {
+	return m.legacyHexCanonicalize(processor.JSONLDLimits{})
+}
+
+func (m *JSONMap) legacyHexCanonicalize(limits processor.JSONLDLimits) ([]byte, error) {
 	mCopy := make(JSONMap)
 	for k, v := range *m {
 		if k != proofField {
@@ -92,7 +98,7 @@ func (m *JSONMap) LegacyHexCanonicalize() ([]byte, error) {
 		return nil, fmt.Errorf("failed to unmarshal JSONMap copy: %w", err)
 	}
 
-	canonicalDoc, err := processor.CanonicalizeDocument(doc)
+	canonicalDoc, err := processor.CanonicalizeDocument(doc, limits)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize document: %w", err)
 	}
@@ -321,7 +327,8 @@ func (m *JSONMap) VerifyDetachedProof(resolver verificationmethod.ResolverProvid
 			suite, DataIntegrityProof, ECDSARDFC2019)
 	}
 
-	ok, err := m.verifyOneProof(resolver, proof, proofVerifyConfigFrom(opts).expectedPurpose, nil)
+	cfg := proofVerifyConfigFrom(opts)
+	ok, err := m.verifyOneProof(resolver, proof, cfg.expectedPurpose, &digestCache{limits: cfg.jsonldLimits})
 	if err != nil {
 		return fmt.Errorf("jsonmap: proof (%s): %w", proof.VerificationMethod, err)
 	}
@@ -353,6 +360,10 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	if resolver == nil {
 		return false, fmt.Errorf("document resolver is required")
 	}
+	cfg := proofVerifyConfigFrom(opts)
+	if err := m.CheckProofCount(cfg.maxProofs); err != nil {
+		return false, err
+	}
 
 	proofs, err := m.Proofs()
 	if err != nil {
@@ -361,12 +372,9 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	if len(proofs) == 0 {
 		return false, fmt.Errorf("credential has no proof")
 	}
-	cfg := proofVerifyConfigFrom(opts)
-	if cfg.maxProofs > 0 && len(proofs) > cfg.maxProofs {
-		return false, fmt.Errorf("%w: the document carries %d and this verifier accepts at most %d; send at most %d, or raise WithMaxProofs", ErrTooManyProofs, len(proofs), cfg.maxProofs, cfg.maxProofs)
-	}
 	raw := m.rawProofList()
 	expectedPurpose := cfg.expectedPurpose
+	cache := &digestCache{limits: cfg.jsonldLimits}
 
 	// Verify a single, caller-selected proof.
 	if targetVM != "" {
@@ -375,7 +383,7 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 				if err := rejectPreviousProof(raw[i]); err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
-				ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, nil)
+				ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, cache)
 				if err != nil {
 					return false, fmt.Errorf("proof (%s): %w", targetVM, err)
 				}
@@ -388,7 +396,6 @@ func (m *JSONMap) VerifyProof(resolver verificationmethod.ResolverProvider, targ
 	// W3C proof set: every proof must verify, each against its own
 	// verification method. The body is the same for all proofs, so the
 	// document digest is computed once per distinct canonical form and reused.
-	cache := &digestCache{}
 	return m.verifyProofSet(resolver, proofs, expectedPurpose, raw, cache)
 }
 
@@ -399,11 +406,11 @@ func (m *JSONMap) verifyProofSet(resolver verificationmethod.ResolverProvider, p
 	resolver = &didMemo{inner: resolver}
 	for i := range proofs {
 		if err := rejectPreviousProof(raw[i]); err != nil {
-			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+			return false, fmt.Errorf("proof %d (%s): %w", i, errtext.Clip(proofs[i].VerificationMethod), err)
 		}
 		ok, err := m.verifyOneProof(resolver, &proofs[i], expectedPurpose, cache)
 		if err != nil {
-			return false, fmt.Errorf("proof %d (%s): %w", i, proofs[i].VerificationMethod, err)
+			return false, fmt.Errorf("proof %d (%s): %w", i, errtext.Clip(proofs[i].VerificationMethod), err)
 		}
 		if !ok {
 			return false, nil
@@ -413,9 +420,9 @@ func (m *JSONMap) verifyProofSet(resolver verificationmethod.ResolverProvider, p
 }
 
 // verifyOneProof verifies a single proof against the DID document resolved from
-// that proof's own verification method. When cache is non-nil, canonicalization
-// results are shared across calls; when nil, each call computes them fresh
-// (the single-proof path, VerifyDetachedProof).
+// that proof's own verification method. cache shares canonicalization results
+// across the proofs of one call and carries its JSON-LD limits; a nil cache
+// computes them fresh with no limits.
 func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, proof *dto.Proof, expectedPurpose string, cache *digestCache) (bool, error) {
 	if err := proofPurposeDisagrees(proof, expectedPurpose); err != nil {
 		return false, err
@@ -460,7 +467,7 @@ func (m *JSONMap) verifyOneProof(resolver verificationmethod.ResolverProvider, p
 		return m.verifyJWSProof(doc, proof, cache)
 
 	default:
-		return false, fmt.Errorf("unsupported proof type: %s", proof.Type)
+		return false, fmt.Errorf("unsupported proof type: %s", errtext.Clip(proof.Type))
 	}
 }
 
@@ -538,7 +545,7 @@ func (m *JSONMap) verifyECDSA(pub *ecdsa.PublicKey, proof *dto.Proof, cache *dig
 // signatureField names the proof property that carries the signature for a
 // proof type, and so the one property the proof configuration leaves out.
 func signatureField(proofType string) string {
-	if proofType == EcdsaSecp256k1Signature2019 {
+	if proofType == EcdsaSecp256k1Signature2019 || proofType == JsonWebSignature2020 {
 		return "jws"
 	}
 
@@ -546,10 +553,13 @@ func signatureField(proofType string) string {
 }
 
 // ecdsaProofConfig builds the proof configuration of section 3.2.5: a copy of
-// the whole proof object with proofValue removed (Data Integrity § 4.4), plus
-// the document's @context. No property is filtered here — every option the
-// signer put on the proof, including ones this SDK does not model, is part of
-// the hash; the document's @context decides which terms are meaningful.
+// the whole proof object with proofValue removed, plus the document's
+// @context (VC DI ECDSA v1.0 §3.2.5 step 4, §3.6.4 step 4). Verify takes the
+// proof without proofValue in §3.2.2 step 2 (ecdsa-rdfc-2019) and hashes the
+// proof options in §3.5.9 step 1 (ecdsa-sd-2023).
+// No property is filtered here — every option the signer put on the proof,
+// including ones this SDK does not model, is part of the hash; the document's
+// @context decides which terms are meaningful.
 func (m *JSONMap) ecdsaProofConfig(proof *dto.Proof) (map[string]interface{}, error) {
 	if proof == nil {
 		return nil, fmt.Errorf("proof is nil")
@@ -603,7 +613,7 @@ func (m *JSONMap) ecdsaHashData(proof *dto.Proof, cache *digestCache) ([]byte, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash document: %w", err)
 	}
-	return m.ProofHashData(docHash, proof)
+	return m.proofHashData(docHash, proof, cache.jsonldLimits())
 }
 
 // verifyECDSASpecConformant verifies a multibase base58btc proofValue,
@@ -686,9 +696,9 @@ func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto
 	if !signedAt.IsZero() {
 		signedAtStr = signedAt.UTC().Format(time.RFC3339)
 		if proof.Created != "" {
-			created, err := time.Parse(time.RFC3339, proof.Created)
+			created, err := parseCreated(proof.Created)
 			if err != nil {
-				return false, fmt.Errorf("invalid proof.created: %w", err)
+				return false, err
 			}
 			if created.Unix() != signedAt.Unix() {
 				return false, fmt.Errorf(
@@ -758,6 +768,65 @@ func (m *JSONMap) Proofs() ([]dto.Proof, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// CheckProofCount returns an error wrapping ErrTooManyProofs when the
+// document carries more than n proofs; n <= 0 accepts any number. It parses
+// no proof, so a caller runs it before costlier steps, as VerifyProof does
+// for WithMaxProofs.
+func (m *JSONMap) CheckProofCount(n int) error {
+	if m == nil || n <= 0 {
+		return nil
+	}
+	if count := len(m.rawProofList()); count > n {
+		return fmt.Errorf("%w: the document carries %d and this verifier accepts at most %d; send at most %d, or raise WithMaxProofs", ErrTooManyProofs, count, n, n)
+	}
+	return nil
+}
+
+// CheckJwtProofTimes checks the nbf and exp of the JWT of each JwtProof2020
+// proof at the current time, widened by leeway, as the JWT path does
+// (jwtutil.CheckTimeClaims). Such a document is a VC-JWT or VP-JWT in JSON
+// form and its validity is in those claims (VCDM 1.1 §6.3.1 moves
+// issuanceDate to nbf and expirationDate to exp). Proofs are read with
+// Proofs, as VerifyProof reads them, so both see the same set.
+func (m *JSONMap) CheckJwtProofTimes(leeway time.Duration) error {
+	proofs, err := m.Proofs()
+	if err != nil {
+		return err
+	}
+	for i := range proofs {
+		if proofs[i].Type != JwtProof2020 {
+			continue
+		}
+		jwtStr, _ := proofs[i].Extra["jwt"].(string)
+		claims, err := jwtutil.DecodePayload(jwtStr)
+		if err != nil {
+			return fmt.Errorf("JwtProof2020 proof: %w", err)
+		}
+		if err := jwtutil.CheckTimeClaims(claims, leeway); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SignsCanonicalForm reports whether any proof on the document signs its
+// JSON-LD canonical form. Every suite but JwtProof2020 does. A JwtProof2020
+// proof signs the JWT, whose claims the document must repeat key by key, so
+// its JSON is already bound by name and not through JSON-LD. Proofs are read
+// with Proofs, as VerifyProof reads them.
+func (m *JSONMap) SignsCanonicalForm() (bool, error) {
+	proofs, err := m.Proofs()
+	if err != nil {
+		return false, err
+	}
+	for i := range proofs {
+		if proofs[i].Type != JwtProof2020 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // rawProofList normalizes the proof field into a slice of raw proof entries,
@@ -834,6 +903,8 @@ type proofVerifyConfig struct {
 	expectedPurpose string
 	// maxProofs caps the proofs a document may carry; 0 means no cap.
 	maxProofs int
+	// jsonldLimits bounds the JSON-LD work of canonicalizing the document.
+	jsonldLimits processor.JSONLDLimits
 }
 
 func proofVerifyConfigFrom(opts []ProofVerifyOpt) proofVerifyConfig {
@@ -864,14 +935,28 @@ func WithExpectedProofPurpose(purpose string) ProofVerifyOpt {
 var ErrTooManyProofs = errors.New("too many proofs")
 
 // WithMaxProofs refuses a document that carries more than n proofs, before any
-// DID is resolved. Each proof costs a resolution, a signature check and a
-// canonicalization of its own configuration, so a verifier that serves
-// untrusted callers sets the most proofs its documents carry. The count is of
-// the whole document, also when VerifyProof checks only the proof of one
-// targetVM. n <= 0 leaves the set unbounded, which is the default.
+// proof is parsed or DID resolved. Each proof costs a signature check and a
+// canonicalization of its own configuration; proofs from one DID share one
+// resolution. An ecdsa-sd-2023 derived proof also costs one signature check
+// per non-mandatory revealed statement, so the cap bounds the number of
+// proofs, not the cost of each. A verifier that serves untrusted callers sets
+// the most proofs its documents carry. The count is of the whole document,
+// also when VerifyProof checks only the proof of one targetVM. n <= 0 leaves
+// the set unbounded, which is the default.
 func WithMaxProofs(n int) ProofVerifyOpt {
 	return func(cfg *proofVerifyConfig) {
 		cfg.maxProofs = max(n, 0)
+	}
+}
+
+// WithJSONLDLimits bounds the JSON-LD work of canonicalizing the document for
+// its proofs: json-gold refuses an operation that applies scoped contexts more
+// times than limits.MaxScopedContextUses, with
+// processor.ErrTooManyScopedContextUses, and the body or a proof configuration
+// that holds more values than limits.MaxValues, with processor.ErrTooManyValues.
+func WithJSONLDLimits(limits processor.JSONLDLimits) ProofVerifyOpt {
+	return func(cfg *proofVerifyConfig) {
+		cfg.jsonldLimits = limits
 	}
 }
 
@@ -901,30 +986,18 @@ func proofPurposeDisagrees(proof *dto.Proof, expected string) error {
 	}
 	return fmt.Errorf(
 		"proof.proofPurpose %q does not match the proof purpose %q this verifier expects",
-		proof.ProofPurpose, expected)
+		errtext.Clip(proof.ProofPurpose), expected)
 }
 
-// XML Schema 1.1 Part 2 §3.3.7.2 with the time zone required (dateTimeStamp,
-// §3.4.28). Years outside 0000-9999 match but cannot be compared as time.Time.
-var dateTimeStamp = regexp.MustCompile(
-	`^-?([1-9][0-9]{3,}|0[0-9]{3})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])` +
-		`T(([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?|24:00:00(\.0+)?)` +
-		`(Z|[+-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00))$`)
-
+// parseCreated reads proof.created, a dateTimeStamp.
 func parseCreated(s string) (time.Time, error) {
-	if !dateTimeStamp.MatchString(s) {
-		return time.Time{}, fmt.Errorf("invalid proof.created timestamp %q: want a date-time with a time zone, such as 2026-01-01T00:00:00Z", s)
-	}
-	endOfDay := strings.Contains(s, "T24:00:00")
-	if endOfDay {
-		s = strings.Replace(s, "T24:00:00", "T00:00:00", 1)
-	}
-	t, err := time.Parse(time.RFC3339Nano, s)
+	t, err := vcdm.ParseDateTimeStamp(s)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid proof.created timestamp %q: %w", s, err)
-	}
-	if endOfDay {
-		t = t.AddDate(0, 0, 1)
+		shown := s
+		if len(shown) > 64 {
+			shown = shown[:64] + "..."
+		}
+		return time.Time{}, fmt.Errorf("invalid proof.created timestamp %q: %w", shown, err)
 	}
 	return t, nil
 }
@@ -1054,6 +1127,12 @@ func (m *JSONMap) DocumentDigest() ([]byte, error) {
 // already computed document digest (GetSigningInput) and the proof options.
 // The signer must sign SHA-256(hashData), not hashData itself.
 func (m *JSONMap) ProofHashData(docHash []byte, proof *dto.Proof) ([]byte, error) {
+	return m.proofHashData(docHash, proof, processor.JSONLDLimits{})
+}
+
+// proofHashData is ProofHashData with limits on canonicalizing the proof
+// configuration, which carries every member of the proof.
+func (m *JSONMap) proofHashData(docHash []byte, proof *dto.Proof, limits processor.JSONLDLimits) ([]byte, error) {
 	if len(docHash) != sha256.Size {
 		return nil, fmt.Errorf("document digest must be %d bytes, got %d", sha256.Size, len(docHash))
 	}
@@ -1061,7 +1140,7 @@ func (m *JSONMap) ProofHashData(docHash []byte, proof *dto.Proof) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to build proof configuration: %w", err)
 	}
-	cfgCanonical, err := processor.Canonicalize(cfg)
+	cfgCanonical, err := processor.Canonicalize(cfg, limits)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize proof configuration: %w", err)
 	}

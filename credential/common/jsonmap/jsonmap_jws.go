@@ -2,7 +2,6 @@ package jsonmap
 
 import (
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -12,17 +11,28 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 )
 
 const (
 	JsonWebSignature2020 string = "JsonWebSignature2020"
 	JsonWebKey2020       string = "JsonWebKey2020"
+
+	// jws2020SuiteContext defines JsonWebSignature2020; no base context does.
+	jws2020SuiteContext string = "https://w3id.org/security/suites/jws-2020/v1"
 )
 
-// AddJWSProof attaches a JsonWebSignature2020 (detached JWS, b64:false) proof.
-// The JOSE algorithm comes from the signer (AlgorithmProvider, default RS256);
-// the signer signs the digest of the JWS signing input hashed with alg's SHA.
-func (m *JSONMap) AddJWSProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string) error {
+// AddJWSProof attaches a JsonWebSignature2020 proof (W3C CCG, CG-FINAL
+// 2022-07-21): a detached JWS with b64:false (RFC 7797) over the Linked Data
+// Proofs "create verify hash", SHA-256 of the canonical proof options followed
+// by SHA-256 of the canonical document. The proof options (created,
+// proofPurpose, verificationMethod, challenge, domain) are therefore signed,
+// and the suite's @context is added to a document that does not define it.
+//
+// The JOSE algorithm comes from the signer (AlgorithmProvider) and must be one
+// this SDK implements from the suite's table (§3.1): ES256 or PS256. The signer
+// signs the SHA-256 digest of the JWS signing input.
+func (m *JSONMap) AddJWSProof(signerProvider signer.SignerProvider, verificationMethod, proofPurpose string, opts ...ProofOpt) (err error) {
 	if m == nil {
 		return fmt.Errorf("jsonmap: JSONMap is nil")
 	}
@@ -37,40 +47,73 @@ func (m *JSONMap) AddJWSProof(signerProvider signer.SignerProvider, verification
 	}
 
 	alg := signer.AlgorithmOf(signerProvider)
+	if err := checkJWS2020Alg(alg); err != nil {
+		return fmt.Errorf("jsonmap: %w", err)
+	}
 
-	proof := dto.Proof{
+	// The document is only mutated on the way to a signature; a failure must
+	// leave the caller's document exactly as it was.
+	restoreContext := m.contextSnapshot()
+	defer func() {
+		if err != nil {
+			restoreContext()
+		}
+	}()
+	if err = m.addSuiteContextWithoutChangingMeaning(jws2020Suite); err != nil {
+		return fmt.Errorf("jsonmap: %w", err)
+	}
+
+	options := newProofOptions(opts...)
+	proof := &dto.Proof{
 		Type:               JsonWebSignature2020,
 		Created:            time.Now().UTC().Format(time.RFC3339),
 		VerificationMethod: verificationMethod,
 		ProofPurpose:       proofPurpose,
-	}
-
-	payload, err := m.LegacyHexCanonicalize()
-	if err != nil {
-		return fmt.Errorf("jsonmap: canonicalize: %w", err)
+		Challenge:          options.challenge,
+		Domain:             domainValue(options.domain),
 	}
 
 	encHeader, err := encodeDetachedJWSHeader(alg)
 	if err != nil {
 		return err
 	}
-	signingInput := jwsSigningInput(encHeader, payload)
-	digest, err := hashForJWSAlg(alg, signingInput)
+	hashData, err := m.ecdsaHashData(proof, nil)
 	if err != nil {
-		return fmt.Errorf("jsonmap: %w", err)
+		return fmt.Errorf("jsonmap: failed to build hash data: %w", err)
 	}
+	digest := sha256.Sum256(jwsSigningInput(encHeader, hashData))
 
-	sig, err := signerProvider.Sign(digest)
+	sig, err := signerProvider.Sign(digest[:])
 	if err != nil {
 		return fmt.Errorf("jsonmap: jws sign: %w", err)
 	}
-	if err := validateJWSSigShape(alg, len(sig)); err != nil {
+	if err = validateJWSSigShape(alg, len(sig)); err != nil {
 		return fmt.Errorf("jsonmap: %w", err)
+	}
+	// Catch an ES256 signer bound to the wrong VM here, not at the verifier,
+	// when the caller named the VM's key (WithVMPublicKey). The option holds
+	// an ECDSA key, so an RSA proof is not checked here.
+	if vmPub := options.vmPub; vmPub != nil && alg == "ES256" {
+		if !crypto.VerifyP256(vmPub, digest[:], sig) {
+			return fmt.Errorf("jsonmap: the signature does not verify against verification method %q; the signer does not hold that key", verificationMethod)
+		}
 	}
 	proof.JWS = encHeader + ".." + base64.RawURLEncoding.EncodeToString(sig)
 
-	m.appendProof(proof)
+	m.appendProof(*proof)
 	return nil
+}
+
+// checkJWS2020Alg admits the JsonWebSignature2020 algorithms this SDK
+// implements. §3.3.1: alg MUST be "present in the supported algorithms table
+// of this suite" (EdDSA, ES256K, ES256, ES384, PS256); EdDSA, ES256K and ES384
+// are not implemented, and RS256 and the other RSA variants are not in it.
+func checkJWS2020Alg(alg string) error {
+	switch alg {
+	case "ES256", "PS256":
+		return nil
+	}
+	return fmt.Errorf("JsonWebSignature2020 alg %q is not supported: this SDK implements ES256 and PS256 from the suite's algorithm table", alg)
 }
 
 // validateJWSSigShape rejects a signer whose signature shape does not match the
@@ -86,23 +129,6 @@ func validateJWSSigShape(alg string, n int) error {
 		return fmt.Errorf("JsonWebSignature2020 %s expects an RSA signature but the signer returned %d bytes (an ECDSA signature); the signer does not match the RSA verification method — pin the right VM with WithVerificationMethodKey", alg, n)
 	}
 	return nil
-}
-
-// hashForJWSAlg hashes input with the SHA matching the JOSE algorithm.
-func hashForJWSAlg(alg string, input []byte) ([]byte, error) {
-	switch alg {
-	case "ES256", "RS256", "PS256":
-		h := sha256.Sum256(input)
-		return h[:], nil
-	case "RS384", "PS384":
-		h := sha512.Sum384(input)
-		return h[:], nil
-	case "RS512", "PS512":
-		h := sha512.Sum512(input)
-		return h[:], nil
-	default:
-		return nil, fmt.Errorf("unsupported JWS alg: %s", alg)
-	}
 }
 
 func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto.Proof, cache *digestCache) (bool, error) {
@@ -124,22 +150,33 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 	if !ok {
 		return false, fmt.Errorf("malformed detached JWS")
 	}
-
 	alg, err := detachedJWSAlg(encHeader)
 	if err != nil {
 		return false, err
 	}
-
-	payload, err := cache.legacyHexCanonicalize(m)
-	if err != nil {
-		return false, fmt.Errorf("canonicalize: %w", err)
+	if err := checkJWS2020Alg(alg); err != nil {
+		return false, err
 	}
-	signingInput := jwsSigningInput(encHeader, payload)
 
-	sig, err := base64.RawURLEncoding.DecodeString(encSig)
+	// Strict(): one signature has one spelling, as for the secp256k1 suite.
+	sig, err := base64.RawURLEncoding.Strict().DecodeString(encSig)
 	if err != nil {
 		return false, fmt.Errorf("decode jws signature: %w", err)
 	}
+
+	// RFC 7797 signs the header that travels with the proof, so the one from
+	// the jws goes back into the signing input.
+	hashData, err := m.ecdsaHashData(proof, cache)
+	if err != nil {
+		// A proof made before the SDK signed the proof options sits on a
+		// document without the suite's context, so its options cannot be
+		// canonicalized. Say so instead of leaving only the expansion error.
+		if !m.definesSuite(jws2020Suite) {
+			return false, fmt.Errorf("failed to build hash data: the document's @context does not include %q; a %s proof made by an SDK that signed the document alone lacks it and must be re-issued: %w", jws2020SuiteContext, JsonWebSignature2020, err)
+		}
+		return false, fmt.Errorf("failed to build hash data: %w", err)
+	}
+	signingInput := jwsSigningInput(encHeader, hashData)
 
 	switch alg {
 	case "ES256":
@@ -151,16 +188,14 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 		if !crypto.VerifyP256(pub, digest[:], sig) {
 			return false, fmt.Errorf("JsonWebSignature2020 ES256 signature verification failed")
 		}
-	case "RS256", "RS384", "RS512", "PS256", "PS384", "PS512":
+	case "PS256":
 		pub, err := verificationmethod.RSAPubKeyFromJWK(vm.PublicKeyJwk)
 		if err != nil {
 			return false, fmt.Errorf("parse RSA jwk: %w", err)
 		}
 		if err := crypto.VerifyRSAJWS(alg, pub, signingInput, sig); err != nil {
-			return false, err
+			return false, fmt.Errorf("JsonWebSignature2020 PS256 signature verification failed: %w", err)
 		}
-	default:
-		return false, fmt.Errorf("unsupported JsonWebSignature2020 alg: %q", alg)
 	}
 
 	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {
@@ -198,6 +233,13 @@ func detachedJWSAlg(encHeader string) (string, error) {
 	}
 	if !containsString(hdr.Crit, "b64") {
 		return "", fmt.Errorf("jws header crit must include b64")
+	}
+	// RFC 7515 §4.1.11: a crit entry the recipient does not understand makes
+	// the JWS invalid; b64 is the only extension this reader understands.
+	for _, c := range hdr.Crit {
+		if c != "b64" {
+			return "", fmt.Errorf("jws header crit names %q, which this verifier does not support", errtext.Clip(c))
+		}
 	}
 	return hdr.Alg, nil
 }

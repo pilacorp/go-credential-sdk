@@ -84,8 +84,9 @@ func TestProofsRefuseAPointerThatDoesNotMatch(t *testing.T) {
 }
 
 // Versions up to v1.15.0 signed mandatory pointers without checking them, and
-// so does the di-sd-primitives reference. A stored pointer is read as it was
-// issued, so these base proofs still verify and derive. Reading
+// so does the di-sd-primitives reference. A stored pointer keeps the reference's
+// rule of dropping the text before its first "/", so these base proofs still
+// verify and derive. Reading
 // "credentialSubject" as the root discloses nothing extra: it already made every
 // statement mandatory.
 func TestBaseProofsWithUncheckedMandatoryPointersStillVerifyAndDerive(t *testing.T) {

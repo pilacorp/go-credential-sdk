@@ -3,6 +3,7 @@ package ecdsasd
 import (
 	"crypto/ecdsa"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 )
 
@@ -67,5 +68,5 @@ func VerifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 // A base proof (0xd95d00) carries the HMAC key and is refused here; the issuer
 // checks that proof when it is created, inside CreateBaseProof.
 func VerifyProof(document map[string]interface{}, proofConfig map[string]interface{}, proofValue string, issuerPub *ecdsa.PublicKey) error {
-	return verifyProof(canonicalizer(document), proofConfig, proofValue, issuerPub)
+	return verifyProof(canonicalizer(document), proofConfig, proofValue, issuerPub, processor.JSONLDLimits{})
 }

@@ -14,6 +14,8 @@ import (
 
 	whatwgurl "github.com/nlnwa/whatwg-url/url"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jsonpointer"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/urlx"
 )
 
 // RenderMethod is a SuiteRenderMethod entry of W3C VC Rendering Methods,
@@ -356,7 +358,7 @@ func (m RenderMethod) validateFormat() error {
 		}
 	}
 	for i, pointer := range m.RenderProperty {
-		if err := validateJSONPointer(pointer); err != nil {
+		if err := jsonpointer.Validate(pointer); err != nil {
 			return fmt.Errorf("renderMethod.renderProperty[%d]: %w", i, err)
 		}
 	}
@@ -455,11 +457,9 @@ func isRestrictedName(name string) bool {
 	return true
 }
 
-// maxURLBytes bounds a URL other than a data: URL that holds a template. The
-// URL Standard sets no limit; the parser in use takes time quadratic in the
-// length of a userinfo or host (1.2 s for a 195 KiB userinfo), and the id comes
-// from the credential.
-const maxURLBytes = 8 << 10
+// maxURLBytes bounds a URL other than a data: URL that holds a template; see
+// urlx.MaxBytes.
+const maxURLBytes = urlx.MaxBytes
 
 func validateURL(raw, field string) error {
 	// The parser has no failure in an opaque path, a query or a fragment, so it
@@ -490,34 +490,21 @@ func serializeURL(raw, field string) (string, error) {
 	return parsed.Href(false), nil
 }
 
+// parseURL parses a renderMethod URL. A data: URL that holds a template has
+// an opaque path, no authority and a parse linear in its length, so it is
+// exempt from the length bound; any other URL goes through urlx.Parse.
 func parseURL(raw, field string) (*whatwgurl.Url, error) {
-	if len(raw) > maxURLBytes && !holdsTemplate(raw) {
+	if holdsTemplate(raw) {
+		parsed, err := whatwgurl.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s must be a URL of the WHATWG URL Standard: %w", field, err)
+		}
+		return parsed, nil
+	}
+	if len(raw) > maxURLBytes {
 		return nil, fmt.Errorf("%s is %d bytes; this SDK accepts at most %d for a URL, and more only for a data: URL of the form data:<media type>,<data>", field, len(raw), maxURLBytes)
 	}
-	parsed, err := whatwgurl.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("%s must be a URL of the WHATWG URL Standard: %w", field, err)
-	}
-	return parsed, nil
-}
-
-func validateJSONPointer(pointer string) error {
-	if pointer == "" {
-		return nil
-	}
-	if !strings.HasPrefix(pointer, "/") {
-		return fmt.Errorf("must be a valid RFC 6901 JSON Pointer")
-	}
-	for i := 0; i < len(pointer); i++ {
-		if pointer[i] != '~' {
-			continue
-		}
-		if i+1 >= len(pointer) || (pointer[i+1] != '0' && pointer[i+1] != '1') {
-			return fmt.Errorf("must be a valid RFC 6901 JSON Pointer")
-		}
-		i++
-	}
-	return nil
+	return urlx.Parse(raw, field)
 }
 
 func (t Template) MarshalJSON() ([]byte, error) {

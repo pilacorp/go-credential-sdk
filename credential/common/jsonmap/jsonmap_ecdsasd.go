@@ -198,7 +198,7 @@ func (m *JSONMap) verifyECDSASDProof(doc *verificationmethod.DIDDocument, proof 
 		return false, fmt.Errorf("failed to build proof configuration: %w", err)
 	}
 
-	if err := sdverify.VerifyProof(canon, proofConfig, proof.ProofValue, pub); err != nil {
+	if err := sdverify.VerifyProof(canon, proofConfig, proof.ProofValue, pub, cache.jsonldLimits()); err != nil {
 		return false, err
 	}
 	if err := strictPurposeCheck(doc, vm, proof.ProofPurpose, proof.Created); err != nil {

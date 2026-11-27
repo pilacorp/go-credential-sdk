@@ -401,14 +401,15 @@ func (j *JWTCredential) executeOptions(opts ...CredentialOpt) error {
 		// VC Data Model v1.1 (W3C REC 2022-03-03) §6.3.1: when "iss"
 		// is present it sets the issuer.
 		iss, _ := j.jwtClaims["iss"].(string)
-		if err := checkRevocation(j.payloadData, options.resolver, options.acceptLegacyStatusList, iss); err != nil {
+		if err := checkRevocation(j.payloadData, options, iss); err != nil {
 			return fmt.Errorf("credential verification failed: check revocation: %w", err)
 		}
 	}
 
 	if options.isCheckExpiration {
-		// Two time windows, in two places. validFrom/validUntil live inside the
-		// vc claim and describe the credential; exp/nbf live beside it, at the top
+		// Two time windows, in two places. validFrom/validUntil (or
+		// issuanceDate/expirationDate) live inside the vc claim and describe the
+		// credential; exp/nbf live beside it, at the top
 		// level, and describe the token. This path writes both — exp and nbf are
 		// derived from ValidUntil and ValidFrom at signing — so checking only the
 		// inner pair let a token past its own exp verify.

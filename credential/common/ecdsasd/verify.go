@@ -67,14 +67,14 @@ func verifyBaseProof(document map[string]interface{}, proofConfig map[string]int
 // verifyProof refuses every proof value but a derived one, then verifies it.
 // VerifyProof and the jsonmap proof-set cache both call it, so the two paths
 // refuse the same values with the same errors.
-func verifyProof(canon func() ([]string, error), proofConfig map[string]interface{}, proofValue string, issuerPub *ecdsa.PublicKey) error {
+func verifyProof(canon func() ([]string, error), proofConfig map[string]interface{}, proofValue string, issuerPub *ecdsa.PublicKey, limits processor.JSONLDLimits) error {
 	if _, err := decodeProofValue(proofValue, baseProofHeader); err == nil {
 		return fmt.Errorf("ecdsasd: a base proof (header 0xd95d00) stays with the holder and cannot be verified; derive a proof from it and verify that (header 0xd95d01)")
 	}
 	if _, err := decodeProofValue(proofValue, derivedProofHeader); err != nil {
 		return fmt.Errorf("ecdsasd: unrecognized proof value header")
 	}
-	return verifyDerivedProof(canon, proofConfig, proofValue, issuerPub)
+	return verifyDerivedProof(canon, proofConfig, proofValue, issuerPub, limits)
 }
 
 // canonicalizer returns the canon function verifyDerivedProof expects for a
@@ -88,7 +88,7 @@ func canonicalizer(document map[string]interface{}) func() ([]string, error) {
 // non-standard extension). canon returns the canonical N-Quads of the revealed
 // document; it is called only after the proof value has parsed, so a malformed
 // proof is refused without canonicalizing.
-func verifyDerivedProof(canon func() ([]string, error), proofConfig map[string]interface{}, derivedProofValue string, issuerPub *ecdsa.PublicKey) error {
+func verifyDerivedProof(canon func() ([]string, error), proofConfig map[string]interface{}, derivedProofValue string, issuerPub *ecdsa.PublicKey, limits processor.JSONLDLimits) error {
 	dp, err := parseDisclosureProofValue(derivedProofValue)
 	if err != nil {
 		return err
@@ -122,7 +122,7 @@ func verifyDerivedProof(canon func() ([]string, error), proofConfig map[string]i
 	}
 
 	// Recompute hashes.
-	proofHash, err := hashProofConfig(proofConfig)
+	proofHash, err := hashProofConfig(proofConfig, limits)
 	if err != nil {
 		return err
 	}
