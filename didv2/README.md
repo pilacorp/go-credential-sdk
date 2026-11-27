@@ -412,6 +412,71 @@ For complete working examples, see:
 
 ---
 
+## Updating a DID's verification methods
+
+A key reaches the chain only through an attribute: `setDocumentHash` anchors a hash, and nothing a resolver reading the chain can rebuild a key from. Change verification methods with the `attribute` package, which returns the new document, its hash and the attribute that writes the change:
+
+| Helper | Attribute |
+|---|---|
+| `attribute.AddVerificationMethod` | `key/N` of the new method |
+| `attribute.RevokeVerificationMethod` | `key/N`, with the `revoked` block |
+| `attribute.AddVerificationMethodPurposes` / `RemoveVerificationMethodPurposes` | `key/N` of that method |
+| `attribute.RotateVerificationMethod` | `vm`, every method (two change) |
+
+did-registrar refuses a document that changes a method its attribute does not write, so take the attribute from the same `Update` as the document.
+
+Two signers can write it:
+
+- **The issuer**, holding its own key: `GenerateSetAttributeByIssuerTransaction` (`setAttributeByIssuer`).
+- **The DID itself**, holding its own key: the issuer signs a `CAP_UPDATE` with `GenerateUpdateCapability`, the DID signs `setAttribute` with `GenerateSetAttributeTransaction`. A `GenerateIssuerSignature` output is a `CAP_CREATE` and the contract refuses it for an update.
+
+A capability names no document and no nonce: it covers every later update of that DID until the issuer revokes its `capId` or bumps its epoch. Mint one per update if each update needs the issuer's approval.
+
+### One transaction per chain
+
+A DID anchored on several chains needs one transaction per chain, each with that chain's id, registry address and nonce, and all committing to the same `DocHash`. Build one generator per chain:
+
+```go
+import (
+    "github.com/pilacorp/go-credential-sdk/didv2"
+    "github.com/pilacorp/go-credential-sdk/didv2/attribute"
+    "github.com/pilacorp/go-credential-sdk/didv2/didcontract"
+)
+
+update, _ := attribute.RevokeVerificationMethod(&doc, "#key-2", "keyCompromise", time.Time{})
+
+type chain struct {
+    Code     string
+    ChainID  int64
+    Registry string
+    Nonce    uint64 // the registrar's next nonce for the signer on this chain
+}
+
+var txs []*didcontract.Transaction
+for _, c := range chains {
+    gen, _ := didv2.NewDIDGenerator(
+        didv2.WithDIDChainID(c.ChainID),
+        didv2.WithDIDAddressSMC(c.Registry),
+        didv2.WithIssuerSignerProvider(issuerSigner),
+    )
+
+    // The DID signs its own update (holder, or an issuer updating its own DID).
+    capability, _ := gen.GenerateUpdateCapability(ctx, didAddr)
+    tx, _ := gen.GenerateSetAttributeTransaction(ctx, update.DocHash, update.Name, update.Value, capability,
+        didv2.WithDIDSignerProvider(didSigner), didv2.WithNonce(c.Nonce))
+
+    // Or the issuer signs it:
+    // tx, _ := gen.GenerateSetAttributeByIssuerTransaction(ctx, update.DocHash, didAddr, update.Name, update.Value,
+    //     didv2.WithNonce(c.Nonce))
+
+    txs = append(txs, tx)
+}
+
+// Submit update.Document with every tx in one request to the registrar.
+```
+
+The capability is signed per chain because it binds the registry address. Take the nonce from the registrar rather than `WithSyncNonce`: the node's pending nonce does not count transactions the registrar has reserved but not yet sent.
+
 ## Updating an existing DID Document (multi verification methods, metadata, etc.)
 
 To update a DID after it has been registered, you modify the DID Document JSON, hash it, then generate a raw transaction to update the on-chain `docHash`.
@@ -442,6 +507,8 @@ docHash, _ := doc.Hash()
 ### Step 2A (Capability flow): build `setDocumentHash` tx
 
 This is used when the **DID owner** signs the transaction, and the **issuer** authorizes the change via capability signature (`issuerSig`).
+
+> The example below signs `issuerSig` with `GenerateIssuerSignature`, which is a `CAP_CREATE`; the contract checks `setDocumentHash` against a `CAP_UPDATE` and reverts. Neither form writes a key: to change verification methods, use the attribute flow above.
 
 ```go
 import (

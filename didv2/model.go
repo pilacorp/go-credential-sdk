@@ -3,6 +3,7 @@ package didv2
 import (
 	"github.com/pilacorp/go-credential-sdk/didv2/did"
 	"github.com/pilacorp/go-credential-sdk/didv2/didcontract"
+	"github.com/pilacorp/go-credential-sdk/didv2/issuer"
 )
 
 // DIDTxResult represents the complete result of a DID generation operation.
@@ -34,4 +35,18 @@ type DIDTxResult struct {
 type Secret struct {
 	// PrivateKeyHex is the private key in hexadecimal format (with "0x" prefix).
 	PrivateKeyHex string `json:"privateKeyHex"`
+}
+
+// UpdateCapability is a CAP_UPDATE an authority signed for one DID. Pass it to
+// GenerateSetAttributeTransaction: the transaction has to carry the same
+// issuer, CapID and signature, which is why they travel together.
+type UpdateCapability struct {
+	// IssuerAddress is the authority that signed it.
+	IssuerAddress string `json:"issuer_address"`
+	// DIDAddress is the DID allowed to send updates under it.
+	DIDAddress string `json:"did_address"`
+	// CapID is the capability id the signature covers.
+	CapID string `json:"cap_id"`
+	// Signature is the CAP_UPDATE signature.
+	Signature *issuer.Signature `json:"signature"`
 }
