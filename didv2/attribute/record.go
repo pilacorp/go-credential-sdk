@@ -184,12 +184,16 @@ func NameFor(kid string) (string, error) {
 		return "", fmt.Errorf("verification method id %q is not #key-N", kid)
 	}
 
-	n, err := strconv.Atoi(strings.TrimPrefix(frag, kidPrefix))
-	if err != nil || n < 1 {
+	digits := strings.TrimPrefix(frag, kidPrefix)
+
+	// did-registrar completes the attribute's index back into "#key-" + index,
+	// digit for digit, so "#key-01" published as key/1 names #key-1 there.
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 1 || strconv.Itoa(n) != digits {
 		return "", fmt.Errorf("verification method id %q has no key index", kid)
 	}
 
-	return keyPrefix + strconv.Itoa(n), nil
+	return keyPrefix + digits, nil
 }
 
 // NameToBytes32 is an attribute name in the contract's bytes32 form, right
@@ -262,12 +266,30 @@ func JWKRecordKey(jwk map[string]any) string {
 	return string(b)
 }
 
+// ErrJsonWebKeyNotPublishable is returned for a JsonWebKey method. The record
+// encoding is defined, but did-registrar refuses kt "JsonWebKey" until
+// pilacorp/did-registrar#348 is deployed; a transaction carrying one would be
+// signed, and its nonce spent, for an update that is refused.
+var ErrJsonWebKeyNotPublishable = errors.New("JsonWebKey records are not accepted by did-registrar yet")
+
+func publishable(vm *did.VerificationMethod) error {
+	if vm.Type == KeyTypeJsonWebKey {
+		return fmt.Errorf("verification method %s: %w", Fragment(vm.Id), ErrJsonWebKeyNotPublishable)
+	}
+
+	return nil
+}
+
 // KeyAttribute is the key/N attribute that publishes one verification method of
 // the document.
 func KeyAttribute(doc *did.DIDDocument, kid string) (string, []byte, error) {
 	vm := doc.FindVerificationMethod(kid)
 	if vm == nil {
 		return "", nil, fmt.Errorf("verification method %q not found", kid)
+	}
+
+	if err := publishable(vm); err != nil {
+		return "", nil, err
 	}
 
 	name, err := NameFor(vm.Id)
@@ -297,6 +319,10 @@ func BundleAttribute(doc *did.DIDDocument) (string, []byte, error) {
 
 	for i := range doc.VerificationMethod {
 		vm := &doc.VerificationMethod[i]
+		if err := publishable(vm); err != nil {
+			return "", nil, err
+		}
+
 		records = append(records, VMRecord{ID: Fragment(vm.Id), Record: *purposes.record(vm)})
 	}
 

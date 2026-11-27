@@ -1,8 +1,10 @@
 package issuer
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pilacorp/go-credential-sdk/didv2/did"
@@ -155,8 +157,12 @@ func (p *UpdateCapabilityPayload) Validate() error {
 		return fmt.Errorf("invalid did address: %s", p.DidAddress)
 	}
 
-	if len(p.CapID) != CapIDLength*2+2 {
-		return fmt.Errorf("invalid cap id length: expected %d, got %d", CapIDLength*2+2, len(p.CapID))
+	if len(p.CapID) != CapIDLength*2+2 || !strings.HasPrefix(p.CapID, "0x") {
+		return fmt.Errorf("invalid cap id: expected 0x and %d hex digits", CapIDLength*2)
+	}
+
+	if _, err := hex.DecodeString(p.CapID[2:]); err != nil {
+		return fmt.Errorf("invalid cap id: not hex")
 	}
 
 	return nil

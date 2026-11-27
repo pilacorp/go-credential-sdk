@@ -122,6 +122,22 @@ func TestUpdateCapabilityRecoversToTheIssuerOverTheContractsHash(t *testing.T) {
 
 // A signer for one address cannot sign a capability naming another as issuer:
 // the payload would claim an authority whose key did not sign it.
+// A capability id the contract cannot read as bytes32 would be signed and then
+// fail on chain; it is refused before signing.
+func TestUpdateCapabilityRefusesACapIDThatIsNotHex(t *testing.T) {
+	issuerSigner := newSigner(t)
+
+	_, err := issuer.GenerateUpdateCapabilitySignature(&issuer.UpdateCapabilityPayload{
+		ContractAddress: DefaultDIDSMCAddress,
+		IssuerAddress:   issuerSigner.GetAddress(),
+		DidAddress:      newSigner(t).GetAddress(),
+		CapID:           "0x" + strings.Repeat("z", 64),
+	}, issuerSigner)
+	if err == nil {
+		t.Fatal("signed a capability whose id is not hex")
+	}
+}
+
 func TestUpdateCapabilitySignatureRefusesASignerForAnotherIssuer(t *testing.T) {
 	_, err := issuer.GenerateUpdateCapabilitySignature(&issuer.UpdateCapabilityPayload{
 		ContractAddress: DefaultDIDSMCAddress,

@@ -2,6 +2,7 @@ package attribute_test
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -232,9 +233,35 @@ func TestNameForMapsAMethodIDToItsAttribute(t *testing.T) {
 		}
 	}
 
-	for _, kid := range []string{"#key-0", "#key-x", "#owner", ""} {
+	// "#key-01" as key/1 would name #key-1 to did-registrar, which completes
+	// the index digit for digit.
+	for _, kid := range []string{"#key-0", "#key-x", "#owner", "", "#key-01"} {
 		if _, err := attribute.NameFor(kid); err == nil {
 			t.Errorf("NameFor(%q) accepted", kid)
 		}
+	}
+}
+
+// did-registrar refuses kt "JsonWebKey" until did-registrar#348 is deployed.
+// Building the record anyway would have a client sign, and spend a nonce on,
+// an update that is refused; it is refused here instead, by name.
+func TestAJsonWebKeyMethodIsNotPublishedYet(t *testing.T) {
+	doc := platformDocument(t)
+	doc.VerificationMethod = append(doc.VerificationMethod, did.VerificationMethod{
+		Id: doc.Id + "#key-3", Type: attribute.KeyTypeJsonWebKey, Controller: doc.Id,
+		PublicKeyJwk: map[string]any{"kty": "EC", "crv": "P-256", "x": "x", "y": "y"},
+	})
+
+	if _, _, err := attribute.KeyAttribute(doc, "#key-3"); !errors.Is(err, attribute.ErrJsonWebKeyNotPublishable) {
+		t.Errorf("KeyAttribute: %v", err)
+	}
+
+	if _, _, err := attribute.BundleAttribute(doc); !errors.Is(err, attribute.ErrJsonWebKeyNotPublishable) {
+		t.Errorf("BundleAttribute: %v", err)
+	}
+
+	// The other methods of the same document still publish.
+	if _, _, err := attribute.KeyAttribute(doc, "#key-1"); err != nil {
+		t.Errorf("KeyAttribute #key-1: %v", err)
 	}
 }
