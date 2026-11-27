@@ -319,14 +319,16 @@ func TestSetAttributeRequestsRefuseWhatTheRegistrarWould(t *testing.T) {
 	didAddr := newSigner(t).GetAddress()
 
 	for name, tc := range map[string]struct {
-		attr  string
-		value []byte
+		docHash string
+		attr    string
+		value   []byte
 	}{
-		"name over 32 bytes": {strings.Repeat("k", 33), []byte("v")},
-		"empty name":         {"", []byte("v")},
-		"empty value":        {"key/1", nil},
+		"name over 32 bytes": {testDocHash, strings.Repeat("k", 33), []byte("v")},
+		"empty name":         {testDocHash, "", []byte("v")},
+		"empty value":        {testDocHash, "key/1", nil},
+		"docHash not hex":    {"0x" + strings.Repeat("g", 64), "key/1", []byte("v")},
 	} {
-		if _, err := g.GenerateSetAttributeByIssuerTransaction(context.Background(), testDocHash, didAddr, tc.attr, tc.value); err == nil {
+		if _, err := g.GenerateSetAttributeByIssuerTransaction(context.Background(), tc.docHash, didAddr, tc.attr, tc.value); err == nil {
 			t.Errorf("%s: signed", name)
 		}
 	}

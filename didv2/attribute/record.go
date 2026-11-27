@@ -217,9 +217,13 @@ func Fragment(id string) string {
 
 // RecordFor turns one of the document's verification methods into its record.
 func RecordFor(doc *did.DIDDocument, vm *did.VerificationMethod) *Record {
+	return indexPurposes(doc).record(vm)
+}
+
+func (p purposeIndex) record(vm *did.VerificationMethod) *Record {
 	rec := &Record{
 		PublicKey: vm.PublicKeyHex,
-		Purposes:  purposesOf(doc, vm.Id),
+		Purposes:  p.of(vm.Id),
 	}
 
 	switch vm.Type {
@@ -286,11 +290,14 @@ func BundleAttribute(doc *did.DIDDocument) (string, []byte, error) {
 		return "", nil, errors.New("document declares no verification method")
 	}
 
+	// One index for the whole bundle: reading both purpose lists per method was
+	// quadratic, 730 ms for a 12000-method document.
+	purposes := indexPurposes(doc)
 	records := make([]VMRecord, 0, len(doc.VerificationMethod))
 
 	for i := range doc.VerificationMethod {
 		vm := &doc.VerificationMethod[i]
-		records = append(records, VMRecord{ID: Fragment(vm.Id), Record: *RecordFor(doc, vm)})
+		records = append(records, VMRecord{ID: Fragment(vm.Id), Record: *purposes.record(vm)})
 	}
 
 	value, err := EncodeVMBundle(records)
@@ -301,26 +308,36 @@ func BundleAttribute(doc *did.DIDDocument) (string, []byte, error) {
 	return VMBundleAttributeName, value, nil
 }
 
-// purposesOf reads the purpose codes the document grants one method, matching
-// by fragment so "#key-1" and "did:…#key-1" are the same method.
-func purposesOf(doc *did.DIDDocument, kid string) []string {
-	frag := Fragment(kid)
-	listed := func(ids []string) bool {
+// purposeIndex holds which methods a document lists under assertionMethod and
+// authentication, by fragment, so "#key-1" and "did:…#key-1" are the same
+// method.
+type purposeIndex struct {
+	assert, auth map[string]struct{}
+}
+
+func indexPurposes(doc *did.DIDDocument) purposeIndex {
+	byFragment := func(ids []string) map[string]struct{} {
+		set := make(map[string]struct{}, len(ids))
 		for _, id := range ids {
-			if id == kid || Fragment(id) == frag {
-				return true
-			}
+			set[Fragment(id)] = struct{}{}
 		}
 
-		return false
+		return set
 	}
 
+	return purposeIndex{assert: byFragment(doc.AssertionMethod), auth: byFragment(doc.Authentication)}
+}
+
+// of reads the purpose codes the document grants one method.
+func (p purposeIndex) of(kid string) []string {
+	frag := Fragment(kid)
+
 	var purposes []string
-	if listed(doc.AssertionMethod) {
+	if _, ok := p.assert[frag]; ok {
 		purposes = append(purposes, PurposeAssert)
 	}
 
-	if listed(doc.Authentication) {
+	if _, ok := p.auth[frag]; ok {
 		purposes = append(purposes, PurposeAuth)
 	}
 

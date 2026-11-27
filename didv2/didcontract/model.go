@@ -1,6 +1,7 @@
 package didcontract
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -91,22 +92,12 @@ func (r *CreateDIDRequest) Validate() error {
 		return errors.New("issuer signature V, R, S are required")
 	}
 
-	docHashLen := len(r.DocHash)
-
-	if strings.HasPrefix(r.DocHash, "0x") {
-		docHashLen -= 2
+	if err := validateHex32("docHash", r.DocHash, DocHashHexLength); err != nil {
+		return err
 	}
 
-	if docHashLen != DocHashHexLength {
-		return fmt.Errorf("invalid docHash length: expected %d hex chars (32 bytes), got %d", DocHashHexLength, docHashLen)
-	}
-
-	capIDLen := len(r.CapID)
-	if strings.HasPrefix(r.CapID, "0x") {
-		capIDLen -= 2
-	}
-	if capIDLen != CapIDHexLength {
-		return fmt.Errorf("invalid capID length: expected %d hex chars (32 bytes), got %d", CapIDHexLength, capIDLen)
+	if err := validateHex32("capID", r.CapID, CapIDHexLength); err != nil {
+		return err
 	}
 
 	return nil
@@ -149,20 +140,12 @@ func (r *SetDocumentHashRequest) Validate() error {
 		return errors.New("issuer signature V, R, S are required")
 	}
 
-	docHashLen := len(r.DocHash)
-	if strings.HasPrefix(r.DocHash, "0x") {
-		docHashLen -= 2
-	}
-	if docHashLen != DocHashHexLength {
-		return fmt.Errorf("invalid docHash length: expected %d hex chars (32 bytes), got %d", DocHashHexLength, docHashLen)
+	if err := validateHex32("docHash", r.DocHash, DocHashHexLength); err != nil {
+		return err
 	}
 
-	capIDLen := len(r.CapID)
-	if strings.HasPrefix(r.CapID, "0x") {
-		capIDLen -= 2
-	}
-	if capIDLen != CapIDHexLength {
-		return fmt.Errorf("invalid capID length: expected %d hex chars (32 bytes), got %d", CapIDHexLength, capIDLen)
+	if err := validateHex32("capID", r.CapID, CapIDHexLength); err != nil {
+		return err
 	}
 
 	return nil
@@ -186,12 +169,8 @@ func (r *SetDocumentHashByIssuerRequest) Validate() error {
 		return fmt.Errorf("invalid did address: %s", r.DIDAddress)
 	}
 
-	docHashLen := len(r.DocHash)
-	if strings.HasPrefix(r.DocHash, "0x") {
-		docHashLen -= 2
-	}
-	if docHashLen != DocHashHexLength {
-		return fmt.Errorf("invalid docHash length: expected %d hex chars (32 bytes), got %d", DocHashHexLength, docHashLen)
+	if err := validateHex32("docHash", r.DocHash, DocHashHexLength); err != nil {
+		return err
 	}
 	return nil
 }
@@ -283,10 +262,16 @@ func validateAttribute(name string, value []byte) error {
 	return nil
 }
 
+// validateHex32 is the one check every request holds a docHash and a capID to:
+// 32 bytes of hex, with or without "0x".
 func validateHex32(field, value string, want int) error {
-	got := len(strings.TrimPrefix(value, "0x"))
-	if got != want {
-		return fmt.Errorf("invalid %s length: expected %d hex chars (32 bytes), got %d", field, want, got)
+	digits := strings.TrimPrefix(value, "0x")
+	if len(digits) != want {
+		return fmt.Errorf("invalid %s length: expected %d hex chars (32 bytes), got %d", field, want, len(digits))
+	}
+
+	if _, err := hex.DecodeString(digits); err != nil {
+		return fmt.Errorf("invalid %s: not hex", field)
 	}
 
 	return nil
