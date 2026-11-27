@@ -1,372 +1,116 @@
 package processor
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+
+	"github.com/pilacorp/json-gold/ld"
 )
 
-// JSONLDLimits configures pre-verification limits on the JSON-LD processing
-// work a document can cause. Setting a field to zero (the default) means no
-// limit for that dimension. The zero value of the struct imposes no limit and
-// gives exactly today's behavior.
+// JSONLDLimits bounds the JSON-LD work a document can cause when it is
+// verified. A zero or negative field sets no limit, and the zero value
+// changes nothing. The processor functions that take it enforce both fields,
+// MaxValues on their input before json-gold runs and MaxScopedContextUses
+// through json-gold, except CompactJSONLD, whose expanded input MaxValues
+// does not measure.
 //
-// Limits are opt-in: a consumer that exposes verify to untrusted callers sets
-// them from the largest credential it issues. No existing API is changed.
+// The SDK sets no default: only a consumer knows the largest credential it
+// issues, and a limit below that would stop its own credentials verifying. A
+// consumer that verifies documents from untrusted callers sets both fields
+// from that credential, with headroom.
 type JSONLDLimits struct {
-	// MaxValues is the total number of JSON values the document may contain,
-	// including inline @context subtrees. Every array element and every
-	// object member (key-value pair) at any depth counts as one value.
-	//
-	// This bound is sound by construction: any merge json-gold performs
-	// during expansion (IRI aliases, @nest, same-@id, scoped-context
-	// remapping, container maps) can only put at most MaxValues values on a
-	// single expanded property, so the quadratic cost of blank-node linking
-	// in ToRDF is bounded by MaxValues².
-	//
-	// Set this to the total value count of the largest credential the
-	// consumer issues, with headroom.
+	// MaxValues is the number of JSON values the document may hold: every
+	// object member and every array element at any depth, inline @context
+	// bodies included. Nothing json-gold merges onto one property can give it
+	// more values than the document holds, so this bounds the per-property
+	// comparison of Node Map Generation (JSON-LD 1.1 Processing Algorithms and
+	// API, W3C REC 2020-07-16, §7.2.2 steps 4.1.2, 6.5.2, 6.6.2.2 and 6.7), which is
+	// quadratic in the values of one property. It is checked on the JSON
+	// before json-gold runs.
 	MaxValues int
 
-	// MaxScopedContextUses is the maximum total number of times terms that
-	// carry a scoped @context may appear as property names or @type / type
-	// values in the document. json-gold re-parses a term's scoped context
-	// on every use, so processing time is roughly proportional to this count
-	// times the size of the scoped context.
-	//
-	// What is counted: every @context in the document (at any depth, not
-	// just the top-level one) is loaded through the caching document loader
-	// (the same cache verification itself uses) to learn which terms have a
-	// scoped @context in their definition. All reachable contexts are
-	// walked: scoped contexts, nested scoped contexts, and contexts
-	// introduced via @import. The document body (everything except @context)
-	// is then scanned, and every use of such a term as a property name and
-	// every use as a type value is counted once. Type aliases — context
-	// terms that expand to @type, including through chains (e.g.
-	// "loai": "kieu", "kieu": "@type") — are recognised:
-	// values under an alias key count the same as under @type / type.
-	//
-	// If any context URL cannot be loaded (or exceeds the remote-load
-	// budget), the document is refused with ErrUnresolvedContext.
+	// MaxScopedContextUses is how many times one json-gold operation may
+	// apply a term's scoped context or a node's own @context: §5.1.2 steps 8,
+	// 9, 11.2 and 13.8.3.2 and §6.1.2 steps 6.1 and 11.1, and @nest as the
+	// JSON-LD 1.2 draft's §5.1.2 step 14.2.2 does, which json-gold follows.
+	// json-gold runs the Context Processing algorithm on that context each
+	// time: at least once per object under a
+	// property-scoped term and once per node of a type-scoped type, so the
+	// work is about this count times the size of the context. json-gold
+	// counts as it goes and stops at the limit. One verification runs a few
+	// operations: the proof's canonicalization and the compacted-form check.
 	MaxScopedContextUses int
 }
 
-// IsSet reports whether any limit is configured.
-func (l JSONLDLimits) IsSet() bool {
-	return l.MaxValues > 0 || l.MaxScopedContextUses > 0
-}
-
-// ErrTooManyValues is returned when the document's total value count exceeds
+// ErrTooManyValues is returned when the document holds more values than
 // JSONLDLimits.MaxValues.
 var ErrTooManyValues = errors.New("document exceeds the total values limit")
 
-// ErrTooManyScopedContextUses is returned when scoped-context terms appear
-// more times in the document than JSONLDLimits.MaxScopedContextUses allows.
+// ErrTooManyScopedContextUses is returned when a JSON-LD operation would apply
+// scoped contexts more times than JSONLDLimits.MaxScopedContextUses.
 var ErrTooManyScopedContextUses = errors.New("document exceeds the scoped-context-uses limit")
 
-// ErrUnresolvedContext is returned when limits are set but the pre-scan cannot
-// resolve one or more context URLs. Without a fully resolved context chain the
-// scoped-context scan cannot reliably discover all scoped terms. Refusing is
-// sound: json-gold needs the context too, so a truly unavailable context would
-// fail verification anyway.
-var ErrUnresolvedContext = errors.New("cannot verify limits: a context URL could not be resolved")
-
-// CheckJSONLDLimits pre-scans doc and returns an error if it exceeds any
-// configured limit. It runs before json-gold processes the document, so an
-// over-limit document is refused without the expensive work.
+// CheckJSONLDLimits refuses doc when it holds more values than
+// limits.MaxValues. It walks the JSON only, so a caller can run it before any
+// other work; MaxScopedContextUses needs json-gold and is not checked here.
 func CheckJSONLDLimits(doc map[string]interface{}, limits JSONLDLimits) error {
-	if limits.MaxValues > 0 {
-		if err := checkTotalValues(doc, limits.MaxValues); err != nil {
-			return err
-		}
-	}
-	if limits.MaxScopedContextUses > 0 {
-		if err := checkScopedContextUses(doc, limits.MaxScopedContextUses); err != nil {
-			return err
-		}
-	}
-	return nil
+	return checkValues(doc, limits)
 }
 
-// ===== (a) total value count =====
-
-// checkTotalValues counts all JSON values in the document, inline @context
-// subtrees included, and returns ErrTooManyValues if the count exceeds limit.
-func checkTotalValues(doc map[string]interface{}, limit int) error {
-	count := countValues(doc)
-	if count > limit {
-		return fmt.Errorf("%w: %d values, limit is %d",
-			ErrTooManyValues, count, limit)
-	}
-	return nil
-}
-
-// countValues recursively counts JSON values in v. Every object member
-// (key-value pair) counts as 1, and every array element counts as 1, at any
-// depth. Inline @context subtrees are counted because json-gold processes them
-// (they define terms, trigger @import loads, and scoped-context re-parsing).
-// The count is O(document size).
-func countValues(v interface{}) int {
-	switch t := v.(type) {
-	case map[string]interface{}:
-		total := 0
-		for _, val := range t {
-			total++ // count this member
-			total += countValues(val)
-		}
-		return total
-	case []interface{}:
-		total := 0
-		for _, item := range t {
-			total++ // count this element
-			total += countValues(item)
-		}
-		return total
-	}
-	return 0
-}
-
-// ===== (b) scoped context uses =====
-
-// collectScopedTerms returns the set of term names that carry a scoped
-// @context anywhere in the given context chain, and whether any context URL
-// could not be resolved. Used directly by unit tests.
-func collectScopedTerms(ctx interface{}) (map[string]bool, bool) {
-	c := &scopedTermCollector{
-		result:      make(map[string]bool),
-		typeAliases: make(map[string]bool),
-		termDefs:    make(map[string][]string),
-		seen:        make(map[string]bool),
-		budget:      newContextBudget(),
-	}
-	c.walk(ctx)
-	c.resolveTypeAliasChains()
-	return c.result, c.loadErr != nil
-}
-
-// checkScopedContextUses identifies terms with scoped @context from every
-// @context in the document (not just the top-level one — credentialSubject,
-// holder, and embedded VCs may carry inline contexts that define additional
-// scoped terms). It then counts how many times those terms appear as property
-// names or as type values in the document body. Type aliases (context terms
-// that expand to @type) are recognised too: a key that is an alias is treated
-// the same as @type / type.
-//
-// Context URLs are loaded through a contextBudget, which shares the same
-// per-operation limits (30 s deadline, 4 MB bytes, 1024 loads) as the
-// verification loader.
-func checkScopedContextUses(doc map[string]interface{}, limit int) error {
-	c := &scopedTermCollector{
-		result:      make(map[string]bool),
-		typeAliases: make(map[string]bool),
-		termDefs:    make(map[string][]string),
-		seen:        make(map[string]bool),
-		budget:      newContextBudget(),
-	}
-
-	// Walk every @context in the document, at any depth.
-	walkDocContexts(doc, func(ctx interface{}) {
-		c.walk(ctx)
-	})
-	c.resolveTypeAliasChains()
-
-	if c.loadErr != nil {
-		return fmt.Errorf("%w: %w", ErrUnresolvedContext, c.loadErr)
-	}
-
-	if len(c.result) == 0 {
+func checkValues(doc interface{}, limits JSONLDLimits) error {
+	if limits.MaxValues <= 0 {
 		return nil
 	}
-	count := countScopedUses(doc, c.result, c.typeAliases)
-	if count > limit {
-		return fmt.Errorf("%w: %d uses, limit is %d",
-			ErrTooManyScopedContextUses, count, limit)
+	if count := countValues(doc); count > limits.MaxValues {
+		return fmt.Errorf("%w: %d values, limit is %d", ErrTooManyValues, count, limits.MaxValues)
 	}
 	return nil
 }
 
-// walkDocContexts visits every @context value at any depth in the document
-// tree and calls fn for each. It does not recurse into the @context values
-// themselves (those are context definitions, not document nodes).
-func walkDocContexts(v interface{}, fn func(ctx interface{})) {
-	switch t := v.(type) {
-	case map[string]interface{}:
-		if ctx, ok := t["@context"]; ok {
-			fn(ctx)
-		}
-		for key, val := range t {
-			if key == "@context" {
-				continue
-			}
-			walkDocContexts(val, fn)
-		}
-	case []interface{}:
-		for _, item := range t {
-			walkDocContexts(item, fn)
-		}
-	}
-}
-
-type scopedTermCollector struct {
-	result      map[string]bool     // terms that carry a scoped @context
-	typeAliases map[string]bool     // terms that expand to @type (resolved)
-	termDefs    map[string][]string // every target a term maps to, in any context of the document
-	seen        map[string]bool     // context URLs already visited
-	loadErr     error               // first context that could not be loaded
-	budget      *contextBudget
-}
-
-func (c *scopedTermCollector) walk(ctx interface{}) {
-	switch v := ctx.(type) {
-	case string:
-		if c.seen[v] {
-			return
-		}
-		c.seen[v] = true
-		parsed, err := c.loadContext(v)
-		if err != nil {
-			if c.loadErr == nil {
-				c.loadErr = err
-			}
-			return
-		}
-		c.walk(parsed)
-	case []interface{}:
-		for _, item := range v {
-			c.walk(item)
-		}
-	case map[string]interface{}:
-		// Handle @import: load the imported context and merge its terms.
-		if importURL, ok := v["@import"]; ok {
-			if s, ok := importURL.(string); ok {
-				c.walk(s)
-			}
-		}
-		for key, def := range v {
-			if strings.HasPrefix(key, "@") {
-				continue
-			}
-			switch d := def.(type) {
-			case string:
-				// Record the mapping for chain resolution.
-				c.termDefs[key] = append(c.termDefs[key], d)
-				if d == "@type" {
-					c.typeAliases[key] = true
-				}
-			case map[string]interface{}:
-				if id, ok := d["@id"]; ok {
-					if idStr, ok := id.(string); ok {
-						c.termDefs[key] = append(c.termDefs[key], idStr)
-						if idStr == "@type" {
-							c.typeAliases[key] = true
-						}
-					}
-				}
-				if scoped, ok := d["@context"]; ok && scoped != nil {
-					c.result[key] = true
-					c.walk(scoped)
-				}
-			}
-		}
-	}
-}
-
-// resolveTypeAliasChains walks back from @type and known aliases over reversed
-// edges to discover all indirect type aliases in one linear pass.
-// If "loai" → "kieu" and "kieu" → "@type", then "loai" is also a type alias.
-// json-gold resolves such chains through its IRI expansion of term values
-// (JSON-LD 1.1 § 4.2.2), so the pre-scan must do the same.
-func (c *scopedTermCollector) resolveTypeAliasChains() {
-	usedBy := make(map[string][]string, len(c.termDefs))
-	for term, targets := range c.termDefs {
-		for _, target := range targets {
-			usedBy[target] = append(usedBy[target], term)
-		}
-	}
-	queue := []string{"@type"}
-	for alias := range c.typeAliases {
-		queue = append(queue, alias)
-	}
-	for len(queue) > 0 {
-		target := queue[0]
-		queue = queue[1:]
-		for _, term := range usedBy[target] {
-			if !c.typeAliases[term] {
-				c.typeAliases[term] = true
-				queue = append(queue, term)
-			}
-		}
-	}
-}
-
-// loadContext loads a context URL through the contextBudget, which enforces
-// the same per-operation limits as the verification loader (30 s deadline,
-// 4 MB bytes, 1024 loads). Bundled contexts are served from embedded bytes.
-func (c *scopedTermCollector) loadContext(url string) (interface{}, error) {
-	// Bundled context: parse from embedded bytes.
-	if data, ok := wellKnownContexts[url]; ok {
-		var doc map[string]interface{}
-		if err := json.Unmarshal(data, &doc); err != nil {
-			return nil, err
-		}
-		return doc["@context"], nil
-	}
-	// Remote context: use the budgeted loader.
-	doc, err := c.budget.LoadDocument(url)
-	if err != nil {
-		return nil, err
-	}
-	m, ok := doc.Document.(map[string]interface{})
-	if !ok || m["@context"] == nil {
-		return nil, errors.New("loaded context document has no @context")
-	}
-	return m["@context"], nil
-}
-
-// countScopedUses counts uses of scoped terms as property names and as type
-// values in v, excluding @context keys. typeAliases are keys that expand to
-// @type in the active context, so their values are type values too.
-func countScopedUses(v interface{}, scoped, typeAliases map[string]bool) int {
+// countValues counts every object member and every array element in v, at
+// any depth.
+func countValues(v interface{}) int {
 	total := 0
 	switch t := v.(type) {
 	case map[string]interface{}:
-		for key, val := range t {
-			if key == "@context" {
-				continue
-			}
-			// Property name that is a scoped term.
-			if scoped[key] {
-				total++
-			}
-			// Type values that are scoped terms (type-scoped contexts).
-			if key == "@type" || key == "type" || typeAliases[key] {
-				total += countTypeValues(val, scoped)
-			}
-			total += countScopedUses(val, scoped, typeAliases)
+		for _, val := range t {
+			total += 1 + countValues(val)
 		}
 	case []interface{}:
 		for _, item := range t {
-			total += countScopedUses(item, scoped, typeAliases)
+			total += 1 + countValues(item)
 		}
 	}
 	return total
 }
 
-// countTypeValues counts how many values in a type field match scoped terms.
-func countTypeValues(v interface{}, scoped map[string]bool) int {
-	count := 0
-	switch t := v.(type) {
-	case string:
-		if scoped[t] {
-			count++
-		}
-	case []interface{}:
-		for _, item := range t {
-			if s, ok := item.(string); ok && scoped[s] {
-				count++
-			}
-		}
+// apply passes the limits json-gold enforces to opts.
+func (l JSONLDLimits) apply(opts *ld.JsonLdOptions) {
+	if l.MaxScopedContextUses > 0 {
+		opts.MaxScopedContexts = l.MaxScopedContextUses
 	}
-	return count
+}
+
+// limitsFor returns the optional limits argument of an entry point after
+// checking input against MaxValues. More than one limits value is refused
+// rather than dropped.
+func limitsFor(input interface{}, limits []JSONLDLimits) (JSONLDLimits, error) {
+	switch len(limits) {
+	case 0:
+		return JSONLDLimits{}, nil
+	case 1:
+		return limits[0], checkValues(input, limits[0])
+	}
+	return JSONLDLimits{}, fmt.Errorf("processor: pass at most one JSONLDLimits, got %d", len(limits))
+}
+
+// markScopedContextOverflow makes json-gold's ScopedContextOverflow match
+// ErrTooManyScopedContextUses.
+func markScopedContextOverflow(err error) error {
+	var ldErr *ld.JsonLdError
+	if err == nil || errors.Is(err, ErrTooManyScopedContextUses) ||
+		!errors.As(err, &ldErr) || ldErr.Code != ld.ScopedContextOverflow {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrTooManyScopedContextUses, err)
 }

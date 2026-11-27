@@ -19,7 +19,7 @@ func TestVerifyCompactedForm_ContextAliasRenamesCheckedKey(t *testing.T) {
 			"holder":   "did:example:holder",
 		}
 	}
-	if err := (&JSONPresentation{presentationData: PresentationData(base())}).verifyCompactedForm(); err != nil {
+	if err := (&JSONPresentation{presentationData: PresentationData(base())}).verifyCompactedForm(processor.JSONLDLimits{}); err != nil {
 		t.Fatalf("a plain presentation was refused: %v", err)
 	}
 
@@ -36,7 +36,7 @@ func TestVerifyCompactedForm_ContextAliasRenamesCheckedKey(t *testing.T) {
 			delete(doc, tc.key)
 			doc["@context"] = []interface{}{"https://www.w3.org/ns/credentials/v2",
 				map[string]interface{}{tc.alias: tc.def}}
-			err := (&JSONPresentation{presentationData: PresentationData(doc)}).verifyCompactedForm()
+			err := (&JSONPresentation{presentationData: PresentationData(doc)}).verifyCompactedForm(processor.JSONLDLimits{})
 			if !errors.Is(err, processor.ErrNotCompactedForm) {
 				t.Fatalf("err = %v, want ErrNotCompactedForm for %s renamed to %s", err, tc.key, tc.alias)
 			}

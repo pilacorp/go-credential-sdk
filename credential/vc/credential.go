@@ -512,17 +512,15 @@ func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 	}
 }
 
-// WithJSONLDLimits sets pre-verification limits on the JSON-LD processing work
-// a document can cause. A document that exceeds a limit is refused before
-// json-gold runs, with an error matchable via errors.Is against
-// processor.ErrTooManyValues, processor.ErrTooManyScopedContextUses or, when
-// MaxScopedContextUses is set and a context cannot be loaded,
-// processor.ErrUnresolvedContext.
+// WithJSONLDLimits bounds the JSON-LD work verifying a document can cause
+// (processor.JSONLDLimits). MaxValues is checked on the JSON before any
+// JSON-LD processing; MaxScopedContextUses is enforced by json-gold in the
+// proof's canonicalization and the compacted-form check. A document over a
+// limit is refused with processor.ErrTooManyValues or
+// processor.ErrTooManyScopedContextUses.
 //
-// No limit is imposed by default; behavior is identical to today.
-//
-// Applies to Verify and Parse with WithVerifyProof — the paths that run
-// json-gold on the caller's document. Signing calls ignore it.
+// No limit is set by default. Applies to Verify and to Parse with
+// WithVerifyProof; signing calls ignore it.
 func WithJSONLDLimits(limits processor.JSONLDLimits) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.jsonldLimits = limits

@@ -66,8 +66,10 @@ type Rules struct {
 // Check compares body (a document without its proof) with its compacted forms
 // under rules. The error wraps processor.ErrNotCompactedForm and names the
 // property path.
-func Check(body map[string]interface{}, rules Rules) error {
-	own, known, err := processor.CompactedForms(body)
+//
+// limits bounds the JSON-LD work of the compactions (processor.JSONLDLimits).
+func Check(body map[string]interface{}, rules Rules, limits processor.JSONLDLimits) error {
+	own, known, err := processor.CompactedForms(body, limits)
 	if err != nil {
 		return err
 	}

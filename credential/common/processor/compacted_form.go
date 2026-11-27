@@ -28,7 +28,14 @@ var ErrNotCompactedForm = errors.New("document is not in compacted form")
 // Expansion drops terms no context defines (JSON-LD 1.1 API §5.1.2 step 13.3):
 // a raw value under such a term then has nothing to match and the document is
 // refused. It applies the same inline-context limit as ExpandJSONLD.
-func CompactedForms(body map[string]interface{}) (own, known map[string]interface{}, err error) {
+//
+// limits, when given, bounds the work of its expansion and compactions
+// (JSONLDLimits).
+func CompactedForms(body map[string]interface{}, limits ...JSONLDLimits) (own, known map[string]interface{}, err error) {
+	l, err := limitsFor(body, limits)
+	if err != nil {
+		return nil, nil, fmt.Errorf("compact document form: %w", err)
+	}
 	ctx, ok := body["@context"]
 	if !ok || ctx == nil {
 		return nil, nil, fmt.Errorf("%w: no @context", ErrNotCompactedForm)
@@ -37,11 +44,11 @@ func CompactedForms(body map[string]interface{}) (own, known map[string]interfac
 	if len(knownCtx) == 0 {
 		return nil, nil, fmt.Errorf("%w: @context names no context this SDK knows", ErrNotCompactedForm)
 	}
-	expanded, err := expandPermissive(body)
+	expanded, err := expandPermissive(body, l)
 	if err != nil {
 		return nil, nil, fmt.Errorf("compact document form: %w", err)
 	}
-	if known, err = compactFrom(expanded, knownCtx); err != nil {
+	if known, err = compactFrom(expanded, knownCtx, l); err != nil {
 		return nil, nil, err
 	}
 	// A @context of bundled contexts only is its own known context: the two
@@ -49,14 +56,14 @@ func CompactedForms(body map[string]interface{}) (own, known map[string]interfac
 	if len(knownCtx) == len(contextEntries(ctx)) {
 		return known, known, nil
 	}
-	if own, err = compactFrom(expanded, ctx); err != nil {
+	if own, err = compactFrom(expanded, ctx, l); err != nil {
 		return nil, nil, err
 	}
 	return own, known, nil
 }
 
-func compactFrom(expanded []interface{}, ctx interface{}) (map[string]interface{}, error) {
-	out, err := CompactJSONLD(expanded, ctx)
+func compactFrom(expanded []interface{}, ctx interface{}, limits JSONLDLimits) (map[string]interface{}, error) {
+	out, err := compactJSONLD(expanded, ctx, limits)
 	if err != nil {
 		return nil, fmt.Errorf("compact document form: %w", err)
 	}
@@ -94,7 +101,7 @@ func knownContext(ctx interface{}) []interface{} {
 // expandPermissive expands a JSON-LD document without SafeMode, under the
 // same inline-context limit ExpandJSONLD applies, since this runs on every
 // verified document whatever proof suite verified it.
-func expandPermissive(doc map[string]interface{}) (result []interface{}, err error) {
+func expandPermissive(doc map[string]interface{}, limits JSONLDLimits) (result []interface{}, err error) {
 	defer finishJSONLD(&err, "expand")
 	std, err := standardizeForCanonicalization(doc)
 	if err != nil {
@@ -103,6 +110,7 @@ func expandPermissive(doc map[string]interface{}) (result []interface{}, err err
 	opts := ld.NewJsonLdOptions("")
 	opts.Algorithm = ld.AlgorithmURDNA2015
 	opts.DocumentLoader = newContextBudget()
+	limits.apply(opts)
 	if err := limitInlineContexts(opts, std); err != nil {
 		return nil, fmt.Errorf("expand: %w", err)
 	}

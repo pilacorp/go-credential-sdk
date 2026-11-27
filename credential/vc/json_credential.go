@@ -319,7 +319,7 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 	}
 	// Verify refuses a credential whose JSON is not in compacted form, so the
 	// SDK does not sign one.
-	if err := e.verifyCompactedForm(); err != nil {
+	if err := e.verifyCompactedForm(processor.JSONLDLimits{}); err != nil {
 		return fmt.Errorf("cannot sign: %w", err)
 	}
 
@@ -434,7 +434,7 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
-	if err := e.verifyCompactedForm(); err != nil {
+	if err := e.verifyCompactedForm(processor.JSONLDLimits{}); err != nil {
 		return fmt.Errorf("cannot attach proof: %w", err)
 	}
 
@@ -512,11 +512,10 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
 	}
 
-	// Pre-scan: refuse documents that would cause excessive JSON-LD work,
-	// before json-gold processes them. The check is a plain JSON walk and
-	// takes microseconds even on large documents. Only the verification
-	// path runs the check: limits protect the verifier, not the issuer.
-	if options.isVerifyProof && options.jsonldLimits.IsSet() {
+	// The value limit walks the JSON, before any JSON-LD processing; the
+	// scoped-context limit goes to json-gold with the proof check below.
+	// Limits protect the verifier, so signing calls skip them.
+	if options.isVerifyProof {
 		if err := processor.CheckJSONLDLimits(
 			map[string]interface{}(e.credentialData), options.jsonldLimits); err != nil {
 			return fmt.Errorf("credential verification failed: %w", err)
@@ -539,6 +538,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 			options.proofVerificationMethod,
 			jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
 			jsonmap.WithMaxProofs(options.maxProofs),
+			jsonmap.WithJSONLDLimits(options.jsonldLimits),
 		)
 		if err != nil {
 			return fmt.Errorf("credential verification failed: verify proof: %w", err)
@@ -559,7 +559,7 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 			return fmt.Errorf("credential verification failed: %w", err)
 		}
 		if signsCanonical {
-			if err := e.verifyCompactedForm(); err != nil {
+			if err := e.verifyCompactedForm(options.jsonldLimits); err != nil {
 				return fmt.Errorf("credential verification failed: %w", err)
 			}
 		}
@@ -616,11 +616,11 @@ var ErrNotCompactedForm = processor.ErrNotCompactedForm
 // verifyCompactedForm refuses a credential whose JSON, for a property in
 // vcCompactedForm, does not say what its signed meaning says. The raw data is
 // never mutated.
-func (e *JSONCredential) verifyCompactedForm() error {
+func (e *JSONCredential) verifyCompactedForm(limits processor.JSONLDLimits) error {
 	body, err := (*jsonmap.JSONMap)(&e.credentialData).ToMap()
 	if err != nil {
 		return fmt.Errorf("compact form check: serialize body: %w", err)
 	}
 	delete(body, "proof")
-	return compactform.Check(body, vcCompactedForm)
+	return compactform.Check(body, vcCompactedForm, limits)
 }

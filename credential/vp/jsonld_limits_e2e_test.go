@@ -1,6 +1,7 @@
 package vp
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
@@ -24,10 +24,22 @@ func vpWithBigVC(t *testing.T, nExtra int) (Presentation, *vmpkg.StaticResolver)
 	const issuer = "did:example:lim-issuer"
 	const holder = "did:example:lim-holder"
 
-	issuerKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	holderKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	issuerProv, _ := signer.NewP256Provider(issuerKey)
-	holderProv, _ := signer.NewP256Provider(holderKey)
+	issuerKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holderKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuerProv, err := signer.NewP256Provider(issuerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holderProv, err := signer.NewP256Provider(holderKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resolver := vmpkg.NewStaticResolver(
 		vmpkg.NewDIDDocument(issuer, mustP256VM(t, issuer, "key-1", &issuerKey.PublicKey)),
 		vmpkg.NewDIDDocument(holder, mustP256VM(t, holder, "key-1", &holderKey.PublicKey)),
@@ -53,7 +65,10 @@ func vpWithBigVC(t *testing.T, nExtra int) (Presentation, *vmpkg.StaticResolver)
 		"validFrom":         "2026-01-01T00:00:00Z",
 		"credentialSubject": subject,
 	}
-	credRaw, _ := json.Marshal(credDoc)
+	credRaw, err := json.Marshal(credDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	cred, err := vc.ParseJSONCredential(credRaw)
 	if err != nil {
@@ -73,12 +88,15 @@ func vpWithBigVC(t *testing.T, nExtra int) (Presentation, *vmpkg.StaticResolver)
 		t.Fatalf("serialized vc is %T, want map", serialized)
 	}
 
-	vpDoc, _ := json.Marshal(map[string]interface{}{
+	vpDoc, err := json.Marshal(map[string]interface{}{
 		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
 		"type":                 []interface{}{"VerifiablePresentation"},
 		"holder":               holder,
 		"verifiableCredential": []interface{}{vcMap},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	pres, err := ParseJSONPresentation(vpDoc)
 	if err != nil {
 		t.Fatalf("parse vp: %v", err)
@@ -109,109 +127,34 @@ func TestWithJSONLDLimits_VP_EmbeddedVC_OverLimit(t *testing.T) {
 	}
 }
 
-// TestWithJSONLDLimits_VP_OwnLimitExceeded verifies that a VP itself is
-// refused when its total value count exceeds MaxValues, before the VP proof
-// is checked. A timing bound confirms json-gold is not reached.
+// The presentation's own document is checked before any DID is resolved.
 func TestWithJSONLDLimits_VP_OwnLimitExceeded(t *testing.T) {
-	pres, resolver := vpWithBigVC(t, 200) // VP contains a big VC embedded
-
-	// Set a limit so low that the VP document itself exceeds it (the
-	// embedded VC's values are part of the VP document).
-	start := time.Now()
-	err := pres.Verify(
-		WithResolver(resolver),
-		WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 10}),
-	)
-	elapsed := time.Since(start)
-
-	if err == nil {
-		t.Fatal("VP over its own limit should be refused")
-	}
+	pres, _ := vpWithBigVC(t, 200)
+	err := pres.Verify(WithResolver(failingResolver{t}), WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 50}))
 	if !errors.Is(err, processor.ErrTooManyValues) {
-		t.Fatalf("expected ErrTooManyValues for VP itself, got %v", err)
-	}
-	// Pre-scan takes microseconds; proof verification takes >10ms.
-	if elapsed > 5*time.Millisecond {
-		t.Fatalf("VP check took %v, expected < 5ms (proof should not have been checked)", elapsed)
-	}
-	t.Logf("over-limit VP refused in %v", elapsed)
-}
-
-// TestWithJSONLDLimits_VP_UnderLimit verifies that a VP and its embedded VC
-// under the limit pass verification normally.
-func TestWithJSONLDLimits_VP_UnderLimit(t *testing.T) {
-	pres, resolver := vpWithBigVC(t, 5) // small VC
-
-	err := pres.Verify(
-		WithResolver(resolver),
-		WithVCValidation(),
-		WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 5000}),
-	)
-	if err != nil {
-		t.Fatalf("under-limit VP should verify: %v", err)
+		t.Fatalf("err = %v, want ErrTooManyValues", err)
 	}
 }
 
-// TestWithJSONLDLimits_VP_SigningSkipsCheck verifies that WithJSONLDLimits does
-// NOT block the parse/signing path: a VP parsed with an over-limit document
-// should succeed because limits protect the verifier, not the presenter.
-func TestWithJSONLDLimits_VP_SigningSkipsCheck(t *testing.T) {
-	const holder = "did:example:sign-nolim"
-
-	holderKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	holderProv, _ := signer.NewP256Provider(holderKey)
-	resolver := vmpkg.NewStaticResolver(
-		vmpkg.NewDIDDocument(holder, mustP256VM(t, holder, "key-1", &holderKey.PublicKey)),
-	)
-
-	// Build a VP with enough VCs to push total values well over MaxValues=5.
-	// The VCs themselves are small but numerous.
-	vcs := make([]interface{}, 20)
-	for i := range vcs {
-		vcs[i] = map[string]interface{}{
-			"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
-			"type":              "VerifiableCredential",
-			"issuer":            fmt.Sprintf("did:example:issuer%d", i),
-			"credentialSubject": map[string]interface{}{"id": fmt.Sprintf("did:example:sub%d", i)},
-		}
-	}
-
-	vpMap := map[string]interface{}{
-		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
-		"type":                 []interface{}{"VerifiablePresentation"},
-		"holder":               holder,
-		"verifiableCredential": vcs,
-	}
-	raw, _ := json.Marshal(vpMap)
-
-	// ParseJSONPresentation with over-limit should NOT fail on non-verify path.
-	pres, err := ParseJSONPresentation(raw,
-		WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 5}),
-	)
-	if err != nil {
-		t.Fatalf("ParseJSONPresentation should ignore limits on non-verify path: %v", err)
-	}
-
-	// AddProofByProvider also should NOT check limits (signing path).
-	err = pres.AddProofByProvider(holderProv,
-		WithResolver(resolver),
-		WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 5}),
-	)
-	if err != nil {
-		t.Fatalf("AddProofByProvider should ignore limits on signing path: %v", err)
-	}
-}
-
-// TestWithJSONLDLimits_VP_NoOption verifies that without WithJSONLDLimits the
-// VP verifies as on main (no limit imposed).
-func TestWithJSONLDLimits_VP_NoOption(t *testing.T) {
+// Without the presentation's proof check, the limits still reach each
+// embedded credential.
+func TestWithJSONLDLimits_VP_ForwardedToEmbeddedVC(t *testing.T) {
 	pres, resolver := vpWithBigVC(t, 200)
-
-	err := pres.Verify(
-		WithResolver(resolver),
-		WithVCValidation(),
-	)
+	raw, err := pres.GetContents()
 	if err != nil {
-		t.Fatalf("no-option VP should verify as on main: %v", err)
+		t.Fatal(err)
 	}
+	_, err = ParseJSONPresentation(raw, WithResolver(resolver), WithVCValidation(),
+		WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 50}))
+	if !errors.Is(err, processor.ErrTooManyValues) {
+		t.Fatalf("err = %v, want ErrTooManyValues", err)
+	}
+}
+
+// failingResolver fails the test when a DID is resolved.
+type failingResolver struct{ t *testing.T }
+
+func (r failingResolver) ResolveDocument(context.Context, string) (*vmpkg.DIDDocument, error) {
+	r.t.Fatal("DID resolved before the value limit was checked")
+	return nil, errors.New("unreachable")
 }

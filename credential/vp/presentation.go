@@ -115,7 +115,8 @@ type presentationOptions struct {
 	// Signing: allow a signing call to replace a signature already present.
 	replaceProof bool
 	// maxProofs caps the proofs a JSON-LD presentation may carry; 0 means no cap.
-	maxProofs    int
+	maxProofs int
+	// jsonldLimits bounds the JSON-LD work Verify lets a document cause.
 	jsonldLimits processor.JSONLDLimits
 }
 
@@ -364,17 +365,14 @@ func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt 
 	}
 }
 
-// WithJSONLDLimits sets pre-verification limits on the JSON-LD processing work
-// the presentation (and its embedded credentials when WithVCValidation is set)
-// can cause. A document that exceeds a limit is refused before json-gold runs,
-// with an error matchable via errors.Is against processor.ErrTooManyValues,
-// processor.ErrTooManyScopedContextUses or, when MaxScopedContextUses is set
-// and a context cannot be loaded, processor.ErrUnresolvedContext.
+// WithJSONLDLimits bounds the JSON-LD work verifying the presentation can
+// cause, as vc.WithJSONLDLimits does for a credential, and is passed on to each
+// embedded credential when WithVCValidation is set. A document over a limit is
+// refused with processor.ErrTooManyValues or
+// processor.ErrTooManyScopedContextUses.
 //
-// No limit is imposed by default; behavior is identical to today.
-//
-// When WithVCValidation is also set, the same limits are forwarded to each
-// embedded credential's verification automatically.
+// No limit is set by default; signing calls ignore it. Limits passed in
+// WithVCValidation's own options are applied after these and win.
 func WithJSONLDLimits(limits processor.JSONLDLimits) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.jsonldLimits = limits

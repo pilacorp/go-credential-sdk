@@ -55,9 +55,7 @@ func verifyCredentials(jsonPresentation PresentationData, options *presentationO
 
 	vcOpts := make([]vc.CredentialOpt, 0, 3+len(options.vcOpts))
 	vcOpts = append(vcOpts, vc.WithResolver(options.resolver), vc.WithLeeway(options.leeway))
-	if options.jsonldLimits.IsSet() {
-		vcOpts = append(vcOpts, vc.WithJSONLDLimits(options.jsonldLimits))
-	}
+	vcOpts = append(vcOpts, vc.WithJSONLDLimits(options.jsonldLimits))
 	vcOpts = append(vcOpts, options.vcOpts...)
 
 	for i, v := range vcs {

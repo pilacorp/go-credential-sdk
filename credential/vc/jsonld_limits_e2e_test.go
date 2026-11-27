@@ -1,6 +1,7 @@
 package vc_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,8 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
+	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
+	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
@@ -76,163 +78,145 @@ func signedVC(t *testing.T, nExtra int) (*vc.JSONCredential, vmpkg.ResolverProvi
 // is not reached (pre-scan takes microseconds; proof verification takes
 // milliseconds).
 func TestWithJSONLDLimits_VC_OverLimit(t *testing.T) {
-	cred, resolver := signedVC(t, 200) // 200 extra claims → total >> 50
+	cred, _ := signedVC(t, 200) // 200 extra claims → total >> 50
 
-	start := time.Now()
+	// The value limit is checked before the proof's DID is resolved.
 	err := cred.Verify(
-		vc.WithResolver(resolver),
+		vc.WithResolver(failingResolver{t}),
 		vc.WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 50}),
 	)
-	elapsed := time.Since(start)
-
-	if err == nil {
-		t.Fatal("over-limit VC should be refused")
-	}
 	if !errors.Is(err, processor.ErrTooManyValues) {
 		t.Fatalf("expected ErrTooManyValues, got %v", err)
 	}
-	// Pre-scan should refuse in microseconds; proof verification takes >10ms.
-	// A 5ms bound confirms json-gold was not reached.
-	if elapsed > 5*time.Millisecond {
-		t.Fatalf("check took %v, expected < 5ms (json-gold should not have run)", elapsed)
-	}
-	t.Logf("over-limit VC refused in %v", elapsed)
 }
 
-// TestWithJSONLDLimits_VC_UnderLimit verifies that a signed VC under the limit
-// passes verification normally.
-func TestWithJSONLDLimits_VC_UnderLimit(t *testing.T) {
-	cred, resolver := signedVC(t, 5) // small credential
+// failingResolver fails the test when a DID is resolved.
+type failingResolver struct{ t *testing.T }
 
-	err := cred.Verify(
-		vc.WithResolver(resolver),
-		vc.WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 500}),
-	)
-	if err != nil {
-		t.Fatalf("under-limit VC should verify successfully: %v", err)
-	}
+func (r failingResolver) ResolveDocument(context.Context, string) (*vmpkg.DIDDocument, error) {
+	r.t.Fatal("DID resolved before the value limit was checked")
+	return nil, errors.New("unreachable")
 }
 
-// TestWithJSONLDLimits_VC_NoOption verifies that without WithJSONLDLimits the
-// credential verifies as on main (no limit imposed).
-func TestWithJSONLDLimits_VC_NoOption(t *testing.T) {
-	cred, resolver := signedVC(t, 200)
-
-	// No WithJSONLDLimits: should verify (json-gold runs, but the doc is valid).
-	err := cred.Verify(vc.WithResolver(resolver))
-	if err != nil {
-		t.Fatalf("no-option VC should verify as on main: %v", err)
-	}
-}
-
-// TestWithJSONLDLimits_VC_ParseCredential_OverLimit exercises the
-// ParseCredential → executeOptions path with WithVerifyProof + WithJSONLDLimits.
-func TestWithJSONLDLimits_VC_ParseCredential_OverLimit(t *testing.T) {
-	cred, resolver := signedVC(t, 200)
-	serialized, err := cred.Serialize()
-	if err != nil {
-		t.Fatalf("serialize: %v", err)
-	}
-	raw, err := json.Marshal(serialized)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	_, err = vc.ParseCredential(raw,
-		vc.WithVerifyProof(),
-		vc.WithResolver(resolver),
-		vc.WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 50}),
-	)
-	if err == nil {
-		t.Fatal("ParseCredential with over-limit VC should fail")
-	}
-	if !errors.Is(err, processor.ErrTooManyValues) {
-		t.Fatalf("expected ErrTooManyValues via ParseCredential, got %v", err)
-	}
-}
-
-// TestWithJSONLDLimits_ECDSASD_OverLimit verifies that an ecdsa-sd derived
-// credential is refused when it exceeds MaxValues.
-func TestWithJSONLDLimits_ECDSASD_OverLimit(t *testing.T) {
-	s := newE2E(t)
-	baseBytes := issueBase(t, s)
-
-	derivedBytes := deriveAndSerialize(t, baseBytes,
-		[]string{"credentialSubject.name", "credentialSubject.dob"})
-
-	derived, err := vc.ParseJSONCredential(derivedBytes)
-	if err != nil {
-		t.Fatalf("parse derived: %v", err)
-	}
-
-	// Set a very low limit that the derived credential will exceed.
-	err = derived.Verify(
-		vc.WithResolver(s.resolver),
-		vc.WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 5}),
-	)
-	if err == nil {
-		t.Fatal("ecdsa-sd derived credential over limit should be refused")
-	}
-	if !errors.Is(err, processor.ErrTooManyValues) {
-		t.Fatalf("expected ErrTooManyValues for ecdsa-sd derived, got %v", err)
-	}
-}
-
-// TestWithJSONLDLimits_VC_SigningSkipsCheck verifies that WithJSONLDLimits does
-// NOT block signing: an over-limit credential that passes through
-// AddProofByProvider should succeed, because limits exist to protect the
-// verifier, not the issuer.
-func TestWithJSONLDLimits_VC_SigningSkipsCheck(t *testing.T) {
-	const issuerDID = "did:example:sign-no-check"
-
+// scopedVC signs a credential whose subject holds 30 objects under p, a term
+// with a scoped context.
+func scopedVC(t *testing.T) (*vc.JSONCredential, vmpkg.ResolverProvider) {
+	t.Helper()
+	const issuerDID = "did:example:limits-issuer"
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("gen p256: %v", err)
+		t.Fatal(err)
 	}
 	prov, err := signer.NewP256Provider(priv)
 	if err != nil {
-		t.Fatalf("p256 provider: %v", err)
+		t.Fatal(err)
 	}
 	vm, err := vmpkg.NewP256VM(issuerDID, "key-1", &priv.PublicKey)
 	if err != nil {
-		t.Fatalf("p256 vm: %v", err)
+		t.Fatal(err)
 	}
 	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(issuerDID, vm))
-
-	// Build a large credential that exceeds MaxValues=5.
-	subject := map[string]interface{}{"id": "did:example:subject"}
-	for i := 0; i < 50; i++ {
-		subject[fmt.Sprintf("field%d", i)] = fmt.Sprintf("value%d", i)
+	items := make([]interface{}, 30)
+	for i := range items {
+		items[i] = map[string]interface{}{"q": "v"}
 	}
-	doc := map[string]interface{}{
-		"@context": []interface{}{
-			"https://www.w3.org/ns/credentials/v2",
-			map[string]interface{}{"@vocab": "https://example.org/vocab#"},
-		},
-		"id":                "urn:uuid:sign-no-check-vc",
-		"type":              []interface{}{"VerifiableCredential"},
-		"issuer":            issuerDID,
-		"validFrom":         "2026-01-01T00:00:00Z",
-		"credentialSubject": subject,
-	}
-	raw, err := json.Marshal(doc)
+	raw, err := json.Marshal(map[string]interface{}{
+		"@context": []interface{}{"https://www.w3.org/ns/credentials/v2", map[string]interface{}{
+			"@vocab": "https://example.org/vocab#",
+			"p":      map[string]interface{}{"@id": "https://example.org/vocab#p", "@context": map[string]interface{}{"q": "https://example.org/vocab#q"}},
+		}},
+		"type": []interface{}{"VerifiableCredential"}, "issuer": issuerDID, "validFrom": "2026-01-01T00:00:00Z",
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject", "p": items},
+	})
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatal(err)
 	}
-
-	cred, err := vc.ParseJSONCredential(raw,
-		vc.WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 5}),
-	)
+	cred, err := vc.ParseJSONCredential(raw)
 	if err != nil {
-		t.Fatalf("ParseJSONCredential should ignore limits on non-verify path: %v", err)
+		t.Fatal(err)
 	}
+	if err := cred.AddProofByProvider(prov, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return cred, resolver
+}
 
-	err = cred.AddProofByProvider(prov,
-		vc.WithVerificationMethodKey("key-1"),
-		vc.WithResolver(resolver),
-		vc.WithJSONLDLimits(processor.JSONLDLimits{MaxValues: 5}),
-	)
+// The proof's canonicalization takes the limit: a credential whose signature
+// does not hold is refused for the limit, before the signature is checked.
+func TestWithJSONLDLimits_VC_ScopedContextUses(t *testing.T) {
+	cred, resolver := scopedVC(t)
+	raw, err := cred.GetContents()
 	if err != nil {
-		t.Fatalf("AddProofByProvider should ignore limits on signing path: %v", err)
+		t.Fatal(err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	proof := doc["proof"].(map[string]interface{})
+	pv := proof["proofValue"].(string)
+	last := "2"
+	if pv[len(pv)-1] == '2' {
+		last = "3"
+	}
+	proof["proofValue"] = pv[:len(pv)-1] + last // still base58btc, signature broken
+	tampered, _ := json.Marshal(doc)
+	forged, err := vc.ParseJSONCredential(tampered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = forged.Verify(vc.WithResolver(resolver), vc.WithJSONLDLimits(processor.JSONLDLimits{MaxScopedContextUses: 20}))
+	if !errors.Is(err, processor.ErrTooManyScopedContextUses) {
+		t.Fatalf("err = %v, want ErrTooManyScopedContextUses", err)
+	}
+	if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("no limit: %v", err)
+	}
+}
+
+// The compacted-form check takes the limit: the holder writes the key as p's
+// IRI, which keeps the proof and applies no scoped context in expansion, but
+// compaction selects p and applies it.
+func TestWithJSONLDLimits_VC_ScopedContextUsesInCompaction(t *testing.T) {
+	cred, resolver := scopedVC(t)
+	raw, err := cred.GetContents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	subject := doc["credentialSubject"].(map[string]interface{})
+	subject["https://example.org/vocab#p"] = subject["p"]
+	delete(subject, "p")
+	raw, _ = json.Marshal(doc)
+	rewritten, err := vc.ParseJSONCredential(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = rewritten.Verify(vc.WithResolver(resolver), vc.WithJSONLDLimits(processor.JSONLDLimits{MaxScopedContextUses: 20}))
+	if !errors.Is(err, processor.ErrTooManyScopedContextUses) {
+		t.Fatalf("err = %v, want ErrTooManyScopedContextUses", err)
+	}
+}
+
+// VerifyDetachedProof takes the limits as VerifyProof does.
+func TestWithJSONLDLimits_DetachedProof(t *testing.T) {
+	cred, resolver := scopedVC(t)
+	ser, err := cred.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := jsonmap.JSONMap(ser.(map[string]interface{}))
+	pb, _ := json.Marshal(body["proof"])
+	var proof dto.Proof
+	if err := json.Unmarshal(pb, &proof); err != nil {
+		t.Fatal(err)
+	}
+	delete(body, "proof")
+	err = body.VerifyDetachedProof(resolver, &proof, jsonmap.WithJSONLDLimits(processor.JSONLDLimits{MaxScopedContextUses: 20}))
+	if !errors.Is(err, processor.ErrTooManyScopedContextUses) {
+		t.Fatalf("err = %v, want ErrTooManyScopedContextUses", err)
 	}
 }

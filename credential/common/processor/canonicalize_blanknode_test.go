@@ -140,7 +140,7 @@ func repeated(value string, times int) []interface{} {
 
 // A clique just inside the score must stay cheap: the limit bounds the time.
 func TestBlankNodeWork_LimitIsCheap(t *testing.T) {
-	dataset, err := toRDFDataset(blankClique(3))
+	dataset, err := toRDFDataset(blankClique(3), JSONLDLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestCanonicalNQuads_MatchesMain(t *testing.T) {
 				}
 				return dataset
 			}
-			opts := sdOptions()
+			opts := sdOptions(JSONLDLimits{})
 			opts.Format = "application/n-quads"
 			want, err := ld.NewNormalisationAlgorithm(ld.AlgorithmURDNA2015).Main(parse(), opts)
 			if err != nil {
@@ -237,7 +237,7 @@ func TestNormalizeDataset_AllocatesLinearly(t *testing.T) {
 		"@context": map[string]interface{}{"values": map[string]interface{}{"@id": "https://example.org/values", "@container": "@list"}},
 		"@id":      "https://example.org/subject",
 		"values":   numbers(3000),
-	})
+	}, JSONLDLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestBlankNodeWork_AllocatesLinearly(t *testing.T) {
 	dataset, err := toRDFDataset(map[string]interface{}{
 		"@context": linkContext,
 		"knows":    map[string]interface{}{"knows": children},
-	})
+	}, JSONLDLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestCanonicalize_BlankNodeWorkLimit(t *testing.T) {
 			"values":   repeated("x", n),
 		}
 	}
-	at, err := toRDFDataset(list(102))
+	at, err := toRDFDataset(list(102), JSONLDLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestBlankNodeWork_IgnoresGroupsWithNoSearch(t *testing.T) {
 		// Each child differs from its neighbour only through the object it holds.
 		children[i] = map[string]interface{}{"name": "same", "knows": map[string]interface{}{"name": fmt.Sprint(i)}}
 	}
-	dataset, err := toRDFDataset(map[string]interface{}{"@context": linkContext, "knows": map[string]interface{}{"knows": children}})
+	dataset, err := toRDFDataset(map[string]interface{}{"@context": linkContext, "knows": map[string]interface{}{"knows": children}}, JSONLDLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}

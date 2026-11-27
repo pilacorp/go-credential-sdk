@@ -7,12 +7,14 @@ package sdverify
 import (
 	"crypto/ecdsa"
 	"fmt"
+
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 )
 
 // VerifyFunc verifies an ecdsa-sd-2023 proof. canon returns the canonical
 // N-Quads of the document body; the function calls it only once the proof
 // value has passed its header and parse checks. Set by ecdsasd's init.
-type VerifyFunc func(canon func() ([]string, error), proofConfig map[string]interface{}, proofValue string, pub *ecdsa.PublicKey) error
+type VerifyFunc func(canon func() ([]string, error), proofConfig map[string]interface{}, proofValue string, pub *ecdsa.PublicKey, limits processor.JSONLDLimits) error
 
 var verifyFn VerifyFunc
 
@@ -23,9 +25,9 @@ func Register(fn VerifyFunc) { verifyFn = fn }
 // VerifyProof verifies an ecdsa-sd-2023 proof through the check ecdsasd
 // registered. canon is called at most once per proof; the caller decides
 // whether it caches.
-func VerifyProof(canon func() ([]string, error), proofConfig map[string]interface{}, proofValue string, pub *ecdsa.PublicKey) error {
+func VerifyProof(canon func() ([]string, error), proofConfig map[string]interface{}, proofValue string, pub *ecdsa.PublicKey, limits processor.JSONLDLimits) error {
 	if verifyFn == nil {
 		return fmt.Errorf("sdverify: ecdsasd verifier not registered")
 	}
-	return verifyFn(canon, proofConfig, proofValue, pub)
+	return verifyFn(canon, proofConfig, proofValue, pub, limits)
 }
