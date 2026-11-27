@@ -702,10 +702,12 @@ For an existing DID, add the same method with
 `did.NewSecp256k1JsonWebKeyVM(doc.Id, "#key-3", publicKeyHexOfKey1)` and
 `AddVerificationMethod`, then anchor the updated document.
 
-Sign VC JOSE with `#key-3` pinned and the secp256k1 signer (`ES256K`). A
-signing call with no key pinned never picks a `JsonWebKey` method while
-another one is usable, so adding `#key-3` does not change which key existing
-callers sign with.
+Sign VC JOSE with `#key-3` pinned and the secp256k1 signer (`ES256K`).
+
+Until go-credential-sdk#228 is merged, a signing call with no key pinned picks
+the highest `#key-N`, which is `#key-3` once it is added. Pin the key in
+existing callers, or wait for #228: with it, the default never picks a
+`JsonWebKey` method while another one is usable.
 
 See the root [README](../README.md) for the credential API.
 

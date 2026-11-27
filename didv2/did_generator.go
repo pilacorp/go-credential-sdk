@@ -120,15 +120,20 @@ func (d *DIDGenerator) GenerateDID(
 
 	options = append(options, WithDIDSignerProvider(didSigner))
 
-	// 2. Publish the P-256 key at #key-2 only when asked; the scalar is the same
-	// either way, so #key-2 can be added later from the returned private key.
-	if cfg.EnableP256VM {
+	// The extra methods below are written under the DID of this key.
+	var didID string
+	if cfg.EnableP256VM || cfg.EnableSecp256k1JsonWebKeyVM {
 		didAddr, err := did.AddressFromPublicKeyHex(keyPair.GetPublicKeyHex())
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert public key hex to address: %w", err)
 		}
+		didID = did.ToDID(cfg.Method, didAddr)
+	}
 
-		p256VM, err := did.NewP256MultikeyVM(did.ToDID(cfg.Method, didAddr), "#key-2", keyPair.P256PublicKey)
+	// 2. Publish the P-256 key at #key-2 only when asked; the scalar is the same
+	// either way, so #key-2 can be added later from the returned private key.
+	if cfg.EnableP256VM {
+		p256VM, err := did.NewP256MultikeyVM(didID, "#key-2", keyPair.P256PublicKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build P-256 verification method: %w", err)
 		}
@@ -139,12 +144,7 @@ func (d *DIDGenerator) GenerateDID(
 	// 3. Publish the secp256k1 key a second time at #key-3, as the JsonWebKey a
 	// VC JOSE verifier needs, only when asked. #key-1 keeps it as hex.
 	if cfg.EnableSecp256k1JsonWebKeyVM {
-		didAddr, err := did.AddressFromPublicKeyHex(keyPair.GetPublicKeyHex())
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert public key hex to address: %w", err)
-		}
-
-		jwkVM, err := did.NewSecp256k1JsonWebKeyVM(did.ToDID(cfg.Method, didAddr), "#key-3", keyPair.GetPublicKeyHex())
+		jwkVM, err := did.NewSecp256k1JsonWebKeyVM(didID, "#key-3", keyPair.GetPublicKeyHex())
 		if err != nil {
 			return nil, fmt.Errorf("failed to build JsonWebKey verification method: %w", err)
 		}
