@@ -10,16 +10,17 @@ type SignerProvider interface {
 }
 
 // AlgorithmProvider lets a signer declare its JOSE algorithm for
-// JsonWebSignature2020 (RSA). Signers that don't implement it default to
-// "RS256". The SDK uses it to pick the hash and to write the JWS header.
+// JsonWebSignature2020. Signers that don't implement it default to "PS256".
+// The SDK writes it to the JWS header.
 type AlgorithmProvider interface {
 	Algorithm() string
 }
 
-// AlgorithmOf returns p's JOSE algorithm, defaulting to "RS256".
+// AlgorithmOf returns p's JOSE algorithm, defaulting to "PS256", the RSA
+// algorithm of JsonWebSignature2020's table (RS256 is not in it).
 func AlgorithmOf(p SignerProvider) string {
 	if a, ok := p.(AlgorithmProvider); ok {
 		return a.Algorithm()
 	}
-	return "RS256"
+	return "PS256"
 }

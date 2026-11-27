@@ -116,84 +116,43 @@ func signedSDCredential(t testing.TB, n int) (JSONMap, verificationmethod.Resolv
 		keys[i] = keyEntry{sp, pub, vm}
 	}
 
-	// Build a base credential body.
 	body := testCredential()
 	body["issuer"] = did
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
 
-	// Issue n separate base proofs and derive from each.
-	derivedProofs := make([]dto.Proof, n)
+	// Each key signs its own base proof over the same body and derives the
+	// same reveal, so every derived document has one body; the first one is
+	// kept and the derived proofs are put on it as a set.
+	result := JSONMap{}
+	derivedProofs := make([]dto.Proof, 0, n)
 	for i, k := range keys {
-		// Deep-copy the body for each base proof (AddECDSASDBaseProof writes proof).
-		bodyJSON, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal body: %v", err)
-		}
 		var base JSONMap
 		if err := json.Unmarshal(bodyJSON, &base); err != nil {
 			t.Fatalf("unmarshal body: %v", err)
 		}
-
 		if err := base.AddECDSASDBaseProof(k.sp, k.vm.ID, "assertionMethod",
 			[]string{"/issuer", "/issuanceDate"}, WithVMPublicKey(k.pub)); err != nil {
 			t.Fatalf("add sd base proof %d: %v", i, err)
 		}
-
 		derived, err := base.DeriveECDSASD([]string{"/credentialSubject"})
 		if err != nil {
 			t.Fatalf("derive sd proof %d: %v", i, err)
 		}
-
+		if i == 0 {
+			for key, v := range derived {
+				if key != proofField {
+					result[key] = v
+				}
+			}
+		}
 		proofs, err := derived.Proofs()
-		if err != nil || len(proofs) == 0 {
-			t.Fatalf("derived proofs %d: %v", i, err)
+		if err != nil || len(proofs) != 1 {
+			t.Fatalf("derived proofs %d: %d, %v", i, len(proofs), err)
 		}
-		derivedProofs[i] = proofs[0]
-	}
-
-	// Build the final credential with all derived proofs on the same body.
-	// Use the body from the first derivation (all derivations reveal the same
-	// claims, so the body is structurally identical).
-	bodyJSON, _ := json.Marshal(body)
-	var result JSONMap
-	_ = json.Unmarshal(bodyJSON, &result)
-	result["issuer"] = did
-
-	// Derive the first proof's document to get the revealed body.
-	{
-		var base JSONMap
-		_ = json.Unmarshal(bodyJSON, &base)
-		sp0, pub0 := keys[0].sp, keys[0].pub
-		if err := base.AddECDSASDBaseProof(sp0, keys[0].vm.ID, "assertionMethod",
-			[]string{"/issuer", "/issuanceDate"}, WithVMPublicKey(pub0)); err != nil {
-			t.Fatalf("re-sign base: %v", err)
-		}
-		derived, err := base.DeriveECDSASD([]string{"/credentialSubject"})
-		if err != nil {
-			t.Fatalf("re-derive: %v", err)
-		}
-		// Use the derived body (without proof) as the final document body.
-		for k, v := range derived {
-			if k != proofField {
-				result[k] = v
-			}
-		}
-		// Re-derive all proofs from their respective base proofs using the
-		// same body, since the revealed document must be identical.
-		derivedProofs = derivedProofs[:0]
-		for i, k := range keys {
-			var b JSONMap
-			_ = json.Unmarshal(bodyJSON, &b)
-			if err := b.AddECDSASDBaseProof(k.sp, k.vm.ID, "assertionMethod",
-				[]string{"/issuer", "/issuanceDate"}, WithVMPublicKey(k.pub)); err != nil {
-				t.Fatalf("sign base %d: %v", i, err)
-			}
-			d, err := b.DeriveECDSASD([]string{"/credentialSubject"})
-			if err != nil {
-				t.Fatalf("derive %d: %v", i, err)
-			}
-			pp, _ := d.Proofs()
-			derivedProofs = append(derivedProofs, pp[0])
-		}
+		derivedProofs = append(derivedProofs, proofs[0])
 	}
 
 	// Set the proof array.
@@ -362,23 +321,29 @@ func TestVerifyProof_OneInvalidAmongSeveral(t *testing.T) {
 	}
 }
 
-func TestVerifyProof_TargetVM_SkipsCache(t *testing.T) {
+func TestVerifyProof_TargetVM_ChecksOnlyThatProof(t *testing.T) {
 	t.Parallel()
 	m, resolver := signedCredential(t, 3)
-
-	// Get the second proof's verification method.
 	proofs, err := m.Proofs()
-	if err != nil || len(proofs) < 3 {
+	if err != nil || len(proofs) != 3 {
 		t.Fatalf("expected 3 proofs, got %d: %v", len(proofs), err)
 	}
-	targetVM := proofs[1].VerificationMethod
 
-	ok, err := m.VerifyProof(resolver, targetVM)
-	if err != nil {
-		t.Fatalf("VerifyProof with targetVM: %v", err)
+	// Break proof 0; a targetVM of proof 1 must not look at it.
+	p0 := m[proofField].([]interface{})[0].(map[string]interface{})
+	pv := p0["proofValue"].(string)
+	i := len(pv) / 2
+	swap := byte('A')
+	if pv[i] == 'A' {
+		swap = 'B'
 	}
-	if !ok {
-		t.Fatal("VerifyProof = false with targetVM, want true")
+	p0["proofValue"] = pv[:i] + string(swap) + pv[i+1:]
+
+	if ok, err := m.VerifyProof(resolver, proofs[1].VerificationMethod); err != nil || !ok {
+		t.Fatalf("targetVM of an intact proof: ok=%v err=%v, want true, nil", ok, err)
+	}
+	if ok, _ := m.VerifyProof(resolver, proofs[0].VerificationMethod); ok {
+		t.Fatal("targetVM of the broken proof verified")
 	}
 }
 
@@ -459,25 +424,5 @@ func TestVerifyProof_ErrorsPreservedOrdering(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "proof 1") {
 		t.Fatalf("error should identify proof 1: %v", err)
-	}
-}
-
-// ===== Benchmark =====
-
-func BenchmarkVerifyProof(b *testing.B) {
-	for _, nProofs := range []int{1, 5} {
-		b.Run(fmt.Sprintf("proofs=%d", nProofs), func(b *testing.B) {
-			m, resolver := signedCredential(b, nProofs)
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				ok, err := m.VerifyProof(resolver, "")
-				if err != nil {
-					b.Fatal(err)
-				}
-				if !ok {
-					b.Fatal("verification failed")
-				}
-			}
-		})
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
@@ -115,6 +116,8 @@ type presentationOptions struct {
 	replaceProof bool
 	// maxProofs caps the proofs a JSON-LD presentation may carry; 0 means no cap.
 	maxProofs int
+	// jsonldLimits bounds the JSON-LD work Verify lets a document cause.
+	jsonldLimits processor.JSONLDLimits
 }
 
 // WithExpectedProofPurpose tells Verify to expect this proof purpose instead of
@@ -147,9 +150,9 @@ func WithProofVerificationMethod(vm string) PresentationOpt {
 }
 
 // WithMaxProofs makes Verify refuse a JSON-LD presentation that carries more
-// than n proofs, before the DIDs of those proofs are resolved. Embedded
-// credentials are verified first, under their own options: pass
-// vc.WithMaxProofs through WithVCValidation to cap their proofs. A JWT
+// than n proofs, before its embedded credentials are verified and before any
+// DID is resolved. Embedded credentials are verified under their own options:
+// pass vc.WithMaxProofs through WithVCValidation to cap their proofs. A JWT
 // presentation holds one signature, so the option does not change it.
 // n <= 0 leaves the proof set unbounded, which is the default.
 func WithMaxProofs(n int) PresentationOpt {
@@ -359,6 +362,20 @@ func WithRequireAudience() PresentationOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) PresentationOpt {
 	return func(p *presentationOptions) {
 		p.resolver = resolver
+	}
+}
+
+// WithJSONLDLimits bounds the JSON-LD work verifying the presentation can
+// cause, as vc.WithJSONLDLimits does for a credential, and is passed on to each
+// embedded credential when WithVCValidation is set. A document over a limit is
+// refused with processor.ErrTooManyValues or
+// processor.ErrTooManyScopedContextUses.
+//
+// No limit is set by default; signing calls ignore it. Limits passed in
+// WithVCValidation's own options are applied after these and win.
+func WithJSONLDLimits(limits processor.JSONLDLimits) PresentationOpt {
+	return func(p *presentationOptions) {
+		p.jsonldLimits = limits
 	}
 }
 

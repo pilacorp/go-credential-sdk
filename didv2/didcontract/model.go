@@ -201,14 +201,10 @@ func (r *SetDocumentHashByIssuerRequest) Validate() error {
 // Checks:
 //   - ContractAddress is a valid hex address (required)
 //   - ChainID is greater than 0 (required)
-//   - RPCURL is optional but a warning is printed if missing
+//   - RPCURL is optional; without it read operations return an error
 //
 // Returns an error if validation fails.
 func (c *Config) Validate() error {
-	if c.RPCURL == "" {
-		fmt.Println("missing RPC URL, some features may not work")
-	}
-
 	if !common.IsHexAddress(c.ContractAddress) {
 		return errors.New("contract address is required")
 	}

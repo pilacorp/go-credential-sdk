@@ -368,7 +368,7 @@ func TestW3CConformance_Phase5_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issuer pub: %v", err)
 	}
-	if err := verifyDerivedProof(canonicalizer(dd.revealDoc), w3cProofConfig(exp, dd.revealDoc["@context"]), derivedPV, issuerPub); err != nil {
+	if err := verifyDerivedProof(canonicalizer(dd.revealDoc), w3cProofConfig(exp, dd.revealDoc["@context"]), derivedPV, issuerPub, processor.JSONLDLimits{}); err != nil {
 		t.Fatalf("round-trip verify: %v", err)
 	}
 }
@@ -454,7 +454,7 @@ func TestW3CConformance_Phase8_VerifyDerived(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode issuer pub: %v", err)
 	}
-	if err := verifyDerivedProof(canonicalizer(dd.revealDoc), w3cProofConfig(exp, dd.revealDoc["@context"]), derivedPV, issuerPub); err != nil {
+	if err := verifyDerivedProof(canonicalizer(dd.revealDoc), w3cProofConfig(exp, dd.revealDoc["@context"]), derivedPV, issuerPub, processor.JSONLDLimits{}); err != nil {
 		t.Fatalf("verify derived (W3C round-trip): %v", err)
 	}
 }

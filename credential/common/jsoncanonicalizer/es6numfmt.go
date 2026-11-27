@@ -16,8 +16,8 @@
 
 // This package converts numbers in IEEE-754 double precision into the
 // format specified for JSON in EcmaScript Version 6 and forward.
-// The core application for this is canonicalization:
-// https://tools.ietf.org/html/draft-rundgren-json-canonicalization-scheme-02
+// The core application for this is canonicalization, RFC 8785 §3.2.2.3:
+// https://www.rfc-editor.org/rfc/rfc8785#section-3.2.2.3
 
 package jsoncanonicalizer
 

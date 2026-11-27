@@ -539,6 +539,14 @@ didv2.WithDIDConfig(&didv2.DIDConfig{
 
 ```
 
+The network options can also be passed to a single `Generate…` call. They then
+apply to that call only: the transaction is signed for that chain ID and sent to
+that contract, and the issuer signature names that contract. A call that
+changes the RPC, contract or chain and also syncs the epoch or nonce opens its
+own client, to the per-call RPC or else the base one, and closes it before
+returning; give the call's context a deadline, as only the deadline bounds that
+dial. A call that reads nothing from the chain does not dial.
+
 ### Using Configuration Object
 
 ```go

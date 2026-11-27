@@ -290,7 +290,7 @@ func TestSecp256k1Suite_AcceptsJsonldSpellingOfTheV11Context(t *testing.T) {
 			if !m.definesSecp256k1Suite() {
 				t.Fatalf("%s already defines the suite, but definesSecp256k1Suite said no", ctx)
 			}
-			if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+			if err := (&m).addSuiteContextWithoutChangingMeaning(secp256k1Suite); err != nil {
 				t.Fatalf("a 1.1 document written as %s became unsignable: %v", ctx, err)
 			}
 			// Nothing was appended: the document already defined the suite.
@@ -341,7 +341,7 @@ func TestSecp256k1Suite_AddSuiteContextIsANoOpWhenAlreadyDefined(t *testing.T) {
 				t.Fatalf("marshal: %v", err)
 			}
 
-			if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+			if err := (&m).addSuiteContextWithoutChangingMeaning(secp256k1Suite); err != nil {
 				t.Fatalf("a document that already defines the suite was refused: %v", err)
 			}
 
@@ -387,7 +387,7 @@ func TestSecp256k1Suite_UncanonicalizableDocumentStillFails(t *testing.T) {
 func BenchmarkAddSuiteContext_AlreadyDefined(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		m := benchCredential([]interface{}{credentialsV1Context})
-		if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+		if err := (&m).addSuiteContextWithoutChangingMeaning(secp256k1Suite); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -396,7 +396,7 @@ func BenchmarkAddSuiteContext_AlreadyDefined(b *testing.B) {
 func BenchmarkAddSuiteContext_NeedsAppending(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		m := benchCredential([]interface{}{credentialsV2Context})
-		if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+		if err := (&m).addSuiteContextWithoutChangingMeaning(secp256k1Suite); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -532,6 +532,27 @@ func TestEnsureSecp256k1SuiteContext_InsertsBeforeUndefinedTerms(t *testing.T) {
 				t.Fatalf("@context = %#v, want %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+// The ".jsonld" spelling of undefined-terms/v2 loads the same document, so it
+// stays last too. JsonWebSignature2020 goes through the same helper as
+// secp256k1, so its suite context is inserted before it as well.
+func TestEnsureSuiteContext_UndefinedTermsSpellingsAndSuites(t *testing.T) {
+	const v2 = "https://www.w3.org/ns/credentials/v2"
+	for _, sc := range []suiteContext{secp256k1Suite, jws2020Suite} {
+		for _, last := range []string{undefinedTermsV2Context, undefinedTermsV2Context + ".jsonld"} {
+			t.Run(string(sc.suite)+" "+last, func(t *testing.T) {
+				m := JSONMap{"id": "urn:uuid:undefined-terms", "@context": []interface{}{v2, last}}
+				if err := (&m).ensureSuiteContext(sc); err != nil {
+					t.Fatalf("ensure: %v", err)
+				}
+				want := []interface{}{v2, sc.narrow, last}
+				if got := m["@context"]; !reflect.DeepEqual(got, want) {
+					t.Fatalf("@context = %#v, want %#v", got, want)
+				}
+			})
+		}
 	}
 }
 

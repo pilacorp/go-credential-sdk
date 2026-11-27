@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 )
@@ -27,6 +29,11 @@ import (
 // ParseJOSECredential.
 var ErrSDJWTRequiresJOSE = errors.New(
 	"selective disclosure is supported only as vc+sd-jwt; use NewJOSECredential / ParseJOSECredential")
+
+// ErrTooManyStatusLists is returned, wrapped with the counts, when a
+// credential's credentialStatus names more status lists than
+// WithMaxStatusLists allows.
+var ErrTooManyStatusLists = errors.New("too many status lists")
 
 // Config holds package configuration.
 var config = struct {
@@ -153,6 +160,15 @@ type credentialOptions struct {
 	replaceProof         bool
 	// maxProofs caps the proofs a JSON-LD credential may carry; 0 means no cap.
 	maxProofs int
+	// jsonldLimits bounds the JSON-LD work Verify lets a document cause.
+	jsonldLimits processor.JSONLDLimits
+	// maxStatusLists caps the status lists WithCheckRevocation fetches; 0 means no cap.
+	maxStatusLists int
+	// statusListIssuers maps a credential issuer to list issuers trusted for
+	// its credentials besides itself.
+	statusListIssuers map[string][]string
+	// statusListHTTPClient fetches status lists; nil means the package default.
+	statusListHTTPClient *http.Client
 }
 
 // WithReplaceProof (signing) lets a signing call replace a signature the
@@ -242,9 +258,11 @@ func WithProofVerificationMethod(vm string) CredentialOpt {
 // WithMaxProofs makes Verify refuse a JSON-LD credential that carries more
 // than n proofs, before any DID is resolved. A verifier that serves untrusted
 // callers sets the most proofs its credentials carry. The count is of the
-// whole credential, also with WithProofVerificationMethod. n <= 0 leaves the
-// proof set unbounded, which is the default. A JWT credential holds one signature,
-// so the option does not change it.
+// whole credential, also with WithProofVerificationMethod. The same cap
+// applies to each status list credential that Verify fetches with
+// WithCheckRevocation. n <= 0 leaves the proof sets unbounded, which is the
+// default. A JWT credential holds one signature, so the cap applies to it only
+// through its status lists.
 func WithMaxProofs(n int) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.maxProofs = n
@@ -326,7 +344,14 @@ func WithLeeway(d time.Duration) CredentialOpt {
 	}
 }
 
-// WithCheckRevocation enables revocation check during credential parsing.
+// WithCheckRevocation makes Verify read each BitstringStatusListEntry and
+// refuse the credential when its revocation or suspension bit is set. One
+// status list is fetched and verified once, also when it serves several
+// statusPurpose values (Bitstring Status List v1.0 §2.2, §3.2 step 5). A refresh
+// entry's list is not read, since §2.1 says a refresh status "does not
+// invalidate the verifiable credential". Any other purpose, message included,
+// is refused: a message status carries an issuer-defined message this SDK
+// does not read.
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckRevocation = true
@@ -341,6 +366,49 @@ func WithCheckRevocation() CredentialOpt {
 func WithLegacyStatusList() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.acceptLegacyStatusList = true
+	}
+}
+
+// WithMaxStatusLists makes WithCheckRevocation refuse a credential whose
+// credentialStatus names more than n status lists, before any list is
+// fetched; the error wraps ErrTooManyStatusLists. Lists are counted by URL:
+// entries on one list share one fetch, whatever statusPurpose each names. A
+// refresh entry is not counted, since its list is not read.
+// Each list costs a fetch of up to 16 MiB and a proof check, so a verifier
+// that serves untrusted callers sets the most lists its credentials name.
+// n <= 0 leaves the number unbounded, which is the default.
+func WithMaxStatusLists(n int) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.maxStatusLists = n
+	}
+}
+
+// WithStatusListIssuers makes WithCheckRevocation accept, for a credential
+// issued by credentialIssuer, a status list issued by one of listIssuers as
+// well as one issued by credentialIssuer itself. Bitstring Status List v1.0
+// §2.2 lets the two differ and leaves the trust to the verifier. The trust is
+// per credential issuer: a list authority named for one issuer vouches for no
+// other issuer's credentials. Without the option only the credential's issuer
+// is trusted. An empty credentialIssuer or list issuer is ignored.
+func WithStatusListIssuers(credentialIssuer string, listIssuers ...string) CredentialOpt {
+	return func(c *credentialOptions) {
+		if c.statusListIssuers == nil {
+			c.statusListIssuers = map[string][]string{}
+		}
+		c.statusListIssuers[credentialIssuer] = append(c.statusListIssuers[credentialIssuer], listIssuers...)
+	}
+}
+
+// WithStatusListHTTPClient sets the HTTP client WithCheckRevocation fetches
+// status lists with. Bitstring Status List v1.0 §3.2 says verifiers SHOULD
+// cache retrieved lists and SHOULD use proxies; a client with a caching or
+// proxying transport does both. It replaces the package default client,
+// which refuses non-public addresses; start from
+// credentialstatus.NewPublicOnlyHTTPClient and wrap its Transport to keep that
+// rule. nil keeps the default.
+func WithStatusListHTTPClient(client *http.Client) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.statusListHTTPClient = client
 	}
 }
 
@@ -441,6 +509,21 @@ func WithSchemaLoader(loader SchemaLoaderFunc) CredentialOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.resolver = resolver
+	}
+}
+
+// WithJSONLDLimits bounds the JSON-LD work verifying a document can cause
+// (processor.JSONLDLimits). MaxValues is checked on the JSON before any
+// JSON-LD processing; MaxScopedContextUses is enforced by json-gold in the
+// proof's canonicalization and the compacted-form check. A document over a
+// limit is refused with processor.ErrTooManyValues or
+// processor.ErrTooManyScopedContextUses.
+//
+// No limit is set by default. Applies to Verify and to Parse with
+// WithVerifyProof; signing calls ignore it.
+func WithJSONLDLimits(limits processor.JSONLDLimits) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.jsonldLimits = limits
 	}
 }
 

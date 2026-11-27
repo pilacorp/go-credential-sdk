@@ -109,7 +109,7 @@ func (m *JSONMap) AddEcdsaSecp256k1Proof(signerProvider signer.SignerProvider, v
 
 	// The proof configuration is canonicalized against the document's
 	// @context, which must define the suite's terms.
-	if err = m.addSuiteContextWithoutChangingMeaning(); err != nil {
+	if err = m.addSuiteContextWithoutChangingMeaning(secp256k1Suite); err != nil {
 		return fmt.Errorf("jsonmap: %w", err)
 	}
 
@@ -237,9 +237,11 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 	}
 	// The third door to the same room: (r, s) and (r, n-s) both verify under
 	// the same key, so every signature has two numeric forms. Low-S is the one
-	// the signer writes, and the one BIP-62 and BIP-146 settled on.
-	// This suite has issued nothing yet, so refusing the other form now costs
-	// no compatibility.
+	// the signer writes, and the one BIP-62 and BIP-146 settled on. Neither the
+	// suite nor RFC 8812 requires it; refusing high-S is this SDK's profile
+	// rule, because a credential's hash is its anchor key and two byte forms of
+	// one credential would be two credentials. A signer that does not
+	// normalise S is refused here.
 	halfN := new(big.Int).Rsh(pub.Curve.Params().N, 1)
 	if new(big.Int).SetBytes(signature[32:]).Cmp(halfN) > 0 {
 		return false, fmt.Errorf(
@@ -322,22 +324,59 @@ func (m *JSONMap) contextSnapshot() func() {
 	}
 }
 
+// suiteContext names a pre-Data-Integrity proof suite, the narrow @context
+// the SDK adds to define it, and the context URLs that already define it.
+type suiteContext struct {
+	suite   string
+	narrow  string
+	defines func(contextURL string) bool
+	// hint says which of the narrow context's terms can redefine one the
+	// document already uses.
+	hint string
+}
+
+// secp256k1Suite: the VC 1.1 base context and security/v2 already define
+// EcdsaSecp256k1Signature2019. The ".jsonld" spelling of the 1.1 context has
+// to be recognised too, because processor.wellKnownContexts maps it to the
+// same embedded document: the loader would see a context defining the suite
+// while this list said it did not, the narrow context would be appended on top
+// of 1.1's @protected terms, and signing would fail on a redefinition the
+// caller cannot do anything about. Adding a URL there means revisiting this.
+var secp256k1Suite = suiteContext{
+	suite:  EcdsaSecp256k1Signature2019,
+	narrow: secp256k1SuiteContextNarrow,
+	hint:   "it defines proof at the root, so a term of that name used elsewhere in this document is redefined",
+	defines: func(s string) bool {
+		return s == credentialsV1Context ||
+			s == credentialsV1Context+".jsonld" ||
+			s == secp256k1SuiteContextAccepted ||
+			s == secp256k1SuiteContextNarrow
+	},
+}
+
+// jws2020Suite: no base or security context defines JsonWebSignature2020; its
+// own context does.
+var jws2020Suite = suiteContext{
+	suite:   JsonWebSignature2020,
+	narrow:  jws2020SuiteContext,
+	hint:    "it defines JsonWebSignature2020, JsonWebKey2020 and privateKeyJwk, so a term of one of those names used in this document is redefined",
+	defines: func(s string) bool { return s == jws2020SuiteContext },
+}
+
 // addSuiteContextWithoutChangingMeaning adds the suite context and refuses if
 // doing so changed what the document says.
 //
-// The suite context defines proof at the document root, while credentials/v2
-// scopes that term to the credential itself. So a document using its own term
-// named proof — under an @vocab, say — has that term redefined underneath it:
-// the value either lands on a different property or stops expanding at all.
-// Either way the issuer would sign something other than what it built, so the
-// signature is refused instead.
-func (m *JSONMap) addSuiteContextWithoutChangingMeaning() error {
-	// A document whose @context already defines the suite gets nothing added —
-	// ensureSecp256k1SuiteContext returns on this same condition — so the two
-	// digests below could only prove that nothing changed. They cost ~300µs
-	// together, against ~14ns for this comparison, and a VC 1.1 document always
-	// takes this path: its base context carries the suite already.
-	if m.definesSecp256k1Suite() {
+// The secp256k1 suite context defines proof at the document root, while
+// credentials/v2 scopes that term to the credential itself. So a document
+// using its own term named proof — under an @vocab, say — has that term
+// redefined underneath it: the value either lands on a different property or
+// stops expanding at all. Either way the issuer would sign something other
+// than what it built, so the signature is refused instead.
+func (m *JSONMap) addSuiteContextWithoutChangingMeaning(sc suiteContext) error {
+	// A document whose @context already defines the suite gets nothing added,
+	// so the two digests below could only prove that nothing changed. They cost
+	// ~300µs together, against ~14ns for this comparison.
+	if m.definesSuite(sc) {
 		return nil
 	}
 
@@ -345,48 +384,44 @@ func (m *JSONMap) addSuiteContextWithoutChangingMeaning() error {
 	if err != nil {
 		return fmt.Errorf("failed to canonicalize the document: %w", err)
 	}
-	if err := m.ensureSecp256k1SuiteContext(); err != nil {
+	if err := m.ensureSuiteContext(sc); err != nil {
 		return err
 	}
 	after, err := m.DocumentDigest()
 	if err != nil {
 		return fmt.Errorf(
 			"adding %q, which %s needs, stopped the document from canonicalizing; a term it defines collides with one this document uses — rename that term, or define the suite in @context yourself: %w",
-			secp256k1SuiteContextNarrow, EcdsaSecp256k1Signature2019, err)
+			sc.narrow, sc.suite, err)
 	}
 	if !bytes.Equal(before, after) {
 		return fmt.Errorf(
-			"adding %q, which %s needs, changed what the document says; it defines proof at the root, so a term of that name used elsewhere in this document is redefined — rename that term, or define the suite in @context yourself",
-			secp256k1SuiteContextNarrow, EcdsaSecp256k1Signature2019)
+			"adding %q, which %s needs, changed what the document says; %s — rename that term, or define the suite in @context yourself",
+			sc.narrow, sc.suite, sc.hint)
 	}
 
 	return nil
 }
 
 // undefinedTermsV2Context is the @vocab catch-all VCDM 2.0 §5.2 says MUST be
-// the last value of @context. When it is the trailing entry the suite context
-// is inserted before it, not appended after.
+// the last value of @context. When it is the trailing entry a suite context is
+// inserted before it, not appended after.
 const undefinedTermsV2Context = "https://www.w3.org/ns/credentials/undefined-terms/v2"
 
-// ensureSecp256k1SuiteContext makes the document's @context define the suite,
-// adding the narrow suite context when it does not.
+// ensureSuiteContext makes the document's @context define the suite, adding
+// the suite's narrow context when it does not.
 //
 // The canonicalizer runs in SafeMode: a proof whose terms no context defines
-// does not expand, and signing fails. The two data models arrive here in
-// different shapes. VC 1.1 already defines the suite in its base context, and
-// those terms are @protected, so layering another security context on top is a
-// protected-term redefinition — nothing is added. VC 2.0 defines Data
-// Integrity only, so the suite context is appended; that combination
-// canonicalizes cleanly and keeps every 2.0 property, credentialStatus
-// included.
+// does not expand, and signing fails. For secp256k1, VC 1.1 already defines
+// the suite in its base context with @protected terms, so nothing is added;
+// VC 2.0 defines Data Integrity only, so the suite context is added.
 //
 // VCDM 2.0 §5.2 requires undefined-terms/v2 to be the last @context entry.
-// When it is the trailing element, the suite context is inserted before it.
-func (m *JSONMap) ensureSecp256k1SuiteContext() error {
+// When it is the trailing element, the suite context goes before it.
+func (m *JSONMap) ensureSuiteContext(sc suiteContext) error {
 	if m == nil {
 		return fmt.Errorf("JSONMap is nil")
 	}
-	if m.definesSecp256k1Suite() {
+	if m.definesSuite(sc) {
 		return nil
 	}
 
@@ -394,22 +429,29 @@ func (m *JSONMap) ensureSecp256k1SuiteContext() error {
 	case nil:
 		return fmt.Errorf(
 			"document has no @context, so %s cannot be expanded; build the credential through vc.NewJSONCredential or add %q yourself",
-			EcdsaSecp256k1Signature2019, secp256k1SuiteContextNarrow)
+			sc.suite, sc.narrow)
 	case string:
-		(*m)["@context"] = []interface{}{c, secp256k1SuiteContextNarrow}
+		(*m)["@context"] = []interface{}{c, sc.narrow}
 	case []interface{}:
-		(*m)["@context"] = insertBeforeUndefinedTerms(c, secp256k1SuiteContextNarrow)
+		(*m)["@context"] = insertBeforeUndefinedTerms(c, sc.narrow)
 	case []string:
 		out := make([]interface{}, 0, len(c)+1)
 		for _, s := range c {
 			out = append(out, s)
 		}
-		(*m)["@context"] = insertBeforeUndefinedTerms(out, secp256k1SuiteContextNarrow)
+		(*m)["@context"] = insertBeforeUndefinedTerms(out, sc.narrow)
 	default:
 		return fmt.Errorf("document @context has unexpected type %T", c)
 	}
 
 	return nil
+}
+
+// isUndefinedTermsV2 reports whether s names undefined-terms/v2. The ".jsonld"
+// spelling counts too: processor.wellKnownContexts maps both URLs to the same
+// document, so a credential ending with either one must keep it last.
+func isUndefinedTermsV2(s string) bool {
+	return s == undefinedTermsV2Context || s == undefinedTermsV2Context+".jsonld"
 }
 
 // insertBeforeUndefinedTerms appends entry to contexts, except when the last
@@ -418,7 +460,7 @@ func (m *JSONMap) ensureSecp256k1SuiteContext() error {
 func insertBeforeUndefinedTerms(contexts []interface{}, entry string) []interface{} {
 	out := append([]interface{}{}, contexts...)
 	if n := len(out); n > 0 {
-		if last, ok := out[n-1].(string); ok && last == undefinedTermsV2Context {
+		if last, ok := out[n-1].(string); ok && isUndefinedTermsV2(last) {
 			// Insert before the trailing undefined-terms/v2.
 			out = append(out, "")
 			copy(out[n:], out[n-1:])
@@ -429,37 +471,27 @@ func insertBeforeUndefinedTerms(contexts []interface{}, entry string) []interfac
 	return append(out, entry)
 }
 
-// definesSecp256k1Suite reports whether the document's @context defines
-// EcdsaSecp256k1Signature2019 — either through the VC 1.1 base context, which
-// carries the suite's own scoped context, or through a security context the
-// caller added.
-//
-// The ".jsonld" spelling of the 1.1 context has to be recognised too, because
-// processor.wellKnownContexts maps it to the same embedded document: the loader
-// would see a context defining the suite while this function said it did not,
-// the narrow context would be appended on top of 1.1's @protected terms, and
-// signing would fail on a redefinition the caller cannot do anything about.
-// Adding a URL there means revisiting this list.
-func (m *JSONMap) definesSecp256k1Suite() bool {
-	defines := func(s string) bool {
-		return s == credentialsV1Context ||
-			s == credentialsV1Context+".jsonld" ||
-			s == secp256k1SuiteContextAccepted ||
-			s == secp256k1SuiteContextNarrow
-	}
+// ensureSecp256k1SuiteContext is ensureSuiteContext for the secp256k1 suite.
+func (m *JSONMap) ensureSecp256k1SuiteContext() error { return m.ensureSuiteContext(secp256k1Suite) }
 
+// definesSecp256k1Suite reports whether the document's @context defines
+// EcdsaSecp256k1Signature2019.
+func (m *JSONMap) definesSecp256k1Suite() bool { return m.definesSuite(secp256k1Suite) }
+
+// definesSuite reports whether a context URL of the document defines sc.
+func (m *JSONMap) definesSuite(sc suiteContext) bool {
 	switch c := (*m)["@context"].(type) {
 	case string:
-		return defines(c)
+		return sc.defines(c)
 	case []interface{}:
 		for _, e := range c {
-			if s, ok := e.(string); ok && defines(s) {
+			if s, ok := e.(string); ok && sc.defines(s) {
 				return true
 			}
 		}
 	case []string:
 		for _, s := range c {
-			if defines(s) {
+			if sc.defines(s) {
 				return true
 			}
 		}
