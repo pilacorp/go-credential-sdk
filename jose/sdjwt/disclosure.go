@@ -8,6 +8,7 @@ package sdjwt
 
 import (
 	"crypto/sha256"
+	"crypto/sha512"
 	"fmt"
 
 	"github.com/pilacorp/go-credential-sdk/jose"
@@ -18,8 +19,24 @@ const (
 	keySD       = "_sd"
 	keySDAlg    = "_sd_alg"
 	keyEllipsis = "..."
-	sdAlgSHA256 = "sha-256"
 )
+
+// Hash algorithm names of the IANA Named Information Hash Algorithm Registry
+// that this package implements for _sd_alg (RFC 9901 §4.1.1). sha-256 is the
+// default and the one every implementation must support.
+const (
+	AlgSHA256 = "sha-256"
+	AlgSHA384 = "sha-384"
+	AlgSHA512 = "sha-512"
+)
+
+// supportedAlgs are the hash algorithms this package implements.
+var supportedAlgs = []string{AlgSHA256, AlgSHA384, AlgSHA512}
+
+// supportedAlg reports whether alg is one of supportedAlgs.
+func supportedAlg(alg string) bool {
+	return alg == AlgSHA256 || alg == AlgSHA384 || alg == AlgSHA512
+}
 
 // Disclosure is one concealed claim: an object property [salt, name, value]
 // (RFC 9901 §4.2.1) or an array element [salt, value] (§4.2.2).
@@ -34,7 +51,9 @@ type Disclosure struct {
 	ArrayElement bool
 	// Encoded is the base64url string, exactly as received or created.
 	Encoded string
-	// Digest is base64url(SHA-256(US-ASCII of Encoded)), RFC 9901 §4.2.3.
+	// Digest is base64url(hash(US-ASCII of Encoded)), RFC 9901 §4.2.3, with
+	// the SD-JWT's _sd_alg: SHA-256 from ParseDisclosure, the algorithm in use
+	// from Conceal and Recreate.
 	Digest string
 }
 
@@ -95,6 +114,19 @@ func reserved(name string) bool {
 // digestOf is base64url(SHA-256(US-ASCII of s)), RFC 9901 §4.2.3: the digest
 // of a disclosure from its encoded string.
 func digestOf(s string) string {
+	return digestWith(s, AlgSHA256)
+}
+
+// digestWith is base64url(alg(US-ASCII of s)) for a supported alg.
+func digestWith(s, alg string) string {
+	switch alg {
+	case AlgSHA384:
+		sum := sha512.Sum384([]byte(s))
+		return jose.EncodeSegment(sum[:])
+	case AlgSHA512:
+		sum := sha512.Sum512([]byte(s))
+		return jose.EncodeSegment(sum[:])
+	}
 	sum := sha256.Sum256([]byte(s))
 	return jose.EncodeSegment(sum[:])
 }

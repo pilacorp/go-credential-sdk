@@ -9,12 +9,12 @@ package sdjwt
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"fmt"
 	"math/big"
 	"slices"
 
 	"github.com/pilacorp/go-credential-sdk/jose"
+	"github.com/pilacorp/go-credential-sdk/jose/internal/errtext"
 )
 
 // ConcealOptions tunes Conceal; the zero value adds no decoy digest.
@@ -31,6 +31,22 @@ type ConcealOptions struct {
 	// payload whose arrays are addressed by index as at issuance (Type
 	// Metadata paths, SD-JWT VC draft 19 §5.6) needs arrays without decoys.
 	NoArrayDecoys bool
+	// Algorithm is the hash of every digest and the _sd_alg written:
+	// AlgSHA256 (the default when empty), AlgSHA384 or AlgSHA512 (§4.1.1).
+	Algorithm string
+	// Decoys adds Count decoy digests to the object or array at Path after
+	// the MinDigests padding (§4.2.5): to the object's _sd, or as array
+	// placeholders at uniformly random positions. Path names a value in
+	// claims as given, the root being the empty Path; each Path at most once,
+	// and never an array when NoArrayDecoys is set. Counts are from 1 to 1000
+	// and count towards the same 20000 digests as MinDigests.
+	Decoys []Decoy
+}
+
+// Decoy is a number of decoy digests for the object or array at a path.
+type Decoy struct {
+	Path  Path
+	Count int
 }
 
 // Conceal makes the claims at paths selectively disclosable (issuer side). It
@@ -59,21 +75,32 @@ type ConcealOptions struct {
 //  5. Decoys pad every object and array (only objects with
 //     opts.NoArrayDecoys), in the payload and in disclosed values, up to
 //     opts.MinDigests; an array counts only its placeholders.
-//     A decoy is base64url(SHA-256(16 random bytes)) (§4.2.5).
+//     opts.Decoys adds decoys at chosen objects and arrays on top.
+//     A decoy is base64url(hash(16 random bytes)): §4.2.5 recommends a hash
+//     over a cryptographically secure random number.
 //  6. Every _sd is sorted (§4.2.4.1: its order must not reveal the claims'
 //     order); arrays keep their order, and array decoys go at uniformly random
 //     positions, since decoys at the end would mark the placeholders before
 //     them as real.
-//  7. _sd_alg: "sha-256" is added at the top level when the result holds any
-//     digest, decoys included.
+//  7. _sd_alg: opts.Algorithm (sha-256 when empty) is added at the top level
+//     when the result holds any digest, decoys included.
 //
-// Every error a caller can cause wraps jose.ErrInvalidArgument.
+// Every error a caller can cause wraps jose.ErrInvalidArgument, except an
+// Algorithm this package does not implement, which wraps
+// jose.ErrUnsupportedAlg; one that names a claim path is a *PathError.
 func Conceal(claims map[string]any, paths []Path, opts ConcealOptions) (map[string]any, []Disclosure, error) {
 	if opts.MinDigests < 0 || opts.MinDigests > maxMinDigests {
 		return nil, nil, fmt.Errorf("%w: sdjwt: MinDigests %d is outside [0, %d]", jose.ErrInvalidArgument, opts.MinDigests, maxMinDigests)
 	}
 	if len(paths) > maxPaths {
 		return nil, nil, fmt.Errorf("%w: sdjwt: %d paths, at most %d", jose.ErrInvalidArgument, len(paths), maxPaths)
+	}
+	alg := opts.Algorithm
+	if alg == "" {
+		alg = AlgSHA256
+	}
+	if !supportedAlg(alg) {
+		return nil, nil, fmt.Errorf("%w: sdjwt: hash algorithm %s is not implemented, only %s", jose.ErrUnsupportedAlg, errtext.Quote(alg), quoteNames(supportedAlgs))
 	}
 	payload, err := copyClaims(claims)
 	if err != nil {
@@ -87,6 +114,10 @@ func Conceal(claims map[string]any, paths []Path, opts ConcealOptions) (map[stri
 	if opts.MinDigests > 0 && containers > maxDigests/opts.MinDigests {
 		return nil, nil, fmt.Errorf("%w: sdjwt: %d objects and arrays × MinDigests %d is over %d digests", jose.ErrInvalidArgument, containers, opts.MinDigests, maxDigests)
 	}
+	decoys, err := decoysByPath(payload, opts.Decoys, containers*opts.MinDigests, opts.NoArrayDecoys)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, p := range paths {
 		if err := p.validate(); err != nil {
 			return nil, nil, err
@@ -94,7 +125,7 @@ func Conceal(claims map[string]any, paths []Path, opts ConcealOptions) (map[stri
 		// Checked here, on the claims as given: once concealing starts, an
 		// object holds an _sd that a later path such as {"_sd"} would find.
 		if _, ok := lookup(payload, p); !ok {
-			return nil, nil, fmt.Errorf("%w: sdjwt: path %s does not exist in the claims", jose.ErrInvalidArgument, p)
+			return nil, nil, pathError(p, "path ", " does not exist in the claims")
 		}
 	}
 
@@ -105,10 +136,10 @@ func Conceal(claims map[string]any, paths []Path, opts ConcealOptions) (map[stri
 	slices.SortFunc(order, Path.compare)
 	for i := 1; i < len(order); i++ {
 		if order[i-1].compare(order[i]) == 0 {
-			return nil, nil, fmt.Errorf("%w: sdjwt: path %s given twice", jose.ErrInvalidArgument, order[i])
+			return nil, nil, pathError(order[i], "path ", " given twice")
 		}
 	}
-	c := concealer{minDigests: opts.MinDigests, noArrayDecoys: opts.NoArrayDecoys}
+	c := concealer{minDigests: opts.MinDigests, noArrayDecoys: opts.NoArrayDecoys, alg: alg, decoys: decoys}
 	disclosures := make([]Disclosure, 0, len(order))
 	for _, p := range order {
 		d, err := c.conceal(payload, p)
@@ -117,10 +148,10 @@ func Conceal(claims map[string]any, paths []Path, opts ConcealOptions) (map[stri
 		}
 		disclosures = append(disclosures, d)
 	}
-	c.finish(payload)
+	c.finish(payload, decoys)
 	// Every path leaves a digest, and MinDigests > 0 pads the top-level object.
-	if len(paths) > 0 || opts.MinDigests > 0 {
-		payload[keySDAlg] = sdAlgSHA256
+	if len(paths) > 0 || opts.MinDigests > 0 || decoys != nil {
+		payload[keySDAlg] = alg
 	}
 	return payload, disclosures, nil
 }
@@ -128,6 +159,71 @@ func Conceal(claims map[string]any, paths []Path, opts ConcealOptions) (map[stri
 type concealer struct {
 	minDigests    int
 	noArrayDecoys bool
+	alg           string
+	decoys        *decoyNode // extra decoys by path; nil when none
+}
+
+// decoyNode is a trie of decoy paths over the claims as given, so finish
+// finds the count at each node in O(1) and never formats a path.
+type decoyNode struct {
+	count int
+	next  map[any]*decoyNode // by path element: string or int
+}
+
+// at returns the node for el below n, or nil when no decoy path goes there.
+func (n *decoyNode) at(el any) *decoyNode {
+	if n == nil {
+		return nil
+	}
+	return n.next[el]
+}
+
+// decoysByPath checks opts.Decoys against the claims as given and returns
+// their trie, nil when there are none. padded is the MinDigests decoys
+// already allowed; noArrayDecoys refuses a path to an array.
+func decoysByPath(claims map[string]any, decoys []Decoy, padded int, noArrayDecoys bool) (*decoyNode, error) {
+	if len(decoys) == 0 {
+		return nil, nil
+	}
+	root := &decoyNode{}
+	total := padded
+	for _, d := range decoys {
+		if d.Count < 1 || d.Count > maxMinDigests {
+			return nil, pathError(d.Path, fmt.Sprintf("%d decoys at ", d.Count), fmt.Sprintf(", from 1 to %d", maxMinDigests))
+		}
+		if len(d.Path) > 0 {
+			if err := d.Path.validate(); err != nil {
+				return nil, err
+			}
+		}
+		v, ok := lookup(claims, d.Path)
+		if !ok || !nests(v) {
+			return nil, pathError(d.Path, "decoy path ", " is not an object or array in the claims")
+		}
+		if _, isArray := v.([]any); isArray && noArrayDecoys {
+			return nil, pathError(d.Path, "decoy path ", " is an array, and NoArrayDecoys is set")
+		}
+		n := root
+		for _, el := range d.Path {
+			next := n.next[el]
+			if next == nil {
+				if n.next == nil {
+					n.next = make(map[any]*decoyNode)
+				}
+				next = &decoyNode{}
+				n.next[el] = next
+			}
+			n = next
+		}
+		if n.count > 0 {
+			return nil, pathError(d.Path, "decoy path ", " given twice")
+		}
+		if total += d.Count; total > maxDigests {
+			return nil, fmt.Errorf("%w: sdjwt: decoys over %d digests", jose.ErrInvalidArgument, maxDigests)
+		}
+		n.count = d.Count
+	}
+	return root, nil
 }
 
 // While Conceal runs, an object's _sd holds a []string and a concealed array
@@ -143,11 +239,15 @@ func (c *concealer) conceal(payload map[string]any, p Path) (Disclosure, error) 
 	// first and refuses duplicates, so no earlier path removed this one. It
 	// stays an error, not a panic, so a wrong reading refuses one call.
 	if !ok {
-		return Disclosure{}, fmt.Errorf("%w: sdjwt: path %s does not exist in the claims", jose.ErrInvalidArgument, p)
+		return Disclosure{}, pathError(p, "path ", " does not exist in the claims")
 	}
 	// Every path below p is concealed already: complete value before it is
 	// encoded into the disclosure.
-	value = c.finish(value)
+	n := c.decoys
+	for _, el := range p {
+		n = n.at(el)
+	}
+	value = c.finish(value, n)
 	salt := newSalt()
 	d := Disclosure{Salt: salt, Value: value}
 	items := []any{salt, value}
@@ -162,7 +262,7 @@ func (c *concealer) conceal(payload map[string]any, p Path) (Disclosure, error) 
 		return Disclosure{}, fmt.Errorf("sdjwt: disclosure for %s: %w", p, err)
 	}
 	d.Encoded = jose.EncodeSegment(raw)
-	d.Digest = digestOf(d.Encoded)
+	d.Digest = digestWith(d.Encoded, c.alg)
 
 	switch container := parent.(type) {
 	case map[string]any:
@@ -175,20 +275,29 @@ func (c *concealer) conceal(payload map[string]any, p Path) (Disclosure, error) 
 	return d, nil
 }
 
-// finish completes every object and array in v: pads it with decoys up to
-// minDigests, sorts _sd and writes placeholders as {"...": digest}. It returns
-// the completed value, since padding an array makes a new slice.
-func (c *concealer) finish(v any) any {
+// finish completes every object and array in v, whose decoy trie node is n
+// (nil when no decoy path reaches it): pads it with decoys up to minDigests,
+// adds the decoys asked for at n, sorts _sd and writes placeholders as
+// {"...": digest}. It returns the completed value, since padding an array
+// makes a new slice.
+func (c *concealer) finish(v any, n *decoyNode) any {
+	var extra int
+	if n != nil {
+		extra = n.count
+	}
 	switch t := v.(type) {
 	case map[string]any:
 		digests, _ := t[keySD].([]string)
 		for k, child := range t {
 			if k != keySD {
-				t[k] = c.finish(child)
+				t[k] = c.finish(child, n.at(k))
 			}
 		}
 		for len(digests) < c.minDigests {
-			digests = append(digests, decoy())
+			digests = append(digests, c.decoy())
+		}
+		for ; extra > 0; extra-- {
+			digests = append(digests, c.decoy())
 		}
 		if len(digests) == 0 {
 			return t
@@ -207,17 +316,15 @@ func (c *concealer) finish(v any) any {
 				placeholders++
 				continue
 			}
-			t[i] = c.finish(el)
+			t[i] = c.finish(el, n.at(i))
 		}
-		// Inserting each decoy at a uniformly random index among len(t)+1
-		// gives every arrangement of decoys among the elements the same chance.
-		for ; !c.noArrayDecoys && placeholders < c.minDigests; placeholders++ {
-			i, err := rand.Int(rand.Reader, big.NewInt(int64(len(t)+1)))
-			if err != nil {
-				// Only a replaced rand.Reader fails, and rand.Read crashes then too.
-				panic("sdjwt: crypto/rand: " + err.Error())
-			}
-			t = slices.Insert(t, int(i.Int64()), any(arrayDigest(decoy())))
+		want := placeholders
+		if !c.noArrayDecoys {
+			want = max(want, c.minDigests)
+		}
+		want += extra
+		if k := want - placeholders; k > 0 {
+			t = c.withDecoys(t, k)
 		}
 		for i, el := range t {
 			if d, ok := el.(arrayDigest); ok {
@@ -230,12 +337,12 @@ func (c *concealer) finish(v any) any {
 	}
 }
 
-// decoy returns base64url(SHA-256(16 random bytes)), RFC 9901 §4.2.5.
-func decoy() string {
+// decoy returns base64url(hash(16 random bytes)) with the concealer's
+// algorithm, RFC 9901 §4.2.5.
+func (c *concealer) decoy() string {
 	b := make([]byte, 16)
 	rand.Read(b) // never returns an error since Go 1.24
-	sum := sha256.Sum256(b)
-	return jose.EncodeSegment(sum[:])
+	return digestWith(string(b), c.alg)
 }
 
 // newSalt returns 16 random bytes as base64url (RFC 9901 §4.2.1; §9.3
@@ -271,7 +378,7 @@ func checkClaims(v any, p Path) (containers int, err error) {
 		containers = 1
 		for k, child := range t {
 			if reserved(k) {
-				return 0, fmt.Errorf("%w: sdjwt: claims hold the reserved name %q at %s", jose.ErrInvalidArgument, k, p)
+				return 0, pathError(p, fmt.Sprintf("claims hold the reserved name %q at ", k), "")
 			}
 			n, err := checkClaims(child, p.child(k))
 			if err != nil {
@@ -290,4 +397,36 @@ func checkClaims(v any, p Path) (containers int, err error) {
 		}
 	}
 	return containers, nil
+}
+
+// withDecoys returns t with k decoy placeholders at uniformly random
+// positions: every arrangement of the decoys among the elements has the same
+// chance, as k random inserts would give, in one pass over len(t)+k slots.
+func (c *concealer) withDecoys(t []any, k int) []any {
+	n := len(t) + k
+	// Floyd's algorithm draws k distinct slots out of n.
+	slot := make([]bool, n)
+	for j := n - k; j < n; j++ {
+		r, err := rand.Int(rand.Reader, big.NewInt(int64(j+1)))
+		if err != nil {
+			// Only a replaced rand.Reader fails, and rand.Read crashes then too.
+			panic("sdjwt: crypto/rand: " + err.Error())
+		}
+		if i := int(r.Int64()); slot[i] {
+			slot[j] = true
+		} else {
+			slot[i] = true
+		}
+	}
+	out := make([]any, 0, n)
+	next := 0
+	for i := 0; i < n; i++ {
+		if slot[i] {
+			out = append(out, arrayDigest(c.decoy()))
+			continue
+		}
+		out = append(out, t[next])
+		next++
+	}
+	return out
 }

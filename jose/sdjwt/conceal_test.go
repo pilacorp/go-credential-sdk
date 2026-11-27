@@ -141,3 +141,19 @@ func TestConcealRejects(t *testing.T) {
 		})
 	}
 }
+
+// A caller that takes paths in another notation reads the path from the
+// error; the text itself is unchanged.
+func TestConcealPathErrorNamesThePath(t *testing.T) {
+	_, _, err := Conceal(map[string]any{"a": map[string]any{}}, []Path{{"a", "b"}}, ConcealOptions{})
+	var pe *PathError
+	if !errors.As(err, &pe) || !errors.Is(err, jose.ErrInvalidArgument) || !reflect.DeepEqual(pe.Path, Path{"a", "b"}) {
+		t.Fatalf("err = %#v, want a *PathError for [a b]", err)
+	}
+	if want := `jose: invalid argument: sdjwt: path ["a","b"] does not exist in the claims`; err.Error() != want {
+		t.Fatalf("Error() = %q, want %q", err.Error(), want)
+	}
+	if got := pe.Text(func(Path) string { return "a.b" }); got != `jose: invalid argument: sdjwt: path a.b does not exist in the claims` {
+		t.Fatalf("Text = %q", got)
+	}
+}

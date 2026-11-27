@@ -22,14 +22,15 @@ const (
 	AlgES256K = "ES256K" // ECDSA secp256k1 with SHA-256 (RFC 8812 §3.2)
 )
 
-// maxHeaderBytes bounds the decoded JOSE Header. No standard sets a size; this
-// is a resource bound: every reader decodes and parses the header as JSON
-// before any signature is checked. An x5c chain fits many times over.
-const maxHeaderBytes = 64 << 10
+// MaxHeaderBytes bounds the decoded JOSE Header that Sign writes and Verify
+// reads. No standard sets a size; this is a resource bound: every reader
+// decodes and parses the header as JSON before any signature is checked. An
+// x5c chain fits many times over.
+const MaxHeaderBytes = 64 << 10
 
-// maxHeaderSegment is the base64url length of maxHeaderBytes without padding,
+// maxHeaderSegment is the base64url length of MaxHeaderBytes without padding,
 // ceil(4n/3), so parse refuses an oversized header before decoding it.
-const maxHeaderSegment = (4*maxHeaderBytes + 2) / 3
+const maxHeaderSegment = (4*MaxHeaderBytes + 2) / 3
 
 // Header is a decoded JOSE Header (RFC 7515 §4).
 type Header map[string]any
@@ -160,8 +161,8 @@ func Sign(ctx context.Context, s Signer, pub crypto.PublicKey, header Header, pa
 	if err != nil {
 		return "", fmt.Errorf("header: %w", err)
 	}
-	if len(headerJSON) > maxHeaderBytes {
-		return "", fmt.Errorf("%w: header is %d bytes; Verify reads at most %d", jose.ErrInvalidArgument, len(headerJSON), maxHeaderBytes)
+	if len(headerJSON) > MaxHeaderBytes {
+		return "", fmt.Errorf("%w: header is %d bytes; Verify reads at most %d", jose.ErrInvalidArgument, len(headerJSON), MaxHeaderBytes)
 	}
 	// A header Verify cannot read (too deep, or a json.RawMessage with a
 	// duplicate key) would cost a signer call and then fail the self-check.
@@ -314,7 +315,7 @@ func parse(compact string) (parsed, error) {
 		return parsed{}, fmt.Errorf("%w: a compact JWS has three parts", jose.ErrMalformed)
 	}
 	if len(parts[0]) > maxHeaderSegment {
-		return parsed{}, fmt.Errorf("%w: header is over %d bytes, the most this package reads", jose.ErrMalformed, maxHeaderBytes)
+		return parsed{}, fmt.Errorf("%w: header is over %d bytes, the most this package reads", jose.ErrMalformed, MaxHeaderBytes)
 	}
 	// RFC 7515 §5.2 steps 2, 6 and 7: strict base64url, no line breaks.
 	headerJSON, err := jose.DecodeSegment(parts[0])

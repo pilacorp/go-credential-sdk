@@ -44,6 +44,13 @@ One package per standard:
   `NewKBJWT` do not hold their output to these limits. `Recreated.Disclosed(path)` tells whether a claim, an ancestor or a descendant came
   from a disclosure; `Recreated.Issued()` gives the payload as issued, each array element in its place at issuance
   and a hidden one marked `Hidden`.
+- `jose/sdjwt` hashes: `ConcealOptions.Algorithm` picks `AlgSHA256` (the default), `AlgSHA384` or `AlgSHA512` for
+  every digest and decoy and writes it as `_sd_alg` (§4.1.1). `Recreate` accepts sha-256 only;
+  `RecreateWithOptions(payload, disclosures, RecreateOptions{Algorithms})` accepts the ones the caller lists (§7.1
+  step 2d), and `Recreated.Alg` names the one used. `SDHashWith(sdJWT, alg)` is `sd_hash` with that hash (§4.3.1),
+  and `DigestWith(s, alg)` the §4.2.3 digest of any string under it, so a disclosure's digest is `DigestWith` of
+  its encoded form.
+  `ConcealOptions.Decoys` adds a number of decoys at chosen objects and arrays, after the `MinDigests` padding (§4.2.5).
 - `jose/sdjwt`, Key Binding JWT (RFC 9901 §4.3, §7.3): `SDHash`, `NewKBJWT` and `VerifyKBJWT` (check order in its
   godoc), which returns `ErrKBInvalid`, `ErrKBAudience`, `ErrKBNonce` or `ErrKBSDHash` for the token;
   `jose.ErrInvalidArgument` for caller mistakes, `jose.ErrUnsupportedAlg` or `jose.ErrUnsupportedKey` for an

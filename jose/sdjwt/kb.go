@@ -13,6 +13,7 @@ import (
 
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/internal/ec"
+	"github.com/pilacorp/go-credential-sdk/jose/internal/errtext"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 	"github.com/pilacorp/go-credential-sdk/jose/jwt"
 )
@@ -45,13 +46,29 @@ var (
 	ErrKBSDHash = errors.New("sdjwt: key binding JWT sd_hash mismatch")
 )
 
-// SDHash returns the sd_hash of an SD-JWT (RFC 9901 §4.3.1):
-// base64url(SHA-256(US-ASCII of sdJWT)), where sdJWT is
+// SDHash returns the sd_hash of an SD-JWT whose _sd_alg is sha-256 or absent
+// (RFC 9901 §4.3.1): base64url(SHA-256(US-ASCII of sdJWT)), where sdJWT is
 // <Issuer-signed JWT>~<D.1>~…~<D.N>~, exactly the disclosures presented, with
-// the trailing ~ and without a KB-JWT. §4.3.1 uses the hash algorithm of the
-// disclosures, and this package supports only sha-256 (§4.1.1).
+// the trailing ~ and without a KB-JWT. Use SDHashWith for another _sd_alg.
 func SDHash(sdJWT string) string {
 	return digestOf(sdJWT)
+}
+
+// SDHashWith is SDHash with the hash _sd_alg names, as §4.3.1 requires: AlgSHA256,
+// AlgSHA384 or AlgSHA512. Another alg is jose.ErrUnsupportedAlg.
+func SDHashWith(sdJWT, alg string) (string, error) {
+	return DigestWith(sdJWT, alg)
+}
+
+// DigestWith is the digest of RFC 9901 §4.2.3, base64url(hash(s)) over the
+// ASCII bytes of s, with the hash alg names: AlgSHA256, AlgSHA384 or
+// AlgSHA512. A disclosure's digest is DigestWith of its encoded form. Another
+// alg is jose.ErrUnsupportedAlg. Its arguments are in SDHashWith's order.
+func DigestWith(s, alg string) (string, error) {
+	if !supportedAlg(alg) {
+		return "", fmt.Errorf("%w: sdjwt: hash algorithm %s is not implemented, only %s", jose.ErrUnsupportedAlg, errtext.Quote(alg), quoteNames(supportedAlgs))
+	}
+	return digestWith(s, alg), nil
 }
 
 // KBClaims are the claims of a new Key Binding JWT (RFC 9901 §4.3). All but
@@ -60,7 +77,7 @@ type KBClaims struct {
 	Audience string    // aud: the Verifier the KB-JWT is for (§4.3: identifies the intended receiver)
 	Nonce    string    // nonce: from the Verifier, binds the KB-JWT to one transaction (§4.3: freshness)
 	IssuedAt time.Time // iat: written in whole seconds, the fraction dropped
-	SDHash   string    // sd_hash: SDHash of the SD-JWT presented with it
+	SDHash   string    // sd_hash of the SD-JWT presented with it: SDHashWith(sdJWT, Recreated.Alg); SDHash for sha-256 (§4.3.1)
 	// Extra holds other claims, for a protocol that defines them, such as
 	// transaction_data_hashes of OpenID4VP 1.0 Appendix B.3.3.1; nil writes
 	// none. §4.3 allows them and asks to avoid them without a compelling
@@ -132,7 +149,7 @@ func NewKBJWT(ctx context.Context, s jws.Signer, holder crypto.PublicKey, c KBCl
 type KBVerifyParams struct {
 	Audience  string        // this Verifier, compared byte for byte with aud
 	Nonce     string        // the nonce this Verifier gave for the transaction
-	SDHash    string        // SDHash of the SD-JWT as received, up to and including the last ~
+	SDHash    string        // SDHashWith(sdJWT, Recreated.Alg) of the SD-JWT as received, up to and including the last ~ (SDHash for sha-256)
 	Now       time.Time     // zero: time.Now()
 	MaxAge    time.Duration // how old iat may be; must be positive
 	ClockSkew time.Duration // leeway on iat, exp and nbf; must not be negative
