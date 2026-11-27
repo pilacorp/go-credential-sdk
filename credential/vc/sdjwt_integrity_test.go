@@ -195,15 +195,13 @@ func TestSDJWT_RevealingNothingStillFoldsOutTheDigests(t *testing.T) {
 			}
 			base := token[:strings.IndexByte(token, '~')]
 
-			// The three forms a holder who reveals nothing can send. The middle one
-			// is what this SDK's own Present(nil) produced before the fix, and the
-			// last is what the spec asks for.
+			// A holder who reveals nothing sends the terminator alone (RFC 9901 §4);
+			// a token without it is refused (TestJOSEStrict_SDJWTWithoutTildeRefused).
 			for _, form := range []struct {
 				name  string
 				token string
 			}{
 				{"terminator only", base + "~"},
-				{"no terminator at all", base},
 			} {
 				t.Run(form.name, func(t *testing.T) {
 					parsed, err := vc.ParseCredential([]byte(form.token), vc.WithResolver(resolver))
@@ -508,7 +506,6 @@ func TestSDJWT_FormatIsReadFromTheMediaTypeNotFromSDAlg(t *testing.T) {
 		}{
 			{"disclosure sent", "vc+sd-jwt", "~" + disclosure + "~", true},
 			{"nothing revealed", "vc+sd-jwt", "~", false},
-			{"terminator missing too", "vc+sd-jwt", "", false},
 			{"the application/ form of the media type", "application/vc+sd-jwt", "~" + disclosure + "~", true},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -845,7 +842,7 @@ func TestSDJWT_SelectiveDisclosureIsConfinedToTheSubject(t *testing.T) {
 		if err == nil {
 			t.Fatal("a vc+jwt carrying _sd in its subject was accepted")
 		}
-		if !strings.Contains(err.Error(), `not permitted in "credentialSubject"`) {
+		if !strings.Contains(err.Error(), `only a vc+sd-jwt token may hold`) {
 			t.Fatalf("err = %v, want the subject named under a vc+jwt", err)
 		}
 	})
@@ -1028,7 +1025,8 @@ func TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused(t *testing.T) {
 				},
 				{
 					// RFC 9901 section 4.2.1: the claim name of a disclosure
-					// must not be "_sd", "_sd_alg" or "...". The builder
+					// must not be "_sd" or "..."; section 4.1.1 keeps
+					// "_sd_alg" at the top level. The builder
 					// refuses it by the rule the parser applies.
 					name: "a disclosure named _sd",
 					mangle: func(t *testing.T, custom map[string]interface{}, ds []string) []string {

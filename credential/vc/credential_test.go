@@ -1722,6 +1722,13 @@ func TestJOSECredential_SDJWTHolderFlow(t *testing.T) {
 
 	disclosures := parsed.Disclosures
 	assert.Len(t, disclosures, 2, "expected two disclosures (firstname, email)")
+	// The holder picks a disclosure by its name, not by its position.
+	for _, d := range parsed.DecodedDisclosures {
+		if d.FieldName == "firstname" {
+			disclosures = []string{d.Disclosure}
+		}
+	}
+	require.Len(t, disclosures, 1)
 
 	issuerJWT := parsed.BaseJWT
 	assert.NotEmpty(t, issuerJWT)

@@ -14,6 +14,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/compactform"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
@@ -186,7 +187,12 @@ func requireDisclosableAtTopLevel(m map[string]interface{}, subjectMayDisclose b
 			continue
 		}
 		if carriesSDMachinery(value) {
-			return fmt.Errorf("selective disclosure is not permitted in %q; "+
+			if name == credentialSubjectProperty {
+				// Only a plain token reaches here with credentialSubject.
+				return fmt.Errorf("%s carries _sd or a {\"...\": digest} array element, which only a %s "+
+					"token may hold", credentialSubjectProperty, TypeVCSDJWT)
+			}
+			return fmt.Errorf("selective disclosure is not permitted in %.64q; "+
 				"only claims inside %s may be withheld", name, credentialSubjectProperty)
 		}
 	}
@@ -202,7 +208,7 @@ const credentialSubjectProperty = "credentialSubject"
 // placeholder that stands for a withheld array element.
 //
 // The placeholder is only looked for inside arrays, which is the only place
-// draft-ietf-oauth-selective-disclosure-jwt § 4.2.4.2 defines it and the only
+// RFC 9901 §4.2.4.2 defines it and the only
 // place Reconstruct acts on it. A map value of that shape elsewhere reconstructs
 // to nothing, so it is not machinery to refuse.
 func carriesSDMachinery(value interface{}) bool {
@@ -246,7 +252,7 @@ func requireV2Context(v interface{}) error {
 		}
 	}
 	if first != credentialsV2Context {
-		return fmt.Errorf("credential must name %q first in @context, got %q", credentialsV2Context, first)
+		return fmt.Errorf("credential must name %q first in @context, got %.64q", credentialsV2Context, first)
 	}
 	return nil
 }
@@ -257,7 +263,7 @@ func requireCredentialType(v interface{}) error {
 	if hasType(v, "VerifiableCredential") {
 		return nil
 	}
-	return fmt.Errorf("credential type must include VerifiableCredential, got %v", v)
+	return fmt.Errorf("credential type must include VerifiableCredential, got %q", errtext.Clip(fmt.Sprint(v)))
 }
 
 // hasType reports whether a type property names want. Shared with the vp package
@@ -330,7 +336,7 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 
 	kind, ok := verificationmethod.VMKeyKind(vm)
 	if !ok {
-		return fmt.Errorf("verification method %q has an unrecognized key type", vmURL)
+		return fmt.Errorf("verification method %.64q has an unrecognized key type", vmURL)
 	}
 
 	suite, err := jsonmap.SigningSuiteForKey(kind)
@@ -340,7 +346,7 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 
 	vmPub, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
-		return fmt.Errorf("verification method %q: %w", vmURL, err)
+		return fmt.Errorf("verification method %.64q: %w", vmURL, err)
 	}
 
 	m := (*jsonmap.JSONMap)(&e.credentialData)

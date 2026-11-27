@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/pilacorp/go-credential-sdk/credential/internal/didjwtvc"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 )
 
 // A JwtProof2020 body that fails the VCDM 1.1 §6.3.1 mapping check is
@@ -61,5 +62,5 @@ func withoutProof(m map[string]interface{}) map[string]interface{} {
 }
 
 func disagreeErr(member string) error {
-	return fmt.Errorf("member %q differs from another signed value in the JWT: %w", shownValue(member), ErrJwtProofBinding)
+	return fmt.Errorf("member %q differs from another signed value in the JWT: %w", errtext.Clip(member), ErrJwtProofBinding)
 }

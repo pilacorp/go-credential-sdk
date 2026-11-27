@@ -1,8 +1,10 @@
 package didjwtvc
 
 import (
+	"encoding/base64"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -48,5 +50,14 @@ func TestDecodeCredential_ListsNestedValuesBeside(t *testing.T) {
 	}
 	if d.Form["issuanceDate"] != "2023-11-14T22:13:20.000Z" {
 		t.Fatalf("issuanceDate = %v, want the nbf date", d.Form["issuanceDate"])
+	}
+}
+
+// The header is read with the 64 KiB bound every JOSE header has.
+func TestNormalizeJWTCredential_OversizedHeader(t *testing.T) {
+	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	big := enc(`{"alg":"ES256K","typ":"JWT","x":"`+strings.Repeat("a", 70<<10)+`"}`) + "." + enc(`{"vc":{"type":["VerifiableCredential"],"credentialSubject":{}},"iss":"did:example:a"}`) + ".c2ln"
+	if _, err := normalizeJWTCredential(big); err != ErrUnsupported {
+		t.Fatalf("err = %v, want ErrUnsupported", err)
 	}
 }

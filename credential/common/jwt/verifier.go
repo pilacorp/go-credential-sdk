@@ -2,13 +2,12 @@ package jwt
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
@@ -53,7 +52,7 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	// alg none, HS256 or RS256 costs no network call and the error names the
 	// algorithm rather than a resolver failure.
 	if alg := jwsHeader.Alg(); alg != AlgES256K && alg != AlgES256 {
-		return fmt.Errorf("unsupported algorithm: %v", jwsHeader["alg"])
+		return fmt.Errorf("unsupported algorithm: %.64q", fmt.Sprint(jwsHeader["alg"]))
 	}
 
 	kid := jwsHeader.Kid()
@@ -69,24 +68,28 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	// expect. The header is untrusted until jws.Verify succeeds.
 	header := map[string]interface{}(jwsHeader)
 
-	// The purpose helpers read the base64url payload segment. The DID to
-	// resolve is the body's signer for this proof purpose, not the kid
-	// prefix: a kid naming another DID must not pick the key.
+	// The payload is decoded once, here, and read by the purpose helpers.
+	// The DID to resolve is the body's signer for this proof purpose, not
+	// the kid prefix: a kid naming another DID must not pick the key.
 	// UnverifiedHeader has already refused a token that is not three parts.
 	parts := strings.SplitN(tokenString, ".", 3)
+	body, err := decodePayload(parts[1])
+	if err != nil {
+		return err
+	}
 
-	purpose, perr := jwtProofPurpose(header, parts[1])
+	purpose, perr := jwtProofPurpose(header, body)
 	if perr != nil {
 		return perr
 	}
 
-	issuer, derr := jwtSigner(parts[1], purpose)
+	issuer, derr := jwtSigner(body, purpose)
 	if derr != nil {
 		return derr
 	}
 	doc, derr := v.docResolver.ResolveDocument(context.Background(), issuer)
 	if derr != nil {
-		return fmt.Errorf("failed to resolve DID document for issuer '%s': %w", issuer, derr)
+		return fmt.Errorf("failed to resolve DID document for issuer %.64q: %w", issuer, derr)
 	}
 	vm, verr := verificationmethod.FindVerificationMethod(doc, kid)
 	if verr != nil {
@@ -95,11 +98,11 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 
 	kind, kok := verificationmethod.VMKeyKind(vm)
 	if !kok {
-		return fmt.Errorf("verification method '%s' has an unrecognized key type", vm.ID)
+		return fmt.Errorf("verification method %q has an unrecognized key type", errtext.Clip(vm.ID))
 	}
 	wantAlg, aerr := AlgForKeyKind(kind)
 	if aerr != nil {
-		return fmt.Errorf("verification method '%s': %w", vm.ID, aerr)
+		return fmt.Errorf("verification method %q: %w", errtext.Clip(vm.ID), aerr)
 	}
 
 	publicKey, err := verificationmethod.ECPubFromVM(vm)
@@ -118,7 +121,7 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 
 	// Strict-purpose check (always on): JWT VCs use proofPurpose =
 	// assertionMethod, JWT VPs use authentication.
-	issuedAt, ierr := jwtIssuedAt(parts[1])
+	issuedAt, ierr := jwtIssuedAt(body)
 	if ierr != nil {
 		return ierr
 	}
@@ -137,15 +140,7 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 // consumer then reads as a credential. A `typ` contradicting the payload is
 // refused rather than ignored; when only one of the two speaks, that one
 // answers.
-func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, error) {
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
-	if err != nil {
-		return "", fmt.Errorf("invalid payload encoding: %w", err)
-	}
-	var body map[string]interface{}
-	if err := json.Unmarshal(payloadBytes, &body); err != nil {
-		return "", fmt.Errorf("invalid payload JSON: %w", err)
-	}
+func jwtProofPurpose(header map[string]interface{}, body map[string]interface{}) (string, error) {
 
 	carried, cerr := purposeFromBody(body)
 	if cerr != nil {
@@ -180,11 +175,11 @@ func jwtProofPurpose(header map[string]interface{}, payloadB64 string) (string, 
 // either: a presentation secured as an SD-JWT needs a key binding JWT, which
 // this package does not check, so neither end claims support it.
 func purposeFromTyp(header map[string]interface{}) string {
-	typ, _ := header["typ"].(string)
-	switch typ {
-	case "vc+jwt", "application/vc+jwt", "vc+sd-jwt", "application/vc+sd-jwt":
+	h := jws.Header(header)
+	switch {
+	case h.TypIs("vc+jwt"), h.TypIs("vc+sd-jwt"):
 		return "assertionMethod"
-	case "vp+jwt", "application/vp+jwt":
+	case h.TypIs("vp+jwt"):
 		return "authentication"
 	}
 	return ""
@@ -263,15 +258,7 @@ func documentKind(purpose string) string {
 // match issuer value" — and likewise against issuer.id when issuer is an
 // object. VC 1.1 nests the document under a vc/vp claim; the same rule applies
 // to the nested property.
-func jwtSigner(payloadB64, purpose string) (string, error) {
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
-	if err != nil {
-		return "", fmt.Errorf("invalid payload encoding: %w", err)
-	}
-	var body map[string]interface{}
-	if err := json.Unmarshal(payloadBytes, &body); err != nil {
-		return "", fmt.Errorf("invalid payload JSON: %w", err)
-	}
+func jwtSigner(body map[string]interface{}, purpose string) (string, error) {
 
 	// A credential names its signer in issuer, a presentation in holder.
 	field := "holder"
@@ -319,7 +306,7 @@ func jwtSigner(payloadB64, purpose string) (string, error) {
 	iss, _ := body["iss"].(string)
 	switch {
 	case iss != "" && claimed != "" && iss != claimed:
-		return "", fmt.Errorf("JWT iss %q does not match %s %q", iss, field, claimed)
+		return "", fmt.Errorf("JWT iss %.64q does not match %s %.64q", iss, field, claimed)
 	case iss != "":
 		return iss, nil
 	case claimed != "":
@@ -351,15 +338,7 @@ func didFromClaim(v interface{}) string {
 // and a credential may state a validFrom long after it was signed, or long
 // before. Substituting one for the other answers a different question and
 // answers it silently.
-func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid payload encoding: %w", err)
-	}
-	var body map[string]interface{}
-	if err := json.Unmarshal(payloadBytes, &body); err != nil {
-		return nil, fmt.Errorf("invalid payload JSON: %w", err)
-	}
+func jwtIssuedAt(body map[string]interface{}) (*time.Time, error) {
 
 	sec, ok, err := jwtutil.NumericClaim(body, "iat")
 	if err != nil || !ok {
@@ -375,16 +354,16 @@ func jwtIssuedAt(payloadB64 string) (*time.Time, error) {
 // signing time as `iat` and add their own enforcement.
 func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmethod.VerificationMethodEntry, proofPurpose string, issuedAt *time.Time) error {
 	if verificationmethod.IsHardRevocationReason(vm.RevocationReason) {
-		return fmt.Errorf("verification method '%s' revoked with hard reason '%s'", vm.ID, vm.RevocationReason)
+		return fmt.Errorf("verification method %q revoked with hard reason %q", errtext.Clip(vm.ID), errtext.Clip(vm.RevocationReason))
 	}
 	if vm.Revoked != nil {
 		if issuedAt == nil {
-			return fmt.Errorf("verification method '%s' was revoked at %s (missing iat for time-based revocation check)",
-				vm.ID, vm.Revoked.UTC().Format(time.RFC3339))
+			return fmt.Errorf("verification method %q was revoked at %s (missing iat for time-based revocation check)",
+				errtext.Clip(vm.ID), vm.Revoked.UTC().Format(time.RFC3339))
 		}
 		if !issuedAt.Before(*vm.Revoked) {
-			return fmt.Errorf("verification method '%s' was revoked at %s; iat %s is not earlier",
-				vm.ID, vm.Revoked.UTC().Format(time.RFC3339), issuedAt.UTC().Format(time.RFC3339))
+			return fmt.Errorf("verification method %q was revoked at %s; iat %s is not earlier",
+				errtext.Clip(vm.ID), vm.Revoked.UTC().Format(time.RFC3339), issuedAt.UTC().Format(time.RFC3339))
 		}
 	}
 
@@ -406,5 +385,16 @@ func strictPurposeCheck(doc *verificationmethod.DIDDocument, vm *verificationmet
 			return nil
 		}
 	}
-	return fmt.Errorf("verification method '%s' is not granted purpose '%s' on DID '%s'", vm.ID, proofPurpose, doc.ID)
+	return fmt.Errorf("verification method %q is not granted purpose '%s' on DID %q", errtext.Clip(vm.ID), proofPurpose, errtext.Clip(doc.ID))
+}
+
+// decodePayload reads the JWS payload as module jose does: base64url without
+// padding (RFC 7515 §2) with its pad bits zero (RFC 4648 §3.5), then a JSON
+// object in UTF-8 (RFC 7519 §7.2 step 10), so these claims are the bytes signed.
+func decodePayload(payloadB64 string) (map[string]interface{}, error) {
+	body, err := jwtutil.DecodeSegmentObject(payloadB64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid payload: %w", err)
+	}
+	return body, nil
 }

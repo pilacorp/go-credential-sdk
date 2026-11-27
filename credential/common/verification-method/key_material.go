@@ -34,7 +34,7 @@ func ecCurveForJWK(crv string) (elliptic.Curve, int, error) {
 	case "P-384":
 		return elliptic.P384(), 48, nil
 	default:
-		return nil, 0, fmt.Errorf("unsupported curve: %s (want secp256k1, P-256 or P-384)", crv)
+		return nil, 0, fmt.Errorf("unsupported curve: %.64q (want secp256k1, P-256 or P-384)", crv)
 	}
 }
 
@@ -46,7 +46,7 @@ func ECPubFromJWK(jwk *JWK) (*ecdsa.PublicKey, error) {
 		return nil, fmt.Errorf("jwk is nil")
 	}
 	if jwk.Kty != "EC" {
-		return nil, fmt.Errorf("unsupported key type: %s", jwk.Kty)
+		return nil, fmt.Errorf("unsupported key type: %.64q", jwk.Kty)
 	}
 	if jwk.hasPrivate {
 		return nil, errPrivateJWK
@@ -87,7 +87,7 @@ func P256PubKeyFromJWK(jwk *JWK) (*ecdsa.PublicKey, error) {
 		return nil, fmt.Errorf("jwk is nil")
 	}
 	if jwk.Crv != "P-256" {
-		return nil, fmt.Errorf("unsupported curve: %s (want P-256)", jwk.Crv)
+		return nil, fmt.Errorf("unsupported curve: %.64q (want P-256)", jwk.Crv)
 	}
 	return ECPubFromJWK(jwk)
 }
@@ -98,7 +98,7 @@ func RSAPubKeyFromJWK(jwk *JWK) (*rsa.PublicKey, error) {
 		return nil, fmt.Errorf("jwk is nil")
 	}
 	if jwk.Kty != "RSA" {
-		return nil, fmt.Errorf("unsupported key type: %s", jwk.Kty)
+		return nil, fmt.Errorf("unsupported key type: %.64q", jwk.Kty)
 	}
 	if jwk.hasPrivate {
 		return nil, errPrivateJWK

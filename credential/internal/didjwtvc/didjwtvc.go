@@ -14,11 +14,12 @@
 package didjwtvc
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 // ErrUnsupported is returned for an input did-jwt-vc refuses or this port does
@@ -304,12 +305,15 @@ func normalizeJWTCredential(jwt string) (map[string]interface{}, error) {
 		return nil, ErrUnsupported
 	}
 	parts := strings.Split(jwt, ".")
-	var header, payload map[string]interface{}
-	for i, dst := range []*map[string]interface{}{&header, &payload} {
-		raw, err := base64.RawURLEncoding.DecodeString(parts[i])
-		if err != nil || json.Unmarshal(raw, dst) != nil || *dst == nil {
-			return nil, ErrUnsupported
-		}
+	// Read by the rules the JwtProof2020 verifier reads the same token with,
+	// so the normalized credential holds the claims that were signed.
+	header, err := jwtutil.DecodeHeaderSegment(parts[0])
+	if err != nil {
+		return nil, ErrUnsupported
+	}
+	payload, err := jwtutil.DecodeSegmentObject(parts[1])
+	if err != nil {
+		return nil, ErrUnsupported
 	}
 	if header["cty"] == "JWT" {
 		return nil, ErrUnsupported // nested JWT, not ported

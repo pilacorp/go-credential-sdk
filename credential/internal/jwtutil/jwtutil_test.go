@@ -2,10 +2,13 @@ package jwtutil
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
 func TestSetIssuedAt(t *testing.T) {
@@ -154,5 +157,52 @@ func TestNumericClaim(t *testing.T) {
 				t.Fatalf("NumericClaim(%v) = %d, %v, %v, want %d", tc.value, got, ok, err, tc.want)
 			}
 		})
+	}
+}
+
+// FloatNumbersExact keeps an integer literal float64 cannot hold (past
+// ±2^53, 2^53 = 9007199254740992), converts the rest, and refuses what no
+// float64 holds, as FloatNumbers does.
+func TestFloatNumbersExact(t *testing.T) {
+	for lit, kept := range map[string]bool{
+		"9007199254740992":    false,
+		"9007199254740993":    true,
+		"-9007199254740992":   false,
+		"-9007199254740993":   true,
+		"9223372036854775808": true,
+		"9007199254740993.0":  false,
+		"1e3":                 false,
+		"-0":                  false,
+	} {
+		got, err := FloatNumbersExact(json.Number(lit))
+		if err != nil {
+			t.Fatalf("%s: %v", lit, err)
+		}
+		if _, isNumber := got.(json.Number); isNumber != kept {
+			t.Errorf("%s: got %T, kept = %v", lit, got, kept)
+		}
+	}
+	if _, err := FloatNumbersExact(json.Number("1" + strings.Repeat("0", 400))); err == nil {
+		t.Error("a 401-digit integer was kept; want it refused like FloatNumbers does")
+	}
+}
+
+// A number no float64 holds is malformed input when read, and a caller
+// mistake when building, so callers can classify it with errors.Is.
+func TestFloatNumbers_RangeErrorSentinel(t *testing.T) {
+	if _, err := FloatNumbers(json.Number("1e400")); !errors.Is(err, jose.ErrMalformed) {
+		t.Errorf("read: %v, want jose.ErrMalformed", err)
+	}
+	if _, err := FloatNumbersExact(json.Number("1e400")); !errors.Is(err, jose.ErrInvalidArgument) {
+		t.Errorf("build: %v, want jose.ErrInvalidArgument", err)
+	}
+}
+
+// A number no float64 holds is named by a bounded prefix only: the text does
+// not grow with the literal an attacker sends.
+func TestNumberErrorTextBounded(t *testing.T) {
+	_, err := DecodeJSONObject([]byte(`{"n":1` + strings.Repeat("0", 1<<20) + `}`))
+	if !errors.Is(err, jose.ErrMalformed) || len(err.Error()) > 200 {
+		t.Fatalf("err (%d bytes) = %.200v, want a bounded malformed error", len(err.Error()), err)
 	}
 }

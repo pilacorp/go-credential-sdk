@@ -3,6 +3,8 @@ package verificationmethod
 import (
 	"fmt"
 	"strings"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 )
 
 // DIDFromVerificationMethodURL extracts the DID prefix from a verification
@@ -16,10 +18,10 @@ func DIDFromVerificationMethodURL(verificationMethodURL string) (string, error) 
 
 	didPart, _, found := strings.Cut(verificationMethodURL, "#")
 	if !found || didPart == "" {
-		return "", fmt.Errorf("invalid verification method URL, could not extract DID: %s", verificationMethodURL)
+		return "", fmt.Errorf("invalid verification method URL, could not extract DID: %q", errtext.Clip(verificationMethodURL))
 	}
 	if !strings.HasPrefix(didPart, "did:") {
-		return "", fmt.Errorf("extracted DID '%s' is invalid, must start with 'did:'", didPart)
+		return "", fmt.Errorf("extracted DID %q is invalid, must start with 'did:'", errtext.Clip(didPart))
 	}
 	return didPart, nil
 }
@@ -41,7 +43,7 @@ func FindVerificationMethod(doc *DIDDocument, verificationMethodURL string) (*Ve
 			return vm, nil
 		}
 	}
-	return nil, fmt.Errorf("verification method '%s' not found in DID '%s' document", verificationMethodURL, doc.ID)
+	return nil, fmt.Errorf("verification method %q not found in DID %q document", errtext.Clip(verificationMethodURL), errtext.Clip(doc.ID))
 }
 
 // RequireController checks that vm belongs to doc. CID 1.0 §3.3 takes the
@@ -56,10 +58,10 @@ func RequireController(doc *DIDDocument, vm *VerificationMethodEntry) error {
 		return err
 	}
 	if doc.ID != did {
-		return fmt.Errorf("DID document id %q is not the DID %q that verification method %q belongs to", doc.ID, did, vm.ID)
+		return fmt.Errorf("DID document id %.64q is not the DID %.64q that verification method %.64q belongs to", doc.ID, did, vm.ID)
 	}
 	if vm.Controller != did {
-		return fmt.Errorf("verification method %q controller %q is not the DID %q it belongs to", vm.ID, vm.Controller, did)
+		return fmt.Errorf("verification method %.64q controller %.64q is not the DID %.64q it belongs to", vm.ID, vm.Controller, did)
 	}
 	return nil
 }

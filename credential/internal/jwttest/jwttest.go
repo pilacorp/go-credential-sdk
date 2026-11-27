@@ -5,6 +5,7 @@ package jwttest
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
@@ -43,4 +44,19 @@ type Counting struct {
 func (c *Counting) Sign(digest []byte) ([]byte, error) {
 	c.Calls++
 	return c.SignerProvider.Sign(digest)
+}
+
+// PadBitAlias sets the lowest unused bit of the last character of an
+// unpadded base64url segment whose length is 2 mod 4 (a 64-byte signature
+// is 86 characters, the last one carrying 4 unused bits). A lenient decoder
+// returns the same bytes; with unused bits set it is not the canonical
+// encoding (RFC 4648 §3.5) and a strict decoder refuses it.
+func PadBitAlias(t testing.TB, seg string) string {
+	t.Helper()
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	v := strings.IndexByte(alphabet, seg[len(seg)-1])
+	if v < 0 || v&0x0f != 0 {
+		t.Fatalf("last character %q is not a canonical 4-unused-bit character", seg[len(seg)-1])
+	}
+	return seg[:len(seg)-1] + string(alphabet[v|1])
 }

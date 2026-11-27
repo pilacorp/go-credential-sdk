@@ -11,8 +11,9 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
-	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
 type JWTPresentation struct {
@@ -86,17 +87,18 @@ func NewJWTPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JWT
 	}
 
 	// Encode header and payload
-	headerJSON, err := json.Marshal(header)
+	headerEncoded, err := jwtutil.EncodeSegment(header)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal header: %w", err)
 	}
-	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
+	if err := jwtutil.CheckHeaderToSign(headerEncoded, signingKey.ID); err != nil {
+		return nil, err
+	}
 
-	payloadJSON, err := json.Marshal(payload)
+	payloadEncoded, err := jwtutil.EncodeSegment(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
 	// Create signing input (header.payload)
 	signingInput := headerEncoded + "." + payloadEncoded
@@ -127,19 +129,23 @@ func ParseJWTPresentation(rawJWT string, opts ...PresentationOpt) (*JWTPresentat
 	// Extract the payload and header
 	headerEncoded := parts[0]
 	payloadEncoded := parts[1]
+	// Read by the rules VerifyJWT reads it with, so parsing refuses what
+	// verifying would.
+	if _, err := jwtutil.DecodeHeaderSegment(headerEncoded); err != nil {
+		return nil, fmt.Errorf("invalid JWT header: %w", err)
+	}
 	signature := ""
 	if len(parts) == 3 {
 		signature = parts[2]
 	}
 
 	// Decode the payload and header
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadEncoded)
+	payloadBytes, err := jose.DecodeSegment(payloadEncoded)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode payload: %w", err)
 	}
 
-	var payloadMap map[string]interface{}
-	err = json.Unmarshal(payloadBytes, &payloadMap)
+	payloadMap, err := jwtutil.DecodeJSONObject(payloadBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
 	}
@@ -200,23 +206,10 @@ func (j *JWTPresentation) AddProofByProvider(provider signer.SignerProvider, opt
 		return err
 	}
 
-	// A parsed token has no verification method: refuse before building a
-	// signer for its empty alg.
-	if err := j.signingKey.RequireBound(); err != nil {
-		return err
-	}
-
-	// Sign through jose/jws: the adapter wraps the SignerProvider (which
-	// signs a digest) as a jws.Signer (which signs the signing input).
-	jwsSigner, err := joseadapter.NewSigner(j.signingKey.Alg, provider)
-	if err != nil {
-		return fmt.Errorf("failed to create JWS signer: %w", err)
-	}
-	raw, err := jwsSigner.Sign(context.Background(), []byte(signingInput))
-	if err != nil {
-		return fmt.Errorf("failed to sign signing input: %w", err)
-	}
-	signature, err := j.signingKey.Accept(signingInput, raw)
+	// Sign checks the 64-byte r||s shape and verifies the signature against
+	// the key the header names, so a signer that does not hold that key fails
+	// here instead of at the verifier.
+	signature, err := j.signingKey.Sign(signingInput, provider)
 	if err != nil {
 		return err
 	}
@@ -380,7 +373,7 @@ func (j *JWTPresentation) checkChallengeAndDomain(options *presentationOptions) 
 	if options.expectedChallenge != "" {
 		nonce, _ := j.jwtClaims["nonce"].(string)
 		if nonce != options.expectedChallenge {
-			return fmt.Errorf("nonce %q does not match expected challenge %q", nonce, options.expectedChallenge)
+			return fmt.Errorf("nonce %.64q does not match expected challenge %q", nonce, options.expectedChallenge)
 		}
 	}
 	return checkAudience(j.jwtClaims["aud"], options)
@@ -396,7 +389,7 @@ func (j *JWTPresentation) checkChallengeAndDomain(options *presentationOptions) 
 func checkAudience(aud interface{}, options *presentationOptions) error {
 	if options.expectedDomain != "" {
 		if !audContains(aud, options.expectedDomain) {
-			return fmt.Errorf("aud %v does not match expected domain %q", aud, options.expectedDomain)
+			return fmt.Errorf("aud %q does not match expected domain %q", errtext.Clip(fmt.Sprint(aud)), options.expectedDomain)
 		}
 		return nil
 	}

@@ -1,7 +1,6 @@
 package vp
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
 )
 
@@ -425,15 +425,14 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 	if isJWTPresentation(valStr) {
 		parts := strings.Split(valStr, ".")
 		if len(parts) >= 2 {
-			if headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0]); err == nil {
-				var header map[string]interface{}
-				if err := json.Unmarshal(headerBytes, &header); err == nil {
-					if typ, ok := header["typ"].(string); ok {
-						if isJOSEPresentationTyp(typ) {
-							return ParseJOSEPresentation(valStr, opts...)
-						}
-					}
-				}
+			// The header decides the parser, so it is read by the rules every
+			// parser reads it with.
+			header, err := jwtutil.DecodeHeaderSegment(parts[0])
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse presentation: invalid JWT header: %w", err)
+			}
+			if typ, ok := header["typ"].(string); ok && isJOSEPresentationTyp(typ) {
+				return ParseJOSEPresentation(valStr, opts...)
 			}
 		}
 		return ParseJWTPresentation(valStr, opts...)

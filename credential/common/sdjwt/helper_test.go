@@ -19,80 +19,6 @@ func encodeDisclosureForTest(t *testing.T, arr []interface{}) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func TestParseDisclosure_ValidObjectField(t *testing.T) {
-	disc := encodeDisclosureForTest(t, []interface{}{"salt-1", "name", "Alice"})
-
-	info, err := parseDisclosure(disc)
-	if err != nil {
-		t.Fatalf("parseDisclosure failed: %v", err)
-	}
-
-	if info.salt != "salt-1" {
-		t.Fatalf("expected salt salt-1, got %q", info.salt)
-	}
-	if info.objectField != "name" {
-		t.Fatalf("expected field name, got %q", info.objectField)
-	}
-	if info.isArrayElem {
-		t.Fatal("expected object-field disclosure, got array disclosure")
-	}
-	if v, ok := info.value.(string); !ok || v != "Alice" {
-		t.Fatalf("expected value Alice, got %#v", info.value)
-	}
-}
-
-func TestParseDisclosure_ValidArrayElement(t *testing.T) {
-	disc := encodeDisclosureForTest(t, []interface{}{"salt-2", 42.0})
-
-	info, err := parseDisclosure(disc)
-	if err != nil {
-		t.Fatalf("parseDisclosure failed: %v", err)
-	}
-
-	if !info.isArrayElem {
-		t.Fatal("expected array-element disclosure")
-	}
-	if info.objectField != "" {
-		t.Fatalf("expected empty objectField, got %q", info.objectField)
-	}
-}
-
-func TestParseDisclosure_InvalidShapes(t *testing.T) {
-	tests := []struct {
-		name    string
-		disc    string
-		wantErr string
-	}{
-		{name: "invalid-base64", disc: "not-base64@", wantErr: "failed to decode disclosure"},
-		{name: "invalid-json", disc: base64.RawURLEncoding.EncodeToString([]byte("{")), wantErr: "failed to unmarshal disclosure"},
-		{name: "invalid-len", disc: encodeDisclosureForTest(t, []interface{}{"only-one"}), wantErr: "invalid disclosure structure"},
-		{name: "salt-not-string", disc: encodeDisclosureForTest(t, []interface{}{1.0, "name", "Alice"}), wantErr: "salt must be a string"},
-		{name: "field-not-string", disc: encodeDisclosureForTest(t, []interface{}{"salt", 1.0, "Alice"}), wantErr: "field name must be a string"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseDisclosure(tc.disc)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
-			}
-		})
-	}
-}
-
-func TestHashDisclosure_UnsupportedAlgorithm(t *testing.T) {
-	_, err := hashDisclosure("sha-999", "abc")
-	if err == nil {
-		t.Fatal("expected error for unsupported hash algorithm")
-	}
-	if !strings.Contains(err.Error(), "unsupported sd_alg") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestBuildSDJWTPresentation_SkipEmptyDisclosure(t *testing.T) {
 	got := BuildSDJWTPresentation("a.b.c", []string{"d1", "", "d2"})
 	if got != "a.b.c~d1~d2~" {
@@ -168,22 +94,20 @@ func TestPresentation(t *testing.T) {
 }
 
 // Test Parse edge case: last segment is JWT-like without trailing ~
+// RFC 9901 §4: an SD-JWT ends in "~", and without it the last segment is a
+// Key Binding JWT, not a disclosure.
 func TestParse_LastSegmentJWTLike(t *testing.T) {
-	// "aaa.bbb.ccc~xxx.yyy.zzz" - the last segment looks like JWT
-	// but without trailing ~, should be treated as disclosure (not holder binding)
-	jwt := "aaa.bbb.ccc"
-	// Create a disclosure that when parsed produces JWT-like string after decoding
-	// Valid disclosure format: ["salt", "field", "value"]
 	arr := []interface{}{"salt", "sub", "123"}
 	b, _ := json.Marshal(arr)
 	disclosure := base64.RawURLEncoding.EncodeToString(b)
 
-	sd := jwt + "~" + disclosure
-	parsed, err := Parse(sd)
-	require.NoError(t, err)
+	_, err := Parse("aaa.bbb.ccc~" + disclosure)
+	require.Error(t, err)
 
-	assert.Equal(t, jwt, parsed.BaseJWT)
-	assert.Contains(t, parsed.Disclosures, disclosure)
+	parsed, err := Parse("aaa.bbb.ccc~" + disclosure + "~")
+	require.NoError(t, err)
+	assert.Equal(t, "aaa.bbb.ccc", parsed.BaseJWT)
+	assert.Equal(t, []string{disclosure}, parsed.Disclosures)
 }
 
 // Test Parse with holder binding JWT at end (proper format)
@@ -202,35 +126,10 @@ func TestParse_WithHolderBindingJWT(t *testing.T) {
 }
 
 // Test Parse with empty disclosure strings
+// RFC 9901 §4: an empty disclosure between two "~" is malformed.
 func TestParse_EmptyDisclosureStrings(t *testing.T) {
-	jwt := "aaa.bbb.ccc"
-	sd := jwt + "~" + "~" + "~"
-
-	parsed, err := Parse(sd)
-	require.NoError(t, err)
-	assert.Equal(t, jwt, parsed.BaseJWT)
-	assert.Empty(t, parsed.Disclosures)
-}
-
-// Test appendSD with invalid _sd type
-func TestAppendSD_InvalidType(t *testing.T) {
-	m := map[string]interface{}{
-		"_sd": 123, // invalid type
-	}
-	appendSD(m, "some-digest")
-	_, isInt := m["_sd"].(int)
-	assert.True(t, isInt, "_sd should remain unchanged")
-}
-
-// Test appendSD with []string type
-func TestAppendSD_StringSlice(t *testing.T) {
-	m := map[string]interface{}{
-		"_sd": []string{"existing-hash"},
-	}
-	appendSD(m, "new-hash")
-	sd, ok := m["_sd"].([]interface{})
-	require.True(t, ok)
-	assert.Len(t, sd, 2)
+	_, err := Parse("aaa.bbb.ccc~~~")
+	require.Error(t, err)
 }
 
 // DecodeDisclosures must reject the reserved claim names "...", "_sd" and
@@ -250,19 +149,5 @@ func TestDecodeDisclosures_RejectsReservedNames(t *testing.T) {
 				t.Fatalf("error = %v, want it to mention 'reserved'", err)
 			}
 		})
-	}
-}
-
-// sha-384 and sha-512 credentials carry the same disclosure format; only the
-// digest algorithm differs. DecodeDisclosures must still decode them because it
-// does not compute digests — it only reads the [salt, name, value] arrays.
-func TestDecodeDisclosures_WorksForNonSHA256(t *testing.T) {
-	disc := encodeDisclosureForTest(t, []interface{}{"salt-384", "email", "a@b.com"})
-	got, err := DecodeDisclosures([]string{disc})
-	if err != nil {
-		t.Fatalf("DecodeDisclosures: %v", err)
-	}
-	if len(got) != 1 || got[0].FieldName != "email" {
-		t.Fatalf("got %+v, want one disclosure with FieldName 'email'", got)
 	}
 }

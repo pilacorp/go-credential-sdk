@@ -13,6 +13,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
 // ===== EcdsaSecp256k1Signature2019 (Linked Data Signatures) =====
@@ -218,11 +219,12 @@ func (m *JSONMap) verifyEcdsaSecp256k1Proof(doc *verificationmethod.DIDDocument,
 			EcdsaSecp256k1Signature2019, algES256K, alg)
 	}
 
-	// Strict() rejects a final character whose unused bits are not zero. 64
-	// bytes encode to 86 characters with 4 bits left over, so without this one
-	// signature has 16 spellings that all decode to the same bytes and all
-	// verify — while Hash() sees 16 different credentials.
-	signature, err := base64.RawURLEncoding.Strict().DecodeString(encSig)
+	// jose.DecodeSegment refuses a final character whose unused bits are not
+	// zero, and the CR and LF that Strict() still skips. 64 bytes encode to 86
+	// characters with 4 bits left over, so without this one signature has
+	// many spellings that all decode to the same bytes and all verify, while
+	// Hash() sees as many different credentials.
+	signature, err := jose.DecodeSegment(encSig)
 	if err != nil {
 		return false, fmt.Errorf("decode jws signature: %w", err)
 	}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +14,10 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/pilacorp/go-credential-sdk/credential/internal/didjwtvc"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtproof"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
 // ErrJwtProofBinding is returned when the JWT payload does not cover
@@ -35,7 +37,7 @@ func VerifyJwtProofToken(body map[string]interface{}, jwtToken string, pub *ecds
 		return time.Time{}, fmt.Errorf("public key is nil")
 	}
 
-	if err := checkJwtHeader(jwtToken); err != nil {
+	if err := jwtproof.CheckHeader(jwtToken); err != nil {
 		return time.Time{}, err
 	}
 
@@ -74,57 +76,9 @@ func VerifyJwtProof(req *map[string]interface{}, pub *ecdsa.PublicKey) (bool, er
 	return true, nil
 }
 
-// checkJwtHeader checks the JOSE header VCDM 1.1 §6.3.1 constrains: "alg
-// MUST be set for digital signatures", and "typ, if present, MUST be set to
-// JWT". This verifier checks secp256k1 with SHA-256 only, so alg must name
-// that: ES256K (RFC 8812 §3.2) or ES256K-R, the recoverable form did-jwt, the
-// library behind JwtProof2020, writes (did-jwt's name; IANA does not register
-// it). The signature length is not tied to alg: a 65-byte signature labelled
-// ES256K (go-ethereum's output) verifies as before. typ compares as a media
-// type (RFC 7515 §4.1.9): any case, with or without "application/". crit
-// names extensions the recipient must understand (RFC 7515 §4.1.11); this
-// verifier understands none, so a header that lists any is refused.
-func checkJwtHeader(jwtToken string) error {
-	header, err := decodeJwtHeader(jwtToken)
-	if err != nil {
-		return err
-	}
-	alg, _ := header["alg"].(string)
-	if alg != "ES256K" && alg != "ES256K-R" {
-		return fmt.Errorf("JWT header alg %q is not supported: want ES256K or ES256K-R", shownValue(alg))
-	}
-	if typ, present := header["typ"]; present {
-		s, ok := typ.(string)
-		if !ok || !(strings.EqualFold(s, "JWT") || strings.EqualFold(s, "application/jwt")) {
-			return fmt.Errorf("JWT header typ must be JWT")
-		}
-	}
-	if _, present := header["crit"]; present {
-		return fmt.Errorf("JWT header crit is not supported: this verifier understands no JWS extension")
-	}
-	return nil
-}
-
-// decodeJwtHeader decodes the JOSE header of a compact JWT, a JSON object.
-func decodeJwtHeader(jwtToken string) (map[string]interface{}, error) {
-	dot := strings.IndexByte(jwtToken, '.')
-	if dot <= 0 {
-		return nil, fmt.Errorf("invalid JWT format")
-	}
-	headerBytes, err := base64.RawURLEncoding.DecodeString(jwtToken[:dot])
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode JWT header")
-	}
-	var header map[string]interface{}
-	if err := json.Unmarshal(headerBytes, &header); err != nil || header == nil {
-		return nil, fmt.Errorf("JWT header is not a JSON object")
-	}
-	return header, nil
-}
-
 // JwtKid extracts the kid claim from the JWT header, if present.
 func JwtKid(jwtToken string) (string, bool) {
-	header, err := decodeJwtHeader(jwtToken)
+	header, err := jwtproof.DecodeHeader(jwtToken)
 	if err != nil {
 		return "", false
 	}
@@ -272,16 +226,7 @@ func bindingErr(msg string) error {
 }
 
 func memberErr(key string) error {
-	return fmt.Errorf("member %q not covered by JWT: %w", shownValue(key), ErrJwtProofBinding)
-}
-
-// shownValue cuts a value from the token or the body (a member name, an alg)
-// to 64 bytes before an error shows it: it comes from untrusted input.
-func shownValue(name string) string {
-	if len(name) > 64 {
-		return name[:64]
-	}
-	return name
+	return fmt.Errorf("member %q not covered by JWT: %w", errtext.Clip(key), ErrJwtProofBinding)
 }
 
 func getSignatureAndMessage(jwtToken string) ([]byte, []byte, error) {
@@ -292,7 +237,9 @@ func getSignatureAndMessage(jwtToken string) ([]byte, []byte, error) {
 
 	headerB64, payloadB64, signatureB64 := parts[0], parts[1], parts[2]
 
-	signature, err := base64.RawURLEncoding.DecodeString(signatureB64)
+	// One spelling only, as for the header and payload: a signature with its
+	// unused bits set would give the same proof a second string.
+	signature, err := jose.DecodeSegment(signatureB64)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decode signature: %w", err)
 	}
