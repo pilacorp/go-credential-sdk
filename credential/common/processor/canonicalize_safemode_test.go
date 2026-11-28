@@ -190,7 +190,7 @@ func docWithUndefinedType() map[string]interface{} {
 // wrappers: SafeMode refuses an undefined property and an undefined type.
 // checkExpandedTypes still runs first, because its error names the type.
 func TestSafeModeCoversPropertiesAndTypes(t *testing.T) {
-	opts := sdOptions()
+	opts := sdOptions(JSONLDLimits{})
 	opts.Format = ""
 	proc := ld.NewJsonLdProcessor()
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -13,8 +14,9 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/compactform"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
-	"golang.org/x/sync/errgroup"
 )
 
 type JSONCredential struct {
@@ -32,7 +34,6 @@ func NewJSONCredential(vcc CredentialContents, opts ...CredentialOpt) (*JSONCred
 	e := &JSONCredential{
 		credentialData: m,
 	}
-
 	return e, e.executeOptions(opts...)
 }
 
@@ -72,7 +73,7 @@ func requireCredentialProperties(m CredentialData) error {
 	return nil
 }
 
-// credentialsV2Context is the @context VC Data Model 2.0 §4.2 requires first on
+// credentialsV2Context is the @context VC Data Model 2.0 §4.3 requires first on
 // every credential. vc-jose-cose is defined against 2.0 only, so the JOSE paths
 // hold documents to it; the VC 1.1 paths do not, and keep their own context.
 const credentialsV2Context = "https://www.w3.org/ns/credentials/v2"
@@ -93,25 +94,27 @@ func requireJOSECredential(m CredentialData) error {
 	return requireCredentialType(m["type"])
 }
 
-// to look up revocation. Both the 1.1 and the 2.0 spelling of the validity window
-// are listed so that neither can be moved out of the signature, whichever one a
-// payload uses.
-//
-// JWT-level claims (iss, exp, nbf, iat) are not here. ParseJOSECredential runs
-// this for vc+jwt and vc+sd-jwt alike; both payloads are flat, so those claims
-// sit at the root beside credentialSubject. They still need no entry:
-// requireDisclosableAtTopLevel refuses an _sd array at the payload root before
-// this runs, so no disclosure can hide or introduce a root claim.
+// securedClaims are the payload properties a verifier decides on: what the
+// credential is (@context, type), who issued it, when it is valid, where to
+// look up revocation and which schema it follows (vc-jose-cose (W3C REC
+// 2026-10-13) §3.2.1 names @context, type, credentialStatus, credentialSchema
+// and relatedResource), plus the JWT claims RFC 9901 §9.7 calls security
+// critical (iss, aud, exp, nbf, cnf). Both the 1.1 and the 2.0 spelling of the
+// validity window are listed, whichever one a payload uses. The sources ask
+// issuers not to conceal them (a SHOULD, over lists that are not closed);
+// refusing a vc+sd-jwt that does is this SDK's policy as a verifier.
 var securedClaims = []string{
 	"@context", "type",
-	"issuer",
+	"issuer", "iss",
 	"validFrom", "validUntil",
 	"issuanceDate", "expirationDate",
-	"credentialStatus",
+	"exp", "nbf",
+	"credentialStatus", "credentialSchema", "relatedResource",
+	"aud", "cnf",
 }
 
 // requireSecuredClaimsSigned refuses a token whose reconstruction introduced one
-// of those properties, or whose holder withheld the disclosure carrying one.
+// of those properties.
 //
 // Selective disclosure moves a property outside the signature: it is the
 // digest that is signed, and the value arrives separately, under the holder's
@@ -125,85 +128,95 @@ var securedClaims = []string{
 //     expired or revoked credential verify as neither, since the checks run on
 //     the reconstructed payload and found nothing to check.
 //
-// A disclosure the holder attached can be named, so the first loop says which
-// property it was. A disclosure the holder withheld cannot: the digest left
-// behind does not record what it stood for. What is still visible is that some
-// top-level property was made disclosable, and at the top level of a credential
-// there is nothing a verifier does not decide on — hence the second check.
+// A disclosure the holder attached can be named, and is refused here. One the
+// holder withheld cannot: the digest left behind does not record what it stood
+// for. A withheld issuer, @context or type leaves a payload that is not a
+// credential; a withheld optional one is caught by requireClaimsNotWithheld
+// when a check that reads it runs.
+//
+// A disclosed name that differs from one of them only by case is refused too:
+// encoding/json matches struct fields case-insensitively, folding ſ to s, so a
+// consumer decoding the contents would read "iſſuer" as issuer. vc and vp
+// must not be present at all (vc-jose-cose §1.1.2.1), in any case.
 func requireSecuredClaimsSigned(signed, reconstructed map[string]interface{}) error {
-	for _, claim := range securedClaims {
-		if _, ok := signed[claim]; ok {
-			continue
-		}
-		if _, ok := reconstructed[claim]; ok {
-			return fmt.Errorf(
-				"%q was selectively disclosed; a verifier decides on it, so it must be part of the signed payload",
-				claim)
+	added := make([]string, 0, len(reconstructed))
+	for k := range reconstructed {
+		if _, ok := signed[k]; !ok {
+			added = append(added, k)
 		}
 	}
-	if _, ok := signed["_sd"]; ok {
-		return fmt.Errorf(
-			"the signed payload hides top-level properties behind _sd; selective disclosure is for claims inside credentialSubject")
+	sort.Strings(added) // the same input fails with the same error
+	for _, k := range added {
+		if strings.EqualFold(k, "vc") || strings.EqualFold(k, "vp") {
+			return fmt.Errorf("%q was selectively disclosed; the JWT claim names vc and vp must not be present", k)
+		}
+		for _, claim := range securedClaims {
+			switch {
+			case k == claim:
+				return fmt.Errorf(
+					"%q was selectively disclosed; a verifier decides on it, so it must be part of the signed payload",
+					claim)
+			case strings.EqualFold(k, claim):
+				return fmt.Errorf("disclosed claim %.64q differs from %q only by case; a consumer may read it as %s", k, claim, claim)
+			}
+		}
 	}
 	return nil
 }
 
-// requireDisclosableAtTopLevel confines selective disclosure to the
-// credentialSubject subtree. Everything else in a credential is metadata a
-// verifier decides on — @context, type, issuer, the validity window,
-// credentialStatus — and making one of those disclosable moves it outside the
-// signature, under whoever holds the token.
+// requireSecuredClaimsNotConcealed refuses a vc+sd-jwt payload in which one of
+// securedClaims holds concealed parts (an _sd array or a {"...": digest}
+// array element), at any depth. Withholding them changes what the verifier
+// decides on: an issuer that made every field of credentialStatus disclosable
+// left a holder able to withhold all of them, and reconstruction produced
+// credentialStatus: {}, which checkRevocation reads as "this credential does
+// not use revocation". Concealed aud array entries are allowed, as RFC 9901
+// §9.7 lets an issuer make them disclosable. Runs before Reconstruct, which removes the evidence.
 //
-// subjectMayDisclose says whether credentialSubject is exempt. It is on every
-// path that legitimately produces or carries an SD-JWT, and off for a vc+jwt,
-// whose media type promises nothing was selectively disclosed: a token labelled
-// that way must not carry the machinery anywhere, not even in the subject.
-//
-// The check is on the machinery (_sd arrays, and the {"...": digest}
-// placeholder an array uses) rather than on property names, because a withheld
-// disclosure leaves only a digest and a digest does not record what it stood
-// for. _sd_alg is not machinery in this sense: BuildDisclosures writes it at the
-// root whatever the paths were, so refusing it would refuse every SD-JWT.
-//
-// Checking only the root used to be enough-looking and was not. _sd nested
-// inside a top-level property is still _sd: an issuer that made every field of
-// credentialStatus disclosable left a holder able to withhold all of them, and
-// reconstruction then produced credentialStatus: {} — which checkRevocation
-// reads as "this credential does not use revocation" and passes. A revoked
-// credential verified clean, and dropping the disclosures cost the holder none
-// of the claims a verifier wanted to see. Hence the walk.
-func requireDisclosableAtTopLevel(m map[string]interface{}, subjectMayDisclose bool) error {
-	if _, ok := m["_sd"]; ok {
-		return fmt.Errorf("the payload carries _sd at the root; selective disclosure — and the " +
-			"decoy digests that pad it — belong to claims inside credentialSubject, because " +
-			"nothing at the top level may be withheld")
-	}
-
-	// Map iteration order is unspecified, so with more than one offending
-	// property the name reported is whichever came first. The verdict does not
-	// depend on it; only the message does.
-	for name, value := range m {
-		if name == credentialSubjectProperty && subjectMayDisclose {
+// Every other property, the payload root included, may be concealed (RFC
+// 9901 §4.2).
+func requireSecuredClaimsNotConcealed(m map[string]interface{}) error {
+	for _, name := range securedClaims {
+		v, ok := m[name]
+		if !ok {
 			continue
 		}
-		if carriesSDMachinery(value) {
-			return fmt.Errorf("selective disclosure is not permitted in %q; "+
-				"only claims inside %s may be withheld", name, credentialSubjectProperty)
+		if name == "aud" {
+			v = audWithoutEntryPlaceholders(v)
+		}
+		if carriesSDMachinery(v) {
+			return fmt.Errorf("selective disclosure is not permitted inside %q; a verifier decides on it, so all of it must be part of the signed payload", name)
 		}
 	}
-
 	return nil
 }
 
-// credentialSubjectProperty is the one subtree selective disclosure belongs to.
-const credentialSubjectProperty = "credentialSubject"
+// audWithoutEntryPlaceholders drops the {"...": digest} entries of an aud
+// array, which RFC 9901 §9.7 lets an issuer conceal; anything else stays to
+// be checked, an aud object with _sd included.
+func audWithoutEntryPlaceholders(v interface{}) interface{} {
+	arr, ok := v.([]interface{})
+	if !ok {
+		return v
+	}
+	out := make([]interface{}, 0, len(arr))
+	for _, el := range arr {
+		if m, ok := el.(map[string]interface{}); ok && len(m) == 1 {
+			if _, ok := m["..."]; ok {
+				continue
+			}
+		}
+		out = append(out, el)
+	}
+	return out
+}
 
 // carriesSDMachinery reports whether value holds anything the SD-JWT layer puts
 // in a payload, at any depth: an _sd digest array, or the {"...": digest}
 // placeholder that stands for a withheld array element.
 //
 // The placeholder is only looked for inside arrays, which is the only place
-// draft-ietf-oauth-selective-disclosure-jwt § 4.2.4.2 defines it and the only
+// RFC 9901 §4.2.4.2 defines it and the only
 // place Reconstruct acts on it. A map value of that shape elsewhere reconstructs
 // to nothing, so it is not machinery to refuse.
 func carriesSDMachinery(value interface{}) bool {
@@ -233,7 +246,7 @@ func carriesSDMachinery(value interface{}) bool {
 	return false
 }
 
-// requireV2Context enforces VCDM 2.0 §4.2: the v2 URL comes first. The data
+// requireV2Context enforces VCDM 2.0 §4.3: the v2 URL comes first. The data
 // model asks for an ordered set, but a lone string means the same thing and is
 // accepted rather than turned into a second way to fail.
 func requireV2Context(v interface{}) error {
@@ -247,7 +260,7 @@ func requireV2Context(v interface{}) error {
 		}
 	}
 	if first != credentialsV2Context {
-		return fmt.Errorf("credential must name %q first in @context, got %q", credentialsV2Context, first)
+		return fmt.Errorf("credential must name %q first in @context, got %.64q", credentialsV2Context, first)
 	}
 	return nil
 }
@@ -258,7 +271,7 @@ func requireCredentialType(v interface{}) error {
 	if hasType(v, "VerifiableCredential") {
 		return nil
 	}
-	return fmt.Errorf("credential type must include VerifiableCredential, got %v", v)
+	return fmt.Errorf("credential type must include VerifiableCredential, got %q", errtext.Clip(fmt.Sprint(v)))
 }
 
 // hasType reports whether a type property names want. Shared with the vp package
@@ -318,6 +331,11 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
+	// Verify refuses a credential whose JSON is not in compacted form, so the
+	// SDK does not sign one.
+	if err := e.verifyCompactedForm(processor.JSONLDLimits{}); err != nil {
+		return fmt.Errorf("cannot sign: %w", err)
+	}
 
 	vm, vmURL, err := e.resolveSigningVMEntry(opts...)
 	if err != nil {
@@ -326,7 +344,7 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 
 	kind, ok := verificationmethod.VMKeyKind(vm)
 	if !ok {
-		return fmt.Errorf("verification method %q has an unrecognized key type", vmURL)
+		return fmt.Errorf("verification method %.64q has an unrecognized key type", vmURL)
 	}
 
 	suite, err := jsonmap.SigningSuiteForKey(kind)
@@ -336,7 +354,7 @@ func (e *JSONCredential) AddProofByProvider(provider signer.SignerProvider, opts
 
 	vmPub, err := verificationmethod.ECPubFromVM(vm)
 	if err != nil {
-		return fmt.Errorf("verification method %q: %w", vmURL, err)
+		return fmt.Errorf("verification method %.64q: %w", vmURL, err)
 	}
 
 	m := (*jsonmap.JSONMap)(&e.credentialData)
@@ -430,6 +448,9 @@ func (e *JSONCredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	if err := e.executeOptions(signingOptions(opts)...); err != nil {
 		return err
 	}
+	if err := e.verifyCompactedForm(processor.JSONLDLimits{}); err != nil {
+		return fmt.Errorf("cannot attach proof: %w", err)
+	}
 
 	return m.AddCustomProof(proof)
 }
@@ -505,47 +526,73 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
 	}
 
-	g := &errgroup.Group{}
-
-	if options.isValidateSchema {
-		g.Go(func() error {
-			if err := validateCredential(e.credentialData, options); err != nil {
-				return fmt.Errorf("validate credential: %w", err)
-			}
-
-			return nil
-		})
-	}
-
+	// The value limit walks the JSON, before any JSON-LD processing; the
+	// scoped-context limit goes to json-gold with the proof check below.
+	// Limits protect the verifier, so signing calls skip them.
 	if options.isVerifyProof {
-		g.Go(func() error {
-			isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
-				options.resolver,
-				options.proofVerificationMethod,
-				jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
-				jsonmap.WithMaxProofs(options.maxProofs),
-			)
-			if err != nil {
-				return fmt.Errorf("verify proof: %w", err)
-			}
-
-			if !isValid {
-				return fmt.Errorf("invalid proof")
-			}
-
-			return nil
-		})
+		if err := processor.CheckJSONLDLimits(
+			map[string]interface{}(e.credentialData), options.jsonldLimits); err != nil {
+			return fmt.Errorf("credential verification failed: %w", err)
+		}
 	}
 
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("credential verification failed: %w", err)
+	// Count the proofs before schema validation and proof verification run.
+	if options.isVerifyProof {
+		if err := (*jsonmap.JSONMap)(&e.credentialData).CheckProofCount(options.maxProofs); err != nil {
+			return fmt.Errorf("credential verification failed: verify proof: %w", err)
+		}
+	}
+
+	// Step 1: verify the proof first. The proof check works on the canonical
+	// RDF of the document, so it accepts any equivalent JSON shape. All later
+	// checks read the raw JSON by key name, so they need the compacted form.
+	if options.isVerifyProof {
+		isValid, err := (*jsonmap.JSONMap)(&e.credentialData).VerifyProof(
+			options.resolver,
+			options.proofVerificationMethod,
+			jsonmap.WithExpectedProofPurpose(options.diProofPurpose()),
+			jsonmap.WithMaxProofs(options.maxProofs),
+			jsonmap.WithJSONLDLimits(options.jsonldLimits),
+		)
+		if err != nil {
+			return fmt.Errorf("credential verification failed: verify proof: %w", err)
+		}
+		if !isValid {
+			return fmt.Errorf("credential verification failed: invalid proof")
+		}
+
+		// Step 2: the properties the SDK reads by name must say what the signed
+		// document says (see vcCompactedForm). The raw data is not mutated.
+		//
+		// Only a proof over the canonical form lets the JSON-LD meaning differ
+		// from what the keys say. A document secured only by JwtProof2020 is
+		// not checked: the JWT binds its body key by key. That departs from
+		// VC Data Model 2.0 §7.1 step 2, which names no securing mechanism.
+		signsCanonical, err := (*jsonmap.JSONMap)(&e.credentialData).SignsCanonicalForm()
+		if err != nil {
+			return fmt.Errorf("credential verification failed: %w", err)
+		}
+		if signsCanonical {
+			if err := e.verifyCompactedForm(options.jsonldLimits); err != nil {
+				return fmt.Errorf("credential verification failed: %w", err)
+			}
+		}
+	}
+
+	// Step 3: the remaining checks read the credential by name, which step 2
+	// proved says what the signed document says. Schema validation runs after
+	// the proof, so an unsigned credential costs no schema fetch.
+	if options.isValidateSchema {
+		if err := validateCredential(e.credentialData, options); err != nil {
+			return fmt.Errorf("credential verification failed: validate credential: %w", err)
+		}
 	}
 
 	// Revocation check runs after the proof is verified: an unsigned or
 	// forged credential must not trigger a GET to the statusListCredential
 	// URL the attacker chose.
 	if options.isCheckRevocation {
-		if err := checkRevocation(e.credentialData, options.resolver, options.acceptLegacyStatusList); err != nil {
+		if err := checkRevocation(e.credentialData, options); err != nil {
 			return fmt.Errorf("credential verification failed: check revocation: %w", err)
 		}
 	}
@@ -555,7 +602,39 @@ func (e *JSONCredential) executeOptions(opts ...CredentialOpt) error {
 		if err := checkExpiration(e.credentialData, options.leeway); err != nil {
 			return fmt.Errorf("failed to check expiration: %w", err)
 		}
+		// The JWT of a JwtProof2020 proof is checked as the JWT path checks
+		// it. Its body dates are not a substitute: a date at the claim's
+		// second can lie later in that second, and a falsy exp (0) has no date.
+		if err := (*jsonmap.JSONMap)(&e.credentialData).CheckJwtProofTimes(options.leeway); err != nil {
+			return fmt.Errorf("failed to check expiration: %w", err)
+		}
 	}
 
 	return nil
+}
+
+// vcCompactedForm lists the properties SDK checks and readers take from a
+// credential by name: validity dates (VC Data Model 2.0 and 1.1), the issuer,
+// and the nodes revocation, schema validation and rendering read.
+var vcCompactedForm = compactform.Rules{
+	Single:         []string{"issuer", "validFrom", "validUntil", "issuanceDate", "expirationDate"},
+	Nodes:          []string{"issuer", "credentialSubject", "credentialStatus", "credentialSchema", "renderMethod"},
+	NamedVCDMTerms: true,
+}
+
+// ErrNotCompactedForm is returned, wrapped with the property path, when the
+// JSON of a JSON-LD document does not say what its signed meaning says for a
+// property the SDK reads by name. It is processor.ErrNotCompactedForm.
+var ErrNotCompactedForm = processor.ErrNotCompactedForm
+
+// verifyCompactedForm refuses a credential whose JSON, for a property in
+// vcCompactedForm, does not say what its signed meaning says. The raw data is
+// never mutated.
+func (e *JSONCredential) verifyCompactedForm(limits processor.JSONLDLimits) error {
+	body, err := (*jsonmap.JSONMap)(&e.credentialData).ToMap()
+	if err != nil {
+		return fmt.Errorf("compact form check: serialize body: %w", err)
+	}
+	delete(body, "proof")
+	return compactform.Check(body, vcCompactedForm, limits)
 }

@@ -9,8 +9,8 @@ require (
 	github.com/fxamacker/cbor/v2 v2.7.0
 	github.com/mr-tron/base58 v1.3.0
 	github.com/nlnwa/whatwg-url v0.6.2
-	github.com/pilacorp/go-credential-sdk/jose v0.1.1
-	github.com/pilacorp/json-gold v0.9.1-pila.6
+	github.com/pilacorp/go-credential-sdk/jose v0.1.2-0.20261128175151-ba319174225d
+	github.com/pilacorp/json-gold v0.9.1-pila.8
 	github.com/stretchr/testify v1.11.1
 	github.com/xeipuuv/gojsonschema v1.2.0
 	golang.org/x/exp v0.0.0-20250718183923-645b1fa84792

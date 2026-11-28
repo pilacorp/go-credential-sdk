@@ -422,6 +422,34 @@ func TestCheckExpiration_Expired(t *testing.T) {
 	assert.Contains(t, err.Error(), "credential is expired")
 }
 
+func TestCheckExpiration_V1ExpirationDatePassed(t *testing.T) {
+	credential := CredentialData{
+		"issuanceDate":   time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+		"expirationDate": time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+	}
+
+	require.ErrorContains(t, checkExpiration(credential, 0), "credential is expired")
+}
+
+func TestCheckExpiration_V1IssuanceDateAhead(t *testing.T) {
+	credential := CredentialData{
+		"issuanceDate": time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+	}
+
+	require.ErrorContains(t, checkExpiration(credential, 0), "credential is not valid yet")
+}
+
+// VCDM 1.1 dates are XML Schema dateTime values: the time zone may be left
+// out (read as UTC) and T24:00:00 is the end of the day.
+func TestCheckExpiration_V1DatesInXMLSchemaForms(t *testing.T) {
+	credential := CredentialData{
+		"issuanceDate":   "2020-01-01T00:00:00",
+		"expirationDate": "2999-12-31T24:00:00Z",
+	}
+
+	require.NoError(t, checkExpiration(credential, 0))
+}
+
 func TestParseSubject(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -741,7 +769,7 @@ func TestCheckRevocation_MissingStatusPurpose_Refused(t *testing.T) {
 			// no statusPurpose
 		},
 	}
-	err := checkRevocation(data, nil, false)
+	err := checkRevocation(data, &credentialOptions{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "statusPurpose is required")
 }
@@ -754,9 +782,10 @@ func TestCheckRevocation_UnsupportedStatusSize_Refused(t *testing.T) {
 			"statusListIndex":      "5",
 			"statusPurpose":        "revocation",
 			"statusSize":           float64(2),
+			"statusMessage":        []interface{}{map[string]interface{}{"status": "0x0", "message": "a"}, map[string]interface{}{"status": "0x1", "message": "b"}, map[string]interface{}{"status": "0x2", "message": "c"}, map[string]interface{}{"status": "0x3", "message": "d"}},
 		},
 	}
-	err := checkRevocation(data, nil, false)
+	err := checkRevocation(data, &credentialOptions{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "statusSize")
 	assert.Contains(t, err.Error(), "not supported")
@@ -1693,6 +1722,13 @@ func TestJOSECredential_SDJWTHolderFlow(t *testing.T) {
 
 	disclosures := parsed.Disclosures
 	assert.Len(t, disclosures, 2, "expected two disclosures (firstname, email)")
+	// The holder picks a disclosure by its name, not by its position.
+	for _, d := range parsed.DecodedDisclosures {
+		if d.FieldName == "firstname" {
+			disclosures = []string{d.Disclosure}
+		}
+	}
+	require.Len(t, disclosures, 1)
 
 	issuerJWT := parsed.BaseJWT
 	assert.NotEmpty(t, issuerJWT)
@@ -2503,7 +2539,39 @@ func TestCheckRevocation_ArrayTypedEntryIsRead(t *testing.T) {
 			"statusListIndex":      "5",
 		},
 	}
-	err := checkRevocation(data, nil, false)
+	err := checkRevocation(data, &credentialOptions{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "statusPurpose is required")
+}
+
+// TestCheckRevocation_StatusArray checks VC Data Model v2.0 §4.10: a
+// credentialStatus set of several entries is read, and each entry is checked.
+func TestCheckRevocation_StatusArray(t *testing.T) {
+	bitstringEntry := func(purpose string) map[string]interface{} {
+		e := map[string]interface{}{
+			"type":                 "BitstringStatusListEntry",
+			"statusListCredential": "https://example.com/status/0",
+			"statusListIndex":      "5",
+		}
+		if purpose != "" {
+			e["statusPurpose"] = purpose
+		}
+		return e
+	}
+	unknown := map[string]interface{}{"type": "StatusList2021Entry", "statusListIndex": "5"}
+
+	// The second entry is refused before any fetch, so the error proves it was read.
+	err := checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, bitstringEntry("")}}, &credentialOptions{})
+	assert.ErrorContains(t, err, "credentialStatus[1]")
+	assert.ErrorContains(t, err, "statusPurpose is required")
+
+	// Entries of types the SDK does not read are ignored, as for a single entry.
+	assert.NoError(t, checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, unknown}}, &credentialOptions{}))
+
+	// An empty set is not "one or more objects".
+	assert.ErrorContains(t, checkRevocation(CredentialData{"credentialStatus": []interface{}{}}, &credentialOptions{}), "empty array")
+
+	// An entry that is not an object is refused.
+	err = checkRevocation(CredentialData{"credentialStatus": []interface{}{unknown, "x"}}, &credentialOptions{})
+	assert.ErrorContains(t, err, "credentialStatus[1] must be an object")
 }

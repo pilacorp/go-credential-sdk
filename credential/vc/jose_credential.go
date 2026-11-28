@@ -3,9 +3,8 @@ package vc
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,8 +14,8 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/jwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
-	"github.com/pilacorp/go-credential-sdk/credential/internal/joseadapter"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 	josesdjwt "github.com/pilacorp/go-credential-sdk/jose/sdjwt"
@@ -76,7 +75,6 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 		VC:             vcMap,
 		SelectivePaths: options.sdSelectivePaths,
 		HashAlgorithm:  options.sdAlg,
-		Shuffle:        options.sdShuffle,
 		Decoys:         options.sdDecoys,
 	})
 	if err != nil {
@@ -117,20 +115,6 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 		}
 	}
 
-	// Same rule the parse side applies: nothing outside credentialSubject may be
-	// disclosable. Reachable here through WithSDSelectivePaths naming a path
-	// outside the subject, or WithSDDecoyDigests with a root path. The subject
-	// itself is exempt — hiding claims in there is the feature.
-	if err := requireDisclosableAtTopLevel(vcMap, true); err != nil {
-		return nil, err
-	}
-
-	// Reconstruct deep-copies, so this validates without touching what gets
-	// signed.
-	if _, rerr := recreateSDPayload(vcMap, disclosures); rerr != nil {
-		return nil, fmt.Errorf("invalid SD-JWT disclosures: %w", rerr)
-	}
-
 	// Read from the payload, which is the same question ParseJOSECredential asks
 	// of the same bytes. Deriving it from len(disclosures) instead made the two
 	// ends disagree about decoys-only credentials — BuildDisclosures writes
@@ -152,6 +136,21 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 
 	payloadData := CredentialData(vcMap)
 
+	// The parser's rules (which claims may be concealed; RFC 9901 §7.1: the
+	// disclosures matching the digests)
+	// run on the bytes that will be signed, whatever Go types the caller's
+	// contents held. A first run with a provisional header refuses a bad
+	// configuration before the DID is resolved, which may cost a network call.
+	if _, err := assembleJOSECredential(vcMap, payloadData, disclosures, disclosable,
+		jwt.SigningKey{ID: options.verificationMethodKey, Alg: jwt.AlgES256}, true); err != nil {
+		return nil, err
+	}
+	if disclosable {
+		if err := requireNoRootDigests(vcMap); err != nil {
+			return nil, err
+		}
+	}
+
 	// Resolve the verification method the header will name, and keep it: every
 	// signing path checks the signature it is handed against this key before
 	// attaching it, so a signature made by another key fails here rather than at
@@ -162,52 +161,66 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 		return nil, err
 	}
 
-	// typ names the securing mechanism, so it follows the payload rather than
-	// being fixed: vc-jose-cose § 3.2.1 says vc+jwt when securing with JWS and
-	// vc+sd-jwt when securing with SD-JWT. A verifier routes on this, and one
-	// told vc+jwt parses the token as plain JWS and chokes on the disclosures
-	// trailing the signature.
-	//
-	// Decoy digests count. They carry no disclosure, but a verifier still has to
-	// run SD-JWT processing to fold them out, and one that does not sees _sd and
-	// _sd_alg sitting in credentialSubject as though they were claims.
-	//
-	// jwt.purposeFromTyp has to recognise whichever value lands here — a typ the
-	// parser routes but the purpose check does not know is decided by the
-	// payload, which the signer writes.
+	// Again with the real header. Only alg and kid changed, and no parse
+	// rule reads them, so the header bound is checked again and, for an
+	// SD-JWT, the size jose/sdjwt.Split caps, which the kid's length moves.
+	e, err := assembleJOSECredential(vcMap, payloadData, disclosures, disclosable, signingKey, false)
+	if err != nil {
+		return nil, err
+	}
+	if disclosable {
+		if err := e.checkSplittable(); err != nil {
+			return nil, err
+		}
+	}
+	return e, e.executeOptions(opts...)
+}
+
+// assembleJOSECredential writes the header for key and the payload, and
+// refuses a credential ParseJOSECredential would refuse once signed.
+//
+// typ names the securing mechanism, so it follows the payload rather than
+// being fixed: vc-jose-cose (W3C REC 2026-10-13) §3.1.1 says typ SHOULD be
+// vc+jwt when securing with JOSE, and §3.2.1 that it SHOULD be vc+sd-jwt when
+// securing with SD-JWT. A verifier routes on this, and one
+// told vc+jwt parses the token as plain JWS and chokes on the disclosures
+// trailing the signature. Decoy digests count: they carry no disclosure, but
+// a verifier still has to run SD-JWT processing to fold them out.
+// jwt.purposeFromTyp has to recognise whichever value lands here.
+func assembleJOSECredential(vcMap map[string]interface{}, payloadData CredentialData, disclosures []string, disclosable bool, key jwt.SigningKey, parseBack bool) (*JOSECredential, error) {
 	header := map[string]interface{}{
 		"typ": TypeVCJWT,
-		"alg": signingKey.Alg,
-		"kid": signingKey.ID,
+		"alg": key.Alg,
+		"kid": key.ID,
 	}
 	if disclosable {
 		header["typ"] = TypeVCSDJWT
 	}
-
-	headerJSON, err := json.Marshal(header)
+	headerEncoded, err := jwtutil.MarshalSegment(header)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal header: %w", err)
 	}
-	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
-
-	payloadJSON, err := json.Marshal(vcMap)
+	if err := jwtutil.CheckHeaderToSign(headerEncoded, key.ID); err != nil {
+		return nil, err
+	}
+	payloadEncoded, err := jwtutil.MarshalSegment(vcMap)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
-
-	signingInput := headerEncoded + "." + payloadEncoded
-
 	e := &JOSECredential{
-		signingInput: signingInput,
+		signingInput: headerEncoded + "." + payloadEncoded,
 		payloadData:  payloadData,
-		signature:    "",
 		disclosures:  disclosures,
 		disclosable:  disclosable,
-		signingKey:   signingKey,
+		signingKey:   key,
 	}
-
-	return e, e.executeOptions(opts...)
+	if !parseBack {
+		return e, nil
+	}
+	if err := e.checkParsable(); err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 // ParseJOSECredential parses a W3C vc-jose-cose (vc+jwt) token.
@@ -220,15 +233,17 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	// empty disclosures and a missing trailing ~.
 	var issuerJWT string
 	var disclosures []string
-	if strings.Contains(rawJWT, "~") {
+	// combinedSD: the token is in the combined form, which Split accepted.
+	combinedSD := strings.Contains(rawJWT, "~")
+	if combinedSD {
 		ij, ds, kbJWT, serr := josesdjwt.Split(rawJWT)
 		if serr != nil {
 			return nil, fmt.Errorf("failed to parse SD-JWT: %w", serr)
 		}
 		// RFC 9901 section 7.2: a Holder that receives an SD-JWT+KB MUST
-		// reject it. Dropping the KB-JWT also left a verifier unable to tell
-		// one had arrived, and gave the token the Hash of the token without it.
-		// Refused until the SDK verifies Key Binding JWTs.
+		// reject it; section 4: a Verifier that expects an SD-JWT MUST check
+		// that the final component is empty. The SDK verifies no Key Binding
+		// JWT yet, so it expects an SD-JWT on both paths.
 		if kbJWT != "" {
 			return nil, fmt.Errorf("failed to parse SD-JWT: SD-JWT carries a key binding JWT, which this SDK does not verify yet; present the credential without it")
 		}
@@ -249,18 +264,22 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		signature = parts[2]
 	}
 
-	headerBytes, err := jose.DecodeSegment(headerEncoded)
+	// Read by module jose's rules: over 64 KiB, a duplicate key, invalid
+	// UTF-8 or trailing data is refused, as jose/jws.Verify refuses it.
+	headerMap, err := jwtutil.DecodeHeaderSegment(headerEncoded)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode header: %w", err)
 	}
-	var headerMap map[string]interface{}
-	if err := json.Unmarshal(headerBytes, &headerMap); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal header: %w", err)
-	}
 	typ, _ := headerMap["typ"].(string)
 	if !isJOSECredentialTyp(typ) {
-		return nil, fmt.Errorf("invalid typ header for JOSECredential: got %q, want %q or %q",
+		return nil, fmt.Errorf("invalid typ header for JOSECredential: got %.64q, want %q or %q",
 			typ, TypeVCJWT, TypeVCSDJWT)
+	}
+	// RFC 9901 §4: the last tilde of an SD-JWT MUST NOT be omitted, and a
+	// Verifier that expects one MUST check it. common/sdjwt.Parse refuses it
+	// too: IsSDJWT needs a "~".
+	if !combinedSD && (jws.Header{"typ": typ}).TypIs(TypeVCSDJWT) {
+		return nil, fmt.Errorf("failed to parse SD-JWT: %w: a %s token ends in \"~\" (RFC 9901 §4)", jose.ErrMalformed, TypeVCSDJWT)
 	}
 
 	payloadBytes, err := jose.DecodeSegment(payloadEncoded)
@@ -268,8 +287,7 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		return nil, fmt.Errorf("failed to decode payload: %w", err)
 	}
 
-	var payloadMap map[string]interface{}
-	err = json.Unmarshal(payloadBytes, &payloadMap)
+	payloadMap, err := jwtutil.DecodeJSONObject(payloadBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
 	}
@@ -283,68 +301,51 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		return nil, fmt.Errorf("invalid vc-jose-cose: 'vp' claim MUST NOT be present in payload")
 	}
 
-	// Whether this token is an SD-JWT is answered by the two things that say how
-	// it was secured — the media type in the header, and the combined format —
-	// not by a claim inside the payload. _sd_alg looked like the marker because
-	// BuildDisclosures always writes it, but RFC 9901 § 4.1.1 makes it OPTIONAL
-	// and defaults it to sha-256, so an SD-JWT from another implementation need
-	// not carry it. Reading it as the marker left such a token with
-	// disclosable=false: Reconstruct never ran, so the _sd digests stayed in the
-	// document as though they were claims, Serialize dropped the disclosures and
-	// the terminator, and the claim the holder did send was gone after a round
-	// trip. It is kept below only as a third signal, never as the only one.
-	_, hasSDAlg := payloadMap["_sd_alg"]
-	declaredSD := strings.TrimPrefix(typ, "application/") == TypeVCSDJWT
-	combinedSD := sdjwt.IsSDJWT(rawJWT)
-
-	// The header must not disagree with the bytes. A token typed vc+jwt means
-	// plain JWS to every other verifier, which parses it that way and chokes on
-	// the disclosures after the signature; this one used to accept it and
-	// reconstruct, so the two ends read the same token differently.
-	//
-	// A vc+jwt whose payload carries _sd with neither a terminator nor _sd_alg
-	// gives neither signal, so it slips past this one; the walk below catches it,
-	// which is why that walk is told whether the media type declared SD.
-	if !declaredSD && (combinedSD || hasSDAlg) {
-		return nil, fmt.Errorf("typ %q does not match the SD-JWT format", typ)
+	// Whether this token is an SD-JWT is answered by what says how it was
+	// secured: the media type in the header. A vc+jwt is a plain JWS (vc-jose-
+	// cose §3.1.1), so _sd, _sd_alg or {"...": digest} in its payload are
+	// claims like any other, which a verifier ignores when it does not know
+	// them (RFC 7519 §4), never SD-JWT processing. Only the combined format,
+	// disclosures after the signature, contradicts that typ.
+	declaredSD := jws.Header{"typ": typ}.TypIs(TypeVCSDJWT)
+	if !declaredSD && combinedSD {
+		return nil, fmt.Errorf("typ %.64q does not match the SD-JWT format", typ)
 	}
 
-	// Whatever the holder chose to send, the issuer must not have made anything
-	// outside credentialSubject disclosable in the first place: a withheld
-	// disclosure leaves only a digest, which does not say which property it
-	// stood for, so there would be nothing left to check. Runs before
-	// Reconstruct, because Reconstruct is what removes the evidence.
-	if err := requireDisclosableAtTopLevel(payloadMap, declaredSD); err != nil {
-		return nil, err
+	if declaredSD {
+		if err := requireSecuredClaimsNotConcealed(payloadMap); err != nil {
+			return nil, err
+		}
 	}
 
 	vcMap := payloadMap
-	// jose/sdjwt.Recreate is also what strips the _sd arrays and _sd_alg, so
-	// it has to run whenever the token is an SD-JWT — not only when a
+	// common/sdjwt.Reconstruct (jose/sdjwt.RecreateWithOptions) is also what
+	// strips the _sd arrays and _sd_alg, so it has to run whenever the token
+	// is an SD-JWT — not only when a
 	// disclosure arrived. A holder revealing nothing used to hand the caller a
 	// credentialSubject with a raw digest array sitting in it as though it
 	// were a claim, and schema validation then saw a property the schema does
 	// not know.
 	//
-	// Recreate applies the stricter rules of RFC 9901 section 7.1: undisclosed
-	// array elements are removed (not kept as {"...": digest}), disclosure
-	// names "...", "_sd" and "_sd_alg" are rejected, and duplicate digests
-	// across the whole payload are refused.
-	disclosable := declaredSD || combinedSD || hasSDAlg
-	if disclosable || len(disclosures) > 0 {
-		recreated, rerr := recreateSDPayload(payloadMap, disclosures)
+	// It applies RFC 9901 §7.1: undisclosed array elements are removed (step
+	// 3d), disclosure names "_sd" and "..." are rejected (step 3c.ii.2), and
+	// duplicate digests are refused (step 4). jose also refuses a disclosure
+	// named "_sd_alg", which §4.1.1 keeps at the top level.
+	disclosable := declaredSD
+	if disclosable {
+		recreated, rerr := sdjwt.Reconstruct(payloadMap, disclosures, true)
 		if rerr != nil {
 			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rerr)
 		}
 		vcMap = recreated
-	}
 
-	// Reconstruct deep-copies, so payloadMap is still exactly what the signature
-	// covered while vcMap is what the caller will read. A disclosure that arrived
-	// carrying one of the claims a verifier decides on is named here; one that was
-	// withheld was already refused above.
-	if err := requireSecuredClaimsSigned(payloadMap, vcMap); err != nil {
-		return nil, fmt.Errorf("invalid %s payload: %w", typ, err)
+		// Reconstruct deep-copies, so payloadMap is still exactly what the
+		// signature covered while vcMap is what the caller will read. A
+		// disclosure that arrived carrying one of the claims a verifier decides
+		// on is named here; one that was withheld was already refused above.
+		if err := requireSecuredClaimsSigned(payloadMap, vcMap); err != nil {
+			return nil, fmt.Errorf("invalid %s payload: %w", typ, err)
+		}
 	}
 
 	// A signature proves who produced these bytes, not that the bytes are a
@@ -390,6 +391,7 @@ const TypeJOSE = "JOSE"
 // jwt.purposeFromTyp has to recognise every value accepted here, or a token this
 // function routes would have its kind decided by its own payload. Adding one
 // means adding it there.
+// Case is ignored and "application/" is implied (RFC 7515 §4.1.9).
 func isJOSECredentialTyp(typ string) bool {
 	h := jws.Header{"typ": typ}
 	return h.TypIs(TypeVCJWT) || h.TypIs(TypeVCSDJWT)
@@ -420,31 +422,11 @@ func (j *JOSECredential) AddProofByProvider(signerProvider signer.SignerProvider
 		return err
 	}
 
-	// A parsed token has no verification method: refuse before building a
-	// signer for its empty alg.
-	if err := j.signingKey.RequireBound(); err != nil {
-		return err
-	}
-
-	// Sign through jose/jws: the adapter wraps the SignerProvider (which
-	// signs a digest) as a jws.Signer (which signs the signing input).
-	jwsSigner, err := joseadapter.NewSigner(j.signingKey.Alg, signerProvider)
+	// Sign checks the 64-byte r||s shape and verifies the signature against
+	// the key the header names, so a signer that does not hold that key fails
+	// here instead of at the verifier.
+	signature, err := j.signingKey.Sign(j.signingInput, signerProvider)
 	if err != nil {
-		return fmt.Errorf("failed to create JWS signer: %w", err)
-	}
-	raw, err := jwsSigner.Sign(context.Background(), []byte(j.signingInput))
-	if err != nil {
-		return fmt.Errorf("failed to sign signing input: %w", err)
-	}
-	// Accept checks the 64-byte r||s shape and verifies the signature
-	// against the key the header names. Assigned only after all of that, so
-	// a failed call needs no rollback and cannot clear a signature the
-	// credential already had.
-	signature, err := j.signingKey.Accept(j.signingInput, raw)
-	if err != nil {
-		return err
-	}
-	if err := j.checkParsable(signature); err != nil {
 		return err
 	}
 	j.signature = signature
@@ -487,9 +469,6 @@ func (j *JOSECredential) AddCustomProof(proof *dto.Proof, opts ...CredentialOpt)
 	// and this is where it is held to being the right key over this input.
 	signature, err := j.signingKey.Accept(j.signingInput, proof.Signature)
 	if err != nil {
-		return err
-	}
-	if err := j.checkParsable(signature); err != nil {
 		return err
 	}
 	j.signature = signature
@@ -541,9 +520,17 @@ func (j *JOSECredential) DecodedDisclosures() ([]sdjwt.DecodedDisclosure, error)
 }
 
 // Present returns the same credential carrying only selectedDisclosures, which
-// is how a holder reveals a subset. The issuer-signed JWT is untouched, so the
-// signature still verifies; what changes is how much of the payload can be
-// reconstructed from it.
+// is how a holder reveals a subset. A disclosure nested in a concealed claim
+// needs that claim's disclosure selected too: RFC 9901 §7.2 has the Holder
+// check that each selected disclosure's digest is in the Issuer-signed JWT
+// or in another selected disclosure (presentation step 2); Present refuses the
+// selection and names what to add, rather than revealing it unasked.
+// The refusal is a *ParentDisclosureError, which matches
+// ErrParentDisclosureNotSelected; its Missing field lists every disclosure
+// the selection lacks, each chain innermost first, so presenting again with
+// them added passes this check.
+// The issuer-signed JWT is untouched, so the signature still verifies; what
+// changes is how much of the payload can be reconstructed from it.
 func (j *JOSECredential) Present(selectedDisclosures []string) (Credential, error) {
 	if j.signature == "" {
 		return nil, fmt.Errorf("cannot present an unsigned credential")
@@ -564,6 +551,13 @@ func (j *JOSECredential) Present(selectedDisclosures []string) (Credential, erro
 		return nil, fmt.Errorf("credential carries no disclosures; nothing to present selectively")
 	}
 
+	payload, err := jwtutil.DecodeSegmentObject(strings.SplitN(j.signingInput, ".", 2)[1])
+	if err != nil {
+		return nil, fmt.Errorf("decode payload: %w", err)
+	}
+	if err := requireParentsSelected(payload, j.disclosures, selectedDisclosures); err != nil {
+		return nil, err
+	}
 	return ParseJOSECredential(sdjwt.BuildSDJWTPresentation(issuerJWT, selectedDisclosures))
 }
 
@@ -607,6 +601,9 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	if options.isCheckRevocation && !options.isVerifyProof {
 		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
 	}
+	if err := j.requireClaimsNotWithheld(options); err != nil {
+		return fmt.Errorf("credential verification failed: %w", err)
+	}
 
 	g := &errgroup.Group{}
 
@@ -632,8 +629,8 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 				return fmt.Errorf("verify proof: %w", err)
 			}
 			// exp and nbf bound the signature, not the credential, so they
-			// belong to this check and not to the optional expiry check on
-			// validFrom/validUntil.
+			// belong to this check and not to the optional expiry check on the
+			// document's dates (vcdm.CheckValidity).
 			if err := jwtutil.CheckTimeClaims(j.payloadData, options.leeway); err != nil {
 				return fmt.Errorf("verify proof: %w", err)
 			}
@@ -649,7 +646,7 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	// forged credential must not trigger a GET to the statusListCredential
 	// URL the attacker chose.
 	if options.isCheckRevocation {
-		if err := checkRevocation(j.payloadData, options.resolver, options.acceptLegacyStatusList); err != nil {
+		if err := checkRevocation(j.payloadData, options); err != nil {
 			return fmt.Errorf("credential verification failed: check revocation: %w", err)
 		}
 	}
@@ -663,66 +660,228 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	return nil
 }
 
-// checkParsable refuses a signature whose finished SD-JWT the SDK's own parser
-// would refuse: jose/sdjwt.Split caps a token at 1 MiB and 1000 disclosures,
-// and issuance has no such cap, so a credential could sign here and then fail
-// ParseJOSECredential.
-func (j *JOSECredential) checkParsable(signature string) error {
-	if !j.disclosable {
-		return nil
-	}
-	signed := *j
-	signed.signature = signature
-	token, err := signed.Serialize()
+// checkParsable refuses, before anything is signed, a credential that
+// ParseJOSECredential would refuse once signed: it parses the finished token
+// with a placeholder signature. Accept takes only a 64-byte signature, so the
+// placeholder of its encoded length gives the token its final size, and the
+// parser's limits (1 MiB and 1000 disclosures for an SD-JWT, nesting depth)
+// apply as they will.
+func (j *JOSECredential) checkParsable() error {
+	token, err := j.placeholderToken()
 	if err != nil {
 		return err
 	}
-	if _, _, _, err := josesdjwt.Split(token.(string)); err != nil {
-		return fmt.Errorf("signed SD-JWT is one this SDK cannot parse back: %w", err)
+	if _, err := ParseJOSECredential(token); err != nil {
+		if j.disclosable || len(j.disclosures) > 0 {
+			return fmt.Errorf("invalid SD-JWT disclosures: the SDK cannot parse back this credential: %w", err)
+		}
+		return fmt.Errorf("the SDK cannot parse back this credential: %w", err)
 	}
 	return nil
 }
 
-// recreateSDPayload returns the claims of an SD-JWT payload with the
-// disclosures put back, without changing payload. Issuance and parsing both
-// call it, so a credential that signs is read by the same rules when it is
-// parsed. A sha-256 payload goes through module jose, which applies RFC 9901
-// section 7.1: undisclosed array elements are removed, the names "...", "_sd"
-// and "_sd_alg" are refused, and a digest used twice is refused. module jose
-// recreates sha-256 only, while WithSDHashAlgorithm also issues sha-384 and
-// sha-512 (section 4.1.1 allows any IANA hash), so those go through
-// common/sdjwt.Reconstruct, which also removes undisclosed array elements.
-func recreateSDPayload(payload map[string]interface{}, disclosures []string) (map[string]interface{}, error) {
-	// ParseDisclosure reads a disclosure's form and refuses the reserved claim
-	// names (RFC 9901 section 4.2.1) whatever hash the payload uses.
-	parsed := make([]josesdjwt.Disclosure, len(disclosures))
-	for i, d := range disclosures {
-		p, err := josesdjwt.ParseDisclosure(d)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse disclosure: %w", err)
-		}
-		parsed[i] = p
-	}
-	if alg, _ := payload["_sd_alg"].(string); alg == sdjwt.AlgSHA384 || alg == sdjwt.AlgSHA512 {
-		// module jose recreates sha-256 only. Check the payload's shape by its
-		// rules first (RFC 9901 section 4.1 rule 7, 4.1.1, 4.2.4.2), on a copy
-		// labelled sha-256 with no disclosures, so every hash refuses what
-		// sha-256 refuses; then put the disclosures back with Reconstruct.
-		shape := make(map[string]interface{}, len(payload))
-		for k, v := range payload {
-			shape[k] = v
-		}
-		shape["_sd_alg"] = sdjwt.DefaultHashAlgorithm
-		if _, err := josesdjwt.Recreate(shape, nil); err != nil {
-			return nil, err
-		}
-		return sdjwt.Reconstruct(payload, disclosures, true)
-	}
-	// Any other _sd_alg, sha-256 or unknown, goes to module jose, which
-	// refuses an algorithm it does not implement.
-	recreated, err := josesdjwt.Recreate(payload, parsed)
+// checkSplittable refuses an SD-JWT that jose/sdjwt.Split, which every
+// reader runs first, would refuse once signed: over 1 MiB or 1000 disclosures.
+func (j *JOSECredential) checkSplittable() error {
+	token, err := j.placeholderToken()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return recreated.Claims, nil
+	if _, _, _, err := josesdjwt.Split(token); err != nil {
+		return fmt.Errorf("invalid SD-JWT disclosures: the SDK cannot parse back this credential: %w", err)
+	}
+	return nil
+}
+
+// placeholderToken is j serialized with a placeholder signature of the
+// final length, the bytes a reader will get once j is signed.
+func (j *JOSECredential) placeholderToken() (string, error) {
+	signed := *j
+	signed.signature = jwtutil.PlaceholderSignature()
+	token, err := signed.Serialize()
+	if err != nil {
+		return "", err
+	}
+	return token.(string), nil
+}
+
+// requireParentsSelected refuses a selection holding a disclosure nested in
+// a concealed claim whose own disclosure is not selected, naming every
+// disclosure the selection lacks, so one refusal says all there is to add.
+// Adding the parents would reveal their other members without the holder
+// choosing to. payload is the Issuer-signed JWT payload and all the
+// credential's disclosures; jose/sdjwt finds each one's concealed ancestors
+// (RFC 9901 §4.2.6, §7.2) under the payload's _sd_alg.
+func requireParentsSelected(payload map[string]interface{}, all, selected []string) error {
+	r, err := recreate(payload, all)
+	if err != nil {
+		return err
+	}
+	chosen := make(map[string]bool, len(selected))
+	for _, d := range selected {
+		chosen[d] = true
+	}
+	var refusal *ParentDisclosureError
+	listed := map[string]bool{}
+	for _, d := range selected {
+		h, err := josesdjwt.DigestWith(d, r.Alg)
+		if err != nil {
+			return err
+		}
+		ancestors, ok := r.Ancestors(h)
+		if !ok {
+			continue // not the credential's; ParseJOSECredential refuses it
+		}
+		// Innermost first, each listed once.
+		for i := len(ancestors) - 1; i >= 0; i-- {
+			p := ancestors[i].Encoded
+			if chosen[p] || listed[p] {
+				continue
+			}
+			listed[p] = true
+			if refusal == nil {
+				refusal = &ParentDisclosureError{Disclosure: d}
+			}
+			refusal.Missing = append(refusal.Missing, p)
+		}
+	}
+	if refusal != nil {
+		return refusal
+	}
+	return nil
+}
+
+// recreate reads the Issuer-signed payload with the credential's own
+// disclosures through jose/sdjwt, under the payload's _sd_alg (sha-256 when
+// absent). The credential was parsed or built under the same rules, so an
+// error here means the payload or disclosures changed since.
+func recreate(payload map[string]interface{}, disclosures []string) (*josesdjwt.Recreated, error) {
+	alg := sdjwt.DefaultHashAlgorithm
+	if v, ok := payload["_sd_alg"].(string); ok {
+		alg = v
+	}
+	given := make([]josesdjwt.Disclosure, 0, len(disclosures))
+	for _, d := range disclosures {
+		if d != "" {
+			given = append(given, josesdjwt.Disclosure{Encoded: d})
+		}
+	}
+	r, err := josesdjwt.RecreateWithOptions(payload, given, josesdjwt.RecreateOptions{Algorithms: []string{alg}})
+	if err != nil {
+		return nil, fmt.Errorf("read the credential's disclosures: %w", err)
+	}
+	return r, nil
+}
+
+// requireNoRootDigests refuses to sign a vc+sd-jwt with a concealed
+// top-level claim or root decoys. This builder writes no exp or nbf, so with
+// root decoys, or once a holder withholds a top-level disclosure, Verify
+// cannot rule out a withheld exp or nbf and refuses the credential
+// (requireClaimsNotWithheld). Root concealment arises only in tokens from
+// other issuers.
+func requireNoRootDigests(payload map[string]interface{}) error {
+	if _, ok := payload["_sd"]; ok {
+		return fmt.Errorf("a top-level claim or decoy is concealed, and this builder writes no exp or nbf: " +
+			"with root decoys, or once a holder withholds a top-level disclosure, the credential fails Verify (RFC 9901 §9.7); " +
+			"conceal claims below the top level instead")
+	}
+	return nil
+}
+
+// requireClaimsNotWithheld refuses a vc+sd-jwt that lacks a claim a check
+// about to run reads, while the payload root holds digests with no
+// disclosure: one of them may be that claim, withheld by the holder, and a
+// verifier cannot tell (RFC 9901 §9.7: verifiers "need to operate as though
+// security-critical claims might be selectively disclosable"). The proof
+// check reads exp and nbf, WithCheckExpiration both validity pairs
+// (vcdm.ValidityPairs),
+// WithCheckRevocation credentialStatus, WithSchemaValidation credentialSchema.
+// A credential carrying them, or with every root digest disclosed, passes.
+func (j *JOSECredential) requireClaimsNotWithheld(o *credentialOptions) error {
+	if !j.disclosable {
+		return nil
+	}
+	var read []string
+	if o.isVerifyProof {
+		read = append(read, "exp", "nbf")
+	}
+	if o.isCheckExpiration {
+		for _, pair := range vcdm.ValidityPairs {
+			read = append(read, pair[0], pair[1])
+		}
+	}
+	if o.isCheckRevocation {
+		read = append(read, "credentialStatus")
+	}
+	if o.isValidateSchema {
+		read = append(read, "credentialSchema")
+	}
+	payload, err := jwtutil.DecodeSegmentObject(strings.SplitN(j.signingInput, ".", 2)[1])
+	if err != nil {
+		return fmt.Errorf("decode payload: %w", err)
+	}
+	if _, ok := payload["_sd"]; !ok {
+		return nil // nothing at the root is concealed
+	}
+	// Disclosed, these claims were refused at parse, so the signed payload
+	// is where they are or are not.
+	var missing []string
+	for _, c := range read {
+		if _, ok := payload[c]; !ok {
+			missing = append(missing, c)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	r, err := recreate(payload, j.disclosures)
+	if err != nil {
+		return err
+	}
+	if n := r.Issued().HiddenFields; n > 0 {
+		return fmt.Errorf("the credential lacks %s while %d top-level claim(s) are concealed and not disclosed; "+
+			"any of them may be one of those, so the checks that read them cannot run (RFC 9901 §9.7): "+
+			"present the credential with its top-level disclosures",
+			strings.Join(missing, ", "), n)
+	}
+	return nil
+}
+
+// ErrParentDisclosureNotSelected is what a *ParentDisclosureError unwraps to.
+var ErrParentDisclosureNotSelected = errors.New("a selected disclosure is inside a concealed claim whose disclosure is not selected")
+
+// ParentDisclosureError is Present's refusal of a selection that holds
+// disclosures without the disclosures of the concealed claims they are nested
+// in. Disclosure is the first such selected disclosure. Missing lists every
+// disclosure the selection lacks, as encoded disclosures, without repeats:
+// Disclosure's chain first, innermost first, then those of later selected
+// disclosures. An application can show the holder what adding them reveals
+// and present again.
+type ParentDisclosureError struct {
+	Disclosure string
+	Missing    []string
+}
+
+func (e *ParentDisclosureError) Error() string {
+	labels := make([]string, len(e.Missing))
+	for i, m := range e.Missing {
+		labels[i] = disclosureLabel(m)
+	}
+	return fmt.Sprintf("disclosure %s is inside a concealed claim that is not selected; select %d more disclosure(s), %s, which reveals their other members",
+		disclosureLabel(e.Disclosure), len(e.Missing), strings.Join(labels, ", "))
+}
+
+// Unwrap returns ErrParentDisclosureNotSelected, for errors.Is.
+func (e *ParentDisclosureError) Unwrap() error { return ErrParentDisclosureNotSelected }
+
+// disclosureLabel names the claim of an encoded disclosure for an error text.
+func disclosureLabel(encoded string) string {
+	d, err := josesdjwt.ParseDisclosure(encoded)
+	switch {
+	case err != nil:
+		return "(unreadable)"
+	case d.ArrayElement:
+		return "(an array element)"
+	}
+	return fmt.Sprintf("%.64q", d.Name)
 }

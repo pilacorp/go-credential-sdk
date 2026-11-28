@@ -19,7 +19,7 @@ func CanonicalizeWithIdMap(doc map[string]interface{}) (nquads []string, idMap m
 		return nil, nil, fmt.Errorf("canonicalize: document is nil")
 	}
 	defer finishJSONLD(&err, "canonicalize with id map")
-	dataset, err := toRDFDataset(doc)
+	dataset, err := toRDFDataset(doc, JSONLDLimits{})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -31,12 +31,12 @@ func CanonicalizeWithIdMap(doc map[string]interface{}) (nquads []string, idMap m
 // (legacy credentials take the CanonicalizeDocument path instead); its output
 // is fed straight to the low-level JsonLdApi.ToRDF, which unlike
 // JsonLdProcessor.ToRDF does not expand again.
-func toRDFDataset(doc map[string]interface{}) (*ld.RDFDataset, error) {
-	expanded, err := ExpandJSONLD(doc)
+func toRDFDataset(doc map[string]interface{}, limits JSONLDLimits) (*ld.RDFDataset, error) {
+	expanded, err := expandJSONLD(doc, limits)
 	if err != nil {
 		return nil, err
 	}
-	dataset, err := ld.NewJsonLdApi().ToRDF(expanded, sdOptions())
+	dataset, err := ld.NewJsonLdApi().ToRDF(expanded, sdOptions(limits))
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize: to rdf: %w", err)
 	}
@@ -49,20 +49,27 @@ func toRDFDataset(doc map[string]interface{}) (*ld.RDFDataset, error) {
 // them, and it fails on undefined terms instead of silently returning nothing.
 // Both Data Integrity cryptosuites (ecdsa-rdfc-2019 and ecdsa-sd-2023) hash
 // their documents and proof configurations through here.
-func Canonicalize(doc map[string]interface{}) ([]byte, error) {
-	return nquads.Join(CanonicalizeNQuads(doc))
+//
+// limits, when given, bounds the JSON-LD work, as for CanonicalizeNQuads.
+func Canonicalize(doc map[string]interface{}, limits ...JSONLDLimits) ([]byte, error) {
+	return nquads.Join(CanonicalizeNQuads(doc, limits...))
 }
 
 // CanonicalizeNQuads is CanonicalizeWithIdMap without the blank-node map: the
-// same URDNA2015 N-Quads, one per element, each ending in "\n".
-func CanonicalizeNQuads(doc map[string]interface{}) (nquads []string, err error) {
+// same RDFC-1.0 N-Quads, one per element, each ending in "\n". limits, when
+// given, bounds the work (JSONLDLimits).
+func CanonicalizeNQuads(doc map[string]interface{}, limits ...JSONLDLimits) (nquads []string, err error) {
 	if doc == nil {
 		return nil, fmt.Errorf("canonicalize: document is nil")
 	}
 	defer finishJSONLD(&err, "canonicalize")
 	// toRDFDataset rather than Normalize, whose two steps cannot stop between
 	// them to check the dataset's cost.
-	dataset, err := toRDFDataset(doc)
+	l, err := limitsFor(doc, limits)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize: %w", err)
+	}
+	dataset, err := toRDFDataset(doc, l)
 	if err != nil {
 		return nil, err
 	}
@@ -263,14 +270,23 @@ func masked(n ld.Node, id string) interface{} {
 	}
 }
 
-// ExpandJSONLD expands a compact JSON-LD document.
-func ExpandJSONLD(doc map[string]interface{}) (result []interface{}, err error) {
+// ExpandJSONLD expands a compact JSON-LD document. limits, when given, bounds
+// the work (JSONLDLimits).
+func ExpandJSONLD(doc map[string]interface{}, limits ...JSONLDLimits) ([]interface{}, error) {
+	l, err := limitsFor(doc, limits)
+	if err != nil {
+		return nil, fmt.Errorf("expand: %w", err)
+	}
+	return expandJSONLD(doc, l)
+}
+
+func expandJSONLD(doc map[string]interface{}, limits JSONLDLimits) (result []interface{}, err error) {
 	defer finishJSONLD(&err, "expand")
 	std, err := standardizeForCanonicalization(doc)
 	if err != nil {
 		return nil, fmt.Errorf("expand: standardize: %w", err)
 	}
-	opts := sdOptions()
+	opts := sdOptions(limits)
 	if err := limitInlineContexts(opts, std); err != nil {
 		return nil, fmt.Errorf("expand: %w", err)
 	}
@@ -289,10 +305,21 @@ func ExpandJSONLD(doc map[string]interface{}) (result []interface{}, err error) 
 	return out, nil
 }
 
-// CompactJSONLD compacts an expanded JSON-LD document against ctx.
-func CompactJSONLD(expanded []interface{}, ctx interface{}) (result map[string]interface{}, err error) {
+// CompactJSONLD compacts an expanded JSON-LD document against ctx. limits,
+// when given, bounds its scoped contexts (MaxScopedContextUses). MaxValues is
+// not counted here: it counts a compact document, and the expanded input of
+// one holds more values; it was bounded when expanded.
+func CompactJSONLD(expanded []interface{}, ctx interface{}, limits ...JSONLDLimits) (map[string]interface{}, error) {
+	l, err := limitsFor(nil, limits)
+	if err != nil {
+		return nil, fmt.Errorf("compact: %w", err)
+	}
+	return compactJSONLD(expanded, ctx, l)
+}
+
+func compactJSONLD(expanded []interface{}, ctx interface{}, limits JSONLDLimits) (result map[string]interface{}, err error) {
 	defer finishJSONLD(&err, "compact")
-	out, err := ld.NewJsonLdProcessor().Compact(expanded, ctx, sdOptions())
+	out, err := ld.NewJsonLdProcessor().Compact(expanded, ctx, sdOptions(limits))
 	if err != nil {
 		return nil, fmt.Errorf("compact: %w", err)
 	}
@@ -303,7 +330,7 @@ func CompactJSONLD(expanded []interface{}, ctx interface{}) (result map[string]i
 // in toRDF order (not canonicalized).
 func ToRDFNQuads(doc interface{}) (result []string, err error) {
 	defer finishJSONLD(&err, "to rdf")
-	opts := sdOptions()
+	opts := sdOptions(JSONLDLimits{})
 	opts.Format = "application/n-quads"
 	if err := limitInlineContexts(opts, doc); err != nil {
 		return nil, fmt.Errorf("to rdf: %w", err)
@@ -319,8 +346,9 @@ func ToRDFNQuads(doc interface{}) (result []string, err error) {
 	return splitNQuadsKeepNL(s), nil
 }
 
-func sdOptions() *ld.JsonLdOptions {
+func sdOptions(limits JSONLDLimits) *ld.JsonLdOptions {
 	opts := ld.NewJsonLdOptions("")
+	limits.apply(opts)
 	opts.Algorithm = ld.AlgorithmURDNA2015
 	opts.DocumentLoader = newContextBudget()
 	// Fail on undefined terms instead of silently dropping them (lossless).

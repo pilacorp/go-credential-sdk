@@ -1,5 +1,5 @@
 // Package joseadapter adapts types from the credential module to the jose
-// module's interfaces and back.
+// module's interfaces.
 package joseadapter
 
 import (

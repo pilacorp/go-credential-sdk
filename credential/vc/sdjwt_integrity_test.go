@@ -195,15 +195,13 @@ func TestSDJWT_RevealingNothingStillFoldsOutTheDigests(t *testing.T) {
 			}
 			base := token[:strings.IndexByte(token, '~')]
 
-			// The three forms a holder who reveals nothing can send. The middle one
-			// is what this SDK's own Present(nil) produced before the fix, and the
-			// last is what the spec asks for.
+			// A holder who reveals nothing sends the terminator alone (RFC 9901 §4);
+			// a token without it is refused (TestJOSEStrict_SDJWTWithoutTildeRefused).
 			for _, form := range []struct {
 				name  string
 				token string
 			}{
 				{"terminator only", base + "~"},
-				{"no terminator at all", base},
 			} {
 				t.Run(form.name, func(t *testing.T) {
 					parsed, err := vc.ParseCredential([]byte(form.token), vc.WithResolver(resolver))
@@ -508,7 +506,6 @@ func TestSDJWT_FormatIsReadFromTheMediaTypeNotFromSDAlg(t *testing.T) {
 		}{
 			{"disclosure sent", "vc+sd-jwt", "~" + disclosure + "~", true},
 			{"nothing revealed", "vc+sd-jwt", "~", false},
-			{"terminator missing too", "vc+sd-jwt", "", false},
 			{"the application/ form of the media type", "application/vc+sd-jwt", "~" + disclosure + "~", true},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -594,11 +591,8 @@ func TestSDJWT_FormatIsReadFromTheMediaTypeNotFromSDAlg(t *testing.T) {
 			sdInBody bool
 		}{
 			{name: "disclosures after the signature", suffix: "~" + disclosure + "~", sdInBody: true},
-			{name: "_sd_alg in the payload", withAlg: true, sdInBody: true},
-			// A vc+jwt carrying only _sd digests — no terminator, no _sd_alg —
-			// is not covered here: neither signal fires, and catching it needs a
-			// walk of the payload. That rule belongs to
-			// requireDisclosableAtTopLevel, which walks it anyway.
+			// _sd_alg or _sd in a vc+jwt payload are plain claims:
+			// TestJOSEStrict_PlainVCJWTKeepsSDNamedClaims.
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				token := signJOSEByHand(t, prov, vc.TypeVCJWT, did+"#key-1", payload(tc.withAlg)) + tc.suffix
@@ -691,7 +685,7 @@ func revokedStatusListServer(t *testing.T, revokedAt int) *httptest.Server {
 // disclosures arrived, and checkRevocation treats {} as absent. The one place
 // that can still tell the difference is the guard, before Reconstruct removes
 // the evidence — which is where the rule now lives.
-func TestSDJWT_SelectiveDisclosureIsConfinedToTheSubject(t *testing.T) {
+func TestSDJWT_SecuredClaimsStayInTheSignedPayload(t *testing.T) {
 	const (
 		issuerDID = "did:example:sd-confine"
 		revokedAt = 7
@@ -760,7 +754,7 @@ func TestSDJWT_SelectiveDisclosureIsConfinedToTheSubject(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				cred, err := vc.ParseCredential([]byte(tc.token), vc.WithResolver(resolver))
 				if err != nil {
-					if !strings.Contains(err.Error(), "not permitted in \"credentialStatus\"") {
+					if !strings.Contains(err.Error(), "not permitted inside \"credentialStatus\"") {
 						t.Fatalf("err = %v, want one naming credentialStatus", err)
 					}
 
@@ -780,35 +774,25 @@ func TestSDJWT_SelectiveDisclosureIsConfinedToTheSubject(t *testing.T) {
 		}
 	})
 
-	// The machinery can sit at any depth and in either shape.
-	t.Run("SD machinery outside the subject is refused wherever it sits", func(t *testing.T) {
+	// Inside a claim a verifier decides on, the machinery is refused at any
+	// depth and in either shape.
+	t.Run("SD machinery inside a secured claim is refused wherever it sits", func(t *testing.T) {
 		for _, tc := range []struct {
 			name  string
 			extra map[string]interface{}
 			wants string
 		}{
 			{
-				name:  "_sd at the root",
-				extra: map[string]interface{}{"_sd": []interface{}{digestOf(withheld)}},
-				wants: "carries _sd at the root",
-			},
-			{
-				name: "_sd one level inside a property",
-				extra: map[string]interface{}{"termsOfUse": map[string]interface{}{
-					"type": "TrustFrameworkPolicy", "_sd": []interface{}{digestOf(withheld)}}},
-				wants: `not permitted in "termsOfUse"`,
-			},
-			{
 				name: "_sd two levels down",
-				extra: map[string]interface{}{"evidence": map[string]interface{}{
-					"verification": map[string]interface{}{"_sd": []interface{}{digestOf(withheld)}}}},
-				wants: `not permitted in "evidence"`,
+				extra: map[string]interface{}{"credentialSchema": map[string]interface{}{
+					"id": "https://example.org/s.json", "x": map[string]interface{}{"_sd": []interface{}{digestOf(withheld)}}}},
+				wants: `not permitted inside "credentialSchema"`,
 			},
 			{
 				name: "an array element placeholder",
-				extra: map[string]interface{}{"termsOfUse": []interface{}{
+				extra: map[string]interface{}{"type": []interface{}{"VerifiableCredential",
 					map[string]interface{}{"...": digestOf(withheld)}}},
-				wants: `not permitted in "termsOfUse"`,
+				wants: `not permitted inside "type"`,
 			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -816,37 +800,111 @@ func TestSDJWT_SelectiveDisclosureIsConfinedToTheSubject(t *testing.T) {
 					payload(tc.extra)) + "~"
 
 				_, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
-				if err == nil {
-					t.Fatal("selective disclosure outside credentialSubject was accepted")
-				}
-				if !strings.Contains(err.Error(), tc.wants) {
+				if err == nil || !strings.Contains(err.Error(), tc.wants) {
 					t.Fatalf("err = %v, want one mentioning %q", err, tc.wants)
 				}
 			})
 		}
 	})
 
-	// vc+jwt promises nothing was selectively disclosed, so the subject is not
-	// exempt under that media type. This is the shape neither the combined
-	// format nor _sd_alg reveals, which is why the walk is told what the header
-	// declared.
-	t.Run("a vc+jwt is not exempt even inside the subject", func(t *testing.T) {
-		token := signJOSEByHand(t, prov, vc.TypeVCJWT, issuerDID+"#key-1",
-			map[string]interface{}{
-				"@context":  []interface{}{"https://www.w3.org/ns/credentials/v2"},
-				"type":      []interface{}{"VerifiableCredential"},
-				"issuer":    issuerDID,
-				"validFrom": "2026-01-01T00:00:00Z",
-				"credentialSubject": map[string]interface{}{
-					"id": "did:example:subject", "_sd": []interface{}{digestOf(withheld)}},
-			})
-
-		_, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
-		if err == nil {
-			t.Fatal("a vc+jwt carrying _sd in its subject was accepted")
+	// Elsewhere, the root included, claims may be concealed (RFC 9901 §4.2).
+	// A withheld root digest may be a claim a check reads, so that check does
+	// not run on its absence (RFC 9901 §9.7): here validUntil, already past.
+	t.Run("SD elsewhere is accepted; a withheld root claim stops the check that reads it", func(t *testing.T) {
+		times := map[string]interface{}{"nbf": float64(1767225600), "exp": float64(4102444800)}
+		with := func(extra map[string]interface{}) map[string]interface{} {
+			for k, v := range times {
+				extra[k] = v
+			}
+			return payload(extra)
 		}
-		if !strings.Contains(err.Error(), `not permitted in "credentialSubject"`) {
-			t.Fatalf("err = %v, want the subject named under a vc+jwt", err)
+		for _, tc := range []struct {
+			name      string
+			extra     map[string]interface{}
+			rootHides bool
+		}{
+			{"_sd at the root", map[string]interface{}{"_sd": []interface{}{digestOf(withheld)}}, true},
+			{"_sd inside a property", map[string]interface{}{"termsOfUse": map[string]interface{}{
+				"type": "TrustFrameworkPolicy", "_sd": []interface{}{digestOf(withheld)}}}, false},
+			{"an array element placeholder", map[string]interface{}{"evidence": []interface{}{
+				map[string]interface{}{"...": digestOf(withheld)}}}, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				token := signJOSEByHand(t, prov, vc.TypeVCSDJWT, issuerDID+"#key-1", with(tc.extra)) + "~"
+				cred, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+				if err != nil {
+					t.Fatalf("parse: %v", err)
+				}
+				if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+					t.Fatalf("verify: %v", err)
+				}
+				err = cred.Verify(vc.WithResolver(resolver), vc.WithCheckExpiration())
+				if tc.rootHides && (err == nil || !strings.Contains(err.Error(), "lacks validUntil")) {
+					t.Fatalf("expiration check: err = %v, want it refused on a withheld root claim", err)
+				}
+				if !tc.rootHides && err != nil {
+					t.Fatalf("expiration check: %v", err)
+				}
+			})
+		}
+
+		// Sent, the same disclosure is refused for its name.
+		token := signJOSEByHand(t, prov, vc.TypeVCSDJWT, issuerDID+"#key-1",
+			with(map[string]interface{}{"_sd": []interface{}{digestOf(withheld)}})) + "~" + withheld + "~"
+		if _, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver)); err == nil ||
+			!strings.Contains(err.Error(), `"validUntil" was selectively disclosed`) {
+			t.Fatalf("err = %v, want the disclosed validUntil refused", err)
+		}
+
+		// Without exp or nbf, the proof check itself cannot rule them out.
+		token = signJOSEByHand(t, prov, vc.TypeVCSDJWT, issuerDID+"#key-1",
+			payload(map[string]interface{}{"_sd": []interface{}{digestOf(withheld)}})) + "~"
+		cred, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if err := cred.Verify(vc.WithResolver(resolver)); err == nil || !strings.Contains(err.Error(), "lacks exp, nbf") {
+			t.Fatalf("verify: err = %v, want exp and nbf named", err)
+		}
+
+		// Each check names what it reads: the 1.1 validity pair beside a
+		// plain 2.0 pair, credentialStatus, credentialSchema. Each refusal
+		// comes before any fetch.
+		rooted := with(map[string]interface{}{"_sd": []interface{}{digestOf(withheld)}, "validUntil": "2100-01-01T00:00:00Z"})
+		cred, err = vc.ParseCredential([]byte(signJOSEByHand(t, prov, vc.TypeVCSDJWT, issuerDID+"#key-1", rooted)+"~"), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		for name, tc := range map[string]struct {
+			opt  vc.CredentialOpt
+			want string
+		}{
+			"expiration": {vc.WithCheckExpiration(), "lacks issuanceDate, expirationDate"},
+			"revocation": {vc.WithCheckRevocation(), "lacks credentialStatus"},
+			"schema":     {vc.WithSchemaValidation(), "lacks credentialSchema"},
+		} {
+			if err := cred.Verify(vc.WithResolver(resolver), tc.opt); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+			}
+		}
+	})
+
+	// A disclosed top-level claim whose name folds to a secured one is read as
+	// it by encoding/json, so it is refused like the claim itself; so are vc
+	// and vp (vc-jose-cose §3.1.3).
+	t.Run("a disclosed claim named like a secured one is refused", func(t *testing.T) {
+		for name, want := range map[string]string{
+			"iſſuer": "only by case",
+			"ISSUER": "only by case",
+			"vc":     "vc and vp must not be present",
+			"VP":     "vc and vp must not be present",
+		} {
+			d := rawDisclosure(t, "c2FsdDc3c2FsdDc3c2FsdDc3", name, "did:example:victim")
+			token := signJOSEByHand(t, prov, vc.TypeVCSDJWT, issuerDID+"#key-1",
+				payload(map[string]interface{}{"_sd": []interface{}{digestOf(d)}})) + "~" + d + "~"
+			if _, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver)); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: err = %v, want %q", name, err, want)
+			}
 		}
 	})
 
@@ -1028,7 +1086,8 @@ func TestSDJWT_PrebuiltDisclosuresAreValidatedNotRefused(t *testing.T) {
 				},
 				{
 					// RFC 9901 section 4.2.1: the claim name of a disclosure
-					// must not be "_sd", "_sd_alg" or "...". The builder
+					// must not be "_sd" or "..."; section 4.1.1 keeps
+					// "_sd_alg" at the top level. The builder
 					// refuses it by the rule the parser applies.
 					name: "a disclosure named _sd",
 					mangle: func(t *testing.T, custom map[string]interface{}, ds []string) []string {

@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/fxamacker/cbor/v2"
+
+	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
 // Spec-conformant ecdsa-sd-2023 proof value serialization (W3C vc-di-ecdsa).
@@ -159,11 +161,14 @@ func compressLabelMap(labelMap map[string]string) (map[uint64][]byte, error) {
 		v := labelMap[k]
 		num, err := strconv.ParseUint(strings.TrimPrefix(k, "c14n"), 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("ecdsasd: label map key %q: %w", k, err)
+			return nil, fmt.Errorf("ecdsasd: label map key %.64q: %w", k, err)
 		}
-		b, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(v, "u"))
+		if !strings.HasPrefix(v, "u") {
+			return nil, fmt.Errorf("ecdsasd: label map value %.64q is not base64url-no-pad multibase ('u')", v)
+		}
+		b, err := jose.DecodeSegment(v[1:])
 		if err != nil {
-			return nil, fmt.Errorf("ecdsasd: label map value %q: %w", v, err)
+			return nil, fmt.Errorf("ecdsasd: label map value %.64q: %w", v, err)
 		}
 		out[num] = b
 	}
@@ -192,7 +197,9 @@ func decodeProofValue(proofValue string, header []byte) ([]byte, error) {
 	if len(proofValue) == 0 || proofValue[0] != 'u' {
 		return nil, fmt.Errorf("ecdsasd: proof value must be base64url-no-pad multibase ('u')")
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(proofValue[1:])
+	// One spelling per proof value, as for JWS segments: no CR/LF, no set pad
+	// bits (RFC 4648 §3.5), which the stdlib decoder lets through.
+	raw, err := jose.DecodeSegment(proofValue[1:])
 	if err != nil {
 		return nil, fmt.Errorf("ecdsasd: decode proof value: %w", err)
 	}

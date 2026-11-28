@@ -4,7 +4,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"encoding/hex"
-	"math/big"
 	"testing"
 	"time"
 
@@ -25,10 +24,10 @@ func fixture152Keys(t *testing.T) (*signer.DefaultProvider, *signer.P256Provider
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := new(big.Int).SetBytes([]byte("fixture-152-p256-key-scalar-0001"))
-	p := &ecdsa.PrivateKey{D: d}
-	p.Curve = elliptic.P256()
-	p.X, p.Y = p.ScalarBaseMult(d.Bytes())
+	p, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), []byte("fixture-152-p256-key-scalar-0001"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	p256, err := signer.NewP256Provider(p)
 	if err != nil {
 		t.Fatal(err)
@@ -106,31 +105,27 @@ func TestTokensSignedBeforeJoseMove_KeepBytesAndHash(t *testing.T) {
 // the signing time, so only the VC-JWT 1.1 token is compared byte for byte.
 func TestIssuanceAfterJoseMove_SameBytesAsBefore(t *testing.T) {
 	secp, _, resolver := fixture152Keys(t)
-	for _, tc := range []struct {
-		name string
-		sign func() (interface{}, error)
-	}{
-		{"jwt-es256k", func() (interface{}, error) {
-			c, err := NewJWTCredential(fixture152Contents(), WithVerificationMethodKey("key-1"), WithResolver(resolver))
-			if err != nil {
-				return nil, err
-			}
-			if err := c.AddProofByProvider(secp, WithResolver(resolver)); err != nil {
-				return nil, err
-			}
-			return c.Serialize()
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := tc.sign()
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, fx := range fixture152Tokens {
-				if fx.name == tc.name && got != fx.token {
-					t.Fatalf("issued token differs from main:\n got %v\nwant %s", got, fx.token)
-				}
-			}
-		})
+	var want string
+	for _, fx := range fixture152Tokens {
+		if fx.name == "jwt-es256k" {
+			want = fx.token
+		}
+	}
+	if want == "" {
+		t.Fatal("fixture jwt-es256k is missing")
+	}
+	c, err := NewJWTCredential(fixture152Contents(), WithVerificationMethodKey("key-1"), WithResolver(resolver))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AddProofByProvider(secp, WithResolver(resolver)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("issued token differs from main:\n got %v\nwant %s", got, want)
 	}
 }

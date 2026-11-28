@@ -164,7 +164,7 @@ func TestJWTProofPurpose(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b64 := encodePayload(t, tc.payload)
-			purpose, err := jwtProofPurpose(tc.header, b64)
+			purpose, err := jwtProofPurpose(tc.header, mustPayload(t, b64))
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error, got purpose %q", purpose)
@@ -412,7 +412,7 @@ func TestJWTSigner(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b64 := encodePayload(t, tc.payload)
-			signer, err := jwtSigner(b64, tc.purpose)
+			signer, err := jwtSigner(mustPayload(t, b64), tc.purpose)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error, got signer %q", signer)
@@ -437,7 +437,7 @@ func TestJWTIssuedAt(t *testing.T) {
 
 	// Test with iat integer
 	p1 := map[string]interface{}{"iat": now.Unix()}
-	tm1, err := jwtIssuedAt(encodePayload(t, p1))
+	tm1, err := jwtIssuedAt(mustPayload(t, encodePayload(t, p1)))
 	if err != nil || tm1 == nil || tm1.Unix() != now.Unix() {
 		t.Fatalf("iat failed: got %v, err %v", tm1, err)
 	}
@@ -446,20 +446,20 @@ func TestJWTIssuedAt(t *testing.T) {
 	// signed, so it must not stand in for iat: the soft-revocation check
 	// would then answer a different question without saying so.
 	p2 := map[string]interface{}{"validFrom": now.Format(time.RFC3339)}
-	tm2, err := jwtIssuedAt(encodePayload(t, p2))
+	tm2, err := jwtIssuedAt(mustPayload(t, encodePayload(t, p2)))
 	if err != nil || tm2 != nil {
 		t.Fatalf("validFrom must not stand in for iat: got %v, err %v", tm2, err)
 	}
 
 	// A malformed iat is an error, not a silently absent signing time.
 	p2b := map[string]interface{}{"iat": "yesterday"}
-	if _, err := jwtIssuedAt(encodePayload(t, p2b)); err == nil {
+	if _, err := jwtIssuedAt(mustPayload(t, encodePayload(t, p2b))); err == nil {
 		t.Fatal("expected an error for a non-numeric iat")
 	}
 
 	// Test when absent
 	p3 := map[string]interface{}{"id": "urn:uuid:1"}
-	tm3, err := jwtIssuedAt(encodePayload(t, p3))
+	tm3, err := jwtIssuedAt(mustPayload(t, encodePayload(t, p3)))
 	if err != nil || tm3 != nil {
 		t.Fatalf("absent failed: got %v, err %v", tm3, err)
 	}
@@ -495,4 +495,13 @@ func TestVerifyJWT_UnsupportedAlgRefusedBeforeResolving(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustPayload(t *testing.T, b64 string) map[string]interface{} {
+	t.Helper()
+	body, err := decodePayload(b64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }

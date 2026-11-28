@@ -29,7 +29,11 @@ func AlgForKeyKind(kind verificationmethod.KeyKind) (string, error) {
 	return "", fmt.Errorf("key kind %v is not supported for JWT", kind)
 }
 
-// SigningMethodES256K implements ES256K signing
+// SigningMethodES256K implements ES256K signing.
+//
+// Deprecated: the SDK signs JWTs through module jose with SigningKey.Sign,
+// which also checks the signature against the verification method. Nothing in
+// the SDK calls this; it will be removed in a future release.
 type SigningMethodES256K struct{}
 
 // Alg returns the algorithm name
@@ -76,6 +80,10 @@ func (m *SigningMethodES256K) Verify(signingString string, signature []byte, key
 // VerifyECDSA verifies a 64-byte r||s signature over SHA-256(signingString)
 // with publicKey, on whatever curve the key is on. ES256K (secp256k1) and
 // ES256 (P-256) differ only in that curve, so one check serves both.
+//
+// Deprecated: the SDK verifies JWTs through module jose (jose/jws.Verify);
+// only the deprecated SigningMethodES256K calls this. It will be removed in a
+// future release.
 func VerifyECDSA(signingString string, signature []byte, publicKey *ecdsa.PublicKey) error {
 	if publicKey == nil {
 		return fmt.Errorf("public key is nil")
@@ -94,5 +102,9 @@ func VerifyECDSA(signingString string, signature []byte, publicKey *ecdsa.Public
 	return nil
 }
 
-// ES256K is the ES256K signing method instance
+// ES256K is the ES256K signing method instance.
+//
+// Deprecated: the SDK signs JWTs through module jose with SigningKey.Sign,
+// which also checks the signature against the verification method. Nothing in
+// the SDK calls this; it will be removed in a future release.
 var ES256K = &SigningMethodES256K{}

@@ -1,17 +1,19 @@
 package vc
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/jsonmap"
+	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
@@ -28,6 +30,11 @@ import (
 // ParseJOSECredential.
 var ErrSDJWTRequiresJOSE = errors.New(
 	"selective disclosure is supported only as vc+sd-jwt; use NewJOSECredential / ParseJOSECredential")
+
+// ErrTooManyStatusLists is returned, wrapped with the counts, when a
+// credential's credentialStatus names more status lists than
+// WithMaxStatusLists allows.
+var ErrTooManyStatusLists = errors.New("too many status lists")
 
 // Config holds package configuration.
 var config = struct {
@@ -78,8 +85,8 @@ type CredentialContents struct {
 	ID               string         `json:"id,omitempty"`               // Credential identifier
 	Types            []string       `json:"type,omitempty"`             // Credential types
 	Issuer           string         `json:"issuer,omitempty"`           // Issuer identifier
-	ValidFrom        time.Time      `json:"validFrom,omitempty"`        // Issuance date
-	ValidUntil       time.Time      `json:"validUntil,omitempty"`       // Expiration date
+	ValidFrom        time.Time      `json:"validFrom,omitempty"`        // validFrom (VCDM 2.0); zero for a VCDM 1.1 credential
+	ValidUntil       time.Time      `json:"validUntil,omitempty"`       // validUntil (VCDM 2.0); zero for a VCDM 1.1 credential
 	CredentialStatus []Status       `json:"credentialStatus,omitempty"` // Credential status entries
 	Subject          []Subject      `json:"subject,omitempty"`          // Credential subjects
 	Schemas          []Schema       `json:"schemas,omitempty"`          // Credential schemas
@@ -158,6 +165,15 @@ type credentialOptions struct {
 	replaceProof         bool
 	// maxProofs caps the proofs a JSON-LD credential may carry; 0 means no cap.
 	maxProofs int
+	// jsonldLimits bounds the JSON-LD work Verify lets a document cause.
+	jsonldLimits processor.JSONLDLimits
+	// maxStatusLists caps the status lists WithCheckRevocation fetches; 0 means no cap.
+	maxStatusLists int
+	// statusListIssuers maps a credential issuer to list issuers trusted for
+	// its credentials besides itself.
+	statusListIssuers map[string][]string
+	// statusListHTTPClient fetches status lists; nil means the package default.
+	statusListHTTPClient *http.Client
 }
 
 // WithReplaceProof (signing) lets a signing call replace a signature the
@@ -247,9 +263,11 @@ func WithProofVerificationMethod(vm string) CredentialOpt {
 // WithMaxProofs makes Verify refuse a JSON-LD credential that carries more
 // than n proofs, before any DID is resolved. A verifier that serves untrusted
 // callers sets the most proofs its credentials carry. The count is of the
-// whole credential, also with WithProofVerificationMethod. n <= 0 leaves the
-// proof set unbounded, which is the default. A JWT credential holds one signature,
-// so the option does not change it.
+// whole credential, also with WithProofVerificationMethod. The same cap
+// applies to each status list credential that Verify fetches with
+// WithCheckRevocation. n <= 0 leaves the proof sets unbounded, which is the
+// default. A JWT credential holds one signature, so the cap applies to it only
+// through its status lists.
 func WithMaxProofs(n int) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.maxProofs = n
@@ -303,7 +321,14 @@ func WithVerifyProof() CredentialOpt {
 	}
 }
 
-// WithCheckExpiration enables expiration check during credential parsing.
+// WithCheckExpiration refuses a credential outside the validity period it
+// states, at the current time widened by WithLeeway: validFrom/validUntil
+// (VCDM 2.0 §4.9) and issuanceDate/expirationDate (VCDM 1.1 §4.6, §4.8), each
+// when present and whatever @context says. A date member that is there but is
+// not a date-time string, empty included, is an error; one without a time
+// zone is read as UTC. For a JWT credential, and for the JWT of a
+// JwtProof2020 proof, it also enforces nbf and exp (RFC 7519 §4.1.4,
+// §4.1.5).
 func WithCheckExpiration() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckExpiration = true
@@ -311,7 +336,8 @@ func WithCheckExpiration() CredentialOpt {
 }
 
 // WithLeeway tolerates clock skew between issuer and verifier: every time check
-// against the current time — validFrom/validUntil and the JWT nbf/exp claims —
+// against the current time — validFrom/validUntil, issuanceDate/expirationDate
+// and the JWT nbf/exp claims —
 // is widened by d on both sides. It turns no check on by itself. Zero, the
 // default, compares exactly; a negative d counts as zero. It does not touch the
 // revocation check, which compares iat with the time a key was revoked, not
@@ -323,7 +349,14 @@ func WithLeeway(d time.Duration) CredentialOpt {
 	}
 }
 
-// WithCheckRevocation enables revocation check during credential parsing.
+// WithCheckRevocation makes Verify read each BitstringStatusListEntry and
+// refuse the credential when its revocation or suspension bit is set. One
+// status list is fetched and verified once, also when it serves several
+// statusPurpose values (Bitstring Status List v1.0 §2.2, §3.2 step 5). A refresh
+// entry's list is not read, since §2.1 says a refresh status "does not
+// invalidate the verifiable credential". Any other purpose, message included,
+// is refused: a message status carries an issuer-defined message this SDK
+// does not read.
 func WithCheckRevocation() CredentialOpt {
 	return func(c *credentialOptions) {
 		c.isCheckRevocation = true
@@ -341,21 +374,68 @@ func WithLegacyStatusList() CredentialOpt {
 	}
 }
 
+// WithMaxStatusLists makes WithCheckRevocation refuse a credential whose
+// credentialStatus names more than n status lists, before any list is
+// fetched; the error wraps ErrTooManyStatusLists. Lists are counted by URL:
+// entries on one list share one fetch, whatever statusPurpose each names. A
+// refresh entry is not counted, since its list is not read.
+// Each list costs a fetch of up to 16 MiB and a proof check, so a verifier
+// that serves untrusted callers sets the most lists its credentials name.
+// n <= 0 leaves the number unbounded, which is the default.
+func WithMaxStatusLists(n int) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.maxStatusLists = n
+	}
+}
+
+// WithStatusListIssuers makes WithCheckRevocation accept, for a credential
+// issued by credentialIssuer, a status list issued by one of listIssuers as
+// well as one issued by credentialIssuer itself. Bitstring Status List v1.0
+// §2.2 lets the two differ and leaves the trust to the verifier. The trust is
+// per credential issuer: a list authority named for one issuer vouches for no
+// other issuer's credentials. Without the option only the credential's issuer
+// is trusted. An empty credentialIssuer or list issuer is ignored.
+func WithStatusListIssuers(credentialIssuer string, listIssuers ...string) CredentialOpt {
+	return func(c *credentialOptions) {
+		if c.statusListIssuers == nil {
+			c.statusListIssuers = map[string][]string{}
+		}
+		c.statusListIssuers[credentialIssuer] = append(c.statusListIssuers[credentialIssuer], listIssuers...)
+	}
+}
+
+// WithStatusListHTTPClient sets the HTTP client WithCheckRevocation fetches
+// status lists with. Bitstring Status List v1.0 §3.2 says verifiers SHOULD
+// cache retrieved lists and SHOULD use proxies; a client with a caching or
+// proxying transport does both. It replaces the package default client,
+// which refuses non-public addresses; start from
+// credentialstatus.NewPublicOnlyHTTPClient and wrap its Transport to keep that
+// rule. nil keeps the default.
+func WithStatusListHTTPClient(client *http.Client) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.statusListHTTPClient = client
+	}
+}
+
 // WithSDDisclosures attaches disclosures the caller built itself. It is the
 // advanced path: the caller runs sdjwt.BuildDisclosures, puts the processed
 // claims — digests and all — into the contents it hands the builder, and passes
 // the matching disclosures here.
 //
 // The builder validates rather than trusts. Every disclosure has to match a
-// digest the payload actually carries, and the rules of
-// draft-ietf-oauth-selective-disclosure-jwt § 7.1 apply: a disclosure matching
-// nothing is refused, so is the same one twice, so is a digest referenced twice.
+// digest the payload actually carries, and RFC 9901 applies: a disclosure
+// matching nothing is refused (§7.1 step 5); so is the same one twice, which
+// a Holder may not send (§4) and every reader refuses; and so is a digest
+// that appears twice (§4.1, §7.1 step 4).
 // A mismatch fails at build time with "invalid SD-JWT disclosures" rather than
 // producing a token this SDK's own parser would reject.
 //
 // Do not combine it with WithSDSelectivePaths for the same claim. Those paths
 // make the builder generate its own digests with a fresh salt, which no
-// previously built disclosure can match.
+// previously built disclosure can match. Combined for other claims, the
+// digests already in the contents are kept: build the digests and the
+// disclosures with one hash, and pass WithSDHashAlgorithm with the value given
+// to BuildDisclosuresInput.HashAlgorithm, or the build is refused.
 //
 // For the ordinary case, name the claims with WithSDSelectivePaths and let the
 // builder do both halves. To re-assemble a stored credential, parse the token:
@@ -373,6 +453,10 @@ func WithSDDisclosures(disclosures []string) CredentialOpt {
 // WithSDSelectivePaths declares which claims should be selectively disclosable.
 // When provided, the SDK will use sdjwt.BuildDisclosures to construct SD-JWT structures
 // during credential issuance.
+//
+// A path to, or inside, a property a verifier decides on is refused (vc-jose-
+// cose (W3C REC 2026-10-13) §3.2.1, RFC 9901 §9.7), and so is a top-level
+// path; see WithSDDecoyDigests for the list and the reason.
 //
 // Applies to NewJOSECredential only; NewJWTCredential refuses it with
 // ErrSDJWTRequiresJOSE.
@@ -393,7 +477,11 @@ func WithSDHashAlgorithm(alg string) CredentialOpt {
 	}
 }
 
-// WithSDShuffle enables shuffling of the _sd array to prevent disclosure order leakage.
+// WithSDShuffle has no effect: every _sd array is sorted, which hides the
+// order of the claims (RFC 9901 §4.2.4.1), and array decoys go at random
+// positions.
+//
+// Deprecated: drop the option; it will be removed in a future release.
 //
 // Applies to NewJOSECredential only; NewJWTCredential refuses it with
 // ErrSDJWTRequiresJOSE.
@@ -407,10 +495,17 @@ func WithSDShuffle(enabled bool) CredentialOpt {
 // number of disclosed claims. Each Decoy specifies the path where decoy digests
 // should be added and the count of decoys.
 //
-// The path must name an object inside credentialSubject, not the root. A decoy at
-// the root would claim a top-level property is hidden when none may be — nothing
-// up there is selectively disclosable — and a root digest is indistinguishable
-// from a withheld top-level property, which is what the parser refuses.
+// The path names an object (decoys go into its _sd) or an array (decoys become
+// placeholders at random positions); a path to an array element adds to that
+// array, a path to any other value adds to the object holding it, and a path
+// not in the credential is refused.
+//
+// The path must not be in, or be, one of the properties a verifier decides on
+// (@context, type, issuer, the validity window, credentialStatus,
+// credentialSchema, relatedResource, iss, exp, nbf, cnf, aud as a whole), and
+// must not be the root: a root digest with no disclosure cannot be told from a
+// withheld exp or nbf, which this builder does not write, so the credential
+// would fail Verify (RFC 9901 §9.7).
 //
 // Example: WithSDDecoyDigests([]vc.Decoy{{Path: "credentialSubject", Count: 3}})
 //
@@ -438,6 +533,21 @@ func WithSchemaLoader(loader SchemaLoaderFunc) CredentialOpt {
 func WithResolver(resolver verificationmethod.ResolverProvider) CredentialOpt {
 	return func(c *credentialOptions) {
 		c.resolver = resolver
+	}
+}
+
+// WithJSONLDLimits bounds the JSON-LD work verifying a document can cause
+// (processor.JSONLDLimits). MaxValues is checked on the JSON before any
+// JSON-LD processing; MaxScopedContextUses is enforced by json-gold in the
+// proof's canonicalization and the compacted-form check. A document over a
+// limit is refused with processor.ErrTooManyValues or
+// processor.ErrTooManyScopedContextUses.
+//
+// No limit is set by default. Applies to Verify and to Parse with
+// WithVerifyProof; signing calls ignore it.
+func WithJSONLDLimits(limits processor.JSONLDLimits) CredentialOpt {
+	return func(c *credentialOptions) {
+		c.jsonldLimits = limits
 	}
 }
 
@@ -522,37 +632,32 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 	valStr := strings.TrimSpace(strings.Trim(string(rawCredential), "\""))
 	if sdjwt.IsSDJWT(valStr) || isJWTCredential(valStr) {
 		// Auto-detect vc-jose-cose (vc+jwt) vs legacy VC 1.1 JWT
-		baseJWT := valStr
-		if sdjwt.IsSDJWT(valStr) {
-			if parsed, err := sdjwt.Parse(valStr); err == nil {
-				baseJWT = parsed.BaseJWT
-			}
-		}
+		// Only the issuer-signed JWT's header routes, so nothing after the
+		// first "~" is decoded here; the parser it routes to bounds the rest.
+		baseJWT, _, _ := strings.Cut(valStr, "~")
 		parts := strings.Split(baseJWT, ".")
 		if len(parts) >= 2 {
-			if headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0]); err == nil {
-				var header map[string]interface{}
-				if err := json.Unmarshal(headerBytes, &header); err == nil {
-					if typ, ok := header["typ"].(string); ok {
-						// Both vc+jwt and vc+sd-jwt are vc-jose-cose; only the
-						// securing mechanism differs, so both route here. A
-						// tilde alone does not decide it: a VC 1.1 SD-JWT has the
-						// same shape with typ "JWT" and its claims under vc. It
-						// goes to the 1.1 path below, which refuses it with
-						// ErrSDJWTRequiresJOSE.
-						// SD-JWT profiles other than vc+sd-jwt, such as the IETF SD-JWT VC
-						// (dc+sd-jwt), are not read here; name the typ rather than point at JOSE.
-						if strings.HasSuffix(strings.ToLower(typ), "+sd-jwt") && !isJOSECredentialTyp(typ) {
-							return nil, fmt.Errorf("failed to parse credential: unsupported SD-JWT typ %q: only vc+sd-jwt is read", typ)
-						}
-						if isJOSECredentialTyp(typ) {
-							c, err := ParseJOSECredential(valStr, opts...)
-							if err != nil {
-								return nil, err
-							}
-							return c, nil
-						}
-					}
+			// The header decides the parser, so it is read by the rules every
+			// parser reads it with: a duplicate typ must not route one way
+			// and verify another.
+			header, err := jwtutil.DecodeHeaderSegment(parts[0])
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse credential: invalid JWT header: %w", err)
+			}
+			if typ, ok := header["typ"].(string); ok {
+				// Both vc+jwt and vc+sd-jwt are vc-jose-cose; only the
+				// securing mechanism differs, so both route here. A tilde
+				// alone does not decide it: a VC 1.1 SD-JWT has the same
+				// shape with typ "JWT" and its claims under vc. It goes to the
+				// 1.1 path below, which refuses it with ErrSDJWTRequiresJOSE.
+				// SD-JWT profiles other than vc+sd-jwt, such as the IETF SD-JWT
+				// VC (dc+sd-jwt), are not read here; name the typ rather than
+				// point at JOSE.
+				if strings.HasSuffix(strings.ToLower(typ), "+sd-jwt") && !isJOSECredentialTyp(typ) {
+					return nil, fmt.Errorf("failed to parse credential: unsupported SD-JWT typ %.64q: only vc+sd-jwt is read", typ)
+				}
+				if isJOSECredentialTyp(typ) {
+					return ParseJOSECredential(valStr, opts...)
 				}
 			}
 		}

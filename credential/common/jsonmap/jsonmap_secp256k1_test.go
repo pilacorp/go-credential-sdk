@@ -106,10 +106,12 @@ func TestSecp256k1Suite_RejectsNonCanonicalBase64(t *testing.T) {
 		t.Fatalf("the mutation changed the signature bytes, so it does not test malleability: err=%v", err)
 	}
 
-	proof.JWS = encHeader + ".." + mutated
-	ok, err = m.verifyEcdsaSecp256k1Proof(doc, proof, nil)
-	if ok || err == nil {
-		t.Fatalf("a second spelling of the same signature verified: ok=%v err=%v", ok, err)
+	for _, spelling := range []string{mutated, encSig[:40] + "\r\n" + encSig[40:]} {
+		proof.JWS = encHeader + ".." + spelling
+		ok, err = m.verifyEcdsaSecp256k1Proof(doc, proof, nil)
+		if ok || err == nil {
+			t.Fatalf("a second spelling %q of the same signature verified: ok=%v err=%v", spelling, ok, err)
+		}
 	}
 }
 
@@ -290,7 +292,7 @@ func TestSecp256k1Suite_AcceptsJsonldSpellingOfTheV11Context(t *testing.T) {
 			if !m.definesSecp256k1Suite() {
 				t.Fatalf("%s already defines the suite, but definesSecp256k1Suite said no", ctx)
 			}
-			if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+			if err := (&m).addSuiteContextWithoutChangingMeaning(secp256k1Suite); err != nil {
 				t.Fatalf("a 1.1 document written as %s became unsignable: %v", ctx, err)
 			}
 			// Nothing was appended: the document already defined the suite.
@@ -341,7 +343,7 @@ func TestSecp256k1Suite_AddSuiteContextIsANoOpWhenAlreadyDefined(t *testing.T) {
 				t.Fatalf("marshal: %v", err)
 			}
 
-			if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+			if err := (&m).addSuiteContextWithoutChangingMeaning(secp256k1Suite); err != nil {
 				t.Fatalf("a document that already defines the suite was refused: %v", err)
 			}
 
@@ -387,7 +389,7 @@ func TestSecp256k1Suite_UncanonicalizableDocumentStillFails(t *testing.T) {
 func BenchmarkAddSuiteContext_AlreadyDefined(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		m := benchCredential([]interface{}{credentialsV1Context})
-		if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+		if err := (&m).addSuiteContextWithoutChangingMeaning(secp256k1Suite); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -396,7 +398,7 @@ func BenchmarkAddSuiteContext_AlreadyDefined(b *testing.B) {
 func BenchmarkAddSuiteContext_NeedsAppending(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		m := benchCredential([]interface{}{credentialsV2Context})
-		if err := (&m).addSuiteContextWithoutChangingMeaning(); err != nil {
+		if err := (&m).addSuiteContextWithoutChangingMeaning(secp256k1Suite); err != nil {
 			b.Fatal(err)
 		}
 	}
