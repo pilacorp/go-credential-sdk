@@ -749,7 +749,7 @@ Selective disclosure is issued as **`vc+sd-jwt`**, the media type [vc-jose-cose]
 | `credentialSubject.tags[0]` | First element of array `tags` |
 | `credentialSubject.person.children[0].name` | Nested array element |
 
-Only the claims at these paths are put into disclosures; all other claims remain in the JWT payload. The Issuer signs the payload that contains digests (e.g. `_sd`) for those claims; the actual values are in the disclosure strings. Only claims inside `credentialSubject` may be disclosable: `issuer`, `type`, the validity window and `credentialStatus` are what a verifier decides on, so the SDK refuses a path that would move one of them out of the signature.
+Only the claims at these paths are put into disclosures; all other claims remain in the JWT payload. The Issuer signs the payload that contains digests (e.g. `_sd`) for those claims; the actual values are in the disclosure strings. Claims a verifier decides on may not be disclosable (vc-jose-cose §3.2.1, RFC 9901 §9.7): `@context`, `type`, `issuer`, both validity pairs, `credentialStatus`, `credentialSchema`, `relatedResource`, `iss`, `exp`, `nbf`, `cnf`, and `aud` as a whole (its entries may be). The SDK refuses a path to or inside one of them (except `aud` entries), at build and at parse. Other claims may be disclosable, below the top level for credentials this SDK builds. A token from another issuer may conceal top-level claims; a withheld top-level digest cannot be told from one of the claims above, so `Verify` then refuses a credential that lacks `exp` or `nbf`, or a claim a requested check reads (both validity pairs for `WithCheckExpiration`, `credentialStatus` for `WithCheckRevocation`, `credentialSchema` for `WithSchemaValidation`).
 
 ```go
 // Issuer: create a vc+sd-jwt with selective disclosure
@@ -782,17 +782,15 @@ if err != nil {
 **Advanced Options:** The SDK supports additional security features for SD-JWT:
 
 ```go
-// Issue with custom hash algorithm, shuffle, and decoy digests
+// Issue with a custom hash algorithm and decoy digests
 cred, err := vc.NewJOSECredential(contents,
     vc.WithSDSelectivePaths(paths),
     // Use sha-384 instead of default sha-256
     vc.WithSDHashAlgorithm("sha-384"),
-    // Shuffle _sd array to prevent disclosure order leakage
-    vc.WithSDShuffle(true),
     // Add decoy digests: 3 in credentialSubject, 1 in the emails array
     vc.WithSDDecoyDigests([]vc.Decoy{
         {Path: "credentialSubject", Count: 3},      // 3 decoys in credentialSubject object
-        {Path: "credentialSubject.emails", Count: 1}, // 1 decoy in emails array (adds new elements)
+        {Path: "credentialSubject.emails", Count: 1}, // 1 decoy in emails array, at a random position
     }),
 )
 ```
@@ -816,7 +814,7 @@ cred, err := vc.NewJOSECredential(contents,
     vc.WithVerificationMethodKey("key-1"))
 ```
 
-The builder validates them against the digests in the payload before signing: a disclosure that matches nothing, the same one twice, or a digest referenced twice fails with `invalid SD-JWT disclosures`. Do not combine this with `WithSDSelectivePaths` for the same claim — those paths make the builder generate its own digests with a fresh salt, which no previously built disclosure can match.
+The builder validates them against the digests in the payload before signing: a disclosure that matches nothing, the same one twice, or a digest referenced twice fails with `invalid SD-JWT disclosures`. Do not combine this with `WithSDSelectivePaths` for the same claim — those paths make the builder generate its own digests with a fresh salt, which no previously built disclosure can match. Combining them for other claims works: the digests already in the contents are kept beside the new ones. Both must use the same hash: pass the same `WithSDHashAlgorithm` you gave `BuildDisclosuresInput.HashAlgorithm`, or the build is refused.
 
 #### Holder: Presenting an SD-JWT
 
@@ -838,7 +836,7 @@ out, _ := presented.Serialize() // SD-JWT string to send to the Verifier
 ```
 
 - **Present the full SD-JWT** — pass the original string to the Verifier (all disclosures).
-- **Present a subset** — `cred.Present(selectedDisclosures)` builds a new SD-JWT with only the chosen disclosures. (`sdjwt.BuildSDJWTPresentation` is the lower-level equivalent.)
+- **Present a subset** — `cred.Present(selectedDisclosures)` builds a new SD-JWT with only the chosen disclosures. (`sdjwt.BuildSDJWTPresentation` only joins the strings. It skips the RFC 9901 §7.2 check that `Present` runs, so a nested disclosure selected without its parent yields a token verifiers reject.)
 
 #### Verifier: Parsing and verifying an SD-JWT
 
@@ -943,6 +941,8 @@ if err != nil {
 }
 presented, err := holderCred.Present([]string{discs[0].Disclosure})
 ```
+
+A disclosure nested inside another concealed claim (issued with both `credentialSubject.address` and `credentialSubject.address.city`) can only be presented together with that claim's disclosure, which reveals the claim's other members. `Present` refuses such a selection with a `*vc.ParentDisclosureError`, which matches `vc.ErrParentDisclosureNotSelected`. Its `Missing` field holds every disclosure the selection lacks, each chain innermost first, and the message names their claims; presenting again with them added passes this check.
 
 What this path enforces that the 1.1 path does not:
 

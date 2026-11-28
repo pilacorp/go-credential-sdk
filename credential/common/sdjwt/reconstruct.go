@@ -2,278 +2,97 @@ package sdjwt
 
 import (
 	"fmt"
+	"math"
+	"unicode/utf8"
 
-	"github.com/pilacorp/go-credential-sdk/credential/common/util"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/jose"
+	josesdjwt "github.com/pilacorp/go-credential-sdk/jose/sdjwt"
 )
 
-// Reconstruct rebuilds the processed SD-JWT payload from a vcMap containing
-// SD-JWT digests and the provided disclosures.
+// Reconstruct rebuilds the payload of an SD-JWT from its Issuer-signed JWT
+// payload and the disclosures received with it, through
+// jose/sdjwt.RecreateWithOptions (RFC 9901 §7.1 steps 3 to 5) with sha-256,
+// sha-384 and sha-512 accepted. Empty disclosure strings are skipped. vcMap is
+// not modified, and the result has no _sd, "..." or _sd_alg. Numbers come back
+// as float64, as encoding/json decodes them, whether disclosed or not.
 //
-// If validateAlg is true, validates that _sd_alg matches a supported hash algorithm.
+// validateAlg is deprecated and has no effect: an _sd_alg outside those three
+// is always refused, even with no disclosure, since no digest can be checked
+// under it.
 func Reconstruct(vcMap map[string]interface{}, disclosures []string, validateAlg bool) (map[string]interface{}, error) {
-	// Get and validate hash algorithm
-	sdAlg, err := validateAndGetAlgorithm(vcMap, validateAlg)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse all disclosures into a map keyed by their hash
-	disclosureMap, err := buildDisclosureMap(disclosures, sdAlg)
-	if err != nil {
-		return nil, err
-	}
-
-	// Deep copy vcMap to avoid modifying original
-	rootCopy := util.DeepCopyMap(vcMap)
-
-	// Process the SD-JWT structure, replacing digests with actual values. used
-	// records which digests the payload actually referenced.
-	used := make(map[string]bool, len(disclosureMap))
-	processed, err := processNode(rootCopy, disclosureMap, used)
-	if err != nil {
-		return nil, err
-	}
-
-	// A disclosure the payload never referenced is a value nobody signed a digest
-	// for. Ignoring it let a holder append anything — fabricated disclosures, a
-	// key binding JWT — and still verify, which gave one credential many byte
-	// forms and therefore many Hash() values. draft-ietf-oauth-selective-disclosure-jwt
-	// § 7.1 step 5: "If any Disclosure was not referenced by digest value in the
-	// Issuer-signed JWT (directly or recursively via other Disclosures), the SD-JWT
-	// MUST be rejected."
-	for digest := range disclosureMap {
-		if !used[digest] {
-			return nil, fmt.Errorf(
-				"disclosure for digest %q matches nothing in the payload; it was not part of what the issuer signed", digest)
-		}
-	}
-
-	// Ensure result is a map
-	result, ok := processed.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("processed payload is not an object")
-	}
-
-	// Remove top-level _sd_alg if present
-	delete(result, "_sd_alg")
-
-	return result, nil
-}
-
-// validateAndGetAlgorithm extracts and validates the hash algorithm from vcMap.
-func validateAndGetAlgorithm(vcMap map[string]interface{}, validateAlg bool) (string, error) {
-	sdAlg := DefaultHashAlgorithm
-	if v, ok := vcMap["_sd_alg"].(string); ok && v != "" {
-		sdAlg = v
-	}
-
-	if validateAlg && !supportedHashAlgorithms[sdAlg] {
-		return "", fmt.Errorf("unsupported _sd_alg: %q", sdAlg)
-	}
-
-	return sdAlg, nil
-}
-
-// buildDisclosureMap parses all disclosures and builds a hash -> disclosure mapping.
-// This wraps the core parseDisclosure function and hashes each disclosure.
-func buildDisclosureMap(disclosures []string, sdAlg string) (map[string]disclosureInfo, error) {
-	disclosureMap := make(map[string]disclosureInfo, len(disclosures))
-
-	for _, disc := range disclosures {
-		if disc == "" {
+	_ = validateAlg
+	// Parsed first, so a disclosure naming a reserved claim is refused for its
+	// name even when no digest matches it; §7.1 step 5 would refuse it anyway
+	// (RFC 9901 §7.1 step 3c.ii.2 names _sd and ... for a referenced one).
+	given := make([]josesdjwt.Disclosure, 0, len(disclosures))
+	for _, d := range disclosures {
+		if d == "" {
 			continue
 		}
-
-		// Hash the disclosure
-		h, err := hashDisclosure(sdAlg, disc)
+		p, err := josesdjwt.ParseDisclosure(d)
 		if err != nil {
-			return nil, fmt.Errorf("failed to hash disclosure: %w", err)
+			return nil, fmt.Errorf("decode disclosure: %w", err)
 		}
-
-		// Decode and parse disclosure (using core parseDisclosure from helper.go)
-		info, err := parseDisclosure(disc)
-		if err != nil {
+		given = append(given, p)
+	}
+	// Read as JSON, as the payload will be once signed, whatever Go types
+	// vcMap holds ([]string for _sd, typed maps, structs). A payload a parser
+	// just decoded is JSON already and is not copied again.
+	payload := vcMap
+	if !isJSONTree(vcMap, 0) {
+		var err error
+		if payload, err = jsonTree(vcMap); err != nil {
 			return nil, err
 		}
-
-		// The same disclosure twice is the same value twice: it reconstructs to
-		// the identical payload but gives the token a second byte form, and
-		// Hash() covers those bytes. draft-ietf-oauth-selective-disclosure-jwt
-		// § 7.1 step 4 rejects a digest encountered more than once.
-		if _, dup := disclosureMap[h]; dup {
-			return nil, fmt.Errorf("disclosure for digest %q was sent more than once", h)
-		}
-		disclosureMap[h] = info
 	}
-
-	return disclosureMap, nil
+	r, err := josesdjwt.RecreateWithOptions(payload, given, josesdjwt.RecreateOptions{Algorithms: supportedHashAlgorithms})
+	if err != nil {
+		return nil, err
+	}
+	// Converted in place: jose shares Claims only with r's Issued tree, and
+	// r is dropped here, so nothing else sees the change.
+	if err := jwtutil.FloatNumbersInPlace(r.Claims); err != nil {
+		return nil, err
+	}
+	return r.Claims, nil
 }
 
-// sdKey is the array of digests an object carries for its withheld claims.
-const sdKey = "_sd"
-
-// processNode recursively processes objects/arrays, applying disclosures.
-func processNode(node interface{}, disclosureMap map[string]disclosureInfo, used map[string]bool) (interface{}, error) {
-	switch v := node.(type) {
+// isJSONTree reports whether v is a tree jwtutil.DecodeJSONObject returns:
+// non-nil objects and arrays, valid UTF-8 keys and strings, finite float64
+// numbers, booleans and null, no deeper than jose's JSON reader allows. Such
+// a tree reads the same through jsonTree, so the copy is skipped; anything
+// else goes through jsonTree, which normalizes or refuses it.
+func isJSONTree(v interface{}, depth int) bool {
+	if depth >= jose.MaxJSONDepth {
+		return false
+	}
+	switch t := v.(type) {
 	case map[string]interface{}:
-		// The fields the issuer wrote, before _sd adds any. Doing it the other
-		// way round visited a disclosed claim twice: applySDHashes already calls
-		// processNode on the value it inserts, and a loop over v afterwards found
-		// that same value sitting in the map and walked it again.
-		//
-		// Harmless until digests were counted whether or not a disclosure came
-		// with them. After that, a disclosed claim whose value holds an
-		// unrevealed {"...": h} had h marked on the first walk, and the second
-		// walk reported it as referenced more than once — a token where h occurs
-		// exactly once. Issue a disclosure for both skills and skills[1], reveal
-		// only skills, and the SDK refused its own credential.
-		//
-		// Assigning to keys that already exist is safe to do while ranging; the
-		// keys applySDHashes adds come after the loop.
-		for key, val := range v {
-			if key == sdKey {
-				continue
-			}
-			processedChild, err := processNode(val, disclosureMap, used)
-			if err != nil {
-				return nil, err
-			}
-			v[key] = processedChild
+		if t == nil {
+			return false
 		}
-
-		if rawSd, ok := v[sdKey]; ok {
-			// Track all digests in this object to check for duplicates
-			objectDigests := make(map[string]bool)
-
-			switch sdList := rawSd.(type) {
-			case []interface{}:
-				// Convert to []string for uniform processing
-				hashes := make([]string, 0, len(sdList))
-				for _, item := range sdList {
-					if h, ok := item.(string); ok {
-						hashes = append(hashes, h)
-					}
-				}
-				if err := applySDHashes(hashes, v, disclosureMap, objectDigests, used); err != nil {
-					return nil, err
-				}
-			case []string:
-				if err := applySDHashes(sdList, v, disclosureMap, objectDigests, used); err != nil {
-					return nil, err
-				}
-			default:
-				// Dropping it silently discarded whatever the issuer meant by it,
-				// and _sd is the one field whose shape decides what the payload
-				// says.
-				return nil, fmt.Errorf("_sd must be an array of digests, got %T", rawSd)
+		for k, el := range t {
+			if !utf8.ValidString(k) || !isJSONTree(el, depth+1) {
+				return false
 			}
-			// Remove _sd after expansion
-			delete(v, sdKey)
 		}
-
-		return v, nil
-
 	case []interface{}:
-		var out []interface{}
-		// Track all digests in this array to check for duplicates
-		arrayDigests := make(map[string]bool)
-		for _, elem := range v {
-			// Check for placeholder { "...": h }
-			if m, ok := elem.(map[string]interface{}); ok && len(m) == 1 {
-				if rawHash, ok := m["..."]; ok {
-					if h, ok := rawHash.(string); ok {
-						if arrayDigests[h] {
-							return nil, fmt.Errorf("duplicate digest %q found in array", h)
-						}
-						arrayDigests[h] = true
-
-						// Same reason as applySDHashes: the payload-wide count
-						// runs before the lookup, so an unrevealed placeholder
-						// repeated across arrays is caught too.
-						if used[h] {
-							return nil, fmt.Errorf("digest %q is referenced more than once in the payload", h)
-						}
-						used[h] = true
-
-						info, exists := disclosureMap[h]
-						if !exists {
-							// Placeholder without disclosure - keep it to preserve array structure
-							out = append(out, map[string]interface{}{"...": h})
-							continue
-						}
-
-						// Validate disclosure type matches context
-						if !info.isArrayElem {
-							return nil, fmt.Errorf("object field disclosure used in array context")
-						}
-
-						// Array-element disclosure
-						processedVal, err := processNode(info.value, disclosureMap, used)
-						if err != nil {
-							return nil, err
-						}
-						out = append(out, processedVal)
-						continue
-					}
-				}
-			}
-
-			processedElem, err := processNode(elem, disclosureMap, used)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, processedElem)
+		if t == nil {
+			return false
 		}
-		return out, nil
-
+		for _, el := range t {
+			if !isJSONTree(el, depth+1) {
+				return false
+			}
+		}
+	case float64:
+		return !math.IsNaN(t) && !math.IsInf(t, 0)
+	case string:
+		return utf8.ValidString(t)
+	case bool, nil:
 	default:
-		return node, nil
+		return false
 	}
-}
-
-// applySDHashes processes a slice of hash strings, applying their disclosures to the object.
-func applySDHashes(hashes []string, v map[string]interface{}, disclosureMap map[string]disclosureInfo, objectDigests, used map[string]bool) error {
-	for _, h := range hashes {
-		// Check for duplicate digest within this object
-		if objectDigests[h] {
-			return fmt.Errorf("duplicate digest %q found in _sd array", h)
-		}
-		objectDigests[h] = true
-
-		// § 7.1 step 4 counts a digest across the whole payload, not per object:
-		// objectDigests above sees one _sd array, so without this one disclosure
-		// could fill two fields in two different objects.
-		//
-		// Counted before the disclosure is looked up, because the rule is about
-		// the payload and says nothing about whether a disclosure came with it.
-		// Behind the lookup it only ever saw revealed digests, so the same
-		// unrevealed digest — or the same decoy — in two containers passed, and
-		// a conforming verifier would have rejected the token this one accepted.
-		if used[h] {
-			return fmt.Errorf("digest %q is referenced more than once in the payload", h)
-		}
-		used[h] = true
-
-		info, ok := disclosureMap[h]
-		if !ok {
-			// No disclosure for this digest - it's either unrevealed or a decoy
-			continue
-		}
-
-		// Validate disclosure type matches context
-		if info.isArrayElem || info.objectField == "" {
-			return fmt.Errorf("array element disclosure used in object context")
-		}
-
-		if _, exists := v[info.objectField]; exists {
-			return fmt.Errorf("duplicate field %q when reconstructing SD-JWT object", info.objectField)
-		}
-
-		processedVal, err := processNode(info.value, disclosureMap, used)
-		if err != nil {
-			return err
-		}
-		v[info.objectField] = processedVal
-	}
-	return nil
+	return true
 }

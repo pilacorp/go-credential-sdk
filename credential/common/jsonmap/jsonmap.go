@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +18,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/util"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtproof"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
@@ -646,6 +646,11 @@ func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto
 	if jwtStr == "" {
 		return false, fmt.Errorf("JwtProof2020 proof is missing jwt")
 	}
+	// The header first: a malformed one is reported as such, not as a
+	// missing or mismatched kid.
+	if err := jwtproof.CheckHeader(jwtStr); err != nil {
+		return false, err
+	}
 
 	// Resolve the VM from the proof's own verificationMethod, with kid fallback.
 	vmURL := proof.VerificationMethod
@@ -666,7 +671,7 @@ func (m *JSONMap) verifyJWTProof(doc *verificationmethod.DIDDocument, proof *dto
 			}
 			if normKid != normVM {
 				return false, fmt.Errorf(
-					"JWT kid %q does not match proof.verificationMethod %q: %w",
+					"JWT kid %.64q does not match proof.verificationMethod %.64q: %w",
 					kid, proof.VerificationMethod, crypto.ErrJwtProofBinding)
 			}
 		}
@@ -1095,18 +1100,13 @@ func jwsKid(jws string) (string, bool) {
 	if dot <= 0 {
 		return "", false
 	}
-	headerB64 := jws[:dot]
-	headerBytes, err := base64.RawURLEncoding.DecodeString(headerB64)
+	hdr, err := decodeJWSHeader(jws[:dot])
 	if err != nil {
 		return "", false
 	}
-	var hdr struct {
-		Kid string `json:"kid"`
-	}
-	if err := json.Unmarshal(headerBytes, &hdr); err != nil {
-		return "", false
-	}
-	return hdr.Kid, hdr.Kid != ""
+	// The exact member: encoding/json into a struct also matched "KID".
+	kid, _ := hdr["kid"].(string)
+	return kid, kid != ""
 }
 
 // DocumentDigest returns the SHA-256 digest of the canonicalized document body.

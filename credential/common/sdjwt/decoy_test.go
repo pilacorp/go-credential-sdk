@@ -2,7 +2,12 @@ package sdjwt
 
 import (
 	"encoding/json"
+	"errors"
+	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
 func TestArrayDecoy(t *testing.T) {
@@ -42,23 +47,20 @@ func TestArrayDecoy(t *testing.T) {
 		t.Errorf("Expected 4 emails (2 original + 2 decoys), got %d", len(emails))
 	}
 
-	// First 2 should be strings (original emails)
-	for i := 0; i < 2; i++ {
-		if _, isStr := emails[i].(string); !isStr {
-			t.Errorf("Expected emails[%d] to be string, got %T", i, emails[i])
-		}
-	}
-
-	// Last 2 should be decoy objects with "..." key
-	for i := 2; i < 4; i++ {
-		decoyMap, ok := emails[i].(map[string]interface{})
-		if !ok {
-			t.Errorf("Expected emails[%d] to be map, got %T", i, emails[i])
+	// The 2 emails keep their order; the 2 decoys are placeholders, placed at
+	// random so their position tells nothing (RFC 9901 §4.2.5).
+	var kept []interface{}
+	for _, el := range emails {
+		if m, ok := el.(map[string]interface{}); ok {
+			if _, ok := m["..."]; !ok || len(m) != 1 {
+				t.Errorf("element %v is not a placeholder", m)
+			}
 			continue
 		}
-		if _, hasKey := decoyMap["..."]; !hasKey {
-			t.Errorf("Expected decoy to have '...' key, got %+v", decoyMap)
-		}
+		kept = append(kept, el)
+	}
+	if len(kept) != 2 || kept[0] != "john@example.com" || kept[1] != "john.doe@work.com" {
+		t.Errorf("emails kept %v", kept)
 	}
 }
 
@@ -202,18 +204,17 @@ func TestMultipleDecoys(t *testing.T) {
 		t.Errorf("Expected 2 emails (1 original + 1 decoy), got %d", len(emails))
 	}
 
-	// Verify first is original string
-	if _, ok := emails[0].(string); !ok {
-		t.Errorf("Expected emails[0] to be string, got %T", emails[0])
-	}
-
-	// Verify second is decoy
-	if decoy, ok := emails[1].(map[string]interface{}); !ok {
-		t.Errorf("Expected emails[1] to be decoy map, got %T", emails[1])
-	} else {
-		if _, hasKey := decoy["..."]; !hasKey {
-			t.Errorf("Expected decoy to have '...' key, got %+v", decoy)
+	// One element is the original email, the other a placeholder.
+	var placeholders int
+	for _, el := range emails {
+		if m, ok := el.(map[string]interface{}); ok && len(m) == 1 && m["..."] != nil {
+			placeholders++
+		} else if el != "john@example.com" {
+			t.Errorf("unexpected element %v", el)
 		}
+	}
+	if placeholders != 1 {
+		t.Errorf("%d placeholders, want 1", placeholders)
 	}
 
 	// Debug output
@@ -280,7 +281,6 @@ func TestSelectiveWithDecoys(t *testing.T) {
 		Decoys: []DecoyConfig{
 			{Path: "credentialSubject", Count: 2},
 		},
-		Shuffle: true,
 	})
 	if err != nil {
 		t.Fatalf("BuildDisclosures failed: %v", err)
@@ -337,40 +337,6 @@ func TestEmptyDisclosures(t *testing.T) {
 	}
 }
 
-func TestApplyDecoyToVC_ArrayElement_WriteBackBug(t *testing.T) {
-	// len == cap để append bắt buộc tạo slice header mới
-	emails := make([]interface{}, 2)
-	emails[0] = "a@example.com"
-	emails[1] = "b@example.com"
-
-	vc := map[string]interface{}{
-		"credentialSubject": map[string]interface{}{
-			"emails": emails,
-		},
-	}
-
-	err := applyDecoyToVC(vc, "credentialSubject.emails[1]", []string{"decoy-x"})
-	if err != nil {
-		t.Fatalf("applyDecoyToVC failed: %v", err)
-	}
-
-	cs := vc["credentialSubject"].(map[string]interface{})
-
-	gotEmails := cs["emails"].([]interface{})
-	if len(gotEmails) != 3 {
-		t.Fatalf("emails len = %d, want 3", len(gotEmails))
-	}
-
-	decoy, ok := gotEmails[2].(map[string]interface{})
-	if !ok || decoy["..."] != "decoy-x" {
-		t.Fatalf("emails[2] is not expected decoy, got %#v", gotEmails[2])
-	}
-
-	if _, exists := cs["credentialSubject"]; exists {
-		t.Fatalf("unexpected key credentialSubject inside credentialSubject")
-	}
-}
-
 // Test BuildDisclosures with empty SelectivePaths but with Decoys
 // Bug: disclosure.go:70-72 - no _sd_alg when only decoys
 func TestBuildDisclosures_EmptySelectivePathsWithDecoys(t *testing.T) {
@@ -400,5 +366,223 @@ func TestBuildDisclosures_EmptySelectivePathsWithDecoys(t *testing.T) {
 	// No disclosures should be generated
 	if len(result.Disclosures) != 0 {
 		t.Errorf("expected no disclosures, got %d", len(result.Disclosures))
+	}
+}
+
+// Decoys name containers the way the claims read as JSON, whatever Go type
+// holds them, and prebuilt digests in the VC survive new paths (README,
+// advanced path): both reach Reconstruct with every disclosure.
+func TestBuildDisclosures_TypedContainersAndPrebuiltDigests(t *testing.T) {
+	first, err := BuildDisclosures(BuildDisclosuresInput{
+		VC:             map[string]interface{}{"credentialSubject": map[string]interface{}{"bloodType": "O", "name": "x"}},
+		SelectivePaths: []string{"credentialSubject.bloodType"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := first.ProcessedVC["credentialSubject"].(map[string]interface{})
+	cs["tags"] = []string{"a", "b"}
+	second, err := BuildDisclosures(BuildDisclosuresInput{
+		VC:             first.ProcessedVC,
+		SelectivePaths: []string{"credentialSubject.name"},
+		Decoys:         []DecoyConfig{{Path: "credentialSubject.tags", Count: 2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs = second.ProcessedVC["credentialSubject"].(map[string]interface{})
+	sd := cs["_sd"].([]interface{})
+	if len(sd) != 2 {
+		t.Errorf("credentialSubject._sd has %d digests, want bloodType + name", len(sd))
+	}
+	// The prebuilt digest and the new one are merged into one sorted _sd
+	// (RFC 9901 §4.2.4.1).
+	if len(sd) == 2 && sd[0].(string) > sd[1].(string) {
+		t.Errorf("credentialSubject._sd = %v, want it sorted", sd)
+	}
+
+	if n := len(cs["tags"].([]interface{})); n != 4 {
+		t.Errorf("tags has %d elements, want 2 + 2 decoys", n)
+	}
+	out, err := Reconstruct(second.ProcessedVC, append(first.Disclosures, second.Disclosures...), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out["credentialSubject"].(map[string]interface{})
+	if got["bloodType"] != "O" || got["name"] != "x" || len(got["tags"].([]interface{})) != 2 {
+		t.Errorf("reconstructed %v", got)
+	}
+}
+
+// An issuer's integer past 2^53 keeps its digits in the payload it signs.
+func TestBuildDisclosures_KeepsLargeIntegers(t *testing.T) {
+	res, err := BuildDisclosures(BuildDisclosuresInput{
+		VC:             map[string]interface{}{"credentialSubject": map[string]interface{}{"n": int64(9007199254740993), "name": "x"}},
+		SelectivePaths: []string{"credentialSubject.name"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(res.ProcessedVC["credentialSubject"].(map[string]interface{})["n"])
+	if err != nil || string(b) != "9007199254740993" {
+		t.Fatalf("n = %s, %v; want 9007199254740993", b, err)
+	}
+}
+
+// Prebuilt sha-256 digests with a sha-384 build would match no disclosure:
+// refused at build, not at verify.
+func TestBuildDisclosures_PrebuiltDigestOfAnotherHashRefused(t *testing.T) {
+	first, err := BuildDisclosures(BuildDisclosuresInput{
+		VC:             map[string]interface{}{"credentialSubject": map[string]interface{}{"a": "1", "b": "2"}},
+		SelectivePaths: []string{"credentialSubject.a"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(first.ProcessedVC, "_sd_alg") // as when only credentialSubject is carried over
+	_, err = BuildDisclosures(BuildDisclosuresInput{
+		VC:             first.ProcessedVC,
+		SelectivePaths: []string{"credentialSubject.b"},
+		HashAlgorithm:  AlgSHA384,
+	})
+	if err == nil || !strings.Contains(err.Error(), "made with another hash") {
+		t.Fatalf("err = %v, want the sha-256 digest refused under sha-384", err)
+	}
+}
+
+// A decoy path that is not in the VC is refused; it used to be skipped, which
+// hid the caller's mistake and left the array or object unpadded.
+func TestBuildDisclosures_MissingDecoyPathRefused(t *testing.T) {
+	_, err := BuildDisclosures(BuildDisclosuresInput{
+		VC:     map[string]interface{}{"credentialSubject": map[string]interface{}{"name": "x"}},
+		Decoys: []DecoyConfig{{Path: "credentialSubject.nope", Count: 2}},
+	})
+	if !errors.Is(err, jose.ErrInvalidArgument) || !strings.Contains(err.Error(), "not in the credential") {
+		t.Fatalf("err = %v, want the missing decoy path refused as a caller mistake", err)
+	}
+}
+
+// Paths in errors are written in the dot notation callers use: services
+// return this text to whoever sent the paths.
+func TestBuildDisclosures_ErrorsNamePathsInDotNotation(t *testing.T) {
+	vc := func() map[string]interface{} {
+		return map[string]interface{}{"credentialSubject": map[string]interface{}{"a": 1, "tags": []interface{}{"x"}}}
+	}
+	for _, tc := range []struct {
+		in   BuildDisclosuresInput
+		want string
+	}{
+		{BuildDisclosuresInput{VC: vc(), SelectivePaths: []string{"credentialSubject.tags[3]"}}, `"credentialSubject.tags[3]"`},
+		{BuildDisclosuresInput{VC: vc(), SelectivePaths: []string{"credentialSubject.a", "credentialSubject.a"}}, `"credentialSubject.a"`},
+		{BuildDisclosuresInput{VC: vc(), Decoys: []DecoyConfig{{Path: "credentialSubject.a", Count: 1001}}}, `"credentialSubject"`},
+		{BuildDisclosuresInput{VC: vc(), Decoys: []DecoyConfig{{Path: "", Count: 1001}}}, `at ""`},
+		{BuildDisclosuresInput{VC: vc(), SelectivePaths: []string{"credentialSubject.tags[3]", "[3]"}}, `"credentialSubject.tags[3]" does`},
+		{BuildDisclosuresInput{VC: map[string]interface{}{"credentialSubject": map[string]interface{}{"a": 1, "x": map[string]interface{}{"...": 1}}},
+			SelectivePaths: []string{"credentialSubject.a"}}, `at "credentialSubject.x"`},
+	} {
+		_, err := BuildDisclosures(tc.in)
+		if !errors.Is(err, jose.ErrInvalidArgument) || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), `["`) || strings.Contains(err.Error(), `[]`) {
+			t.Errorf("err = %v, want %s named in dot notation", err, tc.want)
+		}
+	}
+}
+
+// With nothing to conceal, every plain vc+jwt passes through BuildDisclosures:
+// the VC comes back with the caller's Go types, as before this package ran
+// on jose.
+func TestBuildDisclosures_NothingToConcealKeepsGoTypes(t *testing.T) {
+	res, err := BuildDisclosures(BuildDisclosuresInput{
+		VC: map[string]interface{}{"credentialSubject": map[string]interface{}{"age": 30, "tags": []string{"a"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := res.ProcessedVC["credentialSubject"].(map[string]interface{})
+	if _, ok := cs["age"].(int); !ok {
+		t.Errorf("age is %T, want int", cs["age"])
+	}
+	if _, ok := cs["tags"].([]string); !ok {
+		t.Errorf("tags is %T, want []string", cs["tags"])
+	}
+}
+
+// A parent and a child path conceal together (RFC 9901 §4.2.6), in the dot
+// and [index] syntax, and the disclosures come deeper paths first.
+func TestBuildDisclosures_ParentAndChildPaths(t *testing.T) {
+	vc := map[string]interface{}{"credentialSubject": map[string]interface{}{
+		"address": map[string]interface{}{"city": "x"},
+		"tags":    []interface{}{"a", "b"},
+	}}
+	res, err := BuildDisclosures(BuildDisclosuresInput{
+		VC:             vc,
+		SelectivePaths: []string{"credentialSubject.address", "credentialSubject.address.city", "credentialSubject.tags[1]"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeDisclosures(res.Disclosures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded) != 3 || decoded[0].FieldName != "city" {
+		t.Fatalf("disclosures %+v, want city (the deepest) first", decoded)
+	}
+	out, err := Reconstruct(res.ProcessedVC, res.Disclosures, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out, vc) {
+		t.Fatalf("reconstructed %v, want %v", out, vc)
+	}
+}
+
+// Decoys aimed at one target through different paths (a claim's path adds to
+// the object holding it) add up.
+func TestBuildDisclosures_DecoysAtOneTargetAddUp(t *testing.T) {
+	res, err := BuildDisclosures(BuildDisclosuresInput{
+		VC:     map[string]interface{}{"credentialSubject": map[string]interface{}{"name": "x", "age": 1}},
+		Decoys: []DecoyConfig{{Path: "credentialSubject.name", Count: 2}, {Path: "credentialSubject.age", Count: 3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(res.ProcessedVC["credentialSubject"].(map[string]interface{})["_sd"].([]interface{})); n != 5 {
+		t.Fatalf("credentialSubject._sd has %d decoys, want 2 + 3", n)
+	}
+}
+
+// A VC whose top-level _sd_alg names another hash than HashAlgorithm is
+// refused: its prebuilt digests could match no disclosure.
+func TestBuildDisclosures_PrebuiltSDAlgMismatchRefused(t *testing.T) {
+	_, err := BuildDisclosures(BuildDisclosuresInput{
+		VC:             map[string]interface{}{"_sd_alg": AlgSHA512, "credentialSubject": map[string]interface{}{"a": "1"}},
+		SelectivePaths: []string{"credentialSubject.a"},
+	})
+	if !errors.Is(err, jose.ErrInvalidArgument) || !strings.Contains(err.Error(), "_sd_alg") {
+		t.Fatalf("err = %v, want the _sd_alg mismatch refused", err)
+	}
+}
+
+// A selective path may not name a placeholder a caller built earlier: its
+// disclosure is not here to conceal again.
+func TestBuildDisclosures_PathToPrebuiltPlaceholderRefused(t *testing.T) {
+	_, err := BuildDisclosures(BuildDisclosuresInput{
+		VC: map[string]interface{}{"credentialSubject": map[string]interface{}{
+			"tags": []interface{}{map[string]interface{}{"...": "X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0"}, "b"}}},
+		SelectivePaths: []string{"credentialSubject.tags[0]"},
+	})
+	if !errors.Is(err, jose.ErrInvalidArgument) || !strings.Contains(err.Error(), "prebuilt placeholder") {
+		t.Fatalf("err = %v, want the path to a prebuilt placeholder refused", err)
+	}
+}
+
+// A decoy entry with Count 0 is skipped, path unchecked, as before.
+func TestBuildDisclosures_ZeroCountDecoySkipped(t *testing.T) {
+	if _, err := BuildDisclosures(BuildDisclosuresInput{
+		VC:             map[string]interface{}{"credentialSubject": map[string]interface{}{"a": 1}},
+		SelectivePaths: []string{"credentialSubject.a"},
+		Decoys:         []DecoyConfig{{Path: "credentialSubject.nope", Count: 0}},
+	}); err != nil {
+		t.Fatalf("err = %v, want a Count 0 decoy skipped", err)
 	}
 }

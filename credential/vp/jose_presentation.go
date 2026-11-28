@@ -18,6 +18,8 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
+	"github.com/pilacorp/go-credential-sdk/jose"
+	"github.com/pilacorp/go-credential-sdk/jose/jws"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -131,17 +133,18 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 		"kid": signingKey.ID,
 	}
 
-	headerJSON, err := json.Marshal(header)
+	headerEncoded, err := jwtutil.EncodeSegment(header)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal header: %w", err)
 	}
-	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
+	if err := jwtutil.CheckHeaderToSign(headerEncoded, signingKey.ID); err != nil {
+		return nil, err
+	}
 
-	payloadJSON, err := json.Marshal(payloadData)
+	payloadEncoded, err := jwtutil.EncodeSegment(payloadData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
 	signingInput := headerEncoded + "." + payloadEncoded
 
@@ -171,26 +174,23 @@ func ParseJOSEPresentation(rawJWT string, opts ...PresentationOpt) (*JOSEPresent
 		signature = parts[2]
 	}
 
-	headerBytes, err := base64.RawURLEncoding.DecodeString(headerEncoded)
+	// Read by module jose's rules: over 64 KiB, a duplicate key, invalid
+	// UTF-8 or trailing data is refused, as jose/jws.Verify refuses it.
+	headerMap, err := jwtutil.DecodeHeaderSegment(headerEncoded)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode header: %w", err)
 	}
-	var headerMap map[string]interface{}
-	if err := json.Unmarshal(headerBytes, &headerMap); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal header: %w", err)
-	}
 	typ, _ := headerMap["typ"].(string)
 	if !isJOSEPresentationTyp(typ) {
-		return nil, fmt.Errorf("invalid typ header for JOSEPresentation: got %q, want %q", typ, TypeVPJWT)
+		return nil, fmt.Errorf("invalid typ header for JOSEPresentation: got %.64q, want %q", typ, TypeVPJWT)
 	}
 
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadEncoded)
+	payloadBytes, err := jose.DecodeSegment(payloadEncoded)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode payload: %w", err)
 	}
 
-	var payloadMap map[string]interface{}
-	err = json.Unmarshal(payloadBytes, &payloadMap)
+	payloadMap, err := jwtutil.DecodeJSONObject(payloadBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
 	}
@@ -246,8 +246,9 @@ const typeVerifiablePresentation = "VerifiablePresentation"
 // jwt.purposeFromTyp has to recognise every value accepted here, or a token this
 // function routes would have its kind decided by its own payload. Adding one
 // means adding it there.
+// Case is ignored and "application/" is implied (RFC 7515 §4.1.9).
 func isJOSEPresentationTyp(typ string) bool {
-	return typ == TypeVPJWT || typ == "application/"+TypeVPJWT
+	return jws.Header{"typ": typ}.TypIs(TypeVPJWT)
 }
 
 // requireJOSEPresentation checks the payload really is the VC 2.0 presentation
@@ -262,7 +263,7 @@ func isJOSEPresentationTyp(typ string) bool {
 // counterpart.
 func requireJOSEPresentation(m PresentationData) error {
 	if first := vcdm.FirstContext(m["@context"]); first != vcdm.ContextV2 {
-		return fmt.Errorf("%s payload must name %q first in @context, got %q",
+		return fmt.Errorf("%s payload must name %q first in @context, got %.64q",
 			TypeVPJWT, vcdm.ContextV2, first)
 	}
 	if !vcdm.HasType(m["type"], typeVerifiablePresentation) {
@@ -360,15 +361,10 @@ func (j *JOSEPresentation) AddProofByProvider(signerProvider signer.SignerProvid
 		return err
 	}
 
-	digest := sha256.Sum256([]byte(signingInput))
-	raw, err := signerProvider.Sign(digest[:])
-	if err != nil {
-		return fmt.Errorf("failed to sign signing input: %w", err)
-	}
-	// Accept trims a trailing recovery id, checks the 64-byte r||s shape, and
-	// verifies the signature against the key the header names, so a signer that
-	// does not hold that key fails here instead of at the verifier.
-	signature, err := j.signingKey.Accept(signingInput, raw)
+	// Sign checks the 64-byte r||s shape and verifies the signature against
+	// the key the header names, so a signer that does not hold that key fails
+	// here instead of at the verifier.
+	signature, err := j.signingKey.Sign(signingInput, signerProvider)
 	if err != nil {
 		return err
 	}
@@ -570,7 +566,7 @@ func (j *JOSEPresentation) checkChallengeAndDomain(options *presentationOptions)
 	if options.expectedChallenge != "" {
 		nonce, _ := j.payloadData["nonce"].(string)
 		if nonce != options.expectedChallenge {
-			return fmt.Errorf("nonce %q does not match expected challenge %q", nonce, options.expectedChallenge)
+			return fmt.Errorf("nonce %.64q does not match expected challenge %q", nonce, options.expectedChallenge)
 		}
 	}
 	return checkAudience(j.payloadData["aud"], options)

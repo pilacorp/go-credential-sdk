@@ -9,12 +9,20 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
-// JWTSigner handles JWT signing operations
+// JWTSigner handles JWT signing operations.
+//
+// Deprecated: the SDK signs JWTs through module jose with SigningKey.Sign,
+// which also checks the signature against the verification method. Nothing in
+// the SDK calls this; it will be removed in a future release.
 type JWTSigner struct {
 	signer signer.SignerProvider
 }
 
-// NewJWTSigner creates a new JWT signer instance
+// NewJWTSigner creates a new JWT signer instance.
+//
+// Deprecated: the SDK signs JWTs through module jose with SigningKey.Sign,
+// which also checks the signature against the verification method. Nothing in
+// the SDK calls this; it will be removed in a future release.
 func NewJWTSigner(signer signer.SignerProvider) *JWTSigner {
 	return &JWTSigner{
 		signer: signer,

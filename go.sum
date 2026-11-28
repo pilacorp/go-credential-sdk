@@ -149,8 +149,8 @@ github.com/opentracing/opentracing-go v1.1.0 h1:pWlfV3Bxv7k65HYwkikxat0+s3pV4bsq
 github.com/opentracing/opentracing-go v1.1.0/go.mod h1:UkNAQd3GIcIGf0SeVgPpRdFStlNbqXla1AfSYxPUl2o=
 github.com/peterh/liner v1.1.1-0.20190123174540-a2c9a5303de7 h1:oYW+YCJ1pachXTQmzR3rNLYGGz4g/UgFcjb28p/viDM=
 github.com/peterh/liner v1.1.1-0.20190123174540-a2c9a5303de7/go.mod h1:CRroGNssyjTd/qIG2FyxByd2S8JEAZXBl4qUrZf8GS0=
-github.com/pilacorp/go-credential-sdk/jose v0.1.0 h1:FXqHAYegvVfSGF7oXb0cxT+32D34qvNR+wzJ/RlnWvQ=
-github.com/pilacorp/go-credential-sdk/jose v0.1.0/go.mod h1:H++RuDqmQyJCTXcTiEUBzWxDhS5OVfkkLni+v4icdQI=
+github.com/pilacorp/go-credential-sdk/jose v0.1.2-0.20261128175151-ba319174225d h1:nrywmU4+A5Ueqgzpg8qI36tEd1v8CyDIMC1BO+iOLiU=
+github.com/pilacorp/go-credential-sdk/jose v0.1.2-0.20261128175151-ba319174225d/go.mod h1:H++RuDqmQyJCTXcTiEUBzWxDhS5OVfkkLni+v4icdQI=
 github.com/pilacorp/json-gold v0.9.1-pila.8 h1:rKdswRoz90XsC2Jshfkh4XfJHNWovzj55IlivVWiG98=
 github.com/pilacorp/json-gold v0.9.1-pila.8/go.mod h1:uX1EirW/MDwsj//qdvSWaSOFMml7atktBvCT4bH5Sfo=
 github.com/pion/dtls/v2 v2.2.7 h1:cSUBsETxepsCSFSxC3mc/aDo14qQLMSL+O6IjG28yV8=

@@ -3,9 +3,7 @@ package vc
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -15,6 +13,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/jose"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -95,17 +94,15 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 		"kid": signingKey.ID,
 	}
 
-	headerJSON, err := json.Marshal(header)
+	headerEncoded, err := jwtutil.MarshalSegment(header)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal header: %w", err)
 	}
-	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
 
-	payloadJSON, err := json.Marshal(payload)
+	payloadEncoded, err := jwtutil.MarshalSegment(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
 	signingInput := headerEncoded + "." + payloadEncoded
 
@@ -115,6 +112,11 @@ func NewJWTCredential(vcc CredentialContents, opts ...CredentialOpt) (*JWTCreden
 		jwtClaims:    otherClaims,
 		signature:    "",
 		signingKey:   signingKey,
+	}
+	// The parser's rules run on the bytes that will be signed, whatever Go
+	// types the contents held, so the SDK never signs what it refuses.
+	if _, err := ParseJWTCredential(signingInput + "." + jwtutil.PlaceholderSignature()); err != nil {
+		return nil, fmt.Errorf("the SDK cannot parse back this credential: %w", err)
 	}
 
 	return e, e.executeOptions(opts...)
@@ -136,18 +138,22 @@ func ParseJWTCredential(rawJWT string, opts ...CredentialOpt) (*JWTCredential, e
 	parts := strings.Split(rawJWT, ".")
 	headerEncoded := parts[0]
 	payloadEncoded := parts[1]
+	// Read by the rules VerifyJWT reads it with, so parsing refuses what
+	// verifying would.
+	if _, err := jwtutil.DecodeHeaderSegment(headerEncoded); err != nil {
+		return nil, fmt.Errorf("invalid JWT header: %w", err)
+	}
 	signature := ""
 	if len(parts) == 3 {
 		signature = parts[2]
 	}
 
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadEncoded)
+	payloadBytes, err := jose.DecodeSegment(payloadEncoded)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode payload: %w", err)
 	}
 
-	var payloadMap map[string]interface{}
-	err = json.Unmarshal(payloadBytes, &payloadMap)
+	payloadMap, err := jwtutil.DecodeJSONObject(payloadBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
 	}
@@ -227,12 +233,10 @@ func (j *JWTCredential) AddProofByProvider(signerProvider signer.SignerProvider,
 		return err
 	}
 
-	digest := sha256.Sum256([]byte(j.signingInput))
-	raw, err := signerProvider.Sign(digest[:])
-	if err != nil {
-		return fmt.Errorf("failed to sign signing input: %w", err)
-	}
-	signature, err := j.signingKey.Accept(j.signingInput, raw)
+	// Sign checks the 64-byte r||s shape and verifies the signature against
+	// the key the header names, so a signer that does not hold that key fails
+	// here instead of at the verifier.
+	signature, err := j.signingKey.Sign(j.signingInput, signerProvider)
 	if err != nil {
 		return err
 	}

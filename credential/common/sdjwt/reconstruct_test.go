@@ -4,132 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func hashAndParseDisclosureForTest(t *testing.T, sdAlg string, arr []interface{}) (string, disclosureInfo) {
-	t.Helper()
-	disc := encodeDisclosureForTest(t, arr)
-	h, err := hashDisclosure(sdAlg, disc)
-	if err != nil {
-		t.Fatalf("hashDisclosure failed: %v", err)
-	}
-	info, err := parseDisclosure(disc)
-	if err != nil {
-		t.Fatalf("parseDisclosure failed: %v", err)
-	}
-	return h, info
-}
-
-func TestValidateAndGetAlgorithm(t *testing.T) {
-	tests := []struct {
-		name        string
-		vc          map[string]interface{}
-		validateAlg bool
-		wantAlg     string
-		wantErr     string
-	}{
-		{name: "default-algorithm", vc: map[string]interface{}{}, validateAlg: true, wantAlg: DefaultHashAlgorithm},
-		{name: "custom-supported", vc: map[string]interface{}{"_sd_alg": AlgSHA512}, validateAlg: true, wantAlg: AlgSHA512},
-		{name: "unsupported-validated", vc: map[string]interface{}{"_sd_alg": "sha-999"}, validateAlg: true, wantErr: "unsupported _sd_alg"},
-		{name: "unsupported-not-validated", vc: map[string]interface{}{"_sd_alg": "sha-999"}, validateAlg: false, wantAlg: "sha-999"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := validateAndGetAlgorithm(tc.vc, tc.validateAlg)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("validateAndGetAlgorithm failed: %v", err)
-			}
-			if got != tc.wantAlg {
-				t.Fatalf("algorithm = %q, want %q", got, tc.wantAlg)
-			}
-		})
-	}
-}
-
-func TestBuildDisclosureMap_SkipEmptyAndParse(t *testing.T) {
-	valid := encodeDisclosureForTest(t, []interface{}{"salt", "name", "Alice"})
-	m, err := buildDisclosureMap([]string{"", valid}, AlgSHA256)
-	if err != nil {
-		t.Fatalf("buildDisclosureMap failed: %v", err)
-	}
-	if len(m) != 1 {
-		t.Fatalf("expected one disclosure hash, got %d", len(m))
-	}
-}
-
-func TestBuildDisclosureMap_InvalidDisclosure(t *testing.T) {
-	_, err := buildDisclosureMap([]string{"bad@@@"}, AlgSHA256)
-	if err == nil {
-		t.Fatal("expected parse error for invalid disclosure")
-	}
-	if !strings.Contains(err.Error(), "failed to decode disclosure") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestProcessNode_ObjectContextRejectArrayDisclosure(t *testing.T) {
-	h, info := hashAndParseDisclosureForTest(t, AlgSHA256, []interface{}{"salt-x", "array-value"})
-	disclosureMap := map[string]disclosureInfo{h: info}
-
-	node := map[string]interface{}{
-		"_sd": []interface{}{h},
-	}
-
-	_, err := processNode(node, disclosureMap, map[string]bool{})
-	if err == nil {
-		t.Fatal("expected context mismatch error")
-	}
-	if !strings.Contains(err.Error(), "array element disclosure used in object context") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestProcessNode_ArrayContextRejectObjectDisclosure(t *testing.T) {
-	h, info := hashAndParseDisclosureForTest(t, AlgSHA256, []interface{}{"salt-x", "name", "Alice"})
-	disclosureMap := map[string]disclosureInfo{h: info}
-
-	node := []interface{}{
-		map[string]interface{}{"...": h},
-	}
-
-	_, err := processNode(node, disclosureMap, map[string]bool{})
-	if err == nil {
-		t.Fatal("expected context mismatch error")
-	}
-	if !strings.Contains(err.Error(), "object field disclosure used in array context") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestProcessNode_DuplicateFieldAfterReconstruct(t *testing.T) {
-	h, info := hashAndParseDisclosureForTest(t, AlgSHA256, []interface{}{"salt-x", "name", "Alice"})
-	disclosureMap := map[string]disclosureInfo{h: info}
-
-	node := map[string]interface{}{
-		"name": "already-exists",
-		"_sd":  []interface{}{h},
-	}
-
-	_, err := processNode(node, disclosureMap, map[string]bool{})
-	if err == nil {
-		t.Fatal("expected duplicate field error")
-	}
-	if !strings.Contains(err.Error(), "duplicate field") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
 
 func TestReconstruct_ArrayPlaceholder(t *testing.T) {
 	arr := []interface{}{"salt123", "Item1"}
@@ -215,7 +96,7 @@ func TestValidation_DuplicateDigestInArray(t *testing.T) {
 
 	_, err := Reconstruct(vcWithDup, []string{D1}, true)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "duplicate digest")
+	assert.Contains(t, err.Error(), "appears more than once")
 }
 
 func TestBuildDisclosuresAndReconstruct_ObjectField(t *testing.T) {
@@ -372,100 +253,6 @@ func TestBuildDisclosuresAndReconstruct_RecursiveObjectPath(t *testing.T) {
 	assert.False(t, hasAlg)
 }
 
-func TestBuildDisclosures_RecursiveParentAndChildPaths(t *testing.T) {
-	original1 := map[string]interface{}{
-		"id": "1234",
-		"person": map[string]interface{}{
-			"profile": map[string]interface{}{
-				"name": "Alice",
-				"age":  float64(30),
-			},
-		},
-	}
-	_, err := BuildDisclosures(BuildDisclosuresInput{
-		VC:             original1,
-		SelectivePaths: []string{"person.profile", "person.profile.name"},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `path "person.profile.name" not found`)
-
-	original2 := map[string]interface{}{
-		"id": "1234",
-		"person": map[string]interface{}{
-			"profile": map[string]interface{}{
-				"name": "Alice",
-				"age":  float64(30),
-			},
-		},
-	}
-	result, err := BuildDisclosures(BuildDisclosuresInput{
-		VC:             original2,
-		SelectivePaths: []string{"person.profile.name", "person.profile"},
-	})
-	require.NoError(t, err)
-	require.Len(t, result.Disclosures, 2)
-
-	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, true)
-	require.NoError(t, err)
-
-	assert.Equal(t, "1234", out["id"])
-
-	outPerson, ok := out["person"].(map[string]interface{})
-	require.True(t, ok)
-
-	outProfile, ok := outPerson["profile"].(map[string]interface{})
-	require.True(t, ok)
-
-	assert.Equal(t, "Alice", outProfile["name"])
-	assert.Equal(t, float64(30), outProfile["age"])
-
-	_, hasSdProfile := outProfile["_sd"]
-	assert.False(t, hasSdProfile)
-	_, hasAlg := out["_sd_alg"]
-	assert.False(t, hasAlg)
-}
-
-func TestBuildDisclosures_ArrayParentAndChildPaths(t *testing.T) {
-	original1 := map[string]interface{}{
-		"tags": []interface{}{"public", "email", "phone"},
-		"note": "test",
-	}
-	_, err := BuildDisclosures(BuildDisclosuresInput{
-		VC:             original1,
-		SelectivePaths: []string{"tags", "tags[1]"},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `path "tags[1]" not found`)
-
-	original2 := map[string]interface{}{
-		"tags": []interface{}{"public", "email", "phone"},
-		"note": "test",
-	}
-	result, err := BuildDisclosures(BuildDisclosuresInput{
-		VC:             original2,
-		SelectivePaths: []string{"tags[1]", "tags"},
-	})
-	require.NoError(t, err)
-	require.Len(t, result.Disclosures, 2)
-
-	out, err := Reconstruct(result.ProcessedVC, result.Disclosures, true)
-	require.NoError(t, err)
-
-	outTags, ok := out["tags"].([]interface{})
-	require.True(t, ok)
-	require.Len(t, outTags, 3)
-	assert.Equal(t, "public", outTags[0])
-	assert.Equal(t, "email", outTags[1])
-	assert.Equal(t, "phone", outTags[2])
-
-	assert.Equal(t, "test", out["note"])
-
-	_, hasSd := out["_sd"]
-	assert.False(t, hasSd)
-	_, hasAlg := out["_sd_alg"]
-	assert.False(t, hasAlg)
-}
-
 func TestBuildDisclosures_WithOptions(t *testing.T) {
 	original := map[string]interface{}{
 		"name": "Alice",
@@ -489,7 +276,6 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	_, err = BuildDisclosures(BuildDisclosuresInput{
 		VC:             original,
 		SelectivePaths: []string{"name", "age"},
-		Shuffle:        true,
 	})
 	require.NoError(t, err)
 
@@ -515,7 +301,7 @@ func TestBuildDisclosures_WithOptions(t *testing.T) {
 	assert.Equal(t, "Alice", out3["name"])
 }
 
-// draft-ietf-oauth-selective-disclosure-jwt § 7.1 step 4 counts a digest across
+// RFC 9901 §7.1 step 4 counts a digest across
 // the whole Issuer-signed payload, not per object. objectDigests and arrayDigests
 // each see one container, so a digest placed in two different objects slipped
 // past both and one disclosure filled two fields.
@@ -534,7 +320,7 @@ func TestValidation_DigestReferencedTwiceAcrossObjects(t *testing.T) {
 
 	_, err = Reconstruct(vc, []string{D}, true)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "referenced more than once")
+	require.Contains(t, err.Error(), "appears more than once")
 }
 
 // _sd decides what the payload says, so a shape nobody expected is refused rather
@@ -547,7 +333,7 @@ func TestValidation_SDMustBeAnArray(t *testing.T) {
 
 	_, err := Reconstruct(vc, nil, true)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "_sd must be an array")
+	require.Contains(t, err.Error(), "is not an array")
 }
 
 // digestFor is the digest an _sd array carries for a disclosure under sha-256.
@@ -618,7 +404,7 @@ func TestReconstruct_DigestUniquenessIgnoresWhetherItWasRevealed(t *testing.T) {
 			if err == nil {
 				t.Fatal("a digest repeated across containers was accepted")
 			}
-			if !strings.Contains(err.Error(), "referenced more than once in the payload") {
+			if !strings.Contains(err.Error(), "appears more than once") {
 				t.Fatalf("err = %v, want the payload-wide duplicate reported", err)
 			}
 		})
@@ -698,11 +484,11 @@ func TestReconstruct_DisclosedClaimHoldingAnUnrevealedElement(t *testing.T) {
 		},
 		{
 			// The case that regressed. skills comes back; the element inside
-			// stays a placeholder, because that is what withholding it means.
+			// is removed, because that is what withholding it means
+			// (RFC 9901 section 7.1 step 3d).
 			name:        "the claim revealed, the element inside withheld",
 			disclosures: []string{skills},
-			wantSkills: []interface{}{"go",
-				map[string]interface{}{"...": digestFor(rust)}},
+			wantSkills:  []interface{}{"go"},
 		},
 		{
 			name:        "neither revealed",
@@ -741,4 +527,35 @@ func mustJSON(t *testing.T, v interface{}) string {
 	}
 
 	return string(b)
+}
+
+// hashDisclosure is the RFC 9901 §4.2.3 digest, computed apart from the code
+// under test.
+func hashDisclosure(alg, d string) (string, error) {
+	if alg != AlgSHA256 {
+		return "", fmt.Errorf("test helper: %s", alg)
+	}
+	sum := sha256.Sum256([]byte(d))
+	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
+}
+
+// Reconstruct reads the payload as JSON, as it is once signed: an _sd held as
+// a Go []string is the same array.
+func TestReconstruct_GoTypedSD(t *testing.T) {
+	d := encodeDisclosureForTest(t, []interface{}{"salt", "name", "x"})
+	h, err := hashDisclosure(AlgSHA256, d)
+	require.NoError(t, err)
+	out, err := Reconstruct(map[string]interface{}{"_sd": []string{h}}, []string{d}, true)
+	require.NoError(t, err)
+	assert.Equal(t, "x", out["name"])
+}
+
+// A caller's tree that is not JSON as a decoder gives it (a json.Number no
+// JSON reader accepts) is read through the JSON encoder, which refuses it,
+// rather than passed on as a number.
+func TestReconstructRefusesNonJSONNumber(t *testing.T) {
+	_, err := Reconstruct(map[string]interface{}{"n": json.Number("NaN")}, nil, true)
+	if err == nil {
+		t.Fatal("json.Number(\"NaN\") was read as a number")
+	}
 }

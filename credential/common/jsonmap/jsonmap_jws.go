@@ -12,6 +12,8 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/jose"
 )
 
 const (
@@ -113,7 +115,7 @@ func checkJWS2020Alg(alg string) error {
 	case "ES256", "PS256":
 		return nil
 	}
-	return fmt.Errorf("JsonWebSignature2020 alg %q is not supported: this SDK implements ES256 and PS256 from the suite's algorithm table", alg)
+	return fmt.Errorf("JsonWebSignature2020 alg %.64q is not supported: this SDK implements ES256 and PS256 from the suite's algorithm table", alg)
 }
 
 // validateJWSSigShape rejects a signer whose signature shape does not match the
@@ -140,10 +142,10 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 		return false, err
 	}
 	if vm.Type != JsonWebKey2020 {
-		return false, fmt.Errorf("expected %s VM, got %s", JsonWebKey2020, vm.Type)
+		return false, fmt.Errorf("expected %s VM, got %.64q", JsonWebKey2020, vm.Type)
 	}
 	if vm.PublicKeyJwk == nil {
-		return false, fmt.Errorf("verification method '%s' has no publicKeyJwk", vm.ID)
+		return false, fmt.Errorf("verification method %.64q has no publicKeyJwk", vm.ID)
 	}
 
 	encHeader, encSig, ok := splitDetachedJWS(proof.JWS)
@@ -158,8 +160,8 @@ func (m *JSONMap) verifyJWSProof(doc *verificationmethod.DIDDocument, proof *dto
 		return false, err
 	}
 
-	// Strict(): one signature has one spelling, as for the secp256k1 suite.
-	sig, err := base64.RawURLEncoding.Strict().DecodeString(encSig)
+	// One signature has one spelling, as for the secp256k1 suite.
+	sig, err := jose.DecodeSegment(encSig)
 	if err != nil {
 		return false, fmt.Errorf("decode jws signature: %w", err)
 	}
@@ -216,32 +218,53 @@ func encodeDetachedJWSHeader(alg string) (string, error) {
 // detachedJWSAlg decodes the header, enforces b64:false + crit:[b64], and
 // returns the algorithm.
 func detachedJWSAlg(encHeader string) (string, error) {
-	headerBytes, err := base64.RawURLEncoding.DecodeString(encHeader)
+	hdr, err := decodeJWSHeader(encHeader)
 	if err != nil {
-		return "", fmt.Errorf("decode jws header: %w", err)
+		return "", err
 	}
-	var hdr struct {
-		Alg  string      `json:"alg"`
-		B64  interface{} `json:"b64"`
-		Crit []string    `json:"crit"`
+	alg, ok := hdr["alg"].(string)
+	if _, present := hdr["alg"]; present && !ok {
+		return "", fmt.Errorf("jws header alg must be a string")
 	}
-	if err := json.Unmarshal(headerBytes, &hdr); err != nil {
-		return "", fmt.Errorf("parse jws header: %w", err)
-	}
-	if b, ok := hdr.B64.(bool); !ok || b {
+	if b, ok := hdr["b64"].(bool); !ok || b {
 		return "", fmt.Errorf("jws header b64 must be false")
 	}
-	if !containsString(hdr.Crit, "b64") {
+	var crit []string
+	if raw, present := hdr["crit"]; present {
+		list, ok := raw.([]interface{})
+		if !ok {
+			return "", fmt.Errorf("jws header crit must be an array of strings")
+		}
+		for _, el := range list {
+			s, ok := el.(string)
+			if !ok {
+				return "", fmt.Errorf("jws header crit must be an array of strings")
+			}
+			crit = append(crit, s)
+		}
+	}
+	if !containsString(crit, "b64") {
 		return "", fmt.Errorf("jws header crit must include b64")
 	}
 	// RFC 7515 §4.1.11: a crit entry the recipient does not understand makes
 	// the JWS invalid; b64 is the only extension this reader understands.
-	for _, c := range hdr.Crit {
+	for _, c := range crit {
 		if c != "b64" {
 			return "", fmt.Errorf("jws header crit names %q, which this verifier does not support", errtext.Clip(c))
 		}
 	}
-	return hdr.Alg, nil
+	return alg, nil
+}
+
+// decodeJWSHeader reads a detached JWS header by the rules jose/jws uses
+// for every other JOSE header: one base64url spelling, and a JSON object
+// with no duplicate member and valid UTF-8.
+func decodeJWSHeader(encHeader string) (map[string]interface{}, error) {
+	hdr, err := jwtutil.DecodeHeaderSegment(encHeader)
+	if err != nil {
+		return nil, fmt.Errorf("parse jws header: %w", err)
+	}
+	return hdr, nil
 }
 
 func jwsSigningInput(encHeader string, payload []byte) []byte {

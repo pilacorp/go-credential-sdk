@@ -99,3 +99,29 @@ func TestJwtKid_CaseSensitive(t *testing.T) {
 		}
 	}
 }
+
+// The JwtProof2020 signature has one base64url spelling: unused bits set in
+// its last character are refused, as for the header and payload.
+func TestJwtProofSignatureOneSpelling(t *testing.T) {
+	sig := base64.RawURLEncoding.EncodeToString(make([]byte, 64)) // ends in "A"
+	if _, _, err := getSignatureAndMessage("h.p." + sig); err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	alias := sig[:len(sig)-1] + "B"
+	if _, _, err := getSignatureAndMessage("h.p." + alias); err == nil {
+		t.Fatal("accepted a signature with unused bits set")
+	}
+}
+
+// The JwtProof2020 header is bounded as jose/jws bounds a JOSE header, before
+// it is decoded.
+func TestJwtProofHeaderSizeBounded(t *testing.T) {
+	big := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"ES256K","x":"` + strings.Repeat("a", 70<<10) + `"}`))
+	priv, err := ethcrypto.HexToECDSA(testSecp256k1PrivHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyJwtProofToken(map[string]interface{}{}, big+".p.s", &priv.PublicKey); err == nil || !strings.Contains(err.Error(), "header is over") {
+		t.Fatalf("err = %v, want a 70 KiB header refused", err)
+	}
+}

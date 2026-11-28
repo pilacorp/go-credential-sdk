@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwttest"
 	"github.com/pilacorp/go-credential-sdk/credential/vc"
+	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
 
 func jwtMultikeyContents(issuerDID string) vc.CredentialContents {
@@ -173,7 +175,7 @@ func TestJWT_AlgMustMatchVM(t *testing.T) {
 		vmpkg.NewSecp256k1VM(did, "key-1", pubHex(t, secpPriv))))
 
 	err = cred.Verify(vc.WithResolver(secpResolver))
-	if err == nil || !strings.Contains(err.Error(), "does not match verification method") {
+	if !errors.Is(err, jws.ErrAlgNotAllowed) {
 		t.Fatalf("verify err = %v, want an alg/key mismatch error", err)
 	}
 }

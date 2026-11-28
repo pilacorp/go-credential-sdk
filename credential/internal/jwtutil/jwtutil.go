@@ -13,8 +13,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
+	"github.com/pilacorp/go-credential-sdk/jose"
+	"github.com/pilacorp/go-credential-sdk/jose/jws"
 )
 
 // SetIssuedAt records when the signing input was fixed — which is when the
@@ -89,7 +94,7 @@ func NumericDate(raw interface{}) (int64, error) {
 	case float64:
 		v, ok := secondsFromFloat(t)
 		if !ok {
-			return 0, fmt.Errorf("value: %v", raw)
+			return 0, fmt.Errorf("value: %s", errtext.Clip(fmt.Sprint(raw)))
 		}
 		sec = v
 	case int64:
@@ -103,7 +108,7 @@ func NumericDate(raw interface{}) (int64, error) {
 			}
 			var ok bool
 			if v, ok = secondsFromFloat(f); !ok {
-				return 0, fmt.Errorf("value: %v", raw)
+				return 0, fmt.Errorf("value: %s", errtext.Clip(fmt.Sprint(raw)))
 			}
 		}
 		sec = v
@@ -111,7 +116,7 @@ func NumericDate(raw interface{}) (int64, error) {
 		return 0, fmt.Errorf("type: %T", raw)
 	}
 	if sec <= 0 || sec > maxUnix {
-		return 0, fmt.Errorf("value: %v", raw)
+		return 0, fmt.Errorf("value: %s", errtext.Clip(fmt.Sprint(raw)))
 	}
 
 	return sec, nil
@@ -151,13 +156,183 @@ func DecodePayload(token string) (map[string]interface{}, error) {
 	if len(parts) != 3 {
 		return nil, errors.New("invalid JWT format")
 	}
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	payloadBytes, err := jose.DecodeSegment(parts[1])
 	if err != nil {
-		return nil, errors.New("failed to decode JWT payload")
+		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
 	}
-	var claims map[string]interface{}
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return nil, errors.New("failed to parse JWT payload")
+	claims, err := DecodeJSONObject(payloadBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse JWT payload: %w", err)
 	}
 	return claims, nil
+}
+
+// PlaceholderSignature has the encoded length of the 64-byte r||s signature
+// every SDK signing path attaches, so a builder can parse its finished token
+// back before anything is signed.
+func PlaceholderSignature() string {
+	return strings.Repeat("A", 86)
+}
+
+// EncodeSegment marshals v as a JWS header or payload segment, and refuses
+// one DecodeSegmentObject would refuse (nesting over jose.MaxJSONDepth), so
+// the SDK never signs what it cannot parse back.
+func EncodeSegment(v interface{}) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	if _, err := DecodeJSONObject(b); err != nil {
+		return "", fmt.Errorf("the SDK could not parse it back: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// MarshalSegment is EncodeSegment without the read-back, for a builder that
+// parses its whole token back with its own parser anyway.
+func MarshalSegment(v interface{}) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// CheckHeaderSize refuses a header segment over MaxHeaderBytes, the bound
+// DecodeHeaderSegment and jose/jws.Verify apply.
+func CheckHeaderSize(seg string) error {
+	if len(seg) > maxHeaderSegment {
+		return fmt.Errorf("%w: header is over %d bytes", jose.ErrMalformed, MaxHeaderBytes)
+	}
+	return nil
+}
+
+// CheckHeaderToSign refuses, before anything is signed, a header segment a
+// verifier would refuse for its size; the kid is what a caller can make long.
+func CheckHeaderToSign(seg, kid string) error {
+	if CheckHeaderSize(seg) != nil {
+		return fmt.Errorf("%w: the JOSE header is over %d bytes (kid of %d bytes), the most a verifier reads",
+			jose.ErrInvalidArgument, MaxHeaderBytes, len(kid))
+	}
+	return nil
+}
+
+// MaxHeaderBytes bounds a decoded JOSE header: jose/jws's bound, so the SDK
+// refuses what jws.Verify would and nothing more.
+const MaxHeaderBytes = jws.MaxHeaderBytes
+
+// maxHeaderSegment is the base64url length of MaxHeaderBytes, unpadded.
+const maxHeaderSegment = (4*MaxHeaderBytes + 2) / 3
+
+// DecodeHeaderSegment is DecodeSegmentObject for a JOSE header: a segment
+// over 64 KiB, which jose/jws.Verify would refuse, is refused before it is
+// decoded, so a large header costs nothing on any route.
+func DecodeHeaderSegment(seg string) (map[string]interface{}, error) {
+	if err := CheckHeaderSize(seg); err != nil {
+		return nil, err
+	}
+	return DecodeSegmentObject(seg)
+}
+
+// DecodeSegmentObject reads one base64url segment of a compact JWS, a header
+// or a payload: jose.DecodeSegment (RFC 7515 §2, pad bits zero per RFC 4648
+// §3.5), then DecodeJSONObject.
+func DecodeSegmentObject(seg string) (map[string]interface{}, error) {
+	b, err := jose.DecodeSegment(seg)
+	if err != nil {
+		return nil, err
+	}
+	return DecodeJSONObject(b)
+}
+
+// DecodeJSONObject reads a JWT header, payload or disclosure value by module
+// jose's rules (one value, valid UTF-8, no duplicate key, bounded depth), so
+// the SDK reads the bytes a signature covers the way jose/jws.Verify does,
+// and gives numbers as float64, as encoding/json does.
+func DecodeJSONObject(data []byte) (map[string]interface{}, error) {
+	obj, err := jose.DecodeJSONObject(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := FloatNumbersInPlace(obj); err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
+// FloatNumbersInPlace is FloatNumbers on a tree nothing else holds, such as
+// one just decoded: it changes v itself instead of copying it, so a payload
+// costs one tree, not two, before its signature is checked.
+func FloatNumbersInPlace(v map[string]interface{}) error {
+	_, err := numbers(v, false, true)
+	return err
+}
+
+// FloatNumbers returns a copy of v with every json.Number as the float64
+// encoding/json would give: integers past 2^53 are rounded, as there.
+func FloatNumbers(v interface{}) (interface{}, error) {
+	return numbers(v, false, false)
+}
+
+// FloatNumbersExact is FloatNumbers for data the caller will sign: an
+// integer literal (no '.', 'e' or 'E') past ±2^53 stays a json.Number, so its
+// digits are not changed.
+func FloatNumbersExact(v interface{}) (interface{}, error) {
+	return numbers(v, true, false)
+}
+
+func numbers(v interface{}, exact, inPlace bool) (interface{}, error) {
+	switch t := v.(type) {
+	case json.Number:
+		f, err := strconv.ParseFloat(t.String(), 64)
+		if err != nil {
+			// Refused in both modes, so what is built here can be read back.
+			// Read input is malformed; data a caller is building is the
+			// caller's mistake.
+			sentinel := jose.ErrMalformed
+			if exact {
+				sentinel = jose.ErrInvalidArgument
+			}
+			// The *strconv.NumError would repeat the whole literal.
+			var ne *strconv.NumError
+			if errors.As(err, &ne) {
+				err = ne.Err
+			}
+			return nil, fmt.Errorf("%w: number %.32q does not fit a float64: %w", sentinel, t.String(), err)
+		}
+		if exact && !strings.ContainsAny(t.String(), ".eE") {
+			// An integer literal: float64 holds it exactly up to 2^53.
+			if i, err := strconv.ParseInt(t.String(), 10, 64); err != nil || i > 1<<53 || i < -(1<<53) {
+				return t, nil
+			}
+		}
+		return f, nil
+	case map[string]interface{}:
+		out := t
+		if !inPlace {
+			out = make(map[string]interface{}, len(t))
+		}
+		for k, el := range t {
+			c, err := numbers(el, exact, inPlace)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = c
+		}
+		return out, nil
+	case []interface{}:
+		out := t
+		if !inPlace {
+			out = make([]interface{}, len(t))
+		}
+		for i, el := range t {
+			c, err := numbers(el, exact, inPlace)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = c
+		}
+		return out, nil
+	}
+	return v, nil
 }

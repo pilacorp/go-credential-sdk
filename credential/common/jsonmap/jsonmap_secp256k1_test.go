@@ -106,10 +106,12 @@ func TestSecp256k1Suite_RejectsNonCanonicalBase64(t *testing.T) {
 		t.Fatalf("the mutation changed the signature bytes, so it does not test malleability: err=%v", err)
 	}
 
-	proof.JWS = encHeader + ".." + mutated
-	ok, err = m.verifyEcdsaSecp256k1Proof(doc, proof, nil)
-	if ok || err == nil {
-		t.Fatalf("a second spelling of the same signature verified: ok=%v err=%v", ok, err)
+	for _, spelling := range []string{mutated, encSig[:40] + "\r\n" + encSig[40:]} {
+		proof.JWS = encHeader + ".." + spelling
+		ok, err = m.verifyEcdsaSecp256k1Proof(doc, proof, nil)
+		if ok || err == nil {
+			t.Fatalf("a second spelling %q of the same signature verified: ok=%v err=%v", spelling, ok, err)
+		}
 	}
 }
 

@@ -1,7 +1,6 @@
 package vc
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
 )
 
 // ErrSDJWTRequiresJOSE is returned when selective disclosure is asked of the VC
@@ -418,15 +418,19 @@ func WithStatusListHTTPClient(client *http.Client) CredentialOpt {
 // the matching disclosures here.
 //
 // The builder validates rather than trusts. Every disclosure has to match a
-// digest the payload actually carries, and the rules of
-// draft-ietf-oauth-selective-disclosure-jwt § 7.1 apply: a disclosure matching
-// nothing is refused, so is the same one twice, so is a digest referenced twice.
+// digest the payload actually carries, and RFC 9901 applies: a disclosure
+// matching nothing is refused (§7.1 step 5); so is the same one twice, which
+// a Holder may not send (§4) and every reader refuses; and so is a digest
+// that appears twice (§4.1, §7.1 step 4).
 // A mismatch fails at build time with "invalid SD-JWT disclosures" rather than
 // producing a token this SDK's own parser would reject.
 //
 // Do not combine it with WithSDSelectivePaths for the same claim. Those paths
 // make the builder generate its own digests with a fresh salt, which no
-// previously built disclosure can match.
+// previously built disclosure can match. Combined for other claims, the
+// digests already in the contents are kept: build the digests and the
+// disclosures with one hash, and pass WithSDHashAlgorithm with the value given
+// to BuildDisclosuresInput.HashAlgorithm, or the build is refused.
 //
 // For the ordinary case, name the claims with WithSDSelectivePaths and let the
 // builder do both halves. To re-assemble a stored credential, parse the token:
@@ -444,6 +448,10 @@ func WithSDDisclosures(disclosures []string) CredentialOpt {
 // WithSDSelectivePaths declares which claims should be selectively disclosable.
 // When provided, the SDK will use sdjwt.BuildDisclosures to construct SD-JWT structures
 // during credential issuance.
+//
+// A path to, or inside, a property a verifier decides on is refused (vc-jose-
+// cose (W3C REC 2026-10-13) §3.2.1, RFC 9901 §9.7), and so is a top-level
+// path; see WithSDDecoyDigests for the list and the reason.
 //
 // Applies to NewJOSECredential only; NewJWTCredential refuses it with
 // ErrSDJWTRequiresJOSE.
@@ -464,7 +472,11 @@ func WithSDHashAlgorithm(alg string) CredentialOpt {
 	}
 }
 
-// WithSDShuffle enables shuffling of the _sd array to prevent disclosure order leakage.
+// WithSDShuffle has no effect: every _sd array is sorted, which hides the
+// order of the claims (RFC 9901 §4.2.4.1), and array decoys go at random
+// positions.
+//
+// Deprecated: drop the option; it will be removed in a future release.
 //
 // Applies to NewJOSECredential only; NewJWTCredential refuses it with
 // ErrSDJWTRequiresJOSE.
@@ -478,10 +490,17 @@ func WithSDShuffle(enabled bool) CredentialOpt {
 // number of disclosed claims. Each Decoy specifies the path where decoy digests
 // should be added and the count of decoys.
 //
-// The path must name an object inside credentialSubject, not the root. A decoy at
-// the root would claim a top-level property is hidden when none may be — nothing
-// up there is selectively disclosable — and a root digest is indistinguishable
-// from a withheld top-level property, which is what the parser refuses.
+// The path names an object (decoys go into its _sd) or an array (decoys become
+// placeholders at random positions); a path to an array element adds to that
+// array, a path to any other value adds to the object holding it, and a path
+// not in the credential is refused.
+//
+// The path must not be in, or be, one of the properties a verifier decides on
+// (@context, type, issuer, the validity window, credentialStatus,
+// credentialSchema, relatedResource, iss, exp, nbf, cnf, aud as a whole), and
+// must not be the root: a root digest with no disclosure cannot be told from a
+// withheld exp or nbf, which this builder does not write, so the credential
+// would fail Verify (RFC 9901 §9.7).
 //
 // Example: WithSDDecoyDigests([]vc.Decoy{{Path: "credentialSubject", Count: 3}})
 //
@@ -600,33 +619,32 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 	valStr := strings.TrimSpace(strings.Trim(string(rawCredential), "\""))
 	if sdjwt.IsSDJWT(valStr) || isJWTCredential(valStr) {
 		// Auto-detect vc-jose-cose (vc+jwt) vs legacy VC 1.1 JWT
-		baseJWT := valStr
-		if sdjwt.IsSDJWT(valStr) {
-			if parsed, err := sdjwt.Parse(valStr); err == nil {
-				baseJWT = parsed.BaseJWT
-			}
-		}
+		// Only the issuer-signed JWT's header routes, so nothing after the
+		// first "~" is decoded here; the parser it routes to bounds the rest.
+		baseJWT, _, _ := strings.Cut(valStr, "~")
 		parts := strings.Split(baseJWT, ".")
 		if len(parts) >= 2 {
-			if headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0]); err == nil {
-				var header map[string]interface{}
-				if err := json.Unmarshal(headerBytes, &header); err == nil {
-					if typ, ok := header["typ"].(string); ok {
-						// Both vc+jwt and vc+sd-jwt are vc-jose-cose; only the
-						// securing mechanism differs, so both route here. A
-						// tilde alone does not decide it: a VC 1.1 SD-JWT has the
-						// same shape with typ "JWT" and its claims under vc. It
-						// goes to the 1.1 path below, which refuses it with
-						// ErrSDJWTRequiresJOSE.
-						// SD-JWT profiles other than vc+sd-jwt, such as the IETF SD-JWT VC
-						// (dc+sd-jwt), are not read here; name the typ rather than point at JOSE.
-						if strings.HasSuffix(typ, "+sd-jwt") && !isJOSECredentialTyp(typ) {
-							return nil, fmt.Errorf("failed to parse credential: unsupported SD-JWT typ %q: only vc+sd-jwt is read", typ)
-						}
-						if isJOSECredentialTyp(typ) {
-							return ParseJOSECredential(valStr, opts...)
-						}
-					}
+			// The header decides the parser, so it is read by the rules every
+			// parser reads it with: a duplicate typ must not route one way
+			// and verify another.
+			header, err := jwtutil.DecodeHeaderSegment(parts[0])
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse credential: invalid JWT header: %w", err)
+			}
+			if typ, ok := header["typ"].(string); ok {
+				// Both vc+jwt and vc+sd-jwt are vc-jose-cose; only the
+				// securing mechanism differs, so both route here. A tilde
+				// alone does not decide it: a VC 1.1 SD-JWT has the same
+				// shape with typ "JWT" and its claims under vc. It goes to the
+				// 1.1 path below, which refuses it with ErrSDJWTRequiresJOSE.
+				// SD-JWT profiles other than vc+sd-jwt, such as the IETF SD-JWT
+				// VC (dc+sd-jwt), are not read here; name the typ rather than
+				// point at JOSE.
+				if strings.HasSuffix(strings.ToLower(typ), "+sd-jwt") && !isJOSECredentialTyp(typ) {
+					return nil, fmt.Errorf("failed to parse credential: unsupported SD-JWT typ %.64q: only vc+sd-jwt is read", typ)
+				}
+				if isJOSECredentialTyp(typ) {
+					return ParseJOSECredential(valStr, opts...)
 				}
 			}
 		}
