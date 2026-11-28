@@ -33,6 +33,10 @@ type Recreated struct {
 	// the disclosure that opened the claim at a node. Node 0 is Claims.
 	steps  map[step]int
 	opened map[int]Disclosure
+	// up leads from a node to its parent; nodeOf finds the node a
+	// disclosure opened by its digest. Both serve Ancestors.
+	up     map[int]int
+	nodeOf map[string]int
 }
 
 // Node is one value of the payload as the issuer issued it (RFC 9901 §4.2),
@@ -105,6 +109,30 @@ func (r *Recreated) Disclosures(path Path) (ds []Disclosure, ok bool) {
 			ds = append(ds, d)
 		}
 	}
+	return ds, true
+}
+
+// Ancestors returns the disclosures of the concealed claims that the
+// disclosure with this digest is nested in, outermost first: those a holder
+// must send with it for a verifier to reach it (RFC 9901 §4.2.6, §7.2). It
+// is empty for a disclosure at the top of the payload; ok is false when no
+// disclosure given to Recreate has this digest under r.Alg. Each
+// Disclosure's Value is shared and must not be modified.
+func (r *Recreated) Ancestors(digest string) (ds []Disclosure, ok bool) {
+	if r == nil {
+		return nil, false
+	}
+	node, ok := r.nodeOf[digest]
+	if !ok {
+		return nil, false
+	}
+	ds = []Disclosure{}
+	for n := r.up[node]; n != 0; n = r.up[n] {
+		if d, ok := r.opened[n]; ok {
+			ds = append(ds, d)
+		}
+	}
+	slices.Reverse(ds)
 	return ds, true
 }
 
@@ -212,6 +240,8 @@ func RecreateWithOptions(payload map[string]any, disclosures []Disclosure, opts 
 		seen:     map[string]bool{},
 		steps:    map[step]int{},
 		opened:   map[int]Disclosure{},
+		up:       map[int]int{},
+		nodeOf:   map[string]int{},
 	}
 	order := make([]string, 0, len(disclosures)) // digests in the order received
 	// The digest is over the encoded string (§4.2.3), so duplicates and
@@ -234,7 +264,7 @@ func RecreateWithOptions(payload map[string]any, disclosures []Disclosure, opts 
 			return nil, fmt.Errorf("%w: sdjwt: no digest references disclosure %s", jose.ErrMalformed, digest)
 		}
 	}
-	return &Recreated{Claims: claims, Alg: alg, issued: issued, steps: r.steps, opened: r.opened}, nil
+	return &Recreated{Claims: claims, Alg: alg, issued: issued, steps: r.steps, opened: r.opened, up: r.up, nodeOf: r.nodeOf}, nil
 }
 
 type recreator struct {
@@ -242,6 +272,8 @@ type recreator struct {
 	seen     map[string]bool   // every digest met so far
 	steps    map[step]int
 	opened   map[int]Disclosure
+	up       map[int]int
+	nodeOf   map[string]int
 }
 
 // at is the place of a value in the recreated claims, linked to its parent's,
@@ -276,8 +308,16 @@ func (r *recreator) index(a *at) int {
 		parent := r.index(a.up)
 		a.node = len(r.steps) + 1
 		r.steps[step{parent, a.el}] = a.node
+		r.up[a.node] = parent
 	}
 	return a.node
+}
+
+// open records that d opened the claim at a.
+func (r *recreator) open(a *at, d Disclosure) {
+	n := r.index(a)
+	r.opened[n] = d
+	r.nodeOf[d.Digest] = n
 }
 
 // value, object and array return the recreated value and its Node as issued.
@@ -349,7 +389,7 @@ func (r *recreator) object(obj map[string]any, a *at) (map[string]any, *Node, er
 			return nil, nil, fmt.Errorf("%w: sdjwt: disclosure %s repeats the claim %s at %s", jose.ErrMalformed, digest, errtext.Quote(d.Name), a.path())
 		}
 		ca := a.child(d.Name)
-		r.opened[r.index(ca)] = d
+		r.open(ca, d)
 		v, n, err := r.value(d.Value, ca)
 		if err != nil {
 			return nil, nil, err
@@ -389,7 +429,7 @@ func (r *recreator) array(arr []any, a *at) ([]any, *Node, error) {
 			return nil, nil, fmt.Errorf("%w: sdjwt: array element at %s references the object property disclosure %s", jose.ErrMalformed, a.path(), digest)
 		}
 		ca := a.child(len(out))
-		r.opened[r.index(ca)] = d
+		r.open(ca, d)
 		v, n, err := r.value(d.Value, ca)
 		if err != nil {
 			return nil, nil, err
