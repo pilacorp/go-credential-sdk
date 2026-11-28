@@ -10,6 +10,8 @@ package sdjwt
 import (
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/internal/errtext"
@@ -21,6 +23,9 @@ type Recreated struct {
 	// claim in place, every _sd and _sd_alg removed. Its tree is shared with
 	// Issued and with every caller, and must not be modified.
 	Claims map[string]any
+	// Alg is the _sd_alg the digests were checked with, sha-256 when the
+	// payload has none: the hash of sd_hash too (§4.3.1, SDHashWith).
+	Alg string
 	// issued is the payload as issued, built with Claims; see Issued.
 	issued *Node
 	// An index of the opened claims and their ancestors, never of the whole
@@ -28,6 +33,10 @@ type Recreated struct {
 	// the disclosure that opened the claim at a node. Node 0 is Claims.
 	steps  map[step]int
 	opened map[int]Disclosure
+	// up leads from a node to its parent; nodeOf finds the node a
+	// disclosure opened by its digest. Both serve Ancestors.
+	up     map[int]int
+	nodeOf map[string]int
 }
 
 // Node is one value of the payload as the issuer issued it (RFC 9901 §4.2),
@@ -103,6 +112,30 @@ func (r *Recreated) Disclosures(path Path) (ds []Disclosure, ok bool) {
 	return ds, true
 }
 
+// Ancestors returns the disclosures of the concealed claims that the
+// disclosure with this digest is nested in, outermost first: those a holder
+// must send with it for a verifier to reach it (RFC 9901 §4.2.6, §7.2). It
+// is empty for a disclosure at the top of the payload; ok is false when no
+// disclosure given to Recreate has this digest under r.Alg. Each
+// Disclosure's Value is shared and must not be modified.
+func (r *Recreated) Ancestors(digest string) (ds []Disclosure, ok bool) {
+	if r == nil {
+		return nil, false
+	}
+	node, ok := r.nodeOf[digest]
+	if !ok {
+		return nil, false
+	}
+	ds = []Disclosure{}
+	for n := r.up[node]; n != 0; n = r.up[n] {
+		if d, ok := r.opened[n]; ok {
+			ds = append(ds, d)
+		}
+	}
+	slices.Reverse(ds)
+	return ds, true
+}
+
 // Disclosed reports whether the claim at path arrived through a disclosure:
 // the claim, one of its ancestors or one of its descendants was opened from
 // one (RFC 9901 §4.2). It is false for a nil r, an invalid path and a path not
@@ -141,7 +174,8 @@ func (r *Recreated) Disclosed(path Path) bool {
 // jose.ErrMalformed:
 //   - more than 1000 disclosures, or the same disclosure twice (§4);
 //   - a top-level _sd_alg other than "sha-256" (§4.1.1, §7.1 step 2d; absent
-//     means sha-256), or _sd_alg in any nested object (§4.1.1);
+//     means sha-256; RecreateWithOptions accepts others), or _sd_alg in any
+//     nested object (§4.1.1);
 //   - an _sd that is not an array of strings (§4.2.4.1);
 //   - a digest in _sd whose disclosure is not [salt, name, value], or whose
 //     name is already in the object (§7.1 step 3c.ii);
@@ -159,25 +193,61 @@ func (r *Recreated) Disclosed(path Path) bool {
 // A digest with no disclosure is ignored, and an array element it stands for
 // is removed (§7.1 steps 3c.i, 3d). An object left empty stays {} (step 3e).
 func Recreate(payload map[string]any, disclosures []Disclosure) (*Recreated, error) {
+	return RecreateWithOptions(payload, disclosures, RecreateOptions{})
+}
+
+// RecreateOptions sets what Recreate accepts beyond its defaults.
+type RecreateOptions struct {
+	// Algorithms are the _sd_alg values accepted, from AlgSHA256, AlgSHA384
+	// and AlgSHA512. Empty accepts sha-256 only; a list without sha-256 also
+	// refuses a payload with no _sd_alg, which means sha-256. RFC 9901
+	// §4.1.1 lets an Issuer use a registered or profile-defined hash, and
+	// §7.1 step 2d lets the Holder or Verifier refuse one it does not
+	// understand or deem secure, so the choice is the caller's.
+	Algorithms []string
+}
+
+// RecreateWithOptions is Recreate with the payload's _sd_alg checked against
+// opts.Algorithms and every digest computed with it. An algorithm in
+// opts.Algorithms this package does not implement wraps
+// jose.ErrUnsupportedAlg.
+func RecreateWithOptions(payload map[string]any, disclosures []Disclosure, opts RecreateOptions) (*Recreated, error) {
+	accepted := opts.Algorithms
+	if len(accepted) == 0 {
+		accepted = []string{AlgSHA256}
+	}
+	for _, alg := range accepted {
+		if !supportedAlg(alg) {
+			return nil, fmt.Errorf("%w: sdjwt: hash algorithm %s is not implemented, only %s", jose.ErrUnsupportedAlg, errtext.Quote(alg), quoteNames(supportedAlgs))
+		}
+	}
 	if len(disclosures) > maxDisclosures {
 		return nil, fmt.Errorf("%w: sdjwt: %d disclosures, at most %d", jose.ErrMalformed, len(disclosures), maxDisclosures)
 	}
-	if alg, ok := payload[keySDAlg]; ok && alg != sdAlgSHA256 {
-		// A payload value: its type and a bounded prefix of it, never raw.
-		name, _ := alg.(string)
-		return nil, fmt.Errorf("%w: sdjwt: _sd_alg %T %s is not supported, only %q", jose.ErrMalformed, alg, errtext.Quote(name), sdAlgSHA256)
+	alg := AlgSHA256 // absent means sha-256 (§4.1.1)
+	if raw, ok := payload[keySDAlg]; ok {
+		name, isString := raw.(string)
+		if !isString || !slices.Contains(accepted, name) {
+			// A payload value: its type and a bounded prefix of it, never raw.
+			return nil, fmt.Errorf("%w: sdjwt: _sd_alg %T %s is not supported, only %s", jose.ErrMalformed, raw, errtext.Quote(name), quoteNames(accepted))
+		}
+		alg = name
+	} else if !slices.Contains(accepted, AlgSHA256) {
+		return nil, fmt.Errorf("%w: sdjwt: no _sd_alg, which means sha-256, and only %s is accepted", jose.ErrMalformed, quoteNames(accepted))
 	}
 	r := recreator{
 		byDigest: make(map[string]string, len(disclosures)),
 		seen:     map[string]bool{},
 		steps:    map[step]int{},
 		opened:   map[int]Disclosure{},
+		up:       map[int]int{},
+		nodeOf:   map[string]int{},
 	}
 	order := make([]string, 0, len(disclosures)) // digests in the order received
 	// The digest is over the encoded string (§4.2.3), so duplicates and
 	// references are found without a parse; match parses the ones referenced.
 	for _, given := range disclosures {
-		digest := digestOf(given.Encoded)
+		digest := digestWith(given.Encoded, alg)
 		if _, dup := r.byDigest[digest]; dup {
 			return nil, fmt.Errorf("%w: sdjwt: disclosure %s given twice", jose.ErrMalformed, digest)
 		}
@@ -194,7 +264,7 @@ func Recreate(payload map[string]any, disclosures []Disclosure) (*Recreated, err
 			return nil, fmt.Errorf("%w: sdjwt: no digest references disclosure %s", jose.ErrMalformed, digest)
 		}
 	}
-	return &Recreated{Claims: claims, issued: issued, steps: r.steps, opened: r.opened}, nil
+	return &Recreated{Claims: claims, Alg: alg, issued: issued, steps: r.steps, opened: r.opened, up: r.up, nodeOf: r.nodeOf}, nil
 }
 
 type recreator struct {
@@ -202,6 +272,8 @@ type recreator struct {
 	seen     map[string]bool   // every digest met so far
 	steps    map[step]int
 	opened   map[int]Disclosure
+	up       map[int]int
+	nodeOf   map[string]int
 }
 
 // at is the place of a value in the recreated claims, linked to its parent's,
@@ -236,8 +308,16 @@ func (r *recreator) index(a *at) int {
 		parent := r.index(a.up)
 		a.node = len(r.steps) + 1
 		r.steps[step{parent, a.el}] = a.node
+		r.up[a.node] = parent
 	}
 	return a.node
+}
+
+// open records that d opened the claim at a.
+func (r *recreator) open(a *at, d Disclosure) {
+	n := r.index(a)
+	r.opened[n] = d
+	r.nodeOf[d.Digest] = n
 }
 
 // value, object and array return the recreated value and its Node as issued.
@@ -309,7 +389,7 @@ func (r *recreator) object(obj map[string]any, a *at) (map[string]any, *Node, er
 			return nil, nil, fmt.Errorf("%w: sdjwt: disclosure %s repeats the claim %s at %s", jose.ErrMalformed, digest, errtext.Quote(d.Name), a.path())
 		}
 		ca := a.child(d.Name)
-		r.opened[r.index(ca)] = d
+		r.open(ca, d)
 		v, n, err := r.value(d.Value, ca)
 		if err != nil {
 			return nil, nil, err
@@ -349,7 +429,7 @@ func (r *recreator) array(arr []any, a *at) ([]any, *Node, error) {
 			return nil, nil, fmt.Errorf("%w: sdjwt: array element at %s references the object property disclosure %s", jose.ErrMalformed, a.path(), digest)
 		}
 		ca := a.child(len(out))
-		r.opened[r.index(ca)] = d
+		r.open(ca, d)
 		v, n, err := r.value(d.Value, ca)
 		if err != nil {
 			return nil, nil, err
@@ -379,6 +459,7 @@ func (r *recreator) match(digest string) (d Disclosure, ok bool, err error) {
 	if err != nil {
 		return Disclosure{}, false, err
 	}
+	d.Digest = digest
 	return d, true, nil
 }
 
@@ -392,4 +473,14 @@ func placeholder(el any) (string, bool) {
 	}
 	digest, ok := obj[keyEllipsis].(string)
 	return digest, ok
+}
+
+// quoteNames lists hash names as "a" or "a", "b": one name reads as before
+// RecreateOptions existed.
+func quoteNames(names []string) string {
+	q := make([]string, len(names))
+	for i, n := range names {
+		q[i] = strconv.Quote(n)
+	}
+	return strings.Join(q, ", ")
 }

@@ -12,8 +12,8 @@ const (
 	maxDisclosures = 1000    // disclosures of one SD-JWT; Split and Recreate, when reading
 	maxDepth       = 32      // nesting of objects and arrays, disclosed values in place; Recreate's recursion
 	maxPaths       = 1000    // Conceal's paths, each a walk along its names; checked before generating
-	maxMinDigests  = 1000    // ConcealOptions.MinDigests; an array decoy is an insert, so an array costs its length × MinDigests
-	maxDigests     = 20000   // objects and arrays × MinDigests, the decoys Conceal may write; checked before generating
+	maxMinDigests  = 1000    // ConcealOptions.MinDigests and each Decoy count; array decoys are placed in one pass over the array and its decoys
+	maxDigests     = 20000   // objects and arrays × MinDigests plus every Decoy count, the decoys Conceal may write; checked before generating
 )
 
 // nests reports whether v is an object or an array, the values that count

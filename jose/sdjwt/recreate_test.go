@@ -174,6 +174,55 @@ func TestDisclosuresSelectOnlyThePath(t *testing.T) {
 	}
 }
 
+// RFC 9901 §4.2.6 and §7.2: a disclosure needs those of every concealed
+// claim it is nested in, through objects and arrays, outermost first.
+func TestAncestors(t *testing.T) {
+	claims := map[string]any{"a": map[string]any{"b": map[string]any{"c": "1"}, "d": []any{map[string]any{"e": "2"}}}, "y": "3"}
+	payload, ds, err := Conceal(claims, []Path{{"a"}, {"a", "b"}, {"a", "b", "c"}, {"a", "d", 0}, {"y"}}, ConcealOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	label := map[string]string{}
+	for _, d := range ds {
+		label[d.Digest] = d.Name
+		if d.ArrayElement {
+			label[d.Digest] = "d[0]"
+		}
+	}
+	digest := map[string]string{}
+	for h, n := range label {
+		digest[n] = h
+	}
+	r, err := Recreate(payload, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		of   string
+		ok   bool
+		want string
+	}{
+		{"c", true, "[a b]"},
+		{"d[0]", true, "[a]"},
+		{"a", true, "[]"},
+		{"y", true, "[]"},
+		{"unknown", false, "[]"},
+	} {
+		h := digest[tc.of]
+		if tc.of == "unknown" {
+			h = "X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0"
+		}
+		got, ok := r.Ancestors(h)
+		var names []string
+		for _, d := range got {
+			names = append(names, label[d.Digest])
+		}
+		if s := fmt.Sprint(names); ok != tc.ok || s != tc.want {
+			t.Errorf("Ancestors(%s) = %s %v, want %s %v", tc.of, s, ok, tc.want, tc.ok)
+		}
+	}
+}
+
 // A claim is disclosed when it, an ancestor or a descendant came from a
 // disclosure: draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3 forbids some claims
 // "including any of their sub-claims" in disclosures.

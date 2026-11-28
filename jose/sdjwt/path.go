@@ -31,14 +31,36 @@ func (p Path) validate() error {
 		case string:
 		case int:
 			if v < 0 {
-				return fmt.Errorf("%w: sdjwt: path %s has a negative index", jose.ErrInvalidArgument, p)
+				return pathError(p, "path ", " has a negative index")
 			}
 		default:
-			return fmt.Errorf("%w: sdjwt: path %s has an element of type %T, want string or int", jose.ErrInvalidArgument, p, el)
+			return pathError(p, "path ", fmt.Sprintf(" has an element of type %T, want string or int", el))
 		}
 	}
 	return nil
 }
+
+// PathError is a jose.ErrInvalidArgument that names one claim path: a path
+// or decoy path given to Conceal, or where in the claims a reserved name sits.
+// Error writes Path as Path.String does; Text lets a caller that takes paths
+// in another notation write it in that one.
+type PathError struct {
+	Path          Path
+	before, after string
+}
+
+func pathError(p Path, before, after string) *PathError {
+	return &PathError{Path: p, before: before, after: after}
+}
+
+func (e *PathError) Error() string { return e.Text(Path.String) }
+
+// Text is the error text with the path written by name.
+func (e *PathError) Text(name func(Path) string) string {
+	return jose.ErrInvalidArgument.Error() + ": sdjwt: " + e.before + name(e.Path) + e.after
+}
+
+func (e *PathError) Unwrap() error { return jose.ErrInvalidArgument }
 
 // String writes the path as a JSON-like array, e.g. ["nationalities",0].
 func (p Path) String() string { return p.format(strconv.Quote) }
