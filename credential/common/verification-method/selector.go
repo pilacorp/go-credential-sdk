@@ -110,6 +110,29 @@ func SelectLatestActiveVMForPurpose(doc *DIDDocument, purpose string) (*Verifica
 	return vm, nil
 }
 
+// SelectLatestActiveSigningVMForPurpose picks the active verification method
+// for the given purpose with the highest `#key-N` index, skipping VMs whose
+// Type is "JsonWebKey". When no non-JsonWebKey VM is usable for the purpose,
+// it falls back to considering JsonWebKey VMs so that documents carrying only
+// JWK methods still work.
+//
+// This keeps un-pinned signatures on the key they used before a JsonWebKey VM
+// was added to the document. Callers that intentionally target the JWK method
+// (e.g. conformant VC JOSE) pin the kid explicitly.
+func SelectLatestActiveSigningVMForPurpose(doc *DIDDocument, purpose string) (*VerificationMethodEntry, error) {
+	vm, err := selectLatestActiveVM(doc, purpose, func(vm *VerificationMethodEntry) bool {
+		return vm.Type != "JsonWebKey"
+	})
+	if err != nil {
+		return nil, err
+	}
+	if vm != nil {
+		return vm, nil
+	}
+	// All usable VMs are JsonWebKey — fall back to unrestricted selection.
+	return SelectLatestActiveVMForPurpose(doc, purpose)
+}
+
 // SelectLatestActiveVMForKey is like SelectLatestActiveVMForPurpose but only
 // considers verification methods holding a key of the given kind — so an RSA
 // signer never binds its proof to a secp256k1 VM (or vice versa) on a DID with
@@ -180,7 +203,10 @@ func selectLatestActiveVM(doc *DIDDocument, purpose string, match func(*Verifica
 
 // SelectDefaultSigningVM picks the verification method to sign with when the
 // caller pins none: the only VM when the document has exactly one, otherwise
-// the latest active VM for purpose (see SelectLatestActiveVMForPurpose).
+// the latest active non-JsonWebKey VM for purpose (see
+// SelectLatestActiveSigningVMForPurpose). JsonWebKey VMs are skipped so that
+// adding a JWK method to a document does not silently move every un-pinned
+// signature to the new key; conformant VC JOSE callers pin the kid explicitly.
 func SelectDefaultSigningVM(doc *DIDDocument, purpose string) (*VerificationMethodEntry, error) {
 	if doc == nil {
 		return nil, fmt.Errorf("did document is nil")
@@ -188,7 +214,7 @@ func SelectDefaultSigningVM(doc *DIDDocument, purpose string) (*VerificationMeth
 	if len(doc.VerificationMethod) == 1 {
 		return &doc.VerificationMethod[0], nil
 	}
-	return SelectLatestActiveVMForPurpose(doc, purpose)
+	return SelectLatestActiveSigningVMForPurpose(doc, purpose)
 }
 
 // SelectVMForPurpose chooses a verification method from a resolved DID
