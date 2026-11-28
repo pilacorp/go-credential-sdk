@@ -14,6 +14,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/processor"
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	verificationmethod "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 )
 
 // ErrSDJWTRequiresJOSE is returned when selective disclosure is asked of the VC
@@ -576,21 +577,21 @@ func ParseCredential(rawCredential []byte, opts ...CredentialOpt) (Credential, e
 		var peek map[string]interface{}
 		if err := json.Unmarshal(rawCredential, &peek); err == nil {
 			if idStr, ok := peek["id"].(string); ok {
-				for _, prefix := range []string{
-					"data:application/" + TypeVCJWT + ",",
-					"data:application/" + TypeVCSDJWT + ",",
-				} {
-					if !strings.HasPrefix(idStr, prefix) {
-						continue
-					}
+				if _, token, ok := vcdm.CutEnvelopedDataURL(idStr); ok {
 					if !hasType(peek["type"], TypeEnvelopedVC) {
-						return nil, fmt.Errorf("credential carries a %s id but its type is not %s", prefix, TypeEnvelopedVC)
+						return nil, fmt.Errorf(
+							"credential carries an enveloped data: URL id but its type is not %s",
+							TypeEnvelopedVC)
+					}
+					if token == "" {
+						return nil, fmt.Errorf(
+							"enveloped credential id is a data: URL with no token")
 					}
 					// Parse the token as vc-jose-cose rather than recursing through
 					// ParseCredential: the envelope is defined to hold a vc+jwt, so
 					// this refuses a VC 1.1 JWT hidden inside a v2 envelope, and
 					// keeps the nesting to one level.
-					return ParseJOSECredential(strings.TrimPrefix(idStr, prefix), opts...)
+					return ParseJOSECredential(token, opts...)
 				}
 			}
 		}

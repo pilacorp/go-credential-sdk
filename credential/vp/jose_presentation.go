@@ -71,28 +71,11 @@ func NewJOSEPresentation(vpc PresentationContents, opts ...PresentationOpt) (*JO
 				return nil, fmt.Errorf("credential at index %d is %T: a vp+jwt presentation can only carry "+
 					"enveloping-secured credentials; use a JSON presentation for Data Integrity credentials", i, cred)
 			}
-			serialized, err := joseCred.Serialize()
+			envelope, err := envelopeJOSECredential(i, joseCred)
 			if err != nil {
-				return nil, fmt.Errorf("failed to serialize credential at index %d: %w", i, err)
+				return nil, err
 			}
-			// The assertion cannot be skipped here: signingInput and signature
-			// belong to vc.JOSECredential and are not reachable from this package.
-			// Swallowing a failed assertion left credStr empty, and the error then
-			// came out of envelopeMediaType as "credential is not signed" — right
-			// by accident, about the wrong thing.
-			credStr, ok := serialized.(string)
-			if !ok {
-				return nil, fmt.Errorf("credential at index %d serialized to %T, want a token string", i, serialized)
-			}
-			mediaType, err := envelopeMediaType(credStr)
-			if err != nil {
-				return nil, fmt.Errorf("credential at index %d: %w", i, err)
-			}
-			envelopedList[i] = map[string]interface{}{
-				"@context": []interface{}{"https://www.w3.org/ns/credentials/v2"},
-				"type":     []interface{}{vc.TypeEnvelopedVC},
-				"id":       fmt.Sprintf("data:application/%s,%s", mediaType, credStr),
-			}
+			envelopedList[i] = envelope
 		}
 		payloadData["verifiableCredential"] = envelopedList
 	}
@@ -305,6 +288,9 @@ func requireEnvelopedCredentials(m PresentationData) error {
 			return fmt.Errorf(
 				"credential at index %d must be an %s; a %s carries credentials enveloped, not bare",
 				i, vc.TypeEnvelopedVC, TypeVPJWT)
+		}
+		if err := checkEnvelopedCredential(i, entry); err != nil {
+			return err
 		}
 	}
 
