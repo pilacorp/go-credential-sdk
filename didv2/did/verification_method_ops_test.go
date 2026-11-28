@@ -209,8 +209,8 @@ func TestAddVerificationMethod_AcceptsMultikey(t *testing.T) {
 }
 
 // TestAddVerificationMethod_RejectsAmbiguousKeyMaterial guards the mutual
-// exclusivity declared on VerificationMethod, and that the deprecated
-// publicKeyJwk is not accepted — only secp256k1 hex and P-256 Multikey are.
+// exclusivity declared on VerificationMethod, and that a publicKeyJwk without
+// its coordinates is not accepted.
 func TestAddVerificationMethod_RejectsAmbiguousKeyMaterial(t *testing.T) {
 	doc := mixedDoc(t)
 
@@ -220,7 +220,7 @@ func TestAddVerificationMethod_RejectsAmbiguousKeyMaterial(t *testing.T) {
 			PublicKeyHex:       "0x03aa",
 			PublicKeyMultibase: w3cP256PublicMultibase,
 		},
-		"deprecated jwk": {
+		"jwk without x, y": {
 			PublicKeyJwk: map[string]any{"kty": "EC", "crv": "P-256"},
 		},
 	} {

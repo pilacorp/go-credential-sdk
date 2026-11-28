@@ -57,8 +57,9 @@ func (doc *DIDDocument) FindVerificationMethod(idOrFragment string) *Verificatio
 // fragment id ("#key-3") is canonicalised to the full URL form.
 //
 // The VM must publish exactly one key material field: PublicKeyHex
-// (secp256k1) or PublicKeyMultibase (P-256 Multikey). An empty Type is
-// defaulted from that field; a Type that contradicts it is rejected.
+// (secp256k1), PublicKeyMultibase (P-256 Multikey) or PublicKeyJwk
+// (JsonWebKey). An empty Type is defaulted from that field; a Type that
+// contradicts it is rejected.
 //
 // Returns the assigned VM id.
 func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []VerificationPurpose) (string, error) {
@@ -106,7 +107,7 @@ func (doc *DIDDocument) AddVerificationMethod(vm VerificationMethod, purposes []
 	}
 
 	doc.VerificationMethod = append(doc.VerificationMethod, vm)
-	if vm.Type == multikeyVMType {
+	if needsCIDContext(vm.Type) {
 		doc.ensureContext(cidContext)
 	}
 
@@ -289,31 +290,37 @@ func (doc *DIDDocument) RemoveVerificationMethodPurposes(kid string, purposes []
 
 // vmTypeFor returns the suite a VM must be published under, derived from its
 // key material field: publicKeyHex is secp256k1, publicKeyMultibase is a
-// P-256 Multikey. A VM carrying neither, both, or the deprecated
-// publicKeyJwk is rejected (model.go declares the fields mutually exclusive).
+// P-256 Multikey, publicKeyJwk is a JsonWebKey (secp256k1 or P-256, public
+// members only; see publicJWKPoint). A VM carrying none of them, or more than
+// one, is rejected (model.go declares the fields mutually exclusive).
 func vmTypeFor(vm VerificationMethod) (string, error) {
-	if len(vm.PublicKeyJwk) > 0 {
-		return "", fmt.Errorf("publicKeyJwk is not supported: publish secp256k1 as publicKeyHex or P-256 as publicKeyMultibase")
-	}
-
-	hasHex, hasMultibase := vm.PublicKeyHex != "", vm.PublicKeyMultibase != ""
+	hasHex, hasMultibase, hasJwk := vm.PublicKeyHex != "", vm.PublicKeyMultibase != "", len(vm.PublicKeyJwk) > 0
 
 	switch {
+	case hasJwk && (hasHex || hasMultibase):
+		return "", fmt.Errorf("verification method must have one of publicKeyHex, publicKeyMultibase or publicKeyJwk, not both")
 	case hasHex && hasMultibase:
 		return "", fmt.Errorf("verification method must have publicKeyHex or publicKeyMultibase, not both")
+	case hasJwk:
+		if _, _, err := publicJWKPoint(vm.PublicKeyJwk); err != nil {
+			return "", err
+		}
+
+		return jsonWebKeyVMType, nil
 	case hasHex:
 		return secp256k1VMType, nil
 	case hasMultibase:
 		return multikeyVMType, nil
 	default:
-		return "", fmt.Errorf("verification method must have either publicKeyHex or publicKeyMultibase")
+		return "", fmt.Errorf("verification method must have one of publicKeyHex, publicKeyMultibase or publicKeyJwk")
 	}
 }
 
 // ensureContext appends ctx to @context unless it is already there. Terms a
-// document uses must be defined by a context it declares: Multikey and
-// publicKeyMultibase, and revoked / revocationReason, all come from
-// cidContext, and GenerateDIDDocument only sees the VMs present at creation.
+// document uses must be defined by a context it declares: Multikey,
+// publicKeyMultibase, JsonWebKey, publicKeyJwk, and revoked / revocationReason
+// all come from cidContext, and GenerateDIDDocument only sees the VMs present
+// at creation.
 func (doc *DIDDocument) ensureContext(ctx string) {
 	if slices.Contains(doc.Context, ctx) {
 		return
@@ -346,6 +353,15 @@ func keyFingerprint(vm VerificationMethod) string {
 	case vm.PublicKeyMultibase != "":
 		// base58btc is case-sensitive — compare verbatim.
 		return "publicKeyMultibase:" + vm.PublicKeyMultibase
+	case len(vm.PublicKeyJwk) > 0:
+		// Its own namespace: the key a secp256k1 method publishes as hex may
+		// also sit in a JsonWebKey method, but only once in each form. The
+		// decoded point makes member order and encoding irrelevant. A JWK that
+		// does not parse gets no fingerprint; vmTypeFor has refused it before
+		// any caller compares fingerprints.
+		if crv, point, err := publicJWKPoint(vm.PublicKeyJwk); err == nil {
+			return "publicKeyJwk:" + crv + ":" + hex.EncodeToString(compressPoint(point))
+		}
 	}
 
 	return ""
