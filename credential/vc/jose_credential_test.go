@@ -702,7 +702,7 @@ func TestJOSECredential_SelectiveDisclosure(t *testing.T) {
 		}
 	})
 
-	// Every property at the top level is one a verifier decides on.
+	// Properties a verifier decides on cannot be made disclosable.
 	for _, path := range []string{"issuer", "validUntil", "validFrom", "credentialStatus", "type"} {
 		t.Run("a top-level path is refused: "+path, func(t *testing.T) {
 			c := contents()
@@ -713,7 +713,7 @@ func TestJOSECredential_SelectiveDisclosure(t *testing.T) {
 			if err == nil {
 				t.Fatalf("%q was made disclosable", path)
 			}
-			if !strings.Contains(err.Error(), "_sd at the root") &&
+			if !strings.Contains(err.Error(), "was selectively disclosed") &&
 				!strings.Contains(err.Error(), "failed to build SD-JWT disclosures") {
 				t.Fatalf("err = %v, want the top-level path to be refused", err)
 			}

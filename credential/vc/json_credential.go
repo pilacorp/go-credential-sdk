@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/pilacorp/go-credential-sdk/credential/common/dto"
@@ -93,25 +94,27 @@ func requireJOSECredential(m CredentialData) error {
 	return requireCredentialType(m["type"])
 }
 
-// to look up revocation. Both the 1.1 and the 2.0 spelling of the validity window
-// are listed so that neither can be moved out of the signature, whichever one a
-// payload uses.
-//
-// JWT-level claims (iss, exp, nbf, iat) are not here. ParseJOSECredential runs
-// this for vc+jwt and vc+sd-jwt alike; both payloads are flat, so those claims
-// sit at the root beside credentialSubject. They still need no entry:
-// requireDisclosableAtTopLevel refuses an _sd array at the payload root before
-// this runs, so no disclosure can hide or introduce a root claim.
+// securedClaims are the payload properties a verifier decides on: what the
+// credential is (@context, type), who issued it, when it is valid, where to
+// look up revocation and which schema it follows (vc-jose-cose (W3C REC
+// 2026-10-13) §3.2.1 names @context, type, credentialStatus, credentialSchema
+// and relatedResource), plus the JWT claims RFC 9901 §9.7 calls security
+// critical (iss, aud, exp, nbf, cnf). Both the 1.1 and the 2.0 spelling of the
+// validity window are listed, whichever one a payload uses. The sources ask
+// issuers not to conceal them (a SHOULD, over lists that are not closed);
+// refusing a vc+sd-jwt that does is this SDK's policy as a verifier.
 var securedClaims = []string{
 	"@context", "type",
-	"issuer",
+	"issuer", "iss",
 	"validFrom", "validUntil",
 	"issuanceDate", "expirationDate",
-	"credentialStatus",
+	"exp", "nbf",
+	"credentialStatus", "credentialSchema", "relatedResource",
+	"aud", "cnf",
 }
 
 // requireSecuredClaimsSigned refuses a token whose reconstruction introduced one
-// of those properties, or whose holder withheld the disclosure carrying one.
+// of those properties.
 //
 // Selective disclosure moves a property outside the signature: it is the
 // digest that is signed, and the value arrives separately, under the holder's
@@ -125,76 +128,88 @@ var securedClaims = []string{
 //     expired or revoked credential verify as neither, since the checks run on
 //     the reconstructed payload and found nothing to check.
 //
-// A disclosure the holder attached can be named, so the first loop says which
-// property it was. A disclosure the holder withheld cannot: the digest left
-// behind does not record what it stood for. What is still visible is that some
-// top-level property was made disclosable, and at the top level of a credential
-// there is nothing a verifier does not decide on — hence the second check.
+// A disclosure the holder attached can be named, and is refused here. One the
+// holder withheld cannot: the digest left behind does not record what it stood
+// for. A withheld issuer, @context or type leaves a payload that is not a
+// credential; a withheld optional one is caught by requireClaimsNotWithheld
+// when a check that reads it runs.
+//
+// A disclosed name that differs from one of them only by case is refused too:
+// encoding/json matches struct fields case-insensitively, folding ſ to s, so a
+// consumer decoding the contents would read "iſſuer" as issuer. vc and vp
+// must not be present at all (vc-jose-cose §1.1.2.1), in any case.
 func requireSecuredClaimsSigned(signed, reconstructed map[string]interface{}) error {
-	for _, claim := range securedClaims {
-		if _, ok := signed[claim]; ok {
-			continue
-		}
-		if _, ok := reconstructed[claim]; ok {
-			return fmt.Errorf(
-				"%q was selectively disclosed; a verifier decides on it, so it must be part of the signed payload",
-				claim)
+	added := make([]string, 0, len(reconstructed))
+	for k := range reconstructed {
+		if _, ok := signed[k]; !ok {
+			added = append(added, k)
 		}
 	}
-	if _, ok := signed["_sd"]; ok {
-		return fmt.Errorf(
-			"the signed payload hides top-level properties behind _sd; selective disclosure is for claims inside credentialSubject")
+	sort.Strings(added) // the same input fails with the same error
+	for _, k := range added {
+		if strings.EqualFold(k, "vc") || strings.EqualFold(k, "vp") {
+			return fmt.Errorf("%q was selectively disclosed; the JWT claim names vc and vp must not be present", k)
+		}
+		for _, claim := range securedClaims {
+			switch {
+			case k == claim:
+				return fmt.Errorf(
+					"%q was selectively disclosed; a verifier decides on it, so it must be part of the signed payload",
+					claim)
+			case strings.EqualFold(k, claim):
+				return fmt.Errorf("disclosed claim %.64q differs from %q only by case; a consumer may read it as %s", k, claim, claim)
+			}
+		}
 	}
 	return nil
 }
 
-// requireDisclosableAtTopLevel confines selective disclosure to the
-// credentialSubject subtree. Everything else in a credential is metadata a
-// verifier decides on — @context, type, issuer, the validity window,
-// credentialStatus — and making one of those disclosable moves it outside the
-// signature, under whoever holds the token.
+// requireSecuredClaimsNotConcealed refuses a vc+sd-jwt payload in which one of
+// securedClaims holds concealed parts (an _sd array or a {"...": digest}
+// array element), at any depth. Withholding them changes what the verifier
+// decides on: an issuer that made every field of credentialStatus disclosable
+// left a holder able to withhold all of them, and reconstruction produced
+// credentialStatus: {}, which checkRevocation reads as "this credential does
+// not use revocation". Concealed aud array entries are allowed, as RFC 9901
+// §9.7 lets an issuer make them disclosable. Runs before Reconstruct, which removes the evidence.
 //
-// It runs on vc+sd-jwt payloads only: in a vc+jwt these members are plain
-// claims, since nothing there is selectively disclosed.
-//
-// The check is on the machinery (_sd arrays, and the {"...": digest}
-// placeholder an array uses) rather than on property names, because a withheld
-// disclosure leaves only a digest and a digest does not record what it stood
-// for. _sd_alg is not machinery in this sense: BuildDisclosures writes it at the
-// root whatever the paths were, so refusing it would refuse every SD-JWT.
-//
-// Checking only the root used to be enough-looking and was not. _sd nested
-// inside a top-level property is still _sd: an issuer that made every field of
-// credentialStatus disclosable left a holder able to withhold all of them, and
-// reconstruction then produced credentialStatus: {} — which checkRevocation
-// reads as "this credential does not use revocation" and passes. A revoked
-// credential verified clean, and dropping the disclosures cost the holder none
-// of the claims a verifier wanted to see. Hence the walk.
-func requireDisclosableAtTopLevel(m map[string]interface{}) error {
-	if _, ok := m["_sd"]; ok {
-		return fmt.Errorf("the payload carries _sd at the root; selective disclosure — and the " +
-			"decoy digests that pad it — belong to claims inside credentialSubject, because " +
-			"nothing at the top level may be withheld")
-	}
-
-	// Map iteration order is unspecified, so with more than one offending
-	// property the name reported is whichever came first. The verdict does not
-	// depend on it; only the message does.
-	for name, value := range m {
-		if name == credentialSubjectProperty {
+// Every other property, the payload root included, may be concealed (RFC
+// 9901 §4.2).
+func requireSecuredClaimsNotConcealed(m map[string]interface{}) error {
+	for _, name := range securedClaims {
+		v, ok := m[name]
+		if !ok {
 			continue
 		}
-		if carriesSDMachinery(value) {
-			return fmt.Errorf("selective disclosure is not permitted in %.64q; "+
-				"only claims inside %s may be withheld", name, credentialSubjectProperty)
+		if name == "aud" {
+			v = audWithoutEntryPlaceholders(v)
+		}
+		if carriesSDMachinery(v) {
+			return fmt.Errorf("selective disclosure is not permitted inside %q; a verifier decides on it, so all of it must be part of the signed payload", name)
 		}
 	}
-
 	return nil
 }
 
-// credentialSubjectProperty is the one subtree selective disclosure belongs to.
-const credentialSubjectProperty = "credentialSubject"
+// audWithoutEntryPlaceholders drops the {"...": digest} entries of an aud
+// array, which RFC 9901 §9.7 lets an issuer conceal; anything else stays to
+// be checked, an aud object with _sd included.
+func audWithoutEntryPlaceholders(v interface{}) interface{} {
+	arr, ok := v.([]interface{})
+	if !ok {
+		return v
+	}
+	out := make([]interface{}, 0, len(arr))
+	for _, el := range arr {
+		if m, ok := el.(map[string]interface{}); ok && len(m) == 1 {
+			if _, ok := m["..."]; ok {
+				continue
+			}
+		}
+		out = append(out, el)
+	}
+	return out
+}
 
 // carriesSDMachinery reports whether value holds anything the SD-JWT layer puts
 // in a payload, at any depth: an _sd digest array, or the {"...": digest}

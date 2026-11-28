@@ -15,6 +15,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/sdjwt"
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwtutil"
+	"github.com/pilacorp/go-credential-sdk/credential/internal/vcdm"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
 	josesdjwt "github.com/pilacorp/go-credential-sdk/jose/sdjwt"
@@ -135,14 +136,19 @@ func NewJOSECredential(vcc CredentialContents, opts ...CredentialOpt) (*JOSECred
 
 	payloadData := CredentialData(vcMap)
 
-	// The parser's rules (the SDK's own: nothing disclosable outside
-	// credentialSubject; RFC 9901 §7.1: the disclosures matching the digests)
+	// The parser's rules (which claims may be concealed; RFC 9901 §7.1: the
+	// disclosures matching the digests)
 	// run on the bytes that will be signed, whatever Go types the caller's
 	// contents held. A first run with a provisional header refuses a bad
 	// configuration before the DID is resolved, which may cost a network call.
 	if _, err := assembleJOSECredential(vcMap, payloadData, disclosures, disclosable,
 		jwt.SigningKey{ID: options.verificationMethodKey, Alg: jwt.AlgES256}, true); err != nil {
 		return nil, err
+	}
+	if disclosable {
+		if err := requireNoRootDigests(vcMap); err != nil {
+			return nil, err
+		}
 	}
 
 	// Resolve the verification method the header will name, and keep it: every
@@ -306,13 +312,8 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		return nil, fmt.Errorf("typ %.64q does not match the SD-JWT format", typ)
 	}
 
-	// Whatever the holder chose to send, the issuer must not have made anything
-	// outside credentialSubject disclosable in the first place: a withheld
-	// disclosure leaves only a digest, which does not say which property it
-	// stood for, so there would be nothing left to check. Runs before
-	// Reconstruct, because Reconstruct is what removes the evidence.
 	if declaredSD {
-		if err := requireDisclosableAtTopLevel(payloadMap); err != nil {
+		if err := requireSecuredClaimsNotConcealed(payloadMap); err != nil {
 			return nil, err
 		}
 	}
@@ -599,6 +600,9 @@ func (j *JOSECredential) executeOptions(opts ...CredentialOpt) error {
 	if options.isCheckRevocation && !options.isVerifyProof {
 		return fmt.Errorf("credential verification failed: WithCheckRevocation requires WithVerifyProof — the credential's proof must be verified before fetching its status list")
 	}
+	if err := j.requireClaimsNotWithheld(options); err != nil {
+		return fmt.Errorf("credential verification failed: %w", err)
+	}
 
 	g := &errgroup.Group{}
 
@@ -766,6 +770,80 @@ func recreate(payload map[string]interface{}, disclosures []string) (*josesdjwt.
 		return nil, fmt.Errorf("read the credential's disclosures: %w", err)
 	}
 	return r, nil
+}
+
+// requireNoRootDigests refuses to sign a vc+sd-jwt with a concealed
+// top-level claim or root decoys. This builder writes no exp or nbf, so with
+// root decoys, or once a holder withholds a top-level disclosure, Verify
+// cannot rule out a withheld exp or nbf and refuses the credential
+// (requireClaimsNotWithheld). Root concealment arises only in tokens from
+// other issuers.
+func requireNoRootDigests(payload map[string]interface{}) error {
+	if _, ok := payload["_sd"]; ok {
+		return fmt.Errorf("a top-level claim or decoy is concealed, and this builder writes no exp or nbf: " +
+			"with root decoys, or once a holder withholds a top-level disclosure, the credential fails Verify (RFC 9901 §9.7); " +
+			"conceal claims below the top level instead")
+	}
+	return nil
+}
+
+// requireClaimsNotWithheld refuses a vc+sd-jwt that lacks a claim a check
+// about to run reads, while the payload root holds digests with no
+// disclosure: one of them may be that claim, withheld by the holder, and a
+// verifier cannot tell (RFC 9901 §9.7: verifiers "need to operate as though
+// security-critical claims might be selectively disclosable"). The proof
+// check reads exp and nbf, WithCheckExpiration both validity pairs
+// (vcdm.ValidityPairs),
+// WithCheckRevocation credentialStatus, WithSchemaValidation credentialSchema.
+// A credential carrying them, or with every root digest disclosed, passes.
+func (j *JOSECredential) requireClaimsNotWithheld(o *credentialOptions) error {
+	if !j.disclosable {
+		return nil
+	}
+	var read []string
+	if o.isVerifyProof {
+		read = append(read, "exp", "nbf")
+	}
+	if o.isCheckExpiration {
+		for _, pair := range vcdm.ValidityPairs {
+			read = append(read, pair[0], pair[1])
+		}
+	}
+	if o.isCheckRevocation {
+		read = append(read, "credentialStatus")
+	}
+	if o.isValidateSchema {
+		read = append(read, "credentialSchema")
+	}
+	payload, err := jwtutil.DecodeSegmentObject(strings.SplitN(j.signingInput, ".", 2)[1])
+	if err != nil {
+		return fmt.Errorf("decode payload: %w", err)
+	}
+	if _, ok := payload["_sd"]; !ok {
+		return nil // nothing at the root is concealed
+	}
+	// Disclosed, these claims were refused at parse, so the signed payload
+	// is where they are or are not.
+	var missing []string
+	for _, c := range read {
+		if _, ok := payload[c]; !ok {
+			missing = append(missing, c)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	r, err := recreate(payload, j.disclosures)
+	if err != nil {
+		return err
+	}
+	if n := r.Issued().HiddenFields; n > 0 {
+		return fmt.Errorf("the credential lacks %s while %d top-level claim(s) are concealed and not disclosed; "+
+			"any of them may be one of those, so the checks that read them cannot run (RFC 9901 §9.7): "+
+			"present the credential with its top-level disclosures",
+			strings.Join(missing, ", "), n)
+	}
+	return nil
 }
 
 // ErrParentDisclosureNotSelected is what a *ParentDisclosureError unwraps to.

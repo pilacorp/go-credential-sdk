@@ -143,6 +143,10 @@ func parseDateTime(s string, zoneRequired bool) (time.Time, error) {
 	return t, nil
 }
 
+// ValidityPairs are the members CheckValidity reads, from and until, in the
+// order it reads them.
+var ValidityPairs = [][2]string{{ValidFrom, ValidUntil}, {IssuanceDate, ExpirationDate}}
+
 // CheckValidity enforces the validity period a credential or presentation
 // states, at the current time widened by leeway on both sides: validFrom and
 // validUntil (VCDM 2.0), and issuanceDate and expirationDate (VCDM 1.1 §4.6,
@@ -150,7 +154,7 @@ func parseDateTime(s string, zoneRequired bool) (time.Time, error) {
 // document that mixes contexts cannot move its dates out of view. what names
 // the document in the error ("credential", "presentation").
 func CheckValidity(what string, doc map[string]interface{}, leeway time.Duration) error {
-	for _, pair := range [][2]string{{ValidFrom, ValidUntil}, {IssuanceDate, ExpirationDate}} {
+	for _, pair := range ValidityPairs {
 		from, err := dateMember(doc, pair[0])
 		if err != nil {
 			return err

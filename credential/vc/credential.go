@@ -449,6 +449,10 @@ func WithSDDisclosures(disclosures []string) CredentialOpt {
 // When provided, the SDK will use sdjwt.BuildDisclosures to construct SD-JWT structures
 // during credential issuance.
 //
+// A path to, or inside, a property a verifier decides on is refused (vc-jose-
+// cose (W3C REC 2026-10-13) §3.2.1, RFC 9901 §9.7), and so is a top-level
+// path; see WithSDDecoyDigests for the list and the reason.
+//
 // Applies to NewJOSECredential only; NewJWTCredential refuses it with
 // ErrSDJWTRequiresJOSE.
 func WithSDSelectivePaths(paths []string) CredentialOpt {
@@ -491,10 +495,12 @@ func WithSDShuffle(enabled bool) CredentialOpt {
 // array, a path to any other value adds to the object holding it, and a path
 // not in the credential is refused.
 //
-// The path must be inside credentialSubject, not the root. A decoy at
-// the root would claim a top-level property is hidden when none may be — nothing
-// up there is selectively disclosable — and a root digest is indistinguishable
-// from a withheld top-level property, which is what the parser refuses.
+// The path must not be in, or be, one of the properties a verifier decides on
+// (@context, type, issuer, the validity window, credentialStatus,
+// credentialSchema, relatedResource, iss, exp, nbf, cnf, aud as a whole), and
+// must not be the root: a root digest with no disclosure cannot be told from a
+// withheld exp or nbf, which this builder does not write, so the credential
+// would fail Verify (RFC 9901 §9.7).
 //
 // Example: WithSDDecoyDigests([]vc.Decoy{{Path: "credentialSubject", Count: 3}})
 //

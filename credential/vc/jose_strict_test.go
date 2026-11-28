@@ -803,9 +803,9 @@ func TestJOSEStrict_BadSDConfigRefusedBeforeResolving(t *testing.T) {
 	r := &downResolver{}
 	c := joseContents("did:example:x")
 	_, err := vc.NewJOSECredential(c, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(r),
-		vc.WithSDDecoyDigests([]vc.Decoy{{Path: "", Count: 2}}))
+		vc.WithSDDecoyDigests([]vc.Decoy{{Path: "type", Count: 2}}))
 	if err == nil || strings.Contains(err.Error(), "resolver down") || r.calls != 0 {
-		t.Fatalf("err = %v after %d resolver calls, want the root decoy refused first", err, r.calls)
+		t.Fatalf("err = %v after %d resolver calls, want the decoy in type refused first", err, r.calls)
 	}
 }
 
@@ -944,6 +944,22 @@ func TestJOSEStrict_VerificationMethodControllerChecked(t *testing.T) {
 		}
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want the method refused (%q)", name, err, tc.want)
+		}
+	}
+}
+
+// A top-level path or decoy is refused at build: the builder writes no exp or
+// nbf, so Verify would refuse the credential once a top-level digest is
+// withheld, or with root decoys alone.
+func TestJOSEStrict_RootConcealmentRefusedAtBuild(t *testing.T) {
+	did, _, resolver := joseSetup(t)
+	for name, opt := range map[string]vc.CredentialOpt{
+		"path":  vc.WithSDSelectivePaths([]string{"id"}),
+		"decoy": vc.WithSDDecoyDigests([]vc.Decoy{{Path: "", Count: 2}}),
+	} {
+		_, err := vc.NewJOSECredential(joseContents(did), opt, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+		if err == nil || !strings.Contains(err.Error(), "fails Verify") {
+			t.Errorf("%s: err = %v, want the root concealment refused", name, err)
 		}
 	}
 }
