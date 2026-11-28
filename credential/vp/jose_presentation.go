@@ -241,7 +241,8 @@ const TypeJOSE = "JOSE"
 const typeVerifiablePresentation = "VerifiablePresentation"
 
 // isJOSEPresentationTyp reports whether typ names a presentation secured the
-// way vc-jose-cose defines, in either media type spelling.
+// way vc-jose-cose defines. The comparison is case-insensitive and treats a
+// value without "/" as "application/" + value, per RFC 7515 section 4.1.9.
 //
 // jwt.purposeFromTyp has to recognise every value accepted here, or a token this
 // function routes would have its kind decided by its own payload. Adding one
@@ -306,6 +307,26 @@ func requireEnvelopedCredentials(m PresentationData) error {
 			return fmt.Errorf(
 				"credential at index %d must be an %s; a %s carries credentials enveloped, not bare",
 				i, vc.TypeEnvelopedVC, TypeVPJWT)
+		}
+
+		// VCDM 2.0 §4.13: the envelope MUST carry the v2 @context.
+		if !vcdm.HasType(entry["@context"], vcdm.ContextV2) {
+			return fmt.Errorf(
+				"credential at index %d: enveloped credential @context must include %s",
+				i, vcdm.ContextV2)
+		}
+
+		// VCDM 2.0 §4.13: id MUST be a data: URL whose media type names a
+		// secured credential scheme (application/vc+jwt or application/vc+sd-jwt).
+		id, _ := entry["id"].(string)
+		_, envToken, ok := vcdm.CutEnvelopedDataURL(id)
+		if !ok {
+			return fmt.Errorf(
+				"credential at index %d: enveloped credential id must be a data: URL "+
+					"with media type application/vc+jwt or application/vc+sd-jwt", i)
+		}
+		if envToken == "" {
+			return fmt.Errorf("credential at index %d: enveloped credential id is a data: URL with no token", i)
 		}
 	}
 

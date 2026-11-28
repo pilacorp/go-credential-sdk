@@ -8,15 +8,18 @@
 package jwtutil
 
 import (
+	"crypto/elliptic"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/errtext"
 	"github.com/pilacorp/go-credential-sdk/jose"
 	"github.com/pilacorp/go-credential-sdk/jose/jws"
@@ -148,6 +151,19 @@ func TrimRecoveryByte(signature []byte) []byte {
 	return signature
 }
 
+// curveOrder returns the order n of the curve named by alg ("ES256" → P-256,
+// "ES256K" → secp256k1). Unknown algorithms return nil and the caller skips
+// normalization.
+func curveOrder(alg string) *big.Int {
+	switch alg {
+	case "ES256":
+		return elliptic.P256().Params().N
+	case "ES256K":
+		return secp256k1.S256().N
+	}
+	return nil
+}
+
 // DecodePayload decodes the payload of a compact JWT without checking its
 // signature. The caller verifies the signature, or reads only claims whose
 // worth does not depend on it.
@@ -205,6 +221,33 @@ func CheckHeaderSize(seg string) error {
 		return fmt.Errorf("%w: header is over %d bytes", jose.ErrMalformed, MaxHeaderBytes)
 	}
 	return nil
+}
+
+// NormalizeLowS returns the low-S form (s <= n/2) of a 64-byte r||s ECDSA
+// signature, so every token the SDK signs has one canonical signature.
+// Verification still accepts high-S, so a copy with s replaced by n-s
+// verifies too and has a different Hash().
+//
+// alg names the JWS algorithm ("ES256" or "ES256K"). An unrecognised alg is
+// returned unchanged — an extra algorithm does not break existing signatures.
+func NormalizeLowS(alg string, sig []byte) []byte {
+	if len(sig) != 64 {
+		return sig
+	}
+	n := curveOrder(alg)
+	if n == nil {
+		return sig
+	}
+	halfN := new(big.Int).Rsh(n, 1) // n/2
+	s := new(big.Int).SetBytes(sig[32:])
+	if s.Cmp(halfN) > 0 {
+		s.Sub(n, s)
+		out := make([]byte, 64)
+		copy(out[:32], sig[:32])
+		s.FillBytes(out[32:])
+		return out
+	}
+	return sig
 }
 
 // CheckHeaderToSign refuses, before anything is signed, a header segment a

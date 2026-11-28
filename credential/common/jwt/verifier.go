@@ -87,6 +87,17 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	if derr != nil {
 		return derr
 	}
+
+	// VC-JOSE-COSE: a relative kid (#fragment) is resolved against iss when
+	// present. Without iss, a relative kid cannot name a verification method.
+	if strings.HasPrefix(kid, "#") {
+		iss, _ := body["iss"].(string)
+		if iss == "" {
+			return fmt.Errorf("relative kid %q requires an iss claim", kid)
+		}
+		kid = iss + kid
+	}
+
 	doc, derr := v.docResolver.ResolveDocument(context.Background(), issuer)
 	if derr != nil {
 		return fmt.Errorf("failed to resolve DID document for issuer %.64q: %w", issuer, derr)
@@ -167,6 +178,8 @@ func jwtProofPurpose(header map[string]interface{}, body map[string]interface{})
 
 // purposeFromTyp reads the media types vc-jose-cose gives the two document
 // kinds. Anything else — including VC 1.1's "JWT" — says nothing and yields "".
+// The comparison is case-insensitive and treats a value without "/" as
+// "application/" + value, per RFC 7515 section 4.1.9.
 //
 // This list must cover every typ the parsers accept: vc.isJOSECredentialTyp and
 // vp.isJOSEPresentationTyp. A typ they route but this one does not know yields

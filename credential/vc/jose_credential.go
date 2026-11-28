@@ -385,7 +385,8 @@ const (
 const TypeJOSE = "JOSE"
 
 // isJOSECredentialTyp reports whether typ names a credential secured the way
-// vc-jose-cose defines, in either the short or the full media type spelling.
+// vc-jose-cose defines. The comparison is case-insensitive and treats a value
+// without "/" as "application/" + value, per RFC 7515 section 4.1.9.
 //
 // jwt.purposeFromTyp has to recognise every value accepted here, or a token this
 // function routes would have its kind decided by its own payload. Adding one

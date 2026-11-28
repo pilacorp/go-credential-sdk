@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -365,6 +366,51 @@ func TestJOSEStrict_KBJWTRefused(t *testing.T) {
 
 // --- Hash stability ---
 
+// --- #99 item 4: case-insensitive typ ---
+
+// TestJOSEStrict_TypCaseInsensitive checks that ParseCredential routes a
+// token with an uppercase or mixed-case typ to the JOSE parser (RFC 7515
+// section 4.1.9: media type values are case-insensitive).
+func TestJOSEStrict_TypCaseInsensitive(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	token := signedJOSEToken(t, did, priv, resolver)
+
+	for _, tc := range []struct {
+		name string
+		typ  string
+	}{
+		{"uppercase VC+JWT", "VC+JWT"},
+		{"full prefix Application/vc+jwt", "Application/vc+jwt"},
+		{"application/VC+JWT", "application/VC+JWT"},
+		{"mixed Vc+Jwt", "Vc+Jwt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Rewrite the header with the new typ and re-sign so the token
+			// verifies.
+			parts := strings.SplitN(token, ".", 3)
+			headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var header map[string]interface{}
+			if err := json.Unmarshal(headerBytes, &header); err != nil {
+				t.Fatal(err)
+			}
+			header["typ"] = tc.typ
+			newHeader, _ := json.Marshal(header)
+			tampered := resignES256(t, priv, newHeader, parts[1])
+
+			cred, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("ParseCredential with typ %q: %v", tc.typ, err)
+			}
+			if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+				t.Fatalf("Verify with typ %q: %v", tc.typ, err)
+			}
+		})
+	}
+}
+
 // WithSDHashAlgorithm accepts sha-384 and sha-512 (RFC 9901 section 4.1.1
 // allows any IANA hash): a credential the SDK issued with any of them must
 // parse and verify.
@@ -393,6 +439,274 @@ func TestJOSEStrict_SDHashAlgorithmsRoundTrip(t *testing.T) {
 				t.Fatalf("parse %s SD-JWT: %v", alg, err)
 			}
 		})
+	}
+}
+
+// --- #99 item 8: ParseCredential returns untyped nil on error ---
+
+func TestParseCredential_ReturnsUntypedNilOnError(t *testing.T) {
+	// Each input triggers a different concrete parser (JSON, JOSE, JWT) and
+	// must return an untyped nil Credential on the error path, not a typed
+	// (*ConcreteType)(nil) which would satisfy `c != nil`.
+	cases := []struct {
+		name  string
+		input []byte
+	}{
+		{"empty", nil},
+		{"invalid JSON object", []byte(`{"type": "not-a-credential"}`)},
+		{"invalid JWT", []byte(`eyJhbGciOiJub25lIn0.eyJpc3MiOiJ0ZXN0In0.`)},
+		{"garbage", []byte(`not-a-credential-at-all!!!`)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := vc.ParseCredential(tc.input)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if c != nil {
+				t.Fatalf("ParseCredential returned a non-nil Credential (%T) on error", c)
+			}
+		})
+	}
+}
+
+// --- #99 item 14: low-S normalization ---
+
+// extractS returns the s component from a 64-byte ECDSA signature embedded in
+// a vc+jwt token's third segment.
+func extractS(t *testing.T, token string) *big.Int {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[len(parts)-1])
+	if err != nil {
+		t.Fatalf("decode sig: %v", err)
+	}
+	if len(sigBytes) != 64 {
+		t.Fatalf("sig length = %d, want 64", len(sigBytes))
+	}
+	return new(big.Int).SetBytes(sigBytes[32:])
+}
+
+// signer.NewP256Provider already normalizes s, so the P-256 case uses a
+// signer that returns high-S, as a Vault or KMS signer may. The token must
+// carry the low-S form and still verify.
+func TestJOSE_LowS_P256_HighSInput(t *testing.T) {
+	const did = "did:example:lows-p256"
+	n := elliptic.P256().Params().N
+	halfN := new(big.Int).Rsh(n, 1)
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	highS := &highSSecp256k1Signer{inner: inner, n: n}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	for i := 0; i < 20; i++ {
+		cred, err := vc.NewJOSECredential(joseContents(did),
+			vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cred.AddProofByProvider(highS, vc.WithResolver(resolver)); err != nil {
+			t.Fatal(err)
+		}
+		ser, err := cred.Serialize()
+		if err != nil {
+			t.Fatal(err)
+		}
+		token := ser.(string)
+		if s := extractS(t, token); s.Cmp(halfN) > 0 {
+			t.Fatalf("iteration %d: the token carries a high-S signature", i)
+		}
+		parsed, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("verify: %v", err)
+		}
+	}
+}
+
+// highSSecp256k1Signer wraps a real signer and flips every signature to high-S
+// before returning it. n is the order of the signer's curve, so it serves
+// P-256 too.
+type highSSecp256k1Signer struct {
+	inner signer.SignerProvider
+	n     *big.Int
+}
+
+func (h *highSSecp256k1Signer) Sign(digest []byte) ([]byte, error) {
+	raw, err := h.inner.Sign(digest)
+	if err != nil {
+		return nil, err
+	}
+	// Trim recovery byte if present.
+	sig := raw
+	if len(sig) == 65 {
+		sig = sig[:64]
+	}
+	halfN := new(big.Int).Rsh(h.n, 1)
+	s := new(big.Int).SetBytes(sig[32:])
+	if s.Cmp(halfN) <= 0 {
+		// Flip to high-S.
+		s.Sub(h.n, s)
+		s.FillBytes(sig[32:])
+	}
+	return sig, nil
+}
+
+func TestJOSE_LowS_Secp256k1_HighSInput(t *testing.T) {
+	const (
+		did  = "did:example:lows-secp"
+		priv = "57600b3f2b7e1054094e14cd85c72a40dc74c4ee062bb381cea604b55ce56aec"
+	)
+
+	inner, err := signer.NewDefaultProvider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// secp256k1 order from decred
+	n, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16)
+	highS := &highSSecp256k1Signer{inner: inner, n: n}
+	halfN := new(big.Int).Rsh(n, 1)
+
+	vm := vmpkg.NewSecp256k1VM(did, "key-1", pubHex(t, priv))
+	resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+
+	cred, err := vc.NewJOSECredential(joseContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cred.AddProofByProvider(highS, vc.WithResolver(resolver)); err != nil {
+		t.Fatal(err)
+	}
+	ser, err := cred.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := ser.(string)
+
+	s := extractS(t, token)
+	if s.Cmp(halfN) > 0 {
+		t.Fatal("adapter did not normalize high-S to low-S")
+	}
+
+	// The normalized token must still verify.
+	parsed, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}
+
+// --- #99 item 18: relative kid resolution ---
+
+// resignES256VC signs header||payload with a P-256 key and returns a compact JWS.
+func resignES256VC(t *testing.T, priv *ecdsa.PrivateKey, header []byte, payloadB64 string) string {
+	t.Helper()
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + payloadB64
+	digest := sha256.Sum256([]byte(input))
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func TestJOSE_RelativeKid_WithIss(t *testing.T) {
+	const did = "did:example:rel-kid"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	// Issue a valid token, then rewrite kid to relative form and re-sign.
+	token := signedJOSEToken(t, did, priv, resolver)
+	parts := strings.SplitN(token, ".", 3)
+	headerBytes, _ := base64.RawURLEncoding.DecodeString(parts[0])
+	var header map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		t.Fatal(err)
+	}
+	header["kid"] = "#key-1" // relative kid
+	newHeader, _ := json.Marshal(header)
+
+	// Ensure the payload has iss.
+	payloadBytes, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	var payload map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["iss"] = did
+	newPayload, _ := json.Marshal(payload)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(newPayload)
+
+	tampered := resignES256VC(t, priv, newHeader, payloadB64)
+	cred, err := vc.ParseCredential([]byte(tampered), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("parse with relative kid: %v", err)
+	}
+	if err := cred.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("verify with relative kid and iss: %v", err)
+	}
+}
+
+func TestJOSE_RelativeKid_WithoutIss_Rejected(t *testing.T) {
+	const did = "did:example:rel-kid-no-iss"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	// Build a vc+jwt payload WITHOUT iss, relying only on the issuer property.
+	header := map[string]interface{}{
+		"typ": "vc+jwt",
+		"alg": "ES256",
+		"kid": "#key-1", // relative
+	}
+	payload := map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            did,
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+	}
+	hJSON, _ := json.Marshal(header)
+	pJSON, _ := json.Marshal(payload)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(pJSON)
+	token := resignES256VC(t, priv, hJSON, payloadB64)
+
+	cred, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
+	if err != nil {
+		// Rejected at parse; that is fine.
+		if !strings.Contains(err.Error(), "relative kid") {
+			t.Fatalf("rejected for wrong reason: %v", err)
+		}
+		return
+	}
+	err = cred.Verify(vc.WithResolver(resolver))
+	if err == nil {
+		t.Fatal("accepted a relative kid without iss")
+	}
+	if !strings.Contains(err.Error(), "relative kid") {
+		t.Fatalf("rejected for wrong reason: %v", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"github.com/pilacorp/go-credential-sdk/credential/common/signer"
 	vmpkg "github.com/pilacorp/go-credential-sdk/credential/common/verification-method"
 	"github.com/pilacorp/go-credential-sdk/credential/internal/jwttest"
+	"github.com/pilacorp/go-credential-sdk/credential/vc"
 	"github.com/pilacorp/go-credential-sdk/credential/vp"
 	"github.com/pilacorp/go-credential-sdk/jose"
 )
@@ -117,6 +119,187 @@ func TestJWT11_BrokenPresentationHeaderRefusedAtParse(t *testing.T) {
 		if _, err := vp.ParseJWTPresentation(enc([]byte(h)) + "." + payload + ".c2ln"); err == nil || !strings.Contains(err.Error(), "invalid JWT header") {
 			t.Errorf("header %s: err = %v, want it refused", h, err)
 		}
+	}
+}
+
+// resignES256VP signs header and payload with priv for VP tests.
+func resignES256VP(t *testing.T, priv *ecdsa.PrivateKey, header []byte, payloadB64 string) string {
+	t.Helper()
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + payloadB64
+	digest := sha256.Sum256([]byte(input))
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+// --- #99 item 5: enveloped credential id and @context ---
+
+// vpTokenWithEnvelopedVC builds a signed vp+jwt whose payload contains a
+// single enveloped credential entry with the given fields. The token is
+// structurally valid apart from whatever the caller tampers with.
+func vpTokenWithEnvelopedVC(t *testing.T, priv *ecdsa.PrivateKey, did string, entry map[string]interface{}) string {
+	t.Helper()
+	header := map[string]interface{}{
+		"typ": "vp+jwt",
+		"alg": "ES256",
+		"kid": did + "#key-1",
+	}
+	payload := map[string]interface{}{
+		"@context":             []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":                 []interface{}{"VerifiablePresentation"},
+		"holder":               did,
+		"iss":                  did,
+		"verifiableCredential": []interface{}{entry},
+	}
+	hJSON, _ := json.Marshal(header)
+	pJSON, _ := json.Marshal(payload)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(pJSON)
+	return resignES256VP(t, priv, hJSON, payloadB64)
+}
+
+func TestVPJOSEStrict_EnvelopedCredentialIDNotDataURL(t *testing.T) {
+	did, priv, _ := vpJoseSetup(t)
+	entry := map[string]interface{}{
+		"@context": "https://www.w3.org/ns/credentials/v2",
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "https://example.com/vc/1",
+	}
+	token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	_, err := vp.ParseJOSEPresentation(token)
+	if err == nil {
+		t.Fatal("accepted an enveloped credential whose id is not a data: URL")
+	}
+	if !strings.Contains(err.Error(), "data:") {
+		t.Fatalf("error = %v, want one mentioning data: URL", err)
+	}
+}
+
+func TestVPJOSEStrict_EnvelopedCredentialMissingContext(t *testing.T) {
+	did, priv, _ := vpJoseSetup(t)
+	entry := map[string]interface{}{
+		"type": "EnvelopedVerifiableCredential",
+		"id":   "data:application/vc+jwt,eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2ln",
+	}
+	token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	_, err := vp.ParseJOSEPresentation(token)
+	if err == nil {
+		t.Fatal("accepted an enveloped credential without @context")
+	}
+	if !strings.Contains(err.Error(), "@context") {
+		t.Fatalf("error = %v, want one mentioning @context", err)
+	}
+}
+
+func TestVPJOSEStrict_EnvelopedCredentialValidDataURL(t *testing.T) {
+	did, priv, resolver := vpJoseSetup(t)
+	// The scheme and media type of a data: URL are case-insensitive
+	// (RFC 2397, RFC 2045 section 5.1), so another implementation's
+	// capitalization is accepted too.
+	for _, id := range []string{
+		"data:application/vc+jwt,eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2ln",
+		"DATA:Application/VC+JWT,eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2ln",
+	} {
+		t.Run(id[:24], func(t *testing.T) {
+			entry := map[string]interface{}{
+				"@context": "https://www.w3.org/ns/credentials/v2",
+				"type":     "EnvelopedVerifiableCredential",
+				"id":       id,
+			}
+			token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+			pres, err := vp.ParsePresentation([]byte(token), vp.WithResolver(resolver))
+			if err != nil {
+				t.Fatalf("ParsePresentation with valid enveloped credential: %v", err)
+			}
+			if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+		})
+	}
+}
+
+// An uppercase DATA:Application/VC+JWT prefix must pass ParsePresentation AND
+// Verify(WithVCValidation): the VP gate and the credential unwrap must agree on
+// case folding, or the credential reads as a JSON object with no issuer.
+func TestVPJOSEStrict_UppercaseEnvelopeParsesCredential(t *testing.T) {
+	const did = "did:example:vp-jose-uppercase-envelope"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := vmpkg.NewStaticResolver(
+		vmpkg.NewDIDDocument(did, mustP256VM(t, did, "key-1", &priv.PublicKey)))
+
+	cred, err := vc.NewJOSECredential(joseVPCredentialContents(did),
+		vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("new jose cred: %v", err)
+	}
+	if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("sign jose cred: %v", err)
+	}
+	token, err := cred.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry := map[string]interface{}{
+		"@context": "https://www.w3.org/ns/credentials/v2",
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "DATA:Application/VC+JWT," + token.(string),
+	}
+	vpToken := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	pres, err := vp.ParsePresentation([]byte(vpToken), vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("ParsePresentation: %v", err)
+	}
+	if err := pres.Verify(vp.WithResolver(resolver),
+		vp.WithVCValidation(vc.WithResolver(resolver))); err != nil {
+		t.Fatalf("Verify with WithVCValidation: %v", err)
+	}
+}
+
+// The envelope's @context must include the v2 context, not start with it.
+// ["https://example.org/ctx", v2] is a valid envelope.
+func TestVPJOSEStrict_EnvelopeContextIncludesV2(t *testing.T) {
+	did, priv, resolver := vpJoseSetup(t)
+	entry := map[string]interface{}{
+		"@context": []interface{}{"https://example.org/ctx", "https://www.w3.org/ns/credentials/v2"},
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "data:application/vc+jwt,eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.c2ln",
+	}
+	token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	pres, err := vp.ParsePresentation([]byte(token), vp.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("ParsePresentation refused a valid envelope @context: %v", err)
+	}
+	if err := pres.Verify(vp.WithResolver(resolver)); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
+// An envelope whose data: URL carries no token is refused where the envelope
+// is checked, as the JSON presentation path does, not later when the
+// credential is opened.
+func TestVPJOSEStrict_EnvelopeEmptyTokenRefused(t *testing.T) {
+	did, priv, resolver := vpJoseSetup(t)
+	entry := map[string]interface{}{
+		"@context": "https://www.w3.org/ns/credentials/v2",
+		"type":     "EnvelopedVerifiableCredential",
+		"id":       "data:application/vc+jwt,",
+	}
+	token := vpTokenWithEnvelopedVC(t, priv, did, entry)
+	_, err := vp.ParsePresentation([]byte(token), vp.WithResolver(resolver))
+	if err == nil || !strings.Contains(err.Error(), "no token") {
+		t.Fatalf("err = %v, want the empty envelope token refused", err)
 	}
 }
 
@@ -258,5 +441,38 @@ func TestVPJOSEStrict_ErrorTextBoundedForPayloadValues(t *testing.T) {
 	tok := enc(`{"alg":"ES256","typ":"vp+jwt"}`) + "." + enc(payload) + "." + strings.Repeat("A", 86)
 	if _, err := vp.ParsePresentation([]byte(tok)); err == nil || len(err.Error()) > 1024 {
 		t.Fatalf("err of %d bytes, want a bounded refusal", len(fmt.Sprint(err)))
+	}
+}
+
+// --- #99 item 8: ParsePresentation returns untyped nil on error ---
+
+func TestParsePresentation_ReturnsUntypedNilOnError(t *testing.T) {
+	// A VC 1.1 JWT missing the vp claim reaches ParseJWTPresentation's error
+	// path through ParsePresentation. If the concrete nil leaks through, the
+	// caller gets a non-nil Presentation interface.
+	jwtHeader, _ := json.Marshal(map[string]interface{}{"alg": "ES256", "typ": "JWT"})
+	jwtPayload, _ := json.Marshal(map[string]interface{}{"iss": "did:example:123"})
+	jwtToken := base64.RawURLEncoding.EncodeToString(jwtHeader) + "." +
+		base64.RawURLEncoding.EncodeToString(jwtPayload) + ".fakesig"
+
+	cases := []struct {
+		name  string
+		input []byte
+	}{
+		{"empty", nil},
+		{"JWT missing vp claim", []byte(jwtToken)},
+		{"garbage", []byte(`not-a-presentation!!!`)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := vp.ParsePresentation(tc.input)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if p != nil {
+				t.Fatalf("ParsePresentation returned a non-nil Presentation (%T) on error", p)
+			}
+		})
 	}
 }

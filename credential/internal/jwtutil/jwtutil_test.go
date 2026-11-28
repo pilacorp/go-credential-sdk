@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,50 @@ func TestCheckTimeClaims(t *testing.T) {
 				t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestNormalizeLowS(t *testing.T) {
+	for _, alg := range []string{"ES256", "ES256K"} {
+		n := curveOrder(alg)
+		halfN := new(big.Int).Rsh(n, 1)
+		sig := func(s *big.Int) []byte {
+			out := make([]byte, 64)
+			out[31] = 7 // r
+			s.FillBytes(out[32:])
+			return out
+		}
+		sOf := func(b []byte) *big.Int { return new(big.Int).SetBytes(b[32:]) }
+
+		t.Run(alg, func(t *testing.T) {
+			// s = n/2 is already low-S and is kept.
+			if got := sOf(NormalizeLowS(alg, sig(halfN))); got.Cmp(halfN) != 0 {
+				t.Fatalf("s = n/2 changed to %v", got)
+			}
+			// s = n/2 + 1 becomes n - s, which is n/2 (n is odd).
+			high := new(big.Int).Add(halfN, big.NewInt(1))
+			in := sig(high)
+			out := NormalizeLowS(alg, in)
+			if want := new(big.Int).Sub(n, high); sOf(out).Cmp(want) != 0 {
+				t.Fatalf("s = n/2+1 normalized to %v, want %v", sOf(out), want)
+			}
+			if out[31] != 7 {
+				t.Fatal("r changed")
+			}
+			if sOf(in).Cmp(high) != 0 {
+				t.Fatal("the input slice was modified")
+			}
+		})
+	}
+	// Anything it cannot judge is returned unchanged.
+	odd := []byte{1, 2, 3}
+	if got := NormalizeLowS("ES256", odd); len(got) != 3 {
+		t.Fatalf("non-64-byte input changed: %v", got)
+	}
+	in := make([]byte, 64)
+	in[63] = 0xff
+	if got := NormalizeLowS("RS256", in); got[63] != 0xff {
+		t.Fatal("unknown alg changed the signature")
 	}
 }
 

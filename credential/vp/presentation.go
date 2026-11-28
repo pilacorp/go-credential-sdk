@@ -418,7 +418,11 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 	}
 
 	if isJSONPresentation(rawPresentation) {
-		return ParseJSONPresentation(rawPresentation, opts...)
+		p, err := ParseJSONPresentation(rawPresentation, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
 
 	valStr := strings.TrimSpace(strings.Trim(string(rawPresentation), "\""))
@@ -435,7 +439,11 @@ func ParsePresentation(rawPresentation []byte, opts ...PresentationOpt) (Present
 				return ParseJOSEPresentation(valStr, opts...)
 			}
 		}
-		return ParseJWTPresentation(valStr, opts...)
+		p, err := ParseJWTPresentation(valStr, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
 
 	if isSDJWTShaped(valStr) {
