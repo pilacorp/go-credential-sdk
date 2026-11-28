@@ -860,3 +860,42 @@ func TestJOSEStrict_ErrorTextBoundedForPayloadValues(t *testing.T) {
 		}
 	}
 }
+
+// CID 1.0 §3.3 on the JOSE route, as on the Data Integrity ones: a method
+// whose controller, or whose DID, is not the document's is refused.
+func TestJOSEStrict_VerificationMethodControllerChecked(t *testing.T) {
+	const did, other = "did:example:jose-ctl", "did:example:other"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            did,
+		"validFrom":         "2026-01-01T00:00:00Z",
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+	}
+	for name, tc := range map[string]struct {
+		vmDID, controller, want string
+	}{
+		"controller of another DID": {did, other, "controller"},
+		"method of another DID":     {other, other, "is not the DID"},
+	} {
+		vm := mustP256VM(t, tc.vmDID, "key-1", &priv.PublicKey)
+		vm.Controller = tc.controller
+		resolver := vmpkg.NewStaticResolver(vmpkg.NewDIDDocument(did, vm))
+		tok := signJOSEByHand(t, prov, vc.TypeVCJWT, tc.vmDID+"#key-1", payload)
+		parsed, err := vc.ParseJOSECredential(tok, vc.WithResolver(resolver))
+		if err == nil {
+			err = parsed.Verify(vc.WithResolver(resolver))
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want the method refused (%q)", name, err, tc.want)
+		}
+	}
+}

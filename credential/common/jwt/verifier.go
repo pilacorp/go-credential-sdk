@@ -95,6 +95,11 @@ func (v *JWTVerifier) VerifyJWT(tokenString string) error {
 	if verr != nil {
 		return fmt.Errorf("failed to resolve verification method: %w", verr)
 	}
+	// CID 1.0 §3.3, as the Data Integrity routes check it: the method and the
+	// document both belong to the DID the kid names.
+	if err := verificationmethod.RequireController(doc, vm); err != nil {
+		return err
+	}
 
 	kind, kok := verificationmethod.VMKeyKind(vm)
 	if !kok {
