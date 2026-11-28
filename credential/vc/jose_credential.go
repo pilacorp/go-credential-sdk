@@ -295,28 +295,14 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 		return nil, fmt.Errorf("invalid vc-jose-cose: 'vp' claim MUST NOT be present in payload")
 	}
 
-	// Whether this token is an SD-JWT is answered by the two things that say how
-	// it was secured — the media type in the header, and the combined format —
-	// not by a claim inside the payload. _sd_alg looked like the marker because
-	// BuildDisclosures always writes it, but RFC 9901 § 4.1.1 makes it OPTIONAL
-	// and defaults it to sha-256, so an SD-JWT from another implementation need
-	// not carry it. Reading it as the marker left such a token with
-	// disclosable=false: Reconstruct never ran, so the _sd digests stayed in the
-	// document as though they were claims, Serialize dropped the disclosures and
-	// the terminator, and the claim the holder did send was gone after a round
-	// trip. It is kept below only as a third signal, never as the only one.
-	_, hasSDAlg := payloadMap["_sd_alg"]
+	// Whether this token is an SD-JWT is answered by what says how it was
+	// secured: the media type in the header. A vc+jwt is a plain JWS (vc-jose-
+	// cose §3.1.1), so _sd, _sd_alg or {"...": digest} in its payload are
+	// claims like any other, which a verifier ignores when it does not know
+	// them (RFC 7519 §4), never SD-JWT processing. Only the combined format,
+	// disclosures after the signature, contradicts that typ.
 	declaredSD := jws.Header{"typ": typ}.TypIs(TypeVCSDJWT)
-
-	// The header must not disagree with the bytes. A token typed vc+jwt means
-	// plain JWS to every other verifier, which parses it that way and chokes on
-	// the disclosures after the signature; this one used to accept it and
-	// reconstruct, so the two ends read the same token differently.
-	//
-	// A vc+jwt whose payload carries _sd with neither a terminator nor _sd_alg
-	// gives neither signal, so it slips past this one; the walk below catches it,
-	// which is why that walk is told whether the media type declared SD.
-	if !declaredSD && (combinedSD || hasSDAlg) {
+	if !declaredSD && combinedSD {
 		return nil, fmt.Errorf("typ %.64q does not match the SD-JWT format", typ)
 	}
 
@@ -325,8 +311,10 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	// disclosure leaves only a digest, which does not say which property it
 	// stood for, so there would be nothing left to check. Runs before
 	// Reconstruct, because Reconstruct is what removes the evidence.
-	if err := requireDisclosableAtTopLevel(payloadMap, declaredSD); err != nil {
-		return nil, err
+	if declaredSD {
+		if err := requireDisclosableAtTopLevel(payloadMap); err != nil {
+			return nil, err
+		}
 	}
 
 	vcMap := payloadMap
@@ -342,22 +330,21 @@ func ParseJOSECredential(rawJWT string, opts ...CredentialOpt) (*JOSECredential,
 	// 3d), disclosure names "_sd" and "..." are rejected (step 3c.ii.2), and
 	// duplicate digests are refused (step 4). jose also refuses a disclosure
 	// named "_sd_alg", which §4.1.1 keeps at the top level.
-	// Disclosures imply the combined form, so these three signals cover it.
-	disclosable := declaredSD || combinedSD || hasSDAlg
+	disclosable := declaredSD
 	if disclosable {
 		recreated, rerr := sdjwt.Reconstruct(payloadMap, disclosures, true)
 		if rerr != nil {
 			return nil, fmt.Errorf("failed to reconstruct SD-JWT payload: %w", rerr)
 		}
 		vcMap = recreated
-	}
 
-	// Reconstruct deep-copies, so payloadMap is still exactly what the signature
-	// covered while vcMap is what the caller will read. A disclosure that arrived
-	// carrying one of the claims a verifier decides on is named here; one that was
-	// withheld was already refused above.
-	if err := requireSecuredClaimsSigned(payloadMap, vcMap); err != nil {
-		return nil, fmt.Errorf("invalid %s payload: %w", typ, err)
+		// Reconstruct deep-copies, so payloadMap is still exactly what the
+		// signature covered while vcMap is what the caller will read. A
+		// disclosure that arrived carrying one of the claims a verifier decides
+		// on is named here; one that was withheld was already refused above.
+		if err := requireSecuredClaimsSigned(payloadMap, vcMap); err != nil {
+			return nil, fmt.Errorf("invalid %s payload: %w", typ, err)
+		}
 	}
 
 	// A signature proves who produced these bytes, not that the bytes are a

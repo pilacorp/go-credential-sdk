@@ -591,11 +591,8 @@ func TestSDJWT_FormatIsReadFromTheMediaTypeNotFromSDAlg(t *testing.T) {
 			sdInBody bool
 		}{
 			{name: "disclosures after the signature", suffix: "~" + disclosure + "~", sdInBody: true},
-			{name: "_sd_alg in the payload", withAlg: true, sdInBody: true},
-			// A vc+jwt carrying only _sd digests — no terminator, no _sd_alg —
-			// is not covered here: neither signal fires, and catching it needs a
-			// walk of the payload. That rule belongs to
-			// requireDisclosableAtTopLevel, which walks it anyway.
+			// _sd_alg or _sd in a vc+jwt payload are plain claims:
+			// TestJOSEStrict_PlainVCJWTKeepsSDNamedClaims.
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				token := signJOSEByHand(t, prov, vc.TypeVCJWT, did+"#key-1", payload(tc.withAlg)) + tc.suffix
@@ -820,30 +817,6 @@ func TestSDJWT_SelectiveDisclosureIsConfinedToTheSubject(t *testing.T) {
 					t.Fatalf("err = %v, want one mentioning %q", err, tc.wants)
 				}
 			})
-		}
-	})
-
-	// vc+jwt promises nothing was selectively disclosed, so the subject is not
-	// exempt under that media type. This is the shape neither the combined
-	// format nor _sd_alg reveals, which is why the walk is told what the header
-	// declared.
-	t.Run("a vc+jwt is not exempt even inside the subject", func(t *testing.T) {
-		token := signJOSEByHand(t, prov, vc.TypeVCJWT, issuerDID+"#key-1",
-			map[string]interface{}{
-				"@context":  []interface{}{"https://www.w3.org/ns/credentials/v2"},
-				"type":      []interface{}{"VerifiableCredential"},
-				"issuer":    issuerDID,
-				"validFrom": "2026-01-01T00:00:00Z",
-				"credentialSubject": map[string]interface{}{
-					"id": "did:example:subject", "_sd": []interface{}{digestOf(withheld)}},
-			})
-
-		_, err := vc.ParseCredential([]byte(token), vc.WithResolver(resolver))
-		if err == nil {
-			t.Fatal("a vc+jwt carrying _sd in its subject was accepted")
-		}
-		if !strings.Contains(err.Error(), `only a vc+sd-jwt token may hold`) {
-			t.Fatalf("err = %v, want the subject named under a vc+jwt", err)
 		}
 	})
 

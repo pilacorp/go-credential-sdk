@@ -154,10 +154,8 @@ func requireSecuredClaimsSigned(signed, reconstructed map[string]interface{}) er
 // credentialStatus — and making one of those disclosable moves it outside the
 // signature, under whoever holds the token.
 //
-// subjectMayDisclose says whether credentialSubject is exempt. It is on every
-// path that legitimately produces or carries an SD-JWT, and off for a vc+jwt,
-// whose media type promises nothing was selectively disclosed: a token labelled
-// that way must not carry the machinery anywhere, not even in the subject.
+// It runs on vc+sd-jwt payloads only: in a vc+jwt these members are plain
+// claims, since nothing there is selectively disclosed.
 //
 // The check is on the machinery (_sd arrays, and the {"...": digest}
 // placeholder an array uses) rather than on property names, because a withheld
@@ -172,7 +170,7 @@ func requireSecuredClaimsSigned(signed, reconstructed map[string]interface{}) er
 // reads as "this credential does not use revocation" and passes. A revoked
 // credential verified clean, and dropping the disclosures cost the holder none
 // of the claims a verifier wanted to see. Hence the walk.
-func requireDisclosableAtTopLevel(m map[string]interface{}, subjectMayDisclose bool) error {
+func requireDisclosableAtTopLevel(m map[string]interface{}) error {
 	if _, ok := m["_sd"]; ok {
 		return fmt.Errorf("the payload carries _sd at the root; selective disclosure — and the " +
 			"decoy digests that pad it — belong to claims inside credentialSubject, because " +
@@ -183,15 +181,10 @@ func requireDisclosableAtTopLevel(m map[string]interface{}, subjectMayDisclose b
 	// property the name reported is whichever came first. The verdict does not
 	// depend on it; only the message does.
 	for name, value := range m {
-		if name == credentialSubjectProperty && subjectMayDisclose {
+		if name == credentialSubjectProperty {
 			continue
 		}
 		if carriesSDMachinery(value) {
-			if name == credentialSubjectProperty {
-				// Only a plain token reaches here with credentialSubject.
-				return fmt.Errorf("%s carries _sd or a {\"...\": digest} array element, which only a %s "+
-					"token may hold", credentialSubjectProperty, TypeVCSDJWT)
-			}
 			return fmt.Errorf("selective disclosure is not permitted in %.64q; "+
 				"only claims inside %s may be withheld", name, credentialSubjectProperty)
 		}

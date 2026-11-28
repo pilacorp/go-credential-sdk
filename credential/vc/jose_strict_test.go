@@ -525,24 +525,72 @@ func TestJOSEStrict_NestingLimitsMatchTheReaders(t *testing.T) {
 	}
 }
 
-// A plain vc+jwt whose subject holds _sd or "..." is refused at build, as the
-// parser refuses it, so the SDK does not sign a credential it rejects.
-func TestJOSEStrict_PlainVCJWTWithSDMembersRefusedAtBuild(t *testing.T) {
-	did, _, resolver := joseSetup(t)
-	for name, v := range map[string]interface{}{
-		"_sd":       "x",
-		"_sd array": []interface{}{"X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0"},
-		"tags":      []interface{}{map[string]interface{}{"...": "X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0"}},
+// A vc+jwt is a plain JWS (vc-jose-cose §3.1.1): _sd, _sd_alg or
+// {"...": digest} in its payload are claims, kept as issued and verified
+// like any other, never read as SD-JWT.
+func TestJOSEStrict_PlainVCJWTKeepsSDNamedClaims(t *testing.T) {
+	did, priv, resolver := joseSetup(t)
+	prov, err := signer.NewP256Provider(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeholder := []interface{}{map[string]interface{}{"...": "X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0"}}
+	for name, field := range map[string]struct {
+		key string
+		v   interface{}
+	}{
+		"_sd":         {"_sd", "x"},
+		"_sd array":   {"_sd", []interface{}{"X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0"}},
+		"placeholder": {"tags", placeholder},
+		"_sd_alg":     {"_sd_alg", "sha-256"},
 	} {
 		c := joseContents(did)
-		key := "_sd"
-		if name == "tags" {
-			key = "tags" // an array placeholder
+		c.Subject[0].CustomFields[field.key] = field.v
+		cred, err := vc.NewJOSECredential(c, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("%s: build: %v", name, err)
 		}
-		c.Subject[0].CustomFields[key] = v
-		if _, err := vc.NewJOSECredential(c, vc.WithVerificationMethodKey("key-1"), vc.WithResolver(resolver)); err == nil || !strings.Contains(err.Error(), "only a vc+sd-jwt token may hold") {
-			t.Errorf("%s: err = %v, want the plain vc+jwt refused as the parser refuses it", name, err)
+		if err := cred.AddProofByProvider(prov, vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("%s: sign: %v", name, err)
 		}
+		tok, err := cred.Serialize()
+		if err != nil {
+			t.Fatalf("%s: serialize: %v", name, err)
+		}
+		parsed, err := vc.ParseJOSECredential(tok.(string), vc.WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("%s: parse: %v", name, err)
+		}
+		if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+			t.Fatalf("%s: verify: %v", name, err)
+		}
+		got := parsed.ExtractField("credentialSubject." + field.key)
+		if fmt.Sprint(got) != fmt.Sprint(field.v) {
+			t.Errorf("%s: credentialSubject.%s = %v, want %v as issued", name, field.key, got, field.v)
+		}
+	}
+
+	// Outside the subject too, at the root and inside another property.
+	digest := "X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0"
+	tok := signJOSEByHand(t, prov, vc.TypeVCJWT, did+"#key-1", map[string]interface{}{
+		"@context":          []interface{}{"https://www.w3.org/ns/credentials/v2"},
+		"type":              []interface{}{"VerifiableCredential"},
+		"issuer":            did,
+		"validFrom":         "2026-01-01T00:00:00Z",
+		"credentialSubject": map[string]interface{}{"id": "did:example:subject"},
+		"_sd":               []interface{}{digest},
+		"_sd_alg":           "sha-256",
+		"evidence":          []interface{}{map[string]interface{}{"_sd": []interface{}{digest}}},
+	})
+	parsed, err := vc.ParseJOSECredential(tok, vc.WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("root members: parse: %v", err)
+	}
+	if err := parsed.Verify(vc.WithResolver(resolver)); err != nil {
+		t.Fatalf("root members: verify: %v", err)
+	}
+	if got := fmt.Sprint(parsed.ExtractField("_sd"), parsed.ExtractField("_sd_alg")); got != fmt.Sprint([]interface{}{digest}, "sha-256") {
+		t.Errorf("root members = %s, want them as issued", got)
 	}
 }
 
