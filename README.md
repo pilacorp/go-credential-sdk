@@ -40,7 +40,7 @@ This repository provides a Go SDK for working with W3C Verifiable Credentials (V
 
 - **Verifiable Credential (VC) Package**: Create, sign, serialize, and verify W3C Verifiable Credentials in Go.
 - **Verifiable Presentation (VP) Package**: Create, sign, serialize, and verify W3C Verifiable Presentations containing one or more VCs.
-- **DIDComm Package**: Cryptographic utilities for key derivation, message encryption, and decryption using DIDComm and JWE standards.
+- **DIDComm Package**: Key agreement between secp256k1 keys and message encryption and decryption as JWE (RFC 7516, `dir` with `A256GCM`).
 - **On-Chain VC Verification (vccontract) Package**: Read-only client to verify that a VC hash is anchored on-chain in the Credential Registry smart contract (no private key, no gas).
 
 ## Prerequisites
@@ -1501,9 +1501,14 @@ func main() {
 
 ## <a name="didcomm-features"></a>Features
 
-- Key derivation from sender public and recipient private keys
-- Encryption of messages using a shared secret
-- Decryption of JWE messages
+- Key agreement between two secp256k1 keys: ECDH, then the Concat KDF of RFC 7518 §4.6.2
+- Encryption to a flattened JWE JSON serialization (RFC 7516 §7.2.2) with `{"alg":"dir","enc":"A256GCM"}`
+- Decryption that checks the protected header and authenticates it as AAD (RFC 7516 §5.2)
+
+Messages are readable by any JOSE library that supports `dir` with `A256GCM`. Both keys are static, so the
+key is the same for every message between the same two parties, and only they can derive it. RFC 7518 §8.4
+allows at most 2^32 messages under one AES-GCM key, so rotate a key pair before reaching that. This is not
+DIDComm v2 encryption (ECDH-ES+A256KW / ECDH-1PU+A256KW with recipients).
 
 ## <a name="didcomm-usage"></a>Usage Example
 
@@ -1511,49 +1516,46 @@ func main() {
 package main
 
 import (
-    "crypto/sha256"
     "fmt"
-    "github.com/yourorg/go-credential-sdk/didcomm"
+    "log"
+
+    "github.com/pilacorp/go-credential-sdk/didcomm"
 )
 
+// Hex-encoded secp256k1 keys; fill in real values.
+var recipientPublicKeyHex, recipientPrivateKeyHex, senderPublicKeyHex, senderPrivateKeyHex string
+
 func main() {
-    message := `{
-        "@context": [...],
-        "id": "urn:uuid:...",
-        "type": ["VerifiableCredential"],
-        "issuer": "did:example:123456",
-        "issuanceDate": "...",
-        "credentialSubject": { ... },
-        "proof": {
-            "type": "Ed25519Signature2020",
-            "created": "...",
-            "verificationMethod": "did:example:123456#key-1",
-            "proofPurpose": "assertionMethod",
-            "jws": "..."
-        }
-    }`
+    // Sender: recipient's public key and the sender's own private key (hex).
+    senderKey, err := didcomm.GetFromKeys(recipientPublicKeyHex, senderPrivateKeyHex)
+    if err != nil {
+        log.Fatal(err)
+    }
+    jweOutput, err := didcomm.Encrypt(senderKey, `{"hello":"world"}`)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-    sharedSecret := didcomm.GetFromKeys(SenderPublicKey, SenderPrivateKey)
-    fmt.Printf("Recipient derived: %x\n", sha256.Sum256(sharedSecret))
-
-    jweOutput := didcomm.Encrypt(sharedSecret, message)
-    fmt.Printf("JWE Output: %s\n", jweOutput)
-
-    plaintext := didcomm.DecryptJWE(jweOutput, sharedSecret)
-    fmt.Printf("Plaintext: %s\n", plaintext)
+    // Recipient: sender's public key and the recipient's own private key (hex).
+    recipientKey, err := didcomm.GetFromKeys(senderPublicKeyHex, recipientPrivateKeyHex)
+    if err != nil {
+        log.Fatal(err)
+    }
+    plaintext, err := didcomm.DecryptJWE(jweOutput, recipientKey)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(plaintext)
 }
 ```
 
 ## <a name="didcomm-api"></a>API
 
-- `GetFromKeys(senderPub, senderPriv []byte) []byte`: Derives a shared secret from the sender's public and recipient's private keys.
-- `Encrypt(sharedSecret []byte, message string) string`: Encrypts a message using the shared secret and returns a JWE string.
-- `DecryptJWE(jwe string, sharedSecret []byte) string`: Decrypts a JWE string using the shared secret and returns the plaintext message.
+- `GetFromKeys(peerPubHex, ownPrivHex string) ([]byte, error)`: Returns the 32-byte key two parties share. The public key is hex (compressed or uncompressed), the private key 32 bytes of hex.
+- `Encrypt(key []byte, plaintext string) (string, error)`: Encrypts plaintext under a 32-byte key and returns the JWE JSON.
+- `DecryptJWE(jwe string, key []byte) (string, error)`: Decrypts a JWE written by `Encrypt` or by any JOSE library with `dir` and `A256GCM`. It refuses any other `alg` or `enc`, a `crit` or `zip` header parameter, the `encrypted_key`, `aad`, `unprotected`, `header` and `recipients` members, and a tag that is not 128 bits.
 
-**Notes:**
-
-- Replace `SenderPublicKey` and `SenderPrivateKey` with your actual key variables.
-- The package assumes you are familiar with DIDComm and JWE standards.
+**Note:** messages written by earlier versions (header `"alg":"ECDH-ES"`) do not decrypt.
 
 ---
 

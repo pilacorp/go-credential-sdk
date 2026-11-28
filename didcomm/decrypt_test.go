@@ -9,7 +9,7 @@ import (
 // mustJWE builds a JWE JSON string with the given raw base64url field values.
 func mustJWE(iv, ciphertext, tag string) string {
 	j := JWE{
-		Protected:  "eyJhbGciOiJFQ0RILUVTIn0", // {"alg":"ECDH-ES"}
+		Protected:  "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0", // {"alg":"dir","enc":"A256GCM"}
 		IV:         iv,
 		Ciphertext: ciphertext,
 		Tag:        tag,
@@ -100,7 +100,10 @@ func TestDecryptJWE_RoundTrip(t *testing.T) {
 	}
 
 	original := `{"hello":"world"}`
-	jweStr := Encrypt(key, original)
+	jweStr, err := Encrypt(key, original)
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
 
 	got, err := DecryptJWE(jweStr, key)
 	if err != nil {
